@@ -1,7 +1,7 @@
 use crate::cli::OutputFormat;
 use crate::utils::col_idx_to_letters;
 use libvisi::core::engine::{CellRef, Sheet};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Get string representation of cell value (raw formula string vs calculated result)
 pub fn get_cell_display_val(sheet: &Sheet, row: usize, col: usize, raw: bool) -> String {
@@ -144,7 +144,11 @@ fn render_ascii_table(
         out.push('|');
         out.push_str(&format!(" {:>width$} |", row_num, width = col_widths[0]));
         for (c, cell_val) in row.iter().enumerate().take(num_cols) {
-            out.push_str(&format!(" {:<width$} |", cell_val, width = col_widths[c + 1]));
+            out.push_str(&format!(
+                " {:<width$} |",
+                cell_val,
+                width = col_widths[c + 1]
+            ));
         }
         out.push('\n');
     }

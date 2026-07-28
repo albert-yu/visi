@@ -2,10 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use web_time::Instant;
 
-use super::cell::{
-    CellRef, Dependency, EngineError, EvalError, TextCellRef,
-    generate_unique_id,
-};
+use super::cell::{CellRef, Dependency, EngineError, EvalError, TextCellRef, generate_unique_id};
 use super::column::{ColumnPosition, DataColumn};
 use super::result_data::ResultData;
 /// Context for evaluating expressions, containing references to other sheets
@@ -261,7 +258,10 @@ impl Sheet {
                     updated_cells.insert(cell_ref);
                 }
             }
-            if let Some(comp_sheet) = tables_for_compilation.iter_mut().find(|s| s.name == self.name) {
+            if let Some(comp_sheet) = tables_for_compilation
+                .iter_mut()
+                .find(|s| s.name == self.name)
+            {
                 if let Some(col) = comp_sheet.columns.get_mut(cell_ref.col) {
                     if cell_ref.row < col.data.len() {
                         col.data.set(cell_ref.row, result);
@@ -643,9 +643,9 @@ impl Sheet {
                                 if let ResultData::Error(_) = l_val {
                                     return Ok(l_val);
                                 } else {
-                                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
-                                        "Expected number".to_string(),
-                                    )));
+                                    return Err(EngineError::EvalError(
+                                        EvalError::UnknownFunction("Expected number".to_string()),
+                                    ));
                                 }
                             }
                         };
@@ -655,9 +655,9 @@ impl Sheet {
                                 if let ResultData::Error(_) = r_val {
                                     return Ok(r_val);
                                 } else {
-                                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
-                                        "Expected number".to_string(),
-                                    )));
+                                    return Err(EngineError::EvalError(
+                                        EvalError::UnknownFunction("Expected number".to_string()),
+                                    ));
                                 }
                             }
                         };
@@ -675,11 +675,13 @@ impl Sheet {
                                 if lf == 0.0 && rf < 0.0 {
                                     return Ok(ResultData::Error("#DIV/0!".to_string()));
                                 }
-                                let res = if lf < 0.0 && rf.fract() == 0.0 && rf.abs() <= i32::MAX as f64 {
-                                    lf.powi(rf as i32)
-                                } else {
-                                    lf.powf(rf)
-                                };
+                                let res =
+                                    if lf < 0.0 && rf.fract() == 0.0 && rf.abs() <= i32::MAX as f64
+                                    {
+                                        lf.powi(rf as i32)
+                                    } else {
+                                        lf.powf(rf)
+                                    };
                                 if res.is_nan() || res.is_infinite() {
                                     return Ok(ResultData::Error("#NUM!".to_string()));
                                 }
@@ -714,11 +716,19 @@ impl Sheet {
         }
         match (l, r) {
             (ResultData::Integer(a), ResultData::Integer(b)) => a.cmp(b),
-            (ResultData::Float(a), ResultData::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-            (ResultData::Integer(a), ResultData::Float(b)) => (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-            (ResultData::Float(a), ResultData::Integer(b)) => a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal),
+            (ResultData::Float(a), ResultData::Float(b)) => {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            (ResultData::Integer(a), ResultData::Float(b)) => (*a as f64)
+                .partial_cmp(b)
+                .unwrap_or(std::cmp::Ordering::Equal),
+            (ResultData::Float(a), ResultData::Integer(b)) => a
+                .partial_cmp(&(*b as f64))
+                .unwrap_or(std::cmp::Ordering::Equal),
             (ResultData::Boolean(a), ResultData::Boolean(b)) => a.cmp(b),
-            (ResultData::String(a), ResultData::String(b)) => a.to_lowercase().cmp(&b.to_lowercase()),
+            (ResultData::String(a), ResultData::String(b)) => {
+                a.to_lowercase().cmp(&b.to_lowercase())
+            }
             _ => std::cmp::Ordering::Equal,
         }
     }
@@ -745,10 +755,15 @@ impl Sheet {
 
     fn to_f64_arg(&self, arg_opt: Option<&ResultData>, fn_name: &str) -> Result<f64, EngineError> {
         let val = arg_opt.ok_or_else(|| {
-            EngineError::EvalError(EvalError::UnknownFunction(format!("{} requires argument", fn_name)))
+            EngineError::EvalError(EvalError::UnknownFunction(format!(
+                "{} requires argument",
+                fn_name
+            )))
         })?;
         if let ResultData::Error(e) = val {
-            return Err(EngineError::EvalError(EvalError::UnknownFunction(e.clone())));
+            return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                e.clone(),
+            )));
         }
         self.to_f64(val).ok_or_else(|| {
             EngineError::EvalError(EvalError::UnknownFunction("Expected number".to_string()))
@@ -770,7 +785,11 @@ impl Sheet {
         None
     }
 
-    fn check_direct_string_error(&self, args: &[ResultData], is_direct: &[bool]) -> Option<ResultData> {
+    fn check_direct_string_error(
+        &self,
+        args: &[ResultData],
+        is_direct: &[bool],
+    ) -> Option<ResultData> {
         for (i, arg) in args.iter().enumerate() {
             if is_direct.get(i).copied().unwrap_or(false) {
                 if let ResultData::String(_) = arg {
@@ -787,7 +806,13 @@ impl Sheet {
         match arg {
             ResultData::Float(f) => *f,
             ResultData::Integer(i) => *i as f64,
-            ResultData::Boolean(b) => if is_direct { if *b { 1.0 } else { 0.0 } } else { 0.0 },
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    if *b { 1.0 } else { 0.0 }
+                } else {
+                    0.0
+                }
+            }
             ResultData::List(list) => {
                 let mut sum = 0.0;
                 for item in list {
@@ -803,7 +828,13 @@ impl Sheet {
         match arg {
             ResultData::Float(f) => (*f, 1),
             ResultData::Integer(i) => (*i as f64, 1),
-            ResultData::Boolean(b) => if is_direct { (if *b { 1.0 } else { 0.0 }, 1) } else { (0.0, 0) },
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    (if *b { 1.0 } else { 0.0 }, 1)
+                } else {
+                    (0.0, 0)
+                }
+            }
             ResultData::List(list) => {
                 let mut sum = 0.0;
                 let mut count = 0;
@@ -838,11 +869,7 @@ impl Sheet {
             ResultData::Integer(i) => *i as f64,
             ResultData::Boolean(b) => {
                 if is_direct {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if *b { 1.0 } else { 0.0 }
                 } else {
                     f64::INFINITY
                 }
@@ -864,11 +891,7 @@ impl Sheet {
             ResultData::Integer(i) => *i as f64,
             ResultData::Boolean(b) => {
                 if is_direct {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if *b { 1.0 } else { 0.0 }
                 } else {
                     f64::NEG_INFINITY
                 }
@@ -1241,7 +1264,9 @@ impl Sheet {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
-                    if let Some(err) = self.check_direct_string_error(&evaluated_args, &arg_is_direct) {
+                    if let Some(err) =
+                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                    {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1254,7 +1279,9 @@ impl Sheet {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
-                    if let Some(err) = self.check_direct_string_error(&evaluated_args, &arg_is_direct) {
+                    if let Some(err) =
+                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                    {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1284,7 +1311,9 @@ impl Sheet {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
-                    if let Some(err) = self.check_direct_string_error(&evaluated_args, &arg_is_direct) {
+                    if let Some(err) =
+                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                    {
                         return Ok(err);
                     }
                     let mut min_val = f64::INFINITY;
@@ -1301,7 +1330,9 @@ impl Sheet {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
-                    if let Some(err) = self.check_direct_string_error(&evaluated_args, &arg_is_direct) {
+                    if let Some(err) =
+                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                    {
                         return Ok(err);
                     }
                     let mut max_val = f64::NEG_INFINITY;
@@ -1341,8 +1372,12 @@ impl Sheet {
                             "RANDBETWEEN requires 2 arguments".to_string(),
                         )));
                     }
-                    let bottom = self.to_f64_arg(evaluated_args.first(), "RANDBETWEEN")?.round() as i64;
-                    let top = self.to_f64_arg(evaluated_args.get(1), "RANDBETWEEN")?.round() as i64;
+                    let bottom = self
+                        .to_f64_arg(evaluated_args.first(), "RANDBETWEEN")?
+                        .round() as i64;
+                    let top = self
+                        .to_f64_arg(evaluated_args.get(1), "RANDBETWEEN")?
+                        .round() as i64;
                     use rand::Rng;
                     let mut rng = rand::thread_rng();
                     let val = if bottom <= top {
@@ -1906,7 +1941,9 @@ impl Sheet {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
-                    if let Some(err) = self.check_direct_string_error(&evaluated_args, &arg_is_direct) {
+                    if let Some(err) =
+                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                    {
                         return Ok(err);
                     }
                     let mut prod = 1.0;
@@ -2738,4 +2775,3 @@ impl Sheet {
         self.columns.len()
     }
 }
-

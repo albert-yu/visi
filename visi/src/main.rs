@@ -2,19 +2,19 @@
 //! Consumes `libvisi` to read, evaluate, update, and export Excel (.xlsx) files.
 
 use clap::Parser;
+use libvisi::core::chart::ChartType;
 use serde_json::json;
 use visi::cli::{
-    ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs, ExportArgs,
-    ExportFormat, InfoArgs, OutputFormat, ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs,
-    SheetSubcommands,
+    ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
+    ExportArgs, ExportFormat, InfoArgs, OutputFormat, ReadArgs, RowArgs, RowSubcommands, SetArgs,
+    SheetArgs, SheetSubcommands,
 };
 use visi::engine::WorkbookManager;
 use visi::format::{get_cell_display_val, render_grid};
 use visi::utils::{
-    col_idx_to_letters, exit_with_error, parse_cell_ref, parse_col_spec, parse_range_ref,
-    parse_row_spec, EXIT_ENGINE_ERROR, EXIT_IO_ERROR, EXIT_USAGE_ERROR,
+    EXIT_ENGINE_ERROR, EXIT_IO_ERROR, EXIT_USAGE_ERROR, col_idx_to_letters, exit_with_error,
+    parse_cell_ref, parse_col_spec, parse_range_ref, parse_row_spec,
 };
-use libvisi::core::chart::ChartType;
 
 fn main() {
     let cli = Cli::parse();
@@ -78,11 +78,17 @@ fn handle_info(args: InfoArgs) {
         println!("Sheets: {}", summary.sheet_count);
         println!("Charts: {}", summary.chart_count);
         println!();
-        println!("{:<20} {:<12} {:<10}", "Sheet Name", "Dimensions", "Formulas");
+        println!(
+            "{:<20} {:<12} {:<10}",
+            "Sheet Name", "Dimensions", "Formulas"
+        );
         println!("{}", "-".repeat(45));
         for sheet in &summary.sheets {
             let dims = format!("{}x{}", sheet.row_count, sheet.col_count);
-            println!("{:<20} {:<12} {:<10}", sheet.name, dims, sheet.formula_count);
+            println!(
+                "{:<20} {:<12} {:<10}",
+                sheet.name, dims, sheet.formula_count
+            );
         }
     }
 }
@@ -94,7 +100,10 @@ fn handle_read(args: ReadArgs) {
 
     if args.eval {
         wb.evaluate().unwrap_or_else(|e| {
-            exit_with_error(format!("Formula evaluation failed: {}", e), EXIT_ENGINE_ERROR);
+            exit_with_error(
+                format!("Formula evaluation failed: {}", e),
+                EXIT_ENGINE_ERROR,
+            );
         });
     }
 
@@ -133,7 +142,10 @@ fn handle_read(args: ReadArgs) {
     if let Some((row, col)) = target_cell {
         let val_str = get_cell_display_val(sheet, row, col, args.raw);
         if args.format == OutputFormat::Json {
-            let raw_src = sheet.get_src(&libvisi::core::CellRef::new(row, col)).cloned().unwrap_or_default();
+            let raw_src = sheet
+                .get_src(&libvisi::core::CellRef::new(row, col))
+                .cloned()
+                .unwrap_or_default();
             let json_out = json!({
                 "sheet": sheet.name,
                 "cell": format!("{}{}", col_idx_to_letters(col), row + 1),
@@ -205,7 +217,10 @@ fn handle_set(args: SetArgs, quiet: bool) {
         let parts: Vec<&str> = pair.splitn(2, '=').collect();
         if parts.len() != 2 {
             exit_with_error(
-                format!("Invalid --set pair '{}', expected format CELL=VALUE (e.g. A1=100)", pair),
+                format!(
+                    "Invalid --set pair '{}', expected format CELL=VALUE (e.g. A1=100)",
+                    pair
+                ),
                 EXIT_USAGE_ERROR,
             );
         }
@@ -239,7 +254,10 @@ fn handle_set(args: SetArgs, quiet: bool) {
     // Evaluate formulas if required
     if args.eval {
         wb.evaluate().unwrap_or_else(|e| {
-            exit_with_error(format!("Formula evaluation failed: {}", e), EXIT_ENGINE_ERROR);
+            exit_with_error(
+                format!("Formula evaluation failed: {}", e),
+                EXIT_ENGINE_ERROR,
+            );
         });
     }
 
@@ -263,7 +281,10 @@ fn handle_eval(args: EvalArgs, quiet: bool) {
     });
 
     wb.evaluate().unwrap_or_else(|e| {
-        exit_with_error(format!("Formula evaluation failed: {}", e), EXIT_ENGINE_ERROR);
+        exit_with_error(
+            format!("Formula evaluation failed: {}", e),
+            EXIT_ENGINE_ERROR,
+        );
     });
 
     if args.print {
@@ -293,7 +314,10 @@ fn handle_eval(args: EvalArgs, quiet: bool) {
             exit_with_error(e, EXIT_IO_ERROR);
         });
         if !quiet {
-            eprintln!("Successfully evaluated workbook and saved to '{}'.", save_path);
+            eprintln!(
+                "Successfully evaluated workbook and saved to '{}'.",
+                save_path
+            );
         }
     } else if !args.print {
         exit_with_error(
@@ -311,16 +335,25 @@ fn handle_sheet(args: SheetArgs, quiet: bool) {
             });
             let summary = wb.get_summary(&list_args.file);
             if list_args.json {
-                let json_val = json!(summary.sheets.iter().map(|s| json!({
-                    "name": s.name,
-                    "rows": s.row_count,
-                    "cols": s.col_count,
-                    "formulas": s.formula_count
-                })).collect::<Vec<_>>());
+                let json_val = json!(
+                    summary
+                        .sheets
+                        .iter()
+                        .map(|s| json!({
+                            "name": s.name,
+                            "rows": s.row_count,
+                            "cols": s.col_count,
+                            "formulas": s.formula_count
+                        }))
+                        .collect::<Vec<_>>()
+                );
                 println!("{}", serde_json::to_string_pretty(&json_val).unwrap());
             } else {
                 for s in &summary.sheets {
-                    println!("{}\t{}x{}\t{} formulas", s.name, s.row_count, s.col_count, s.formula_count);
+                    println!(
+                        "{}\t{}x{}\t{} formulas",
+                        s.name, s.row_count, s.col_count, s.formula_count
+                    );
                 }
             }
         }
@@ -336,7 +369,10 @@ fn handle_sheet(args: SheetArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Added sheet '{}' and saved to '{}'.", add_args.name, save_path);
+                eprintln!(
+                    "Added sheet '{}' and saved to '{}'.",
+                    add_args.name, save_path
+                );
             }
         }
         SheetSubcommands::Delete(del_args) => {
@@ -351,22 +387,29 @@ fn handle_sheet(args: SheetArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Deleted sheet '{}' and saved to '{}'.", del_args.name, save_path);
+                eprintln!(
+                    "Deleted sheet '{}' and saved to '{}'.",
+                    del_args.name, save_path
+                );
             }
         }
         SheetSubcommands::Rename(ren_args) => {
             let mut wb = WorkbookManager::load_file(&ren_args.file).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
-            wb.rename_sheet(&ren_args.old, &ren_args.new).unwrap_or_else(|e| {
-                exit_with_error(e, EXIT_USAGE_ERROR);
-            });
+            wb.rename_sheet(&ren_args.old, &ren_args.new)
+                .unwrap_or_else(|e| {
+                    exit_with_error(e, EXIT_USAGE_ERROR);
+                });
             let save_path = resolve_output_path(ren_args.output, ren_args.in_place, &ren_args.file);
             wb.save_file(&save_path).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Renamed sheet '{}' -> '{}' and saved to '{}'.", ren_args.old, ren_args.new, save_path);
+                eprintln!(
+                    "Renamed sheet '{}' -> '{}' and saved to '{}'.",
+                    ren_args.old, ren_args.new, save_path
+                );
             }
         }
     }
@@ -395,7 +438,10 @@ fn handle_row(args: RowArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Inserted row at index {} and saved to '{}'.", row_args.index, save_path);
+                eprintln!(
+                    "Inserted row at index {} and saved to '{}'.",
+                    row_args.index, save_path
+                );
             }
         }
         RowSubcommands::Delete(row_args) => {
@@ -419,7 +465,10 @@ fn handle_row(args: RowArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Deleted row at index {} and saved to '{}'.", row_args.index, save_path);
+                eprintln!(
+                    "Deleted row at index {} and saved to '{}'.",
+                    row_args.index, save_path
+                );
             }
         }
     }
@@ -448,7 +497,10 @@ fn handle_col(args: ColArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Inserted column '{}' and saved to '{}'.", col_args.index, save_path);
+                eprintln!(
+                    "Inserted column '{}' and saved to '{}'.",
+                    col_args.index, save_path
+                );
             }
         }
         ColSubcommands::Delete(col_args) => {
@@ -472,7 +524,10 @@ fn handle_col(args: ColArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Deleted column '{}' and saved to '{}'.", col_args.index, save_path);
+                eprintln!(
+                    "Deleted column '{}' and saved to '{}'.",
+                    col_args.index, save_path
+                );
             }
         }
     }
@@ -486,24 +541,35 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
             });
 
             if list_args.json {
-                let json_charts = json!(wb.charts.iter().map(|c| json!({
-                    "id": c.id,
-                    "name": c.name,
-                    "type": format!("{:?}", c.chart_type),
-                    "data_range": c.data_range,
-                    "title": c.title
-                })).collect::<Vec<_>>());
+                let json_charts = json!(
+                    wb.charts
+                        .iter()
+                        .map(|c| json!({
+                            "id": c.id,
+                            "name": c.name,
+                            "type": format!("{:?}", c.chart_type),
+                            "data_range": c.data_range,
+                            "title": c.title
+                        }))
+                        .collect::<Vec<_>>()
+                );
                 println!("{}", serde_json::to_string_pretty(&json_charts).unwrap());
             } else {
                 if wb.charts.is_empty() {
                     println!("No charts found in workbook.");
                     return;
                 }
-                println!("{:<12} {:<15} {:<10} {:<20} {:<20}", "ID", "Name", "Type", "Range", "Title");
+                println!(
+                    "{:<12} {:<15} {:<10} {:<20} {:<20}",
+                    "ID", "Name", "Type", "Range", "Title"
+                );
                 println!("{}", "-".repeat(77));
                 for c in &wb.charts {
                     let title = c.title.as_deref().unwrap_or("-");
-                    println!("{:<12} {:<15} {:<10?} {:<20} {:<20}", c.id, c.name, c.chart_type, c.data_range, title);
+                    println!(
+                        "{:<12} {:<15} {:<10?} {:<20} {:<20}",
+                        c.id, c.name, c.chart_type, c.data_range, title
+                    );
                 }
             }
         }
@@ -515,7 +581,9 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
             let sheet_name = match add_args.sheet {
                 Some(name) => name,
                 None => {
-                    let s_idx = wb.find_sheet_index(None).unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+                    let s_idx = wb
+                        .find_sheet_index(None)
+                        .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
                     wb.sheets[s_idx].name.clone()
                 }
             };
@@ -529,7 +597,8 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 ChartTypeArg::Area => ChartType::Area,
             };
 
-            let chart_id = wb.add_chart(&sheet_name, c_type, add_args.range, add_args.title)
+            let chart_id = wb
+                .add_chart(&sheet_name, c_type, add_args.range, add_args.title)
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
 
             let save_path = resolve_output_path(add_args.output, add_args.in_place, &add_args.file);
@@ -537,7 +606,10 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Added chart (ID {}) and saved to '{}'.", chart_id, save_path);
+                eprintln!(
+                    "Added chart (ID {}) and saved to '{}'.",
+                    chart_id, save_path
+                );
             }
         }
         ChartSubcommands::Delete(del_args) => {
@@ -554,7 +626,10 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!("Deleted chart ID {} and saved to '{}'.", del_args.id, save_path);
+                eprintln!(
+                    "Deleted chart ID {} and saved to '{}'.",
+                    del_args.id, save_path
+                );
             }
         }
     }
@@ -567,7 +642,10 @@ fn handle_export(args: ExportArgs) {
 
     if args.eval {
         wb.evaluate().unwrap_or_else(|e| {
-            exit_with_error(format!("Formula evaluation failed: {}", e), EXIT_ENGINE_ERROR);
+            exit_with_error(
+                format!("Formula evaluation failed: {}", e),
+                EXIT_ENGINE_ERROR,
+            );
         });
     }
 
@@ -596,7 +674,10 @@ fn handle_export(args: ExportArgs) {
 
     if let Some(ref out_path) = args.output {
         std::fs::write(out_path, rendered).unwrap_or_else(|e| {
-            exit_with_error(format!("Failed to write export file '{}': {}", out_path, e), EXIT_IO_ERROR);
+            exit_with_error(
+                format!("Failed to write export file '{}': {}", out_path, e),
+                EXIT_IO_ERROR,
+            );
         });
     } else {
         print!("{}", rendered);

@@ -94,9 +94,13 @@ pub fn import_xlsx_data(
                         let init_res = match cell_value {
                             calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
                             calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
-                            calamine::Data::String(s) => crate::core::engine::ResultData::String(s.clone()),
+                            calamine::Data::String(s) => {
+                                crate::core::engine::ResultData::String(s.clone())
+                            }
                             calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
-                            calamine::Data::Error(e) => crate::core::engine::ResultData::Error(format!("{:?}", e)),
+                            calamine::Data::Error(e) => {
+                                crate::core::engine::ResultData::Error(format!("{:?}", e))
+                            }
                             _ => crate::core::engine::ResultData::None,
                         };
                         columns[col_idx].data.set(row_idx, init_res);
@@ -137,9 +141,13 @@ pub fn import_xlsx_data(
                         let init_res = match cell_value {
                             calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
                             calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
-                            calamine::Data::String(s) => crate::core::engine::ResultData::String(s.clone()),
+                            calamine::Data::String(s) => {
+                                crate::core::engine::ResultData::String(s.clone())
+                            }
                             calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
-                            calamine::Data::Error(e) => crate::core::engine::ResultData::Error(format!("{:?}", e)),
+                            calamine::Data::Error(e) => {
+                                crate::core::engine::ResultData::Error(format!("{:?}", e))
+                            }
                             _ => crate::core::engine::ResultData::None,
                         };
                         columns[col_idx].data.set(row_idx, init_res);
@@ -186,9 +194,7 @@ pub fn import_xlsx_data(
                 dependencies_rev: std::collections::HashMap::new(),
                 uncommitted_actions: Vec::new(),
             };
-            imported_tables.push(ImportedSheet {
-                sheet: new_table,
-            });
+            imported_tables.push(ImportedSheet { sheet: new_table });
 
             log::info!(
                 "Worksheet '{}' ({}x{} cells) processed. range_parse: {:.2?}, formula_parse: {:.2?}, cells_convert: {:.2?}, total_sheet: {:.2?}",
@@ -263,7 +269,10 @@ fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String 
         crate::core::engine::ResultData::String(s) => s.clone(),
         crate::core::engine::ResultData::Error(e) => {
             let upper = e.to_uppercase();
-            if upper.contains("#DIV/0!") || upper.contains("DIVISION BY ZERO") || upper.contains("DIV/0") {
+            if upper.contains("#DIV/0!")
+                || upper.contains("DIVISION BY ZERO")
+                || upper.contains("DIV/0")
+            {
                 "#DIV/0!".to_string()
             } else if upper.contains("#N/A") {
                 "#N/A".to_string()
@@ -371,7 +380,6 @@ pub fn export_xlsx_data(
                 }
             }
         }
-
     }
 
     // Export charts
@@ -1198,9 +1206,12 @@ mod tests {
         let mut col1 = DataColumn::new(3);
         col1.name = "A".to_string();
         col1.src = vec!["10".to_string(), "20".to_string(), "=A1 + A2".to_string()].into();
-        col1.data.set(0, crate::core::engine::ResultData::Integer(10));
-        col1.data.set(1, crate::core::engine::ResultData::Integer(20));
-        col1.data.set(2, crate::core::engine::ResultData::Integer(30));
+        col1.data
+            .set(0, crate::core::engine::ResultData::Integer(10));
+        col1.data
+            .set(1, crate::core::engine::ResultData::Integer(20));
+        col1.data
+            .set(2, crate::core::engine::ResultData::Integer(30));
         columns.push(col1);
 
         let sheet = Sheet {

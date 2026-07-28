@@ -10,8 +10,7 @@ pub mod xlsx;
 pub use actions::SheetAction;
 pub use engine::{
     CellRef, ColumnData, Context, DataColumn, Dependency, Direction, EngineError, RefType,
-    ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id,
-    get_word_boundaries_from_str,
+    ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id, get_word_boundaries_from_str,
 };
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
 pub use shared_vec::SharedVec;

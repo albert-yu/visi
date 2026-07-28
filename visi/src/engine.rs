@@ -1,7 +1,7 @@
 use crate::utils::col_idx_to_letters;
 use libvisi::core::{
     chart::{Chart, ChartType},
-    engine::{generate_unique_id, Context, DataColumn, ResultData, Sheet},
+    engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
 };
 use libvisi::{export_xlsx_data, import_xlsx_data};
 use std::fs;
@@ -46,8 +46,7 @@ impl WorkbookManager {
                 .map_err(|e| format!("Failed to read stdin: {}", e))?;
             stdin_bytes
         } else {
-            fs::read(path_str)
-                .map_err(|e| format!("Failed to read file '{}': {}", path_str, e))?
+            fs::read(path_str).map_err(|e| format!("Failed to read file '{}': {}", path_str, e))?
         };
 
         Self::load_bytes(&buffer)
@@ -69,8 +68,7 @@ impl WorkbookManager {
 
     /// Save Excel workbook to file path or stdout ("-")
     pub fn save_file(&self, path_str: &str) -> Result<(), String> {
-        let bytes =
-            export_xlsx_data(&self.sheets, &self.charts).map_err(|e| e.to_string())?;
+        let bytes = export_xlsx_data(&self.sheets, &self.charts).map_err(|e| e.to_string())?;
 
         if path_str == "-" {
             io::stdout()
@@ -133,10 +131,15 @@ impl WorkbookManager {
 
         match name_opt {
             Some(name) => {
-                if let Some(idx) = self.sheets.iter().position(|s| s.name.eq_ignore_ascii_case(name)) {
+                if let Some(idx) = self
+                    .sheets
+                    .iter()
+                    .position(|s| s.name.eq_ignore_ascii_case(name))
+                {
                     Ok(idx)
                 } else {
-                    let available: Vec<String> = self.sheets.iter().map(|s| s.name.clone()).collect();
+                    let available: Vec<String> =
+                        self.sheets.iter().map(|s| s.name.clone()).collect();
                     Err(format!(
                         "Sheet '{}' not found. Available sheets: {}",
                         name,
@@ -270,7 +273,11 @@ impl WorkbookManager {
 
     /// Add new sheet with specified name
     pub fn add_sheet(&mut self, name: &str) -> Result<(), String> {
-        if self.sheets.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+        if self
+            .sheets
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(name))
+        {
             return Err(format!("Sheet '{}' already exists", name));
         }
 
