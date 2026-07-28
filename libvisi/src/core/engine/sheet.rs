@@ -757,10 +757,50 @@ impl Sheet {
                 .unwrap_or(std::cmp::Ordering::Equal),
             (ResultData::Boolean(a), ResultData::Boolean(b)) => a.cmp(b),
             (ResultData::String(a), ResultData::String(b)) => {
-                a.to_lowercase().cmp(&b.to_lowercase())
+                Self::compare_excel_strings(a, b)
             }
             _ => std::cmp::Ordering::Equal,
         }
+    }
+
+    fn is_excel_number_str(s: &str) -> bool {
+        let s = s.trim();
+        if s.is_empty() {
+            return false;
+        }
+        let bytes = s.as_bytes();
+        let first = bytes[0];
+        if first == b'e' || first == b'E' {
+            return false;
+        }
+        if (first == b'+' || first == b'-') && bytes.len() > 1 {
+            let second = bytes[1];
+            if second == b'e' || second == b'E' {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn compare_excel_strings(a: &str, b: &str) -> std::cmp::Ordering {
+        let a_low = a.to_lowercase();
+        let b_low = b.to_lowercase();
+        let char_weight = |ch: char| -> u32 {
+            match ch {
+                '-' => 1,
+                '(' => 2,
+                ')' => 3,
+                _ => (ch as u32) + 10,
+            }
+        };
+        for (ca, cb) in a_low.chars().zip(b_low.chars()) {
+            if ca != cb {
+                let wa = char_weight(ca);
+                let wb = char_weight(cb);
+                return wa.cmp(&wb);
+            }
+        }
+        a_low.len().cmp(&b_low.len())
     }
 
     pub fn to_f64(&self, val: &ResultData) -> Option<f64> {
@@ -775,8 +815,14 @@ impl Sheet {
                     Some(1.0)
                 } else if s_trim.eq_ignore_ascii_case("false") {
                     Some(0.0)
-                } else if let Ok(f) = s_trim.parse::<f64>() {
-                    Some(f)
+                } else if Self::is_excel_number_str(s_trim) {
+                    if let Ok(f) = s_trim.parse::<f64>() {
+                        return Some(f);
+                    }
+                    if let Some((date, _)) = crate::core::date::parse_date(s_trim) {
+                        return Some(crate::core::date::date_to_excel_serial(date));
+                    }
+                    None
                 } else if let Some((date, _)) = crate::core::date::parse_date(s_trim) {
                     Some(crate::core::date::date_to_excel_serial(date))
                 } else {
@@ -1339,12 +1385,12 @@ impl Sheet {
             let mut arg_is_direct = Vec::new();
             for arg in args {
                 let is_direct_arg = match arg {
-                    Expr::Number(_) | Expr::String(_) | Expr::Boolean(_) => true,
+                    Expr::CellRef { .. } | Expr::RangeRef { .. } => false,
                     Expr::FunctionCall { name, .. } => {
                         let n = name.to_uppercase();
                         n != "IF" && n != "IFERROR" && n != "CHOOSE"
                     }
-                    _ => false,
+                    _ => true,
                 };
                 arg_is_direct.push(is_direct_arg);
                 let eval_res = match self.evaluate_ast(arg, context, row, deps) {
