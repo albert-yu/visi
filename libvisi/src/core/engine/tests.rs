@@ -17038,3 +17038,64 @@ fn test_fuzz_roundup_if_branch_evaluation() {
     let target_d9 = sheet.get_result_data(&CellRef::new(8, 3));
     println!("Seed 892758 D9: {:?}", target_d9);
 }
+#[test]
+fn test_fuzz_if_power_overflow_num_error() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 10,
+        cols: 5,
+        ..Default::default()
+    });
+    sheet.insert(TextCellRef { row: 0, col: 0, char_offset: 0 }, "-3");
+    sheet.insert(TextCellRef { row: 0, col: 1, char_offset: 0 }, "21.488");
+    sheet.insert(TextCellRef { row: 0, col: 4, char_offset: 0 }, "\"1X1OB\"");
+    sheet.insert(TextCellRef { row: 1, col: 0, char_offset: 0 }, "-247.996");
+    sheet.insert(TextCellRef { row: 1, col: 1, char_offset: 0 }, "\"XNfFdxbI\"");
+    sheet.insert(TextCellRef { row: 1, col: 2, char_offset: 0 }, "4");
+    sheet.insert(TextCellRef { row: 1, col: 3, char_offset: 0 }, "\"O\"");
+    sheet.insert(TextCellRef { row: 1, col: 4, char_offset: 0 }, "\"VjE\"");
+    sheet.insert(TextCellRef { row: 2, col: 0, char_offset: 0 }, "9");
+    sheet.insert(TextCellRef { row: 2, col: 2, char_offset: 0 }, "-39");
+    sheet.insert(TextCellRef { row: 2, col: 3, char_offset: 0 }, "-76");
+    sheet.insert(TextCellRef { row: 2, col: 4, char_offset: 0 }, "127.738");
+    sheet.insert(TextCellRef { row: 3, col: 0, char_offset: 0 }, "-105.1");
+    sheet.insert(TextCellRef { row: 3, col: 1, char_offset: 0 }, "35");
+    sheet.insert(TextCellRef { row: 3, col: 2, char_offset: 0 }, "372.504");
+    sheet.insert(TextCellRef { row: 3, col: 3, char_offset: 0 }, "133.7");
+    sheet.insert(TextCellRef { row: 3, col: 4, char_offset: 0 }, "40");
+    sheet.insert(TextCellRef { row: 4, col: 0, char_offset: 0 }, "TRUE");
+    sheet.insert(TextCellRef { row: 4, col: 1, char_offset: 0 }, "TRUE");
+    sheet.insert(TextCellRef { row: 4, col: 3, char_offset: 0 }, "FALSE");
+    sheet.insert(TextCellRef { row: 4, col: 4, char_offset: 0 }, "402.9274");
+    sheet.insert(TextCellRef { row: 5, col: 0, char_offset: 0 }, "=PRODUCT(A4:A5)");
+    sheet.insert(TextCellRef { row: 5, col: 1, char_offset: 0 }, "=E1");
+    sheet.insert(TextCellRef { row: 5, col: 2, char_offset: 0 }, "=OR(ROUND(B1, 1) > 0, CONCATENATE(\"-18\", \"47\") < 100)");
+    sheet.insert(TextCellRef { row: 5, col: 3, char_offset: 0 }, "=-22");
+    sheet.insert(TextCellRef { row: 5, col: 4, char_offset: 0 }, "=AVERAGE(C1:D4)");
+    sheet.insert(TextCellRef { row: 6, col: 0, char_offset: 0 }, "=D1");
+    sheet.insert(TextCellRef { row: 6, col: 1, char_offset: 0 }, "=(ROUNDDOWN(E5, 2) + (C2 * B3))");
+    sheet.insert(TextCellRef { row: 6, col: 2, char_offset: 0 }, "215.33");
+    sheet.insert(TextCellRef { row: 6, col: 3, char_offset: 0 }, "=B2");
+    sheet.insert(TextCellRef { row: 6, col: 4, char_offset: 0 }, "=IF(((A6 / D1) > AVERAGE(D3, C1)), D5, AVERAGE(C3:C4))");
+    sheet.insert(TextCellRef { row: 7, col: 0, char_offset: 0 }, "=ROUNDUP((-22 - A5), 2)");
+    sheet.insert(TextCellRef { row: 7, col: 1, char_offset: 0 }, "=-3");
+    sheet.insert(TextCellRef { row: 7, col: 2, char_offset: 0 }, "4");
+    sheet.insert(TextCellRef { row: 7, col: 3, char_offset: 0 }, "=UPPER(\"OR(48 > 0, B1 < 100)\")");
+    sheet.insert(TextCellRef { row: 7, col: 4, char_offset: 0 }, "=CONCATENATE(\"E7\", \"E5\")");
+    sheet.insert(TextCellRef { row: 8, col: 0, char_offset: 0 }, "FALSE");
+    sheet.insert(TextCellRef { row: 8, col: 1, char_offset: 0 }, "=A1");
+    sheet.insert(TextCellRef { row: 8, col: 2, char_offset: 0 }, "=A1");
+    sheet.insert(TextCellRef { row: 8, col: 4, char_offset: 0 }, "\"ZDYF1\"");
+    sheet.insert(TextCellRef { row: 9, col: 0, char_offset: 0 }, "=(IF((D1 > A8), -12, C9) ^ ROUNDDOWN(B7, 0))");
+    sheet.insert(TextCellRef { row: 9, col: 1, char_offset: 0 }, "=AVERAGE(C4, OR(D4 > 0, C8 < 100))");
+    sheet.insert(TextCellRef { row: 9, col: 2, char_offset: 0 }, "=MIN(4, (-18 + -4))");
+    sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=OR(E2 > 0, C4 < 100)");
+    sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=SUM(A3:C4)");
+    sheet.commit(None).unwrap();
+    let target_a10 = sheet.get_result_data(&CellRef::new(9, 0));
+    println!("Seed 708047 A10: {:?}", target_a10);
+    let d1 = sheet.get_result_data(&CellRef::new(0, 3));
+    let a8 = sheet.get_result_data(&CellRef::new(7, 0));
+    let b7 = sheet.get_result_data(&CellRef::new(6, 1));
+    println!("Seed 708047 D1: {:?}, A8: {:?}, B7: {:?}", d1, a8, b7);
+}
