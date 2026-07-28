@@ -118,3 +118,12 @@ Run all unit and integration tests across `libvisi` and `visi`:
 ```bash
 cargo test --workspace
 ```
+
+---
+
+## License
+
+Dual-licensed:
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
