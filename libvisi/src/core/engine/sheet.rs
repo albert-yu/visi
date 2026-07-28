@@ -803,6 +803,22 @@ impl Sheet {
         a_low.len().cmp(&b_low.len())
     }
 
+    pub fn clean_float(val: f64) -> f64 {
+        if val == 0.0 || !val.is_finite() {
+            return val;
+        }
+        let abs_val = val.abs();
+        let exp = abs_val.log10().floor() as i32;
+        let factor = 10.0f64.powi(15 - 1 - exp);
+        if factor.is_finite() && factor != 0.0 {
+            let rounded = (val * factor).round() / factor;
+            if (val - rounded).abs() <= 1e-14 * abs_val {
+                return rounded;
+            }
+        }
+        val
+    }
+
     pub fn to_f64(&self, val: &ResultData) -> Option<f64> {
         match val {
             ResultData::None => Some(0.0),
@@ -1081,7 +1097,7 @@ impl Sheet {
                 for item in list {
                     let (p, h) = self.product_helper(item, false);
                     if h {
-                        prod *= p;
+                        prod = Self::clean_float(prod * p);
                         has_nums = true;
                     }
                 }
