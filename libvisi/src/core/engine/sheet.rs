@@ -173,7 +173,7 @@ impl Sheet {
         let max_ops = 10000.max(initial_queue_len * 3);
         let mut ops = 0;
 
-        let tables_for_compilation = self.get_all_tables_for_compilation(context);
+        let mut tables_for_compilation = self.get_all_tables_for_compilation(context);
         let mut last_log_time = Instant::now();
 
         while let Some(cell_ref) = queue.pop_front() {
@@ -257,8 +257,15 @@ impl Sheet {
             // Update data
             if let Some(col) = self.columns.get_mut(cell_ref.col) {
                 if cell_ref.row < col.data.len() {
-                    col.data.set(cell_ref.row, result);
+                    col.data.set(cell_ref.row, result.clone());
                     updated_cells.insert(cell_ref);
+                }
+            }
+            if let Some(comp_sheet) = tables_for_compilation.iter_mut().find(|s| s.name == self.name) {
+                if let Some(col) = comp_sheet.columns.get_mut(cell_ref.col) {
+                    if cell_ref.row < col.data.len() {
+                        col.data.set(cell_ref.row, result);
+                    }
                 }
             }
 
@@ -609,27 +616,26 @@ impl Sheet {
                 let l_val = self.evaluate_ast(left, context, row, deps)?;
                 let r_val = self.evaluate_ast(right, context, row, deps)?;
 
+                if let ResultData::Error(_) = &l_val {
+                    return Ok(l_val);
+                }
+                if let ResultData::Error(_) = &r_val {
+                    return Ok(r_val);
+                }
+
                 match op {
                     Op::Add => {
-                        if let (ResultData::String(s1), ResultData::String(s2)) = (&l_val, &r_val) {
-                            Ok(ResultData::String(format!("{}{}", s1, s2)))
-                        } else if let ResultData::String(s1) = &l_val {
-                            Ok(ResultData::String(format!("{}{}", s1, r_val.to_string())))
-                        } else if let ResultData::String(s2) = &r_val {
-                            Ok(ResultData::String(format!("{}{}", l_val.to_string(), s2)))
-                        } else {
-                            let lf = self.to_f64(&l_val).ok_or_else(|| {
-                                EngineError::EvalError(EvalError::UnknownFunction(
-                                    "Expected number for addition".to_string(),
-                                ))
-                            })?;
-                            let rf = self.to_f64(&r_val).ok_or_else(|| {
-                                EngineError::EvalError(EvalError::UnknownFunction(
-                                    "Expected number for addition".to_string(),
-                                ))
-                            })?;
-                            Ok(ResultData::Float(lf + rf))
-                        }
+                        let lf = self.to_f64(&l_val).ok_or_else(|| {
+                            EngineError::EvalError(EvalError::UnknownFunction(
+                                "Expected number for addition".to_string(),
+                            ))
+                        })?;
+                        let rf = self.to_f64(&r_val).ok_or_else(|| {
+                            EngineError::EvalError(EvalError::UnknownFunction(
+                                "Expected number for addition".to_string(),
+                            ))
+                        })?;
+                        Ok(ResultData::Float(lf + rf))
                     }
                     Op::Sub => {
                         let lf = self.to_f64(&l_val).ok_or_else(|| {
@@ -686,30 +692,25 @@ impl Sheet {
                                 "Expected number for exponent".to_string(),
                             ))
                         })?;
-                        Ok(ResultData::Float(lf.powf(rf)))
+                        if lf == 0.0 && rf < 0.0 {
+                            return Ok(ResultData::Error("#DIV/0!".to_string()));
+                        }
+                        let res = if lf < 0.0 && rf.fract() == 0.0 && rf.abs() <= i32::MAX as f64 {
+                            lf.powi(rf as i32)
+                        } else {
+                            lf.powf(rf)
+                        };
+                        if res.is_nan() || res.is_infinite() {
+                            return Ok(ResultData::Error("#NUM!".to_string()));
+                        }
+                        Ok(ResultData::Float(res))
                     }
-                    Op::Eq => Ok(ResultData::Boolean(l_val.to_string() == r_val.to_string())),
-                    Op::Ne => Ok(ResultData::Boolean(l_val.to_string() != r_val.to_string())),
-                    Op::Lt => {
-                        let lf = self.to_f64(&l_val).unwrap_or(0.0);
-                        let rf = self.to_f64(&r_val).unwrap_or(0.0);
-                        Ok(ResultData::Boolean(lf < rf))
-                    }
-                    Op::Gt => {
-                        let lf = self.to_f64(&l_val).unwrap_or(0.0);
-                        let rf = self.to_f64(&r_val).unwrap_or(0.0);
-                        Ok(ResultData::Boolean(lf > rf))
-                    }
-                    Op::Le => {
-                        let lf = self.to_f64(&l_val).unwrap_or(0.0);
-                        let rf = self.to_f64(&r_val).unwrap_or(0.0);
-                        Ok(ResultData::Boolean(lf <= rf))
-                    }
-                    Op::Ge => {
-                        let lf = self.to_f64(&l_val).unwrap_or(0.0);
-                        let rf = self.to_f64(&r_val).unwrap_or(0.0);
-                        Ok(ResultData::Boolean(lf >= rf))
-                    }
+                    Op::Eq => Ok(ResultData::Boolean(Self::compare_excel_values(&l_val, &r_val).is_eq())),
+                    Op::Ne => Ok(ResultData::Boolean(!Self::compare_excel_values(&l_val, &r_val).is_eq())),
+                    Op::Lt => Ok(ResultData::Boolean(Self::compare_excel_values(&l_val, &r_val).is_lt())),
+                    Op::Gt => Ok(ResultData::Boolean(Self::compare_excel_values(&l_val, &r_val).is_gt())),
+                    Op::Le => Ok(ResultData::Boolean(Self::compare_excel_values(&l_val, &r_val).is_le())),
+                    Op::Ge => Ok(ResultData::Boolean(Self::compare_excel_values(&l_val, &r_val).is_ge())),
                 }
             }
             Expr::FunctionCall { name, args } => {
@@ -718,24 +719,88 @@ impl Sheet {
         }
     }
 
+    fn excel_type_rank(val: &ResultData) -> u8 {
+        match val {
+            ResultData::None => 0,
+            ResultData::Integer(_) | ResultData::Float(_) => 1,
+            ResultData::String(_) => 2,
+            ResultData::Boolean(_) => 3,
+            _ => 4,
+        }
+    }
+
+    fn compare_excel_values(l: &ResultData, r: &ResultData) -> std::cmp::Ordering {
+        let rank_l = Self::excel_type_rank(l);
+        let rank_r = Self::excel_type_rank(r);
+        if rank_l != rank_r {
+            return rank_l.cmp(&rank_r);
+        }
+        match (l, r) {
+            (ResultData::Integer(a), ResultData::Integer(b)) => a.cmp(b),
+            (ResultData::Float(a), ResultData::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+            (ResultData::Integer(a), ResultData::Float(b)) => (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+            (ResultData::Float(a), ResultData::Integer(b)) => a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal),
+            (ResultData::Boolean(a), ResultData::Boolean(b)) => a.cmp(b),
+            (ResultData::String(a), ResultData::String(b)) => a.to_lowercase().cmp(&b.to_lowercase()),
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+
     pub fn to_f64(&self, val: &ResultData) -> Option<f64> {
         match val {
             ResultData::Float(f) => Some(*f),
             ResultData::Integer(i) => Some(*i as f64),
             ResultData::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-            ResultData::String(s) => s.parse::<f64>().ok(),
+            ResultData::String(s) => s.trim().parse::<f64>().ok(),
+            ResultData::None => Some(0.0),
             _ => None,
         }
     }
 
-    fn sum_helper(&self, arg: &ResultData) -> f64 {
+    fn to_f64_arg(&self, arg_opt: Option<&ResultData>, fn_name: &str) -> Result<f64, EngineError> {
+        let val = arg_opt.ok_or_else(|| {
+            EngineError::EvalError(EvalError::UnknownFunction(format!("{} requires argument", fn_name)))
+        })?;
+        self.to_f64(val).ok_or_else(|| {
+            EngineError::EvalError(EvalError::UnknownFunction("Expected number".to_string()))
+        })
+    }
+
+    fn find_error_in_args(args: &[ResultData]) -> Option<ResultData> {
+        for arg in args {
+            match arg {
+                ResultData::Error(_) => return Some(arg.clone()),
+                ResultData::List(list) => {
+                    if let Some(err) = Self::find_error_in_args(list) {
+                        return Some(err);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn check_direct_string_error(&self, args: &[ResultData]) -> Option<ResultData> {
+        for arg in args {
+            if let ResultData::String(_) = arg {
+                if self.to_f64(arg).is_none() {
+                    return Some(ResultData::Error("Expected number".to_string()));
+                }
+            }
+        }
+        None
+    }
+
+    fn sum_helper(&self, arg: &ResultData, is_direct: bool) -> f64 {
         match arg {
             ResultData::Float(f) => *f,
             ResultData::Integer(i) => *i as f64,
+            ResultData::Boolean(b) => if is_direct { if *b { 1.0 } else { 0.0 } } else { 0.0 },
             ResultData::List(list) => {
                 let mut sum = 0.0;
                 for item in list {
-                    sum += self.sum_helper(item);
+                    sum += self.sum_helper(item, false);
                 }
                 sum
             }
@@ -743,15 +808,16 @@ impl Sheet {
         }
     }
 
-    fn average_helper(&self, arg: &ResultData) -> (f64, usize) {
+    fn average_helper(&self, arg: &ResultData, is_direct: bool) -> (f64, usize) {
         match arg {
             ResultData::Float(f) => (*f, 1),
             ResultData::Integer(i) => (*i as f64, 1),
+            ResultData::Boolean(b) => if is_direct { (if *b { 1.0 } else { 0.0 }, 1) } else { (0.0, 0) },
             ResultData::List(list) => {
                 let mut sum = 0.0;
                 let mut count = 0;
                 for item in list {
-                    let (s, c) = self.average_helper(item);
+                    let (s, c) = self.average_helper(item, false);
                     sum += s;
                     count += c;
                 }
@@ -775,14 +841,25 @@ impl Sheet {
         }
     }
 
-    fn min_helper(&self, arg: &ResultData) -> f64 {
+    fn min_helper(&self, arg: &ResultData, is_direct: bool) -> f64 {
         match arg {
             ResultData::Float(f) => *f,
             ResultData::Integer(i) => *i as f64,
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    f64::INFINITY
+                }
+            }
             ResultData::List(list) => {
                 let mut min_val = f64::INFINITY;
                 for item in list {
-                    min_val = min_val.min(self.min_helper(item));
+                    min_val = min_val.min(self.min_helper(item, false));
                 }
                 min_val
             }
@@ -790,14 +867,25 @@ impl Sheet {
         }
     }
 
-    fn max_helper(&self, arg: &ResultData) -> f64 {
+    fn max_helper(&self, arg: &ResultData, is_direct: bool) -> f64 {
         match arg {
             ResultData::Float(f) => *f,
             ResultData::Integer(i) => *i as f64,
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    f64::NEG_INFINITY
+                }
+            }
             ResultData::List(list) => {
                 let mut max_val = f64::NEG_INFINITY;
                 for item in list {
-                    max_val = max_val.max(self.max_helper(item));
+                    max_val = max_val.max(self.max_helper(item, false));
                 }
                 max_val
             }
@@ -958,7 +1046,10 @@ impl Sheet {
         deps: &mut Vec<Dependency>,
     ) -> Result<ResultData, EngineError> {
         use crate::core::parser::Expr;
-        let upper_name = name.to_uppercase();
+        let mut upper_name = name.to_uppercase();
+        if upper_name.starts_with("_XLFN.") {
+            upper_name = upper_name["_XLFN.".len()..].to_string();
+        }
 
         if upper_name == "PLOT" {
             let mut x_vals = Vec::new();
@@ -1091,6 +1182,24 @@ impl Sheet {
                 ylabel,
             })
         } else {
+            if upper_name == "IF" {
+                if args.len() < 3 {
+                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                        "IF requires 3 arguments".to_string(),
+                    )));
+                }
+                let cond_val = self.evaluate_ast(&args[0], context, row, deps)?;
+                if let ResultData::Error(_) = cond_val {
+                    return Ok(cond_val);
+                }
+                let condition = self.to_bool(&cond_val);
+                if condition {
+                    return self.evaluate_ast(&args[1], context, row, deps);
+                } else {
+                    return self.evaluate_ast(&args[2], context, row, deps);
+                }
+            }
+
             if upper_name == "IFERROR" {
                 if args.len() < 2 {
                     return Err(EngineError::EvalError(EvalError::UnknownFunction(
@@ -1135,27 +1244,42 @@ impl Sheet {
 
             match upper_name.as_str() {
                 "SUM" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
+                    if let Some(err) = self.check_direct_string_error(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut sum = 0.0;
-                    for arg in evaluated_args {
-                        sum += self.sum_helper(&arg);
+                    for arg in &evaluated_args {
+                        sum += self.sum_helper(arg, true);
                     }
                     Ok(ResultData::Float(sum))
                 }
                 "AVERAGE" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
+                    if let Some(err) = self.check_direct_string_error(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut sum = 0.0;
                     let mut count = 0;
-                    for arg in evaluated_args {
-                        let (s, c) = self.average_helper(&arg);
+                    for arg in &evaluated_args {
+                        let (s, c) = self.average_helper(arg, true);
                         sum += s;
                         count += c;
                     }
                     if count == 0 {
-                        Ok(ResultData::Float(0.0))
+                        Ok(ResultData::Error("#DIV/0!".to_string()))
                     } else {
                         Ok(ResultData::Float(sum / count as f64))
                     }
                 }
                 "COUNT" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut count = 0;
                     for arg in evaluated_args {
                         count += self.count_helper(&arg);
@@ -1163,9 +1287,12 @@ impl Sheet {
                     Ok(ResultData::Float(count as f64))
                 }
                 "MIN" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut min_val = f64::INFINITY;
                     for arg in evaluated_args {
-                        min_val = min_val.min(self.min_helper(&arg));
+                        min_val = min_val.min(self.min_helper(&arg, true));
                     }
                     if min_val.is_infinite() {
                         Ok(ResultData::Float(0.0))
@@ -1174,9 +1301,12 @@ impl Sheet {
                     }
                 }
                 "MAX" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut max_val = f64::NEG_INFINITY;
                     for arg in evaluated_args {
-                        max_val = max_val.max(self.max_helper(&arg));
+                        max_val = max_val.max(self.max_helper(&arg, true));
                     }
                     if max_val.is_infinite() {
                         Ok(ResultData::Float(0.0))
@@ -1184,25 +1314,7 @@ impl Sheet {
                         Ok(ResultData::Float(max_val))
                     }
                 }
-                "IF" => {
-                    if evaluated_args.len() < 3 {
-                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
-                            "IF requires 3 arguments".to_string(),
-                        )));
-                    }
-                    let condition = match &evaluated_args[0] {
-                        ResultData::Boolean(b) => *b,
-                        ResultData::Integer(i) => *i != 0,
-                        ResultData::Float(f) => *f != 0.0,
-                        ResultData::String(s) => !s.is_empty(),
-                        _ => false,
-                    };
-                    if condition {
-                        Ok(evaluated_args[1].clone())
-                    } else {
-                        Ok(evaluated_args[2].clone())
-                    }
-                }
+
                 "STR" => {
                     if evaluated_args.is_empty() {
                         Ok(ResultData::String(String::new()))
@@ -1211,14 +1323,12 @@ impl Sheet {
                     }
                 }
                 "SQRT" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "SQRT requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
-                    Ok(ResultData::Float(val.sqrt()))
+                    let val = self.to_f64_arg(evaluated_args.first(), "SQRT")?;
+                    if val < 0.0 {
+                        Ok(ResultData::Error("#NUM!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(val.sqrt()))
+                    }
                 }
                 "RAND" => {
                     use rand::Rng;
@@ -1231,8 +1341,8 @@ impl Sheet {
                             "RANDBETWEEN requires 2 arguments".to_string(),
                         )));
                     }
-                    let bottom = self.to_f64(&evaluated_args[0]).unwrap_or(0.0).round() as i64;
-                    let top = self.to_f64(&evaluated_args[1]).unwrap_or(0.0).round() as i64;
+                    let bottom = self.to_f64_arg(evaluated_args.first(), "RANDBETWEEN")?.round() as i64;
+                    let top = self.to_f64_arg(evaluated_args.get(1), "RANDBETWEEN")?.round() as i64;
                     use rand::Rng;
                     let mut rng = rand::thread_rng();
                     let val = if bottom <= top {
@@ -1243,113 +1353,47 @@ impl Sheet {
                     Ok(ResultData::Integer(val))
                 }
                 "SIN" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "SIN requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "SIN")?;
                     Ok(ResultData::Float(val.sin()))
                 }
                 "COS" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "COS requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "COS")?;
                     Ok(ResultData::Float(val.cos()))
                 }
                 "TAN" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "TAN requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "TAN")?;
                     Ok(ResultData::Float(val.tan()))
                 }
                 "ACOS" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "ACOS requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "ACOS")?;
                     Ok(ResultData::Float(val.acos()))
                 }
                 "ASIN" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "ASIN requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "ASIN")?;
                     Ok(ResultData::Float(val.asin()))
                 }
                 "ATAN" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "ATAN requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "ATAN")?;
                     Ok(ResultData::Float(val.atan()))
                 }
                 "FLOOR" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "FLOOR requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "FLOOR")?;
                     Ok(ResultData::Float(val.floor()))
                 }
                 "CEIL" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "CEIL requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "CEIL")?;
                     Ok(ResultData::Float(val.ceil()))
                 }
                 "LOG10" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "LOG10 requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "LOG10")?;
                     Ok(ResultData::Float(val.log10()))
                 }
                 "LN" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "LN requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "LN")?;
                     Ok(ResultData::Float(val.ln()))
                 }
                 "EXP" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "EXP requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "EXP")?;
                     Ok(ResultData::Float(val.exp()))
                 }
                 "GET" => {
@@ -1458,24 +1502,52 @@ impl Sheet {
                     }
                 }
                 "ABS" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "ABS requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
+                    let val = self.to_f64_arg(evaluated_args.first(), "ABS")?;
                     Ok(ResultData::Float(val.abs()))
                 }
+                "INT" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "INT")?;
+                    Ok(ResultData::Float(val.floor()))
+                }
                 "ROUND" => {
-                    let val = self
-                        .to_f64(evaluated_args.first().ok_or_else(|| {
-                            EngineError::EvalError(EvalError::UnknownFunction(
-                                "ROUND requires 1 argument".to_string(),
-                            ))
-                        })?)
-                        .unwrap_or(0.0);
-                    Ok(ResultData::Float(val.round()))
+                    let val = self.to_f64_arg(evaluated_args.first(), "ROUND")?;
+                    let digits = if evaluated_args.len() >= 2 {
+                        self.to_f64_arg(evaluated_args.get(1), "ROUND")? as i32
+                    } else {
+                        0
+                    };
+                    let factor = 10.0f64.powi(digits);
+                    Ok(ResultData::Float((val * factor).round() / factor))
+                }
+                "ROUNDUP" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "ROUNDUP")?;
+                    let digits = if evaluated_args.len() >= 2 {
+                        self.to_f64_arg(evaluated_args.get(1), "ROUNDUP")? as i32
+                    } else {
+                        0
+                    };
+                    let factor = 10.0f64.powi(digits);
+                    let rounded = if val >= 0.0 {
+                        (val * factor).ceil() / factor
+                    } else {
+                        (val * factor).floor() / factor
+                    };
+                    Ok(ResultData::Float(rounded))
+                }
+                "ROUNDDOWN" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "ROUNDDOWN")?;
+                    let digits = if evaluated_args.len() >= 2 {
+                        self.to_f64_arg(evaluated_args.get(1), "ROUNDDOWN")? as i32
+                    } else {
+                        0
+                    };
+                    let factor = 10.0f64.powi(digits);
+                    let rounded = if val >= 0.0 {
+                        (val * factor).floor() / factor
+                    } else {
+                        (val * factor).ceil() / factor
+                    };
+                    Ok(ResultData::Float(rounded))
                 }
                 "SLICE" => {
                     if evaluated_args.len() == 3 {
@@ -1627,6 +1699,9 @@ impl Sheet {
                     Ok(ResultData::String(out))
                 }
                 "AND" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     if evaluated_args.is_empty() {
                         return Ok(ResultData::Boolean(false));
                     }
@@ -1654,6 +1729,9 @@ impl Sheet {
                     Ok(ResultData::Boolean(res))
                 }
                 "OR" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     if evaluated_args.is_empty() {
                         return Ok(ResultData::Boolean(false));
                     }
@@ -1681,6 +1759,9 @@ impl Sheet {
                     Ok(ResultData::Boolean(res))
                 }
                 "NOT" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let val = evaluated_args.first().ok_or_else(|| {
                         EngineError::EvalError(EvalError::UnknownFunction(
                             "NOT requires 1 argument".to_string(),
@@ -1821,6 +1902,9 @@ impl Sheet {
                     }
                 }
                 "PRODUCT" => {
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut prod = 1.0;
                     let mut has_nums = false;
                     for arg in evaluated_args {

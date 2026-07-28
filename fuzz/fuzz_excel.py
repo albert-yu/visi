@@ -39,7 +39,7 @@ class ExcelFuzzGenerator:
     FUNCTIONS_SINGLE_NUM = ["ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN"]
     FUNCTIONS_MULTI_NUM = ["SUM", "AVERAGE", "MIN", "MAX", "PRODUCT"]
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
-    FUNCTIONS_TEXT = ["CONCAT", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER"]
+    FUNCTIONS_TEXT = ["CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER"]
 
     def __init__(self, seed=None):
         if seed is not None:
@@ -86,8 +86,8 @@ class ExcelFuzzGenerator:
             return f"{self._col_name(c)}{r}"
 
         def random_range_ref():
-            r1 = random.randint(1, max_row)
-            r2 = random.randint(r1, max_row)
+            r1 = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
+            r2 = random.randint(r1, max(1, current_row - 1)) if current_row > 1 else 1
             c1 = random.randint(1, max_col)
             c2 = random.randint(c1, max_col)
             return f"{self._col_name(c1)}{r1}:{self._col_name(c2)}{r2}"
@@ -143,7 +143,7 @@ class ExcelFuzzGenerator:
                 elif fn in ["UPPER", "LOWER"]:
                     return f'{fn}("{gen_expr(depth+1)}")'
                 else:
-                    return f'CONCAT("{gen_expr(depth+1)}", "{gen_expr(depth+1)}")'
+                    return f'CONCATENATE("{gen_expr(depth+1)}", "{gen_expr(depth+1)}")'
 
         return "=" + gen_expr(0)
 
@@ -237,15 +237,26 @@ class ExcelDriver:
             script = f'''
             tell application "{app_name}"
                 set display alerts to false
-                open posix file "{abs_output}"
-                set wb to active workbook
-                calculate wb
-                save wb
-                close wb saving yes
+                try
+                    open workbook workbook file name "{abs_output}"
+                    calculate
+                    save active workbook
+                    close active workbook saving no
+                on error errText
+                    try
+                        close active workbook saving no
+                    end try
+                    error errText
+                end try
             end tell
             '''
-            res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if res.returncode != 0:
+            res = None
+            for attempt in range(3):
+                time.sleep(0.3)
+                res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode == 0:
+                    break
+            if res is not None and res.returncode != 0:
                 raise RuntimeError(f"Excel AppleScript failed:\nSTDERR: {res.stderr}")
 
         elif self.driver_type == "win32com":
@@ -460,9 +471,17 @@ class DifferentialComparator:
                 return v1.upper() == v2.upper()
             return v1 == v2
 
-        # Booleans vs numbers (e.g. True vs 1)
+        # Booleans vs strings/numbers (e.g. True vs 1, "TRUE" vs True, "FALSE" vs False)
         if isinstance(v1, bool) or isinstance(v2, bool):
-            return bool(v1) == bool(v2)
+            def to_b(v):
+                if isinstance(v, bool):
+                    return v
+                if isinstance(v, str):
+                    return v.upper() in ("TRUE", "1")
+                if isinstance(v, (int, float)):
+                    return v != 0
+                return bool(v)
+            return to_b(v1) == to_b(v2)
 
         return str(v1) == str(v2)
 

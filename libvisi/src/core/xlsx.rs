@@ -147,10 +147,15 @@ pub fn import_xlsx_data(
                         if let Some(ref f_range) = formula_range {
                             if let Some(formula) = f_range.get_value((row_u32, col_u32)) {
                                 if !formula.is_empty() {
-                                    let cell_src = format!("={}", formula);
+                                    let cell_src = if formula.starts_with('=') {
+                                        formula.to_string()
+                                    } else {
+                                        format!("={}", formula)
+                                    };
                                     max_cell_lens[col_idx] =
                                         max_cell_lens[col_idx].max(cell_src.len());
                                     columns[col_idx].src[row_idx] = cell_src;
+                                    columns[col_idx].dirty_indices.push(row_idx);
                                     continue;
                                 }
                             }
@@ -258,7 +263,7 @@ fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String 
         crate::core::engine::ResultData::String(s) => s.clone(),
         crate::core::engine::ResultData::Error(e) => {
             let upper = e.to_uppercase();
-            if upper.contains("#DIV/0!") {
+            if upper.contains("#DIV/0!") || upper.contains("DIVISION BY ZERO") || upper.contains("DIV/0") {
                 "#DIV/0!".to_string()
             } else if upper.contains("#N/A") {
                 "#N/A".to_string()

@@ -516,15 +516,15 @@ fn test_load() {
 fn test_concatenation() {
     test_strings("=\"Hello World\"", "Hello World").unwrap();
 
-    test_strings("=\"A\"+\"B\"", "AB").unwrap();
+    test_strings("=CONCATENATE(\"A\", \"B\")", "AB").unwrap();
 
-    test_strings("=\"Hello\" + \" World\"", "Hello World").unwrap();
-    test_strings("=\"ABC\" + \"DEF\"", "ABCDEF").unwrap();
+    test_strings("=CONCATENATE(\"Hello\", \" World\")", "Hello World").unwrap();
+    test_strings("=CONCATENATE(\"ABC\", \"DEF\")", "ABCDEF").unwrap();
 
-    test_strings("=str(5) + \" items\"", "5 items").unwrap();
-    test_strings("=\"Value: \" + str(42)", "Value: 42").unwrap();
-    test_strings("=str(3.14) + \" is pi\"", "3.14 is pi").unwrap();
-    test_strings("=\"Result: \" + str(True)", "Result: True").unwrap();
+    test_strings("=CONCATENATE(str(5), \" items\")", "5 items").unwrap();
+    test_strings("=CONCATENATE(\"Value: \", str(42))", "Value: 42").unwrap();
+    test_strings("=CONCATENATE(str(3.14), \" is pi\")", "3.14 is pi").unwrap();
+    test_strings("=CONCATENATE(\"Result: \", str(True))", "Result: True").unwrap();
 }
 
 #[test]
@@ -1213,4 +1213,36 @@ fn test_structured_references_evaluation() {
         get_float_val(&sheet.get_result_data(&CellRef::new(2, 2))),
         Some(30.0)
     );
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_545786() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_5_seed_545786/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b10 = sheet.get_result_data(&CellRef::new(9, 1));
+            println!("B10 evaluated: {:?}", b10);
+            match b10 {
+                ResultData::Float(f) => assert!((f - 64217.874).abs() < 1e-3, "Expected ~64217.874, got {}", f),
+                other => panic!("Expected Float for B10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_516067() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_5_seed_516067/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b10 = sheet.get_result_data(&CellRef::new(9, 1));
+            println!("B10 evaluated: {:?}", b10);
+            match b10 {
+                ResultData::Float(f) => assert_eq!(f, 216.0),
+                other => panic!("Expected Float(216.0) for B10, got {:?}", other),
+            }
+        }
+    }
 }
