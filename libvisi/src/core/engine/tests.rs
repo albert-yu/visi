@@ -19504,3 +19504,69 @@ fn test_fuzz_rounddown_abs_product_precision() {
     println!("Seed 810486 target: {:?}", target);
     match target { ResultData::Float(f) => assert_eq!(f, 29369.2), ResultData::Integer(i) => assert_eq!(i, 29369), other => panic!("Expected 29369.2, got {:?}", other) }
 }
+#[test]
+fn test_fuzz_if_boolean_gt_int_upper_neg7() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 10,
+        cols: 5,
+        ..Default::default()
+    });
+    sheet.insert(TextCellRef { row: 0, col: 0, char_offset: 0 }, "-20");
+    sheet.insert(TextCellRef { row: 0, col: 1, char_offset: 0 }, "-25.878");
+    sheet.insert(TextCellRef { row: 0, col: 3, char_offset: 0 }, "-55.5739");
+    sheet.insert(TextCellRef { row: 0, col: 4, char_offset: 0 }, "94");
+    sheet.insert(TextCellRef { row: 1, col: 0, char_offset: 0 }, "-137");
+    sheet.insert(TextCellRef { row: 1, col: 2, char_offset: 0 }, "146.1");
+    sheet.insert(TextCellRef { row: 1, col: 3, char_offset: 0 }, "9");
+    sheet.insert(TextCellRef { row: 1, col: 4, char_offset: 0 }, "268");
+    sheet.insert(TextCellRef { row: 2, col: 0, char_offset: 0 }, "10");
+    sheet.insert(TextCellRef { row: 2, col: 1, char_offset: 0 }, "\"lidXy\"");
+    sheet.insert(TextCellRef { row: 2, col: 2, char_offset: 0 }, "\"sDa\"");
+    sheet.insert(TextCellRef { row: 2, col: 3, char_offset: 0 }, "-40.7562");
+    sheet.insert(TextCellRef { row: 2, col: 4, char_offset: 0 }, "382");
+    sheet.insert(TextCellRef { row: 3, col: 0, char_offset: 0 }, "-77");
+    sheet.insert(TextCellRef { row: 3, col: 1, char_offset: 0 }, "-42");
+    sheet.insert(TextCellRef { row: 3, col: 2, char_offset: 0 }, "\"BFyBvSvA\"");
+    sheet.insert(TextCellRef { row: 3, col: 3, char_offset: 0 }, "FALSE");
+    sheet.insert(TextCellRef { row: 3, col: 4, char_offset: 0 }, "\"Qx3pF \"");
+    sheet.insert(TextCellRef { row: 4, col: 0, char_offset: 0 }, "341.131");
+    sheet.insert(TextCellRef { row: 4, col: 1, char_offset: 0 }, "\"SI eihZF\"");
+    sheet.insert(TextCellRef { row: 4, col: 2, char_offset: 0 }, "-39");
+    sheet.insert(TextCellRef { row: 4, col: 3, char_offset: 0 }, "68");
+    sheet.insert(TextCellRef { row: 4, col: 4, char_offset: 0 }, "356");
+    sheet.insert(TextCellRef { row: 5, col: 0, char_offset: 0 }, "TRUE");
+    sheet.insert(TextCellRef { row: 5, col: 1, char_offset: 0 }, "=ROUNDDOWN(AND(C3 > 0, -22 < 100), 0)");
+    sheet.insert(TextCellRef { row: 5, col: 2, char_offset: 0 }, "=(LOWER(\"7\") + (48 * E5))");
+    sheet.insert(TextCellRef { row: 5, col: 3, char_offset: 0 }, "=(IF((B3 > C5), D3, -26) + 11)");
+    sheet.insert(TextCellRef { row: 5, col: 4, char_offset: 0 }, "=LEN(\"A1\")");
+    sheet.insert(TextCellRef { row: 6, col: 0, char_offset: 0 }, "=C6");
+    sheet.insert(TextCellRef { row: 6, col: 1, char_offset: 0 }, "=IF((AND(E4 > 0, A5 < 100) > INT(C6)), UPPER(\"-7\"), A5)");
+    sheet.insert(TextCellRef { row: 6, col: 2, char_offset: 0 }, "=C6");
+    sheet.insert(TextCellRef { row: 6, col: 3, char_offset: 0 }, "=C3");
+    sheet.insert(TextCellRef { row: 6, col: 4, char_offset: 0 }, "-14");
+    sheet.insert(TextCellRef { row: 7, col: 0, char_offset: 0 }, "=SQRT(SUM(A1, A1))");
+    sheet.insert(TextCellRef { row: 7, col: 1, char_offset: 0 }, "=ABS(MAX(9, C4))");
+    sheet.insert(TextCellRef { row: 7, col: 2, char_offset: 0 }, "=E4");
+    sheet.insert(TextCellRef { row: 7, col: 3, char_offset: 0 }, "=IF((ROUNDUP(D3, 1) > (A7 + E1)), D6, -4)");
+    sheet.insert(TextCellRef { row: 7, col: 4, char_offset: 0 }, "-76");
+    sheet.insert(TextCellRef { row: 8, col: 0, char_offset: 0 }, "=IF((ROUNDDOWN(C4, 1) > IF((B8 > B4), D7, E2)), A3, D2)");
+    sheet.insert(TextCellRef { row: 8, col: 1, char_offset: 0 }, "=D5");
+    sheet.insert(TextCellRef { row: 8, col: 2, char_offset: 0 }, "=IF((AND(C7 > 0, -18 < 100) > OR(B6 > 0, -30 < 100)), (B8 ^ A4), (A7 - A6))");
+    sheet.insert(TextCellRef { row: 8, col: 3, char_offset: 0 }, "=17");
+    sheet.insert(TextCellRef { row: 8, col: 4, char_offset: 0 }, "=D4");
+    sheet.insert(TextCellRef { row: 9, col: 0, char_offset: 0 }, "=E7");
+    sheet.insert(TextCellRef { row: 9, col: 1, char_offset: 0 }, "=((E7 ^ E6) - 46)");
+    sheet.insert(TextCellRef { row: 9, col: 2, char_offset: 0 }, "=(LEFT(\"E1\", 4) ^ (16 * E4))");
+    sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=AND(MAX(A2:A3) > 0, LEFT(\"E3\", 1) < 100)");
+    sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=A1");
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(6, 1));
+    println!("Seed 547773 target: {:?}", target);
+    match target {
+        ResultData::String(s) => assert_eq!(s, "-7"),
+        ResultData::Float(f) => assert_eq!(f, -7.0),
+        ResultData::Integer(i) => assert_eq!(i, -7),
+        other => panic!("Expected -7, got {:?}", other),
+    }
+}
