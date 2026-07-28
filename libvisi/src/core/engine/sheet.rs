@@ -775,8 +775,12 @@ impl Sheet {
                     Some(1.0)
                 } else if s_trim.eq_ignore_ascii_case("false") {
                     Some(0.0)
+                } else if let Ok(f) = s_trim.parse::<f64>() {
+                    Some(f)
+                } else if let Some((date, _)) = crate::core::date::parse_date(s_trim) {
+                    Some(crate::core::date::date_to_excel_serial(date))
                 } else {
-                    s_trim.parse::<f64>().ok()
+                    None
                 }
             }
             _ => None,

@@ -828,6 +828,24 @@ pub fn try_fill_date(src: &str, offset: i32) -> Option<String> {
     Some(format_date(new_date, &format))
 }
 
+pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
+    if date.year < 1900 {
+        return 0.0;
+    }
+    let mut days = 0;
+    for y in 1900..date.year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    for m in 1..date.month {
+        days += days_in_month(date.year, m) as i32;
+    }
+    days += date.day as i32;
+    if date.year > 1900 || (date.year == 1900 && date.month > 2) {
+        days += 1;
+    }
+    days as f64
+}
+
 pub fn date_to_days(date: SimpleDate) -> i32 {
     let mut days = 0;
     // Years
