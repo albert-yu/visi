@@ -523,12 +523,13 @@ def main():
     passed_count = 0
     failed_count = 0
     start_time = time.time()
+    sandbox_dir = "~/Library/Containers/com.microsoft.Excel/Data"
 
     for i in range(1, args.iterations + 1):
         iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
         iter_gen = ExcelFuzzGenerator(seed=iter_seed)
 
-        temp_dir = tempfile.mkdtemp(prefix=f"fuzz_iter_{i}_")
+        temp_dir = tempfile.mkdtemp(prefix=f"fuzz_iter_{i}_", dir=sandbox_dir)
         source_xlsx = os.path.join(temp_dir, "source.xlsx")
         visi_out_xlsx = os.path.join(temp_dir, "visi_out.xlsx")
         excel_out_xlsx = os.path.join(temp_dir, "excel_out.xlsx")
