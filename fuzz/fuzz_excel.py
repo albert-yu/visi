@@ -235,10 +235,17 @@ class ExcelDriver:
             # macOS AppleScript Excel recalculation driver
             app_name = self.excel_path if self.excel_path else "Microsoft Excel"
             script = f'''
+            set posixPath to "{abs_output}"
+
+            -- use Finder to set the file so that we skip the "Grant access" dialog
+            tell application "Finder"
+                set theFile to (POSIX file posixPath) as alias
+            end tell
+
             tell application "{app_name}"
                 set display alerts to false
                 try
-                    open workbook workbook file name "{abs_output}"
+                    open file theFile
                     calculate
                     save active workbook
                     close active workbook saving no
