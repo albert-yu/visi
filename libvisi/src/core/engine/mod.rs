@@ -8,8 +8,7 @@ pub mod sheet;
 mod tests;
 
 pub use cell::{
-    CellRef, Dependency, EngineError, PADDING_X, PADDING_Y, RefType, TextCellRef,
-    generate_unique_id,
+    CellRef, Dependency, EngineError, RefType, TextCellRef, generate_unique_id,
 };
 pub use column::{ColumnData, DataColumn};
 pub use result_data::ResultData;

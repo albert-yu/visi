@@ -1,5 +1,4 @@
 use super::*;
-use crate::render::Position;
 use std::collections::HashSet;
 
 fn test_eval<T, F>(source: &str, expected: T, val_getter: F) -> Result<(), EngineError>
@@ -551,7 +550,6 @@ fn test_table_references() {
     let table1 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_1".to_string()),
-        pos: Position { left: 0, top: 0 },
         rows: 5,
         cols: 5,
     });
@@ -559,7 +557,6 @@ fn test_table_references() {
     let mut table2 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_2".to_string()),
-        pos: Position { left: 10, top: 0 },
         rows: 5,
         cols: 5,
     });
@@ -602,7 +599,6 @@ fn test_context_from_tables() {
     let table1 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_1".to_string()),
-        pos: Position { left: 0, top: 0 },
         rows: 5,
         cols: 5,
     });
@@ -610,7 +606,6 @@ fn test_context_from_tables() {
     let mut table2 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_2".to_string()),
-        pos: Position { left: 10, top: 0 },
         rows: 5,
         cols: 5,
     });
@@ -1188,7 +1183,6 @@ fn test_structured_references_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         id: Some(123),
         name: Some("SalesTable".to_string()),
-        pos: crate::render::Position { left: 0, top: 0 },
         rows: 3,
         cols: 3,
     });

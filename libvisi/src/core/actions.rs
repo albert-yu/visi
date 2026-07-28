@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::render::Position;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SheetAction {
     SetCellSrc {
@@ -35,30 +33,17 @@ pub enum SheetAction {
         sheet_name: String,
         index: usize,
     },
-    MoveTable {
-        sheet_name: String,
-        pos: Position,
-    },
     AddTable {
         sheet: crate::core::Sheet,
     },
     DeleteTable {
         sheet_name: String,
     },
-    SetTableZIndex {
-        sheet_name: String,
-        z_index: i32,
-    },
     AddChart {
         chart: crate::core::chart::Chart,
     },
     DeleteChart {
         chart_id: u64,
-    },
-    UpdateChartLayout {
-        chart_id: u64,
-        from_anchor: crate::core::chart::ChartAnchor,
-        to_anchor: crate::core::chart::ChartAnchor,
     },
     UpdateChartProperties {
         chart_id: u64,

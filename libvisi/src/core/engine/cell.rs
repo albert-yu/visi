@@ -64,10 +64,6 @@ impl CellRef {
     }
 }
 
-// Cell padding constants (must match ui.rs)
-pub const PADDING_X: f32 = 0.004; // Horizontal padding in world coordinates
-pub const PADDING_Y: f32 = 0.003; // Vertical padding in world coordinates
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dependency {
     Local(CellRef),

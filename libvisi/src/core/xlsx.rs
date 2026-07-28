@@ -1,42 +1,14 @@
 use crate::core::{DataColumn, Sheet};
-use crate::render::Position;
 use calamine::Reader;
 use web_time::Instant;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportedSheet {
     pub sheet: Sheet,
-    pub pos_preserved: bool,
-}
-
-fn encode_sheet_name_to_hex(name: &str) -> String {
-    name.as_bytes()
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect()
-}
-
-fn decode_hex_sheet_name(hex_str: &str) -> Option<String> {
-    let mut bytes = Vec::new();
-    for i in (0..hex_str.len()).step_by(2) {
-        if i + 2 <= hex_str.len() {
-            let byte_str = &hex_str[i..i + 2];
-            if let Ok(byte) = u8::from_str_radix(byte_str, 16) {
-                bytes.push(byte);
-            } else {
-                return None;
-            }
-        } else {
-            return None;
-        }
-    }
-    String::from_utf8(bytes).ok()
 }
 
 pub fn import_xlsx_data(
     buffer: &[u8],
-    target_row: isize,
-    target_col: isize,
     existing_sheets: &[Sheet],
     mut progress_callback: impl FnMut(usize, usize, &str),
 ) -> Result<(Vec<ImportedSheet>, Vec<crate::core::chart::Chart>), String> {
@@ -52,89 +24,9 @@ pub fn import_xlsx_data(
         buffer.len()
     );
 
-    // Parse sheet positions and sizes from defined names
-    let start_defined_names = Instant::now();
-    let mut sheet_positions: std::collections::HashMap<String, (Option<isize>, Option<isize>)> =
-        std::collections::HashMap::new();
-    let mut sheet_sizes = std::collections::HashMap::new();
-    let mut sheet_z_indexes = std::collections::HashMap::new();
-    for (name, formula) in workbook.defined_names() {
-        if name.starts_with("GP_POS_X_") {
-            let hex_part = &name[9..];
-            if let Some(sheet_name) = decode_hex_sheet_name(hex_part) {
-                let formula_clean = if formula.starts_with('=') {
-                    &formula[1..]
-                } else {
-                    formula
-                };
-                if let Ok(x) = formula_clean.parse::<isize>() {
-                    let entry = sheet_positions.entry(sheet_name).or_insert((None, None));
-                    entry.0 = Some(x);
-                }
-            }
-        } else if name.starts_with("GP_POS_Y_") {
-            let hex_part = &name[9..];
-            if let Some(sheet_name) = decode_hex_sheet_name(hex_part) {
-                let formula_clean = if formula.starts_with('=') {
-                    &formula[1..]
-                } else {
-                    formula
-                };
-                if let Ok(y) = formula_clean.parse::<isize>() {
-                    let entry = sheet_positions.entry(sheet_name).or_insert((None, None));
-                    entry.1 = Some(y);
-                }
-            }
-        } else if name.starts_with("GP_SIZE_ROWS_") {
-            let hex_part = &name[13..];
-            if let Some(sheet_name) = decode_hex_sheet_name(hex_part) {
-                let formula_clean = if formula.starts_with('=') {
-                    &formula[1..]
-                } else {
-                    formula
-                };
-                if let Ok(rows) = formula_clean.parse::<usize>() {
-                    let entry = sheet_sizes.entry(sheet_name).or_insert((None, None));
-                    entry.0 = Some(rows);
-                }
-            }
-        } else if name.starts_with("GP_SIZE_COLS_") {
-            let hex_part = &name[13..];
-            if let Some(sheet_name) = decode_hex_sheet_name(hex_part) {
-                let formula_clean = if formula.starts_with('=') {
-                    &formula[1..]
-                } else {
-                    formula
-                };
-                if let Ok(cols) = formula_clean.parse::<usize>() {
-                    let entry = sheet_sizes.entry(sheet_name).or_insert((None, None));
-                    entry.1 = Some(cols);
-                }
-            }
-        } else if name.starts_with("GP_Z_INDEX_") {
-            let hex_part = &name[11..];
-            if let Some(sheet_name) = decode_hex_sheet_name(hex_part) {
-                let formula_clean = if formula.starts_with('=') {
-                    &formula[1..]
-                } else {
-                    formula
-                };
-                if let Ok(z) = formula_clean.parse::<i32>() {
-                    sheet_z_indexes.insert(sheet_name, z);
-                }
-            }
-        }
-    }
-    log::info!(
-        "Excel defined names parsing took: {:.2?}",
-        start_defined_names.elapsed()
-    );
-
     let sheet_names = workbook.sheet_names();
     let total_sheets = sheet_names.len();
     let mut imported_tables = Vec::new();
-
-    let mut current_col = target_col;
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -145,27 +37,10 @@ pub fn import_xlsx_data(
             let mut rows = range.height();
             let mut cols = range.width();
 
-            // Override size if it was preserved in defined names
-            if let Some(&(Some(r), Some(c))) = sheet_sizes.get(orig_sheet_name) {
-                rows = r;
-                cols = c;
-            }
-
-            // Fallback for empty worksheets (e.g. from external Excel or empty sheets)
+            // Fallback for empty worksheets
             if rows == 0 || cols == 0 {
                 rows = 10;
                 cols = 5;
-            }
-
-            // Check if position was preserved in defined names
-            let mut pos_preserved = false;
-            let mut pos_left = current_col;
-            let mut pos_top = target_row;
-
-            if let Some(&(Some(x), Some(y))) = sheet_positions.get(orig_sheet_name) {
-                pos_left = x;
-                pos_top = y;
-                pos_preserved = true;
             }
 
             // Unique sheet name
@@ -278,32 +153,16 @@ pub fn import_xlsx_data(
             }
             let elapsed_cells = start_cells.elapsed();
 
-            let mut table_width = 0;
-            for col_idx in 0..cols {
-                let col_width = (max_cell_lens[col_idx] / 4 + 1).max(2);
-                table_width += col_width;
-            }
-
-            let z_index = sheet_z_indexes.get(orig_sheet_name).copied().unwrap_or(0);
-
             let new_table = Sheet {
                 id: rand::random::<u64>(),
                 name: sheet_name,
                 columns,
-                pos: Position {
-                    left: pos_left,
-                    top: pos_top,
-                },
-                z_index,
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
                 uncommitted_actions: Vec::new(),
-                row_tops_cache: std::cell::RefCell::new(None),
             };
-            current_col += (table_width + 2) as isize;
             imported_tables.push(ImportedSheet {
                 sheet: new_table,
-                pos_preserved,
             });
 
             log::info!(
@@ -336,20 +195,6 @@ pub fn import_xlsx_data(
                 .iter()
                 .find(|t| t.sheet.name == parsed.sheet_name)
             {
-                let from_anchor = crate::core::chart::ChartAnchor {
-                    col: sheet.sheet.pos.left + parsed.anchor.from_col,
-                    row: sheet.sheet.pos.top + parsed.anchor.from_row,
-                    col_offset_pixels: parsed.anchor.from_col_off,
-                    row_offset_pixels: parsed.anchor.from_row_off,
-                };
-
-                let to_anchor = crate::core::chart::ChartAnchor {
-                    col: sheet.sheet.pos.left + parsed.anchor.to_col,
-                    row: sheet.sheet.pos.top + parsed.anchor.to_row,
-                    col_offset_pixels: parsed.anchor.to_col_off,
-                    row_offset_pixels: parsed.anchor.to_row_off,
-                };
-
                 let data_range = if parsed.info.data_range.is_empty() {
                     format!("{}!A1", sheet.sheet.name)
                 } else {
@@ -361,13 +206,10 @@ pub fn import_xlsx_data(
                     name: format!("Chart {}", imported_charts.len() + 1),
                     chart_type: parsed.info.chart_type.clone(),
                     data_range,
-                    from_anchor,
-                    to_anchor,
                     title: parsed.info.title.clone(),
                     xlabel: parsed.info.xlabel.clone(),
                     ylabel: parsed.info.ylabel.clone(),
                     show_legend: parsed.info.show_legend,
-                    z_index: 0,
                 });
             }
         }
@@ -444,38 +286,6 @@ pub fn export_xlsx_data(
             }
         }
 
-        // Define position names globally using hex encoding of the final worksheet name
-        let hex_name = encode_sheet_name_to_hex(&worksheet_name);
-        workbook
-            .define_name(
-                &format!("GP_POS_X_{}", hex_name),
-                &format!("={}", sheet.pos.left),
-            )
-            .map_err(|e| format!("Failed to define name GP_POS_X: {}", e))?;
-        workbook
-            .define_name(
-                &format!("GP_POS_Y_{}", hex_name),
-                &format!("={}", sheet.pos.top),
-            )
-            .map_err(|e| format!("Failed to define name GP_POS_Y: {}", e))?;
-        workbook
-            .define_name(
-                &format!("GP_SIZE_ROWS_{}", hex_name),
-                &format!("={}", sheet.row_count()),
-            )
-            .map_err(|e| format!("Failed to define name GP_SIZE_ROWS: {}", e))?;
-        workbook
-            .define_name(
-                &format!("GP_SIZE_COLS_{}", hex_name),
-                &format!("={}", sheet.columns.len()),
-            )
-            .map_err(|e| format!("Failed to define name GP_SIZE_COLS: {}", e))?;
-        workbook
-            .define_name(
-                &format!("GP_Z_INDEX_{}", hex_name),
-                &format!("={}", sheet.z_index),
-            )
-            .map_err(|e| format!("Failed to define name GP_Z_INDEX: {}", e))?;
     }
 
     // Export charts
@@ -599,38 +409,8 @@ pub fn export_xlsx_data(
                     rx_chart.legend().set_hidden();
                 }
 
-                let tile_w = 80.0f32;
-                let tile_h = 24.0f32;
-                let width_tiles = (chart.to_anchor.col - chart.from_anchor.col) as f32;
-                let height_tiles = (chart.to_anchor.row - chart.from_anchor.row) as f32;
-                let width_px = (width_tiles * tile_w
-                    + (chart.to_anchor.col_offset_pixels - chart.from_anchor.col_offset_pixels))
-                    .max(100.0) as u32;
-                let height_px = (height_tiles * tile_h
-                    + (chart.to_anchor.row_offset_pixels - chart.from_anchor.row_offset_pixels))
-                    .max(100.0) as u32;
-
-                rx_chart.set_width(width_px);
-                rx_chart.set_height(height_px);
-
-                let table_pos = table_name_to_table
-                    .get(&tbl_name)
-                    .map(|t| t.pos.clone())
-                    .unwrap_or(Position { left: 0, top: 0 });
-
-                let insert_row = (chart.from_anchor.row - table_pos.top).max(0) as u32;
-                let insert_col = (chart.from_anchor.col - table_pos.left).max(0) as u16;
-                let insert_x_offset = chart.from_anchor.col_offset_pixels.max(0.0) as u32;
-                let insert_y_offset = chart.from_anchor.row_offset_pixels.max(0.0) as u32;
-
                 worksheet
-                    .insert_chart_with_offset(
-                        insert_row,
-                        insert_col,
-                        &rx_chart,
-                        insert_x_offset,
-                        insert_y_offset,
-                    )
+                    .insert_chart(0, 0, &rx_chart)
                     .map_err(|e| format!("Failed to insert Excel chart: {}", e))?;
             }
         }
@@ -641,6 +421,7 @@ pub fn export_xlsx_data(
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))
 }
 
+#[allow(dead_code)]
 struct ParsedAnchor {
     from_col: isize,
     from_row: isize,
@@ -664,6 +445,7 @@ struct ParsedChartInfo {
 
 struct ParsedChartData {
     sheet_name: String,
+    #[allow(dead_code)]
     anchor: ParsedAnchor,
     info: ParsedChartInfo,
 }
@@ -1208,12 +990,9 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
-            pos: Position { left: 5, top: 8 },
-            z_index: 42,
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
-            row_tops_cache: std::cell::RefCell::new(None),
         };
 
         // Export it
@@ -1222,16 +1001,12 @@ mod tests {
 
         // Import it back
         let (imported_tables, imported_charts) =
-            import_xlsx_data(&xlsx_data, 10, 20, &[], |_, _, _| {}).unwrap();
+            import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_charts.len(), 0);
 
         let imported_table = &imported_tables[0].sheet;
-        assert!(imported_tables[0].pos_preserved);
         assert_eq!(imported_table.name, "Sheet1");
-        assert_eq!(imported_table.pos.left, 5);
-        assert_eq!(imported_table.pos.top, 8);
-        assert_eq!(imported_table.z_index, 42);
         assert_eq!(imported_table.columns.len(), 2);
 
         // Verify content
@@ -1239,49 +1014,6 @@ mod tests {
         assert_eq!(imported_table.columns[0].src[1], "20");
         assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_table.columns[1].src[1], "abc");
-    }
-
-    #[test]
-    fn test_defined_names_cycle() {
-        let mut workbook = rust_xlsxwriter::Workbook::new();
-
-        let worksheet1 = workbook.add_worksheet();
-        worksheet1.set_name("SheetOne").unwrap();
-        workbook.define_name("SheetOne!GP_POS_X", "=12").unwrap();
-        workbook.define_name("SheetOne!GP_POS_Y", "=34").unwrap();
-
-        let worksheet2 = workbook.add_worksheet();
-        worksheet2.set_name("SheetTwo").unwrap();
-        workbook.define_name("SheetTwo!GP_POS_X", "=56").unwrap();
-        workbook.define_name("SheetTwo!GP_POS_Y", "=78").unwrap();
-
-        workbook.define_name("GP_GLOBAL_VAL", "=100").unwrap();
-
-        let xlsx_data = workbook.save_to_buffer().unwrap();
-
-        let cursor = std::io::Cursor::new(xlsx_data);
-        let workbook_read: calamine::Xlsx<_> = calamine::open_workbook_from_rs(cursor).unwrap();
-
-        let mut found_pos_x1 = false;
-        let mut found_pos_y1 = false;
-        let mut found_pos_x2 = false;
-        let mut found_pos_y2 = false;
-
-        for (name, formula) in workbook_read.defined_names() {
-            if name == "GP_POS_X" && formula == "12" {
-                found_pos_x1 = true;
-            } else if name == "GP_POS_Y" && formula == "34" {
-                found_pos_y1 = true;
-            } else if name == "GP_POS_X" && formula == "56" {
-                found_pos_x2 = true;
-            } else if name == "GP_POS_Y" && formula == "78" {
-                found_pos_y2 = true;
-            }
-        }
-        assert!(found_pos_x1);
-        assert!(found_pos_y1);
-        assert!(found_pos_x2);
-        assert!(found_pos_y2);
     }
 
     #[test]
@@ -1298,12 +1030,9 @@ mod tests {
             id: 2,
             name: "EmptyTable".to_string(),
             columns,
-            pos: Position { left: 2, top: 3 },
-            z_index: 0,
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
-            row_tops_cache: std::cell::RefCell::new(None),
         };
 
         // Export it
@@ -1311,14 +1040,11 @@ mod tests {
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, _) = import_xlsx_data(&xlsx_data, 10, 20, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_table = &imported_tables[0].sheet;
-        assert!(imported_tables[0].pos_preserved);
         assert_eq!(imported_table.name, "EmptyTable");
-        assert_eq!(imported_table.pos.left, 2);
-        assert_eq!(imported_table.pos.top, 3);
         assert_eq!(imported_table.columns.len(), 5);
         assert_eq!(imported_table.row_count(), 10);
     }
@@ -1341,12 +1067,9 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
-            pos: Position { left: 0, top: 0 },
-            z_index: 0,
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
-            row_tops_cache: std::cell::RefCell::new(None),
         };
 
         // Create a chart referencing that sheet
@@ -1355,23 +1078,10 @@ mod tests {
             name: "Chart 1".to_string(),
             chart_type: crate::core::chart::ChartType::Line,
             data_range: "Sheet1!A1:B3".to_string(),
-            from_anchor: crate::core::chart::ChartAnchor {
-                col: 2,
-                row: 4,
-                col_offset_pixels: 10.0,
-                row_offset_pixels: 5.0,
-            },
-            to_anchor: crate::core::chart::ChartAnchor {
-                col: 7,
-                row: 15,
-                col_offset_pixels: 20.0,
-                row_offset_pixels: 15.0,
-            },
             title: Some("My Chart Title".to_string()),
             xlabel: Some("X Axis".to_string()),
             ylabel: Some("Y Axis".to_string()),
             show_legend: true,
-            z_index: 0,
         };
 
         // Export sheet + chart
@@ -1380,7 +1090,7 @@ mod tests {
 
         // Import back
         let (imported_tables, imported_charts) =
-            import_xlsx_data(&xlsx_data, 10, 20, &[], |_, _, _| {}).unwrap();
+            import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_charts.len(), 1);
@@ -1394,13 +1104,5 @@ mod tests {
             imported_chart.chart_type,
             crate::core::chart::ChartType::Line
         );
-
-        // Verify the from_anchor coordinates round-trip
-        assert_eq!(imported_chart.from_anchor.col, 2);
-        assert_eq!(imported_chart.from_anchor.row, 4);
-
-        // Offset conversion might have slight rounding differences, but should be close
-        assert!((imported_chart.from_anchor.col_offset_pixels - 10.0).abs() < 1.0);
-        assert!((imported_chart.from_anchor.row_offset_pixels - 5.0).abs() < 1.0);
     }
 }

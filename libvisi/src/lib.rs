@@ -3,6 +3,5 @@
 //! and consumption by the `visi` CLI binary.
 
 pub mod core;
-pub mod render;
 
 pub use core::xlsx::{export_xlsx_data, import_xlsx_data};

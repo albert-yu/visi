@@ -1735,14 +1735,12 @@ mod tests {
         let table1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
-            pos: crate::render::Position { left: 0, top: 0 },
             rows: 5,
             cols: 5,
         });
         let table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
-            pos: crate::render::Position { left: 10, top: 0 },
             rows: 5,
             cols: 5,
         });
@@ -1774,14 +1772,12 @@ mod tests {
         let table1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
-            pos: crate::render::Position { left: 0, top: 0 },
             rows: 5,
             cols: 5,
         });
         let table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("My Sheet".to_string()),
-            pos: crate::render::Position { left: 10, top: 0 },
             rows: 5,
             cols: 5,
         });
@@ -1827,7 +1823,6 @@ mod tests {
         let table1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Model_SL_5.5Yr".to_string()),
-            pos: crate::render::Position { left: 0, top: 0 },
             rows: 5,
             cols: 5,
         });
@@ -1870,7 +1865,6 @@ mod tests {
         let table1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
-            pos: crate::render::Position { left: 0, top: 0 },
             rows: 5,
             cols: 5,
         });
@@ -1905,7 +1899,6 @@ mod tests {
         let table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
-            pos: crate::render::Position { left: 10, top: 0 },
             rows: 5,
             cols: 5,
         });
@@ -1969,7 +1962,6 @@ mod tests {
         let mut table1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
-            pos: crate::render::Position { left: 0, top: 0 },
             rows: 5,
             cols: 2,
         });
@@ -2043,7 +2035,6 @@ mod tests {
         let mut table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
-            pos: crate::render::Position { left: 10, top: 0 },
             rows: 5,
             cols: 2,
         });

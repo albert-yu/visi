@@ -1,12 +1,9 @@
-use glam::Vec2;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use web_time::Instant;
 
-use crate::render::{Position, Rect, TextPosition, UnitValues};
-
 use super::cell::{
-    CellRef, Dependency, EngineError, EvalError, PADDING_X, PADDING_Y, TextCellRef,
+    CellRef, Dependency, EngineError, EvalError, TextCellRef,
     generate_unique_id,
 };
 use super::column::{ColumnPosition, DataColumn};
@@ -48,17 +45,12 @@ pub struct Sheet {
     pub id: u64,
     pub name: String,
     pub columns: Vec<DataColumn>,
-    pub pos: Position,
-    #[serde(default)]
-    pub z_index: i32,
     #[serde(skip, default)]
     pub dependencies: HashMap<Dependency, HashSet<CellRef>>,
     #[serde(skip, default)]
     pub dependencies_rev: HashMap<CellRef, HashSet<Dependency>>,
     #[serde(skip)]
     pub uncommitted_actions: Vec<crate::core::SheetAction>,
-    #[serde(skip, default)]
-    pub row_tops_cache: std::cell::RefCell<Option<Vec<isize>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +58,6 @@ pub struct SheetInit {
     #[serde(default)]
     pub id: Option<u64>,
     pub name: Option<String>,
-    pub pos: Position,
     pub rows: usize,
     pub cols: usize,
 }
@@ -76,7 +67,6 @@ impl Default for SheetInit {
         Self {
             id: None,
             name: None,
-            pos: Position { left: 0, top: 0 },
             rows: 10,
             cols: 5,
         }
@@ -84,20 +74,10 @@ impl Default for SheetInit {
 }
 
 impl Sheet {
-    pub fn row_header_width_tiles(&self, units: UnitValues) -> usize {
-        let max_row = self.row_count();
-        let (char_w, _) = units.char_dims;
-        let (tile_w, _) = units.tile_dims;
-        let text_width = max_row.to_string().len() as f32 * char_w + 2.0 * PADDING_X;
-        let cells_needed_width = (text_width / tile_w).ceil() as usize;
-        cells_needed_width.max(1)
-    }
-
     pub fn new(args: SheetInit) -> Sheet {
         let SheetInit {
             id,
             name,
-            pos,
             rows,
             cols,
         } = args;
@@ -125,17 +105,13 @@ impl Sheet {
             id: sheet_id,
             name: sheet_name,
             columns,
-            pos,
-            z_index: 0,
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),
             uncommitted_actions,
-            row_tops_cache: std::cell::RefCell::new(None),
         }
     }
 
     pub fn setup_after_deserialization(&mut self) {
-        self.invalidate_layout_cache();
         for col in &mut self.columns {
             let size = col.src.len();
             col.data.resize(size);
@@ -160,7 +136,6 @@ impl Sheet {
     }
 
     pub fn mark_all_dirty(&mut self) {
-        self.invalidate_layout_cache();
         for col in &mut self.columns {
             col.dirty_indices.clear();
             col.dirty_indices.extend(0..col.src.len());
@@ -189,7 +164,6 @@ impl Sheet {
             return Ok(updated_cells);
         }
 
-        self.invalidate_layout_cache();
         let start_commit = Instant::now();
         log::info!(
             "Sheet '{}' commit starting for {} dirty cells",
@@ -2316,36 +2290,6 @@ impl Sheet {
         let text = self.get_src_str(cell);
         get_word_boundaries_from_str(&text, char_offset)
     }
-
-    pub fn get_cell_position(
-        &self,
-        units: UnitValues,
-        row_idx: usize,
-        col_idx: usize,
-        active_cell_ref: Option<CellRef>,
-    ) -> Position {
-        let mut pos = self.pos.clone();
-        for col in 0..col_idx {
-            pos.left += self.columns[col].width(units, active_cell_ref, col) as isize;
-        }
-        let row_tops = self.get_row_tops(units, active_cell_ref);
-        if row_idx < row_tops.len() {
-            pos.top = row_tops[row_idx];
-        }
-        pos
-    }
-
-    pub fn get_cell_dims(
-        &self,
-        units: UnitValues,
-        row_idx: usize,
-        col_idx: usize,
-        active_cell_ref: Option<CellRef>,
-    ) -> (usize, usize) {
-        let cell_width = self.columns[col_idx].width(units, active_cell_ref, col_idx);
-        let cell_height = self.get_row_height(units, row_idx, active_cell_ref);
-        (cell_width, cell_height)
-    }
 }
 
 pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, usize) {
@@ -2357,12 +2301,9 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
     let len = chars.len();
     let offset = char_offset.min(len);
 
-    // Define what constitutes a word character (alphanumeric + underscore)
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
 
-    // Determine which character we are actually "on"
     let (on_idx, on_c) = if offset < len {
-        // If we are on a whitespace, but there's a word char to the left, favor the word char
         if chars[offset].is_whitespace() && offset > 0 && is_word_char(chars[offset - 1]) {
             (offset - 1, chars[offset - 1])
         } else {
@@ -2375,7 +2316,6 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
     };
 
     if on_c.is_whitespace() {
-        // Select sequence of whitespace
         let mut start = on_idx;
         while start > 0 && chars[start - 1].is_whitespace() {
             start -= 1;
@@ -2388,7 +2328,6 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
     }
 
     if is_word_char(on_c) {
-        // Select word sequence
         let mut start = on_idx;
         while start > 0 && is_word_char(chars[start - 1]) {
             start -= 1;
@@ -2400,7 +2339,6 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
         return (start, end);
     }
 
-    // Otherwise (punctuation/symbols), select sequence of non-word, non-whitespace chars
     let mut start = on_idx;
     while start > 0 && !is_word_char(chars[start - 1]) && !chars[start - 1].is_whitespace() {
         start -= 1;
@@ -2411,14 +2349,7 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
     }
     (start, end)
 }
-
 impl Sheet {
-    pub fn invalidate_layout_cache(&self) {
-        if let Ok(mut cache) = self.row_tops_cache.try_borrow_mut() {
-            *cache = None;
-        }
-    }
-
     pub fn get_result_data(&self, cell: &CellRef) -> ResultData {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -2433,7 +2364,6 @@ impl Sheet {
     /// updated cells.
     /// Directly sets the src of a cell and marks it dirty.
     pub fn set_cell_src(&mut self, row: usize, col: usize, src: String) {
-        self.invalidate_layout_cache();
         let table_clone = self.clone();
         if let Some(column) = self.columns.get_mut(col) {
             if row < column.src.len() {
@@ -2498,155 +2428,6 @@ impl Sheet {
         self.delete(start, end);
     }
 
-    pub fn bounding_rect(&self, units: UnitValues, active_cell: Option<CellRef>) -> Rect {
-        let top = self.pos.top;
-        let left = self.pos.left;
-
-        let mut width = 0;
-        for (col_idx, column) in self.columns.iter().enumerate() {
-            let col_width = column.width(units, active_cell, col_idx);
-            width += col_width;
-        }
-
-        let row_tops = self.get_row_tops(units, active_cell);
-        let height = (row_tops[self.row_count()] - row_tops[0]) as usize;
-
-        Rect {
-            top,
-            left,
-            width,
-            height,
-        }
-    }
-
-    pub fn measure_cell_rect(
-        &self,
-        pos: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<Rect> {
-        if !self.contains(pos, units, active_cell) {
-            return None;
-        }
-        let cell = self.pos_to_ref(pos, units, active_cell);
-        match cell {
-            Some(cell) => {
-                let col = self.columns.get(cell.col).unwrap();
-                let width = col.width(units, active_cell, cell.col);
-                let height = self.get_row_height(units, cell.row, active_cell);
-                let mut left = self.pos.left;
-                let mut i = 0;
-                while i < cell.col {
-                    left += self.columns[i].width(units, active_cell, i) as isize;
-                    i += 1;
-                }
-                let row_tops = self.get_row_tops(units, active_cell);
-                let top = if cell.row < row_tops.len() {
-                    row_tops[cell.row]
-                } else {
-                    self.pos.top
-                };
-                Some(Rect {
-                    top,
-                    left,
-                    width,
-                    height,
-                })
-            }
-            None => None,
-        }
-    }
-
-    /// Given the position and dimensions and character width
-    /// and height, returns the relative position of the cursor.
-    pub fn cursor_pt(
-        &self,
-        pos: &TextPosition,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Vec2 {
-        let char_dims = units.char_dims;
-        if !self.contains(&pos.to_pos(), units, active_cell) {
-            return Vec2::new(0.0, 0.0);
-        }
-        let (width, height) = char_dims;
-        let cell = self.pos_to_ref(
-            &Position {
-                top: pos.top,
-                left: pos.left,
-            },
-            units,
-            active_cell,
-        );
-        if cell.is_none() {
-            return Vec2::new(0.0, 0.0);
-        }
-        let src = self.get_src(&cell.unwrap());
-        match src {
-            Some(src) => {
-                let char_offset = pos.char_offset;
-                let mut i = 0;
-                let mut x = 0.0;
-                let mut y = 0.0;
-                let chars: Vec<char> = src.chars().collect();
-                while i < char_offset {
-                    let ch = chars.get(i);
-                    match ch {
-                        Some(ch) => {
-                            if *ch == '\n' {
-                                y += height;
-                                x = 0.0;
-                            } else {
-                                x += width;
-                            }
-                        }
-                        None => {
-                            break;
-                        }
-                    }
-                    i += 1;
-                }
-                Vec2::new(x + PADDING_X, y + PADDING_Y)
-            }
-            // TODO: should we return something else?
-            None => Vec2::new(PADDING_X, PADDING_Y),
-        }
-    }
-
-    pub fn shift_char(
-        &self,
-        pos: &TextPosition,
-        delta: i32,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> TextPosition {
-        let cell = self.pos_to_ref(
-            &Position {
-                top: pos.top,
-                left: pos.left,
-            },
-            units,
-            active_cell,
-        );
-        if let Some(cell) = cell {
-            let s = self.get_src(&cell);
-            match s {
-                Some(s) => {
-                    let new_offset_raw = pos.char_offset as i32 + delta;
-                    let new_offset = new_offset_raw.clamp(0, s.len() as i32) as usize;
-                    TextPosition {
-                        top: pos.top,
-                        left: pos.left,
-                        char_offset: new_offset,
-                    }
-                }
-                None => pos.clone(),
-            }
-        } else {
-            pos.clone()
-        }
-    }
-
     pub fn delete(&mut self, start: TextCellRef, end: TextCellRef) {
         // Validate positions are in correct order
         if start.col > end.col || (start.col == end.col && start.row > end.row) {
@@ -2657,10 +2438,6 @@ impl Sheet {
         if start.col == end.col {
             let start_index = start.row;
             let end_index = end.row;
-
-            if start_index != end_index {
-                self.invalidate_layout_cache();
-            }
 
             if let Some(column) = self.columns.get_mut(start.col) {
                 // Handle single row deletion
@@ -2687,7 +2464,6 @@ impl Sheet {
                 }
             }
         } else {
-            self.invalidate_layout_cache();
             // Handle multi-column deletion
             for col in start.col..=end.col {
                 if let Some(column) = self.columns.get_mut(col) {
@@ -2712,126 +2488,14 @@ impl Sheet {
         }
     }
 
-    pub fn contains(
-        &self,
-        position: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> bool {
-        let rect = self.bounding_rect(units, active_cell);
-        let col_ok = position.left >= rect.left && position.left < rect.left + rect.width as isize;
-        let row_ok = position.top >= rect.top && position.top < rect.top + rect.height as isize;
-        col_ok && row_ok
-    }
-
-    /// Check if position is adjacent to the Sheet.
-    /// It must be immediately to the left, right, up, or down of the Sheet.
-    /// Cannot be diagonally adjacent.
-    pub fn adjacent(
-        &self,
-        position: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Direction {
-        const DIST: usize = 1;
-        let rect = self.bounding_rect(units, active_cell);
-        let left = rect.left;
-        let top = rect.top;
-        let right = left + rect.width as isize;
-        let bottom = top + rect.height as isize;
-
-        let col_ok = position.left >= rect.left && position.left < right;
-        if col_ok {
-            // bottom is "top" of bottom border
-            if bottom == position.top {
-                return Direction::Down;
-            } else if position.top + DIST as isize == top {
-                return Direction::Up;
-            }
-        }
-        let row_ok = position.top >= rect.top && position.top < bottom;
-        if row_ok {
-            // right is "left" of the right border
-            if right == position.left {
-                return Direction::Right;
-            } else if position.left + DIST as isize == left {
-                return Direction::Left;
-            }
-        }
-        Direction::None
-    }
-
-    /// Returns the dimensions of the adjacent cell when position is adjacent to the sheet.
-    /// Only matches the main dimension based on direction:
-    /// - Down/Up: matches width only (height = 1)
-    /// - Right/Left: matches height only (width = 1)
-    /// Returns None if not adjacent or if the adjacent cell cannot be determined.
-    pub fn adjacent_cell_rect(
-        &self,
-        position: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<Rect> {
-        let direction = self.adjacent(position, units, active_cell);
-        if direction == Direction::None {
-            return None;
-        }
-
-        let rect = self.bounding_rect(units, active_cell);
-        match direction {
-            Direction::Down | Direction::Up => {
-                // Position is below or above the sheet, find which column it aligns with
-                // Match width only, height is always 1
-                let col_offset = (position.left - rect.left) as usize;
-                let mut col_start = 0;
-                for (c, column) in self.columns.iter().enumerate() {
-                    let width = column.width(units, active_cell, c);
-                    if col_start + width > col_offset {
-                        // Found the column, match width only
-                        return Some(Rect {
-                            top: position.top,
-                            left: rect.left + col_start as isize,
-                            width,
-                            height: 1,
-                        });
-                    } else {
-                        col_start += width;
-                    }
-                }
-                None
-            }
-            Direction::Right | Direction::Left => {
-                // Position is to the right/left of the sheet, find which row it aligns with
-                // Match height only, width is always 1
-                if let Some(r) = self.get_row_index(position, units, active_cell) {
-                    let row_tops = self.get_row_tops(units, active_cell);
-                    let row_start = row_tops[r];
-                    let row_h = (row_tops[r + 1] - row_tops[r]) as usize;
-                    Some(Rect {
-                        top: row_start,
-                        left: position.left,
-                        width: 1,
-                        height: row_h,
-                    })
-                } else {
-                    None
-                }
-            }
-            Direction::None => None,
-        }
-    }
-
     pub fn extend(&mut self, direction: Direction) {
-        self.invalidate_layout_cache();
         if self.columns.is_empty() {
             return;
         }
         let row_count = self.columns[0].src.len();
-        // TODO: allow past Z (search for this comment elsewhere)
         const MAX_COLS: usize = 26;
         match direction {
             Direction::Up => {
-                self.pos.top -= 1;
                 for column in &mut self.columns {
                     column.src.insert(0, String::new());
                     column
@@ -2839,11 +2503,6 @@ impl Sheet {
                         .insert(0, crate::core::CompiledFormula::default());
                     column.data.insert(0, ResultData::None);
                 }
-                self.uncommitted_actions
-                    .push(crate::core::SheetAction::MoveTable {
-                        sheet_name: self.name.clone(),
-                        pos: self.pos,
-                    });
                 self.uncommitted_actions
                     .push(crate::core::SheetAction::InsertRow {
                         sheet_name: self.name.clone(),
@@ -2866,13 +2525,7 @@ impl Sheet {
             }
             Direction::Left => {
                 if self.columns.len() < MAX_COLS {
-                    self.pos.left -= 1;
                     self.columns.insert(0, DataColumn::new(row_count));
-                    self.uncommitted_actions
-                        .push(crate::core::SheetAction::MoveTable {
-                            sheet_name: self.name.clone(),
-                            pos: self.pos,
-                        });
                     self.uncommitted_actions
                         .push(crate::core::SheetAction::InsertCol {
                             sheet_name: self.name.clone(),
@@ -2897,7 +2550,6 @@ impl Sheet {
     /// Insert a new empty row at the specified index
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
-        self.invalidate_layout_cache();
         let row_count = self.row_count();
         if index >= row_count {
             // Append at the end
@@ -2931,7 +2583,6 @@ impl Sheet {
     }
 
     pub fn delete_row(&mut self, index: usize) {
-        self.invalidate_layout_cache();
         let row_count = self.row_count();
         if index < row_count {
             for column in &mut self.columns {
@@ -2951,17 +2602,11 @@ impl Sheet {
                     sheet_name: self.name.clone(),
                     index,
                 });
-            // Invalidate dependencies for the deleted row and everything after it
-            // because CellRefs have shifted.
-            // Simplified approach: mark everything as dirty if anything shifted.
-            // This is safer than trying to surgically update all Dependency::Local(CellRef)
-            // in all formulas.
             self.mark_all_dirty();
         }
     }
 
     pub fn delete_col(&mut self, index: usize) {
-        self.invalidate_layout_cache();
         if index < self.columns.len() {
             self.columns.remove(index);
             self.uncommitted_actions
@@ -2976,7 +2621,6 @@ impl Sheet {
     /// Insert a new empty column at the specified index
     /// If index is >= columns.len(), appends at the end
     pub fn insert_col(&mut self, index: usize) {
-        self.invalidate_layout_cache();
         let row_count = self.row_count();
         let new_col = DataColumn::new(row_count);
         let col_count = self.columns.len();
@@ -2998,151 +2642,6 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    pub fn text_pos_to_ref(
-        &self,
-        position: &TextPosition,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<TextCellRef> {
-        let cell = self.pos_to_ref(&position.to_pos(), units, active_cell);
-        if let Some(cell) = cell {
-            Some(TextCellRef {
-                row: cell.row,
-                col: cell.col,
-                char_offset: position.char_offset,
-            })
-        } else {
-            None
-        }
-    }
-
-    pub fn pos_to_ref(
-        &self,
-        position: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<CellRef> {
-        let row_index = self.get_row_index(position, units, active_cell);
-        let col_index = self.get_col_index(position, units, active_cell);
-        if let Some(col) = col_index
-            && let Some(row) = row_index
-        {
-            Some(CellRef::new(row, col))
-        } else {
-            None
-        }
-    }
-
-    pub fn get_row_tops(&self, units: UnitValues, active_cell: Option<CellRef>) -> Vec<isize> {
-        let cached_row_tops = {
-            let cache = self.row_tops_cache.borrow();
-            cache.clone()
-        };
-        let mut row_tops = match cached_row_tops {
-            Some(tops) => tops,
-            None => {
-                let row_start = self.pos.top;
-                let num_rows = self.row_count();
-                let mut tops = Vec::with_capacity(num_rows + 1);
-                tops.push(row_start);
-                for i in 0..num_rows {
-                    let row_height = self.get_row_height(units, i, None);
-                    let next_top = tops[i] + row_height as isize;
-                    tops.push(next_top);
-                }
-                let mut cache = self.row_tops_cache.borrow_mut();
-                *cache = Some(tops.clone());
-                tops
-            }
-        };
-
-        if let Some(active) = active_cell {
-            let r = active.row;
-            let num_rows = self.row_count();
-            if r < num_rows {
-                let base_height = self.get_row_height(units, r, None);
-                let active_height = self.get_row_height(units, r, active_cell);
-                if active_height != base_height {
-                    let diff = (active_height as isize) - (base_height as isize);
-                    for i in (r + 1)..=num_rows {
-                        row_tops[i] += diff;
-                    }
-                }
-            }
-        }
-        row_tops
-    }
-
-    pub fn get_row_index(
-        &self,
-        position: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<usize> {
-        let row_tops = self.get_row_tops(units, active_cell);
-        let target_y = position.top;
-        if target_y < *row_tops.first().unwrap_or(&0) || target_y >= *row_tops.last().unwrap_or(&0)
-        {
-            return None;
-        }
-        match row_tops.binary_search(&target_y) {
-            Ok(idx) => {
-                if idx < self.row_count() {
-                    Some(idx)
-                } else {
-                    None
-                }
-            }
-            Err(idx) => {
-                if idx > 0 && idx <= self.row_count() {
-                    Some(idx - 1)
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    pub fn get_row_index_with_padding(
-        &self,
-        y: f32,
-        tile_h: f32,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<usize> {
-        let row_tops = self.get_row_tops(units, active_cell);
-        let num_rows = self.row_count();
-        let target_y = y / tile_h;
-
-        let mut r = match row_tops.binary_search_by(|&top| {
-            (top as f32)
-                .partial_cmp(&target_y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            Ok(idx) => idx,
-            Err(idx) => {
-                if idx > 0 {
-                    idx - 1
-                } else {
-                    return None;
-                }
-            }
-        };
-
-        if r > 0 && y < row_tops[r] as f32 * tile_h + PADDING_Y {
-            r -= 1;
-        } else if r >= num_rows {
-            // Check if we are in the padding at the bottom of the last row
-            if r > 0 && y < row_tops[num_rows] as f32 * tile_h + PADDING_Y {
-                r = num_rows - 1;
-            } else {
-                return None;
-            }
-        }
-
-        if r < num_rows { Some(r) } else { None }
-    }
-
     pub fn row_count(&self) -> usize {
         self.columns.first().map(|c| c.src.len()).unwrap_or(0)
     }
@@ -3150,57 +2649,5 @@ impl Sheet {
     pub fn col_count(&self) -> usize {
         self.columns.len()
     }
-
-    pub fn get_row_height(
-        &self,
-        units: UnitValues,
-        index: usize,
-        active_cell: Option<CellRef>,
-    ) -> usize {
-        let mut height = 0;
-        for (col_idx, column) in self.columns.iter().enumerate() {
-            let is_active = match active_cell {
-                Some(cell_ref) => cell_ref.row == index && cell_ref.col == col_idx,
-                None => false,
-            };
-            let src_height = if is_active {
-                let (_, h) = column.min_src_dims(units, index);
-                h
-            } else {
-                let mut h = column.min_data_height(index);
-                if let Some(plot_data) = column.data.get(index) {
-                    if let Some((_, plot_h)) = plot_data.plot_cell_dims() {
-                        h = h.max(plot_h);
-                    }
-                }
-                h
-            };
-            height = height.max(src_height);
-        }
-        height
-    }
-
-    fn get_col_index(
-        &self,
-        position: &Position,
-        units: UnitValues,
-        active_cell: Option<CellRef>,
-    ) -> Option<usize> {
-        if position.left < self.pos.left {
-            return None;
-        }
-        let left = (position.left - self.pos.left) as usize;
-        let mut col_start = 0;
-
-        for (c, column) in self.columns.iter().enumerate() {
-            let width = column.width(units, active_cell, c);
-            if col_start + width > left {
-                // found column
-                return Some(c);
-            }
-            col_start += width;
-        }
-
-        None
-    }
 }
+
