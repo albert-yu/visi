@@ -644,29 +644,19 @@ impl Sheet {
                         Ok(ResultData::Boolean(b))
                     }
                     _ => {
+                        if let ResultData::Error(_) = &l_val {
+                            return Ok(l_val);
+                        }
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
                         let lf = match self.to_f64(&l_val) {
                             Some(f) => f,
-                            None => {
-                                if let ResultData::Error(_) = l_val {
-                                    return Ok(l_val);
-                                } else {
-                                    return Err(EngineError::EvalError(
-                                        EvalError::UnknownFunction("Expected number".to_string()),
-                                    ));
-                                }
-                            }
+                            None => return Ok(ResultData::Error("#VALUE!".to_string())),
                         };
                         let rf = match self.to_f64(&r_val) {
                             Some(f) => f,
-                            None => {
-                                if let ResultData::Error(_) = r_val {
-                                    return Ok(r_val);
-                                } else {
-                                    return Err(EngineError::EvalError(
-                                        EvalError::UnknownFunction("Expected number".to_string()),
-                                    ));
-                                }
-                            }
+                            None => return Ok(ResultData::Error("#VALUE!".to_string())),
                         };
                         match op {
                             Op::Add => Ok(ResultData::Float(lf + rf)),
@@ -803,7 +793,7 @@ impl Sheet {
             )));
         }
         self.to_f64(val).ok_or_else(|| {
-            EngineError::EvalError(EvalError::UnknownFunction("Expected number".to_string()))
+            EngineError::EvalError(EvalError::UnknownFunction("#VALUE!".to_string()))
         })
     }
 
