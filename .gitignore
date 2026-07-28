@@ -13,3 +13,8 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Fuzzing test harness artifacts
+fuzz/venv/
+fuzz_results/
+
