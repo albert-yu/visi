@@ -647,13 +647,13 @@ impl Sheet {
                         if let ResultData::Error(_) = &l_val {
                             return Ok(l_val);
                         }
-                        if let ResultData::Error(_) = &r_val {
-                            return Ok(r_val);
-                        }
                         let lf = match self.to_f64(&l_val) {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
                         };
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
                         let rf = match self.to_f64(&r_val) {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
