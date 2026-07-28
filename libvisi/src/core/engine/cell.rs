@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub fn generate_unique_id() -> u64 {
     let mut buf = [0u8; 8];
-    let val = if getrandom::fill(&mut buf).is_err() {
+    let val = if getrandom::getrandom(&mut buf).is_err() {
         let now = web_time::SystemTime::now()
             .duration_since(web_time::SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos())
