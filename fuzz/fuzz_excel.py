@@ -191,11 +191,15 @@ class VisiDriver:
     def __init__(self, binary_path):
         self.binary_path = binary_path
         if not os.path.exists(self.binary_path):
-            # Try workspace release/debug locations
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             rel_path = os.path.join(project_root, "target", "release", "visi")
             dbg_path = os.path.join(project_root, "target", "debug", "visi")
-            if os.path.exists(rel_path):
+            if os.path.exists(rel_path) and os.path.exists(dbg_path):
+                if os.path.getmtime(dbg_path) > os.path.getmtime(rel_path):
+                    self.binary_path = dbg_path
+                else:
+                    self.binary_path = rel_path
+            elif os.path.exists(rel_path):
                 self.binary_path = rel_path
             elif os.path.exists(dbg_path):
                 self.binary_path = dbg_path
@@ -466,17 +470,20 @@ class DifferentialComparator:
         if v1 is None and v2 is None:
             return True
         if v1 is None or v2 is None:
+            if (v1 is None and isinstance(v2, str) and not v2.strip()) or \
+               (v2 is None and isinstance(v1, str) and not v1.strip()):
+                return True
             return False
 
         # If both are numbers (float or int)
         if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
             return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
 
-        # If both are error strings
+        # If both are error strings or text strings
         if isinstance(v1, str) and isinstance(v2, str):
             if v1.upper() in self.EXCEL_ERRORS or v2.upper() in self.EXCEL_ERRORS:
                 return v1.upper() == v2.upper()
-            return v1 == v2
+            return v1.strip() == v2.strip()
 
         # Booleans vs strings/numbers (e.g. True vs 1, "TRUE" vs True, "FALSE" vs False)
         if isinstance(v1, bool) or isinstance(v2, bool):

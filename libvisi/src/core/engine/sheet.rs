@@ -201,8 +201,10 @@ impl Sheet {
                         ResultData::Integer(i)
                     } else if let Ok(f) = src.parse::<f64>() {
                         ResultData::Float(f)
-                    } else if let Ok(b) = src.parse::<bool>() {
-                        ResultData::Boolean(b)
+                    } else if src.eq_ignore_ascii_case("true") {
+                        ResultData::Boolean(true)
+                    } else if src.eq_ignore_ascii_case("false") {
+                        ResultData::Boolean(false)
                     } else {
                         ResultData::String(src.to_string())
                     };
@@ -217,7 +219,12 @@ impl Sheet {
                             Ok(r) => r,
                             Err(e) => (ResultData::Error(e.to_string()), vec![]),
                         };
-                    (res, deps, Some(compiled))
+                    let final_res = if let ResultData::None = res {
+                        ResultData::Float(0.0)
+                    } else {
+                        res
+                    };
+                    (final_res, deps, Some(compiled))
                 }
             };
 
@@ -709,6 +716,36 @@ impl Sheet {
     }
 
     fn compare_excel_values(l: &ResultData, r: &ResultData) -> std::cmp::Ordering {
+        // Coerce ResultData::None against the type of the opposing operand
+        match (l, r) {
+            (ResultData::None, ResultData::None) => return std::cmp::Ordering::Equal,
+            (ResultData::None, ResultData::Integer(b)) => {
+                return 0.0.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            (ResultData::None, ResultData::Float(b)) => {
+                return 0.0.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            (ResultData::Integer(a), ResultData::None) => {
+                return (*a as f64).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            (ResultData::Float(a), ResultData::None) => {
+                return a.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            (ResultData::None, ResultData::String(b)) => {
+                return "".cmp(&b.to_lowercase().as_str());
+            }
+            (ResultData::String(a), ResultData::None) => {
+                return a.to_lowercase().as_str().cmp("");
+            }
+            (ResultData::None, ResultData::Boolean(b)) => {
+                return false.cmp(b);
+            }
+            (ResultData::Boolean(a), ResultData::None) => {
+                return a.cmp(&false);
+            }
+            _ => {}
+        }
+
         let rank_l = Self::excel_type_rank(l);
         let rank_r = Self::excel_type_rank(r);
         if rank_l != rank_r {
@@ -735,6 +772,7 @@ impl Sheet {
 
     pub fn to_f64(&self, val: &ResultData) -> Option<f64> {
         match val {
+            ResultData::None => Some(0.0),
             ResultData::Float(f) => Some(*f),
             ResultData::Integer(i) => Some(*i as f64),
             ResultData::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
@@ -748,7 +786,6 @@ impl Sheet {
                     s_trim.parse::<f64>().ok()
                 }
             }
-            ResultData::None => Some(0.0),
             _ => None,
         }
     }
@@ -813,6 +850,13 @@ impl Sheet {
                     0.0
                 }
             }
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            }
             ResultData::List(list) => {
                 let mut sum = 0.0;
                 for item in list {
@@ -831,6 +875,17 @@ impl Sheet {
             ResultData::Boolean(b) => {
                 if is_direct {
                     (if *b { 1.0 } else { 0.0 }, 1)
+                } else {
+                    (0.0, 0)
+                }
+            }
+            ResultData::String(_) => {
+                if is_direct {
+                    if let Some(f) = self.to_f64(arg) {
+                        (f, 1)
+                    } else {
+                        (0.0, 0)
+                    }
                 } else {
                     (0.0, 0)
                 }
@@ -874,6 +929,13 @@ impl Sheet {
                     f64::INFINITY
                 }
             }
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).unwrap_or(f64::INFINITY)
+                } else {
+                    f64::INFINITY
+                }
+            }
             ResultData::List(list) => {
                 let mut min_val = f64::INFINITY;
                 for item in list {
@@ -892,6 +954,13 @@ impl Sheet {
             ResultData::Boolean(b) => {
                 if is_direct {
                     if *b { 1.0 } else { 0.0 }
+                } else {
+                    f64::NEG_INFINITY
+                }
+            }
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).unwrap_or(f64::NEG_INFINITY)
                 } else {
                     f64::NEG_INFINITY
                 }
@@ -941,15 +1010,33 @@ impl Sheet {
         }
     }
 
-    fn product_helper(&self, arg: &ResultData) -> (f64, bool) {
+    fn product_helper(&self, arg: &ResultData, is_direct: bool) -> (f64, bool) {
         match arg {
             ResultData::Float(f) => (*f, true),
             ResultData::Integer(i) => (*i as f64, true),
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    (if *b { 1.0 } else { 0.0 }, true)
+                } else {
+                    (1.0, false)
+                }
+            }
+            ResultData::String(_) => {
+                if is_direct {
+                    if let Some(f) = self.to_f64(arg) {
+                        (f, true)
+                    } else {
+                        (1.0, false)
+                    }
+                } else {
+                    (1.0, false)
+                }
+            }
             ResultData::List(list) => {
                 let mut prod = 1.0;
                 let mut has_nums = false;
                 for item in list {
-                    let (p, h) = self.product_helper(item);
+                    let (p, h) = self.product_helper(item, false);
                     if h {
                         prod *= p;
                         has_nums = true;
@@ -1254,19 +1341,26 @@ impl Sheet {
             let mut evaluated_args = Vec::new();
             let mut arg_is_direct = Vec::new();
             for arg in args {
-                let is_ref = matches!(arg, Expr::CellRef { .. } | Expr::RangeRef { .. });
-                arg_is_direct.push(!is_ref);
+                let is_direct_arg = match arg {
+                    Expr::Number(_) | Expr::String(_) | Expr::Boolean(_) => true,
+                    Expr::FunctionCall { name, .. } => {
+                        let n = name.to_uppercase();
+                        n != "IF" && n != "IFERROR" && n != "CHOOSE"
+                    }
+                    _ => false,
+                };
+                arg_is_direct.push(is_direct_arg);
                 evaluated_args.push(self.evaluate_ast(arg, context, row, deps)?);
             }
 
             match upper_name.as_str() {
                 "SUM" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if let Some(err) =
                         self.check_direct_string_error(&evaluated_args, &arg_is_direct)
                     {
+                        return Ok(err);
+                    }
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1276,12 +1370,12 @@ impl Sheet {
                     Ok(ResultData::Float(sum))
                 }
                 "AVERAGE" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if let Some(err) =
                         self.check_direct_string_error(&evaluated_args, &arg_is_direct)
                     {
+                        return Ok(err);
+                    }
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1308,12 +1402,12 @@ impl Sheet {
                     Ok(ResultData::Float(count as f64))
                 }
                 "MIN" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if let Some(err) =
                         self.check_direct_string_error(&evaluated_args, &arg_is_direct)
                     {
+                        return Ok(err);
+                    }
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut min_val = f64::INFINITY;
@@ -1327,12 +1421,12 @@ impl Sheet {
                     }
                 }
                 "MAX" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if let Some(err) =
                         self.check_direct_string_error(&evaluated_args, &arg_is_direct)
                     {
+                        return Ok(err);
+                    }
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut max_val = f64::NEG_INFINITY;
@@ -1546,41 +1640,47 @@ impl Sheet {
                 }
                 "ROUND" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "ROUND")?;
+                    let val_clean = (val * 1e10).round() / 1e10;
                     let digits = if evaluated_args.len() >= 2 {
                         self.to_f64_arg(evaluated_args.get(1), "ROUND")? as i32
                     } else {
                         0
                     };
                     let factor = 10.0f64.powi(digits);
-                    Ok(ResultData::Float((val * factor).round() / factor))
+                    let scaled = (val_clean * factor * 1e10).round() / 1e10;
+                    Ok(ResultData::Float(scaled.round() / factor))
                 }
                 "ROUNDUP" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "ROUNDUP")?;
+                    let val_clean = (val * 1e10).round() / 1e10;
                     let digits = if evaluated_args.len() >= 2 {
                         self.to_f64_arg(evaluated_args.get(1), "ROUNDUP")? as i32
                     } else {
                         0
                     };
                     let factor = 10.0f64.powi(digits);
-                    let rounded = if val >= 0.0 {
-                        (val * factor).ceil() / factor
+                    let scaled = (val_clean * factor * 1e10).round() / 1e10;
+                    let rounded = if val_clean >= 0.0 {
+                        scaled.ceil() / factor
                     } else {
-                        (val * factor).floor() / factor
+                        scaled.floor() / factor
                     };
                     Ok(ResultData::Float(rounded))
                 }
                 "ROUNDDOWN" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "ROUNDDOWN")?;
+                    let val_clean = (val * 1e10).round() / 1e10;
                     let digits = if evaluated_args.len() >= 2 {
                         self.to_f64_arg(evaluated_args.get(1), "ROUNDDOWN")? as i32
                     } else {
                         0
                     };
                     let factor = 10.0f64.powi(digits);
-                    let rounded = if val >= 0.0 {
-                        (val * factor).floor() / factor
+                    let scaled = (val_clean * factor * 1e10).round() / 1e10;
+                    let rounded = if val_clean >= 0.0 {
+                        scaled.floor() / factor
                     } else {
-                        (val * factor).ceil() / factor
+                        scaled.ceil() / factor
                     };
                     Ok(ResultData::Float(rounded))
                 }
@@ -1938,18 +2038,19 @@ impl Sheet {
                     }
                 }
                 "PRODUCT" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if let Some(err) =
                         self.check_direct_string_error(&evaluated_args, &arg_is_direct)
                     {
                         return Ok(err);
                     }
+                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                        return Ok(err);
+                    }
                     let mut prod = 1.0;
                     let mut has_nums = false;
-                    for arg in evaluated_args {
-                        let (p, h) = self.product_helper(&arg);
+                    for (i, arg) in evaluated_args.iter().enumerate() {
+                        let is_dir = arg_is_direct.get(i).copied().unwrap_or(false);
+                        let (p, h) = self.product_helper(arg, is_dir);
                         if h {
                             prod *= p;
                             has_nums = true;
