@@ -1353,6 +1353,12 @@ impl Sheet {
                 evaluated_args.push(self.evaluate_ast(arg, context, row, deps)?);
             }
 
+            if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" {
+                if let Some(err) = Self::find_error_in_args(&evaluated_args) {
+                    return Ok(err);
+                }
+            }
+
             match upper_name.as_str() {
                 "SUM" => {
                     if let Some(err) =
