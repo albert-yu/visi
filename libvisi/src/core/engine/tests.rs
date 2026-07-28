@@ -18964,3 +18964,61 @@ fn test_fuzz_abs_c8_b10() {
     let target = sheet.get_result_data(&CellRef::new(9, 1));
     println!("Seed 640931 target: {:?}", target);
 }
+#[test]
+fn test_fuzz_if_nested_product_b4_d4() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 10,
+        cols: 5,
+        ..Default::default()
+    });
+    sheet.insert(TextCellRef { row: 0, col: 0, char_offset: 0 }, "486.89");
+    sheet.insert(TextCellRef { row: 0, col: 1, char_offset: 0 }, "\"Eaf\"");
+    sheet.insert(TextCellRef { row: 0, col: 2, char_offset: 0 }, "50");
+    sheet.insert(TextCellRef { row: 0, col: 3, char_offset: 0 }, "-374.4602");
+    sheet.insert(TextCellRef { row: 0, col: 4, char_offset: 0 }, "-124.2236");
+    sheet.insert(TextCellRef { row: 1, col: 0, char_offset: 0 }, "-315");
+    sheet.insert(TextCellRef { row: 1, col: 1, char_offset: 0 }, "TRUE");
+    sheet.insert(TextCellRef { row: 1, col: 3, char_offset: 0 }, "96");
+    sheet.insert(TextCellRef { row: 2, col: 0, char_offset: 0 }, "94");
+    sheet.insert(TextCellRef { row: 2, col: 1, char_offset: 0 }, "-455.2");
+    sheet.insert(TextCellRef { row: 2, col: 2, char_offset: 0 }, "56.703");
+    sheet.insert(TextCellRef { row: 2, col: 4, char_offset: 0 }, "5");
+    sheet.insert(TextCellRef { row: 3, col: 0, char_offset: 0 }, "\"klN\"");
+    sheet.insert(TextCellRef { row: 3, col: 1, char_offset: 0 }, "55");
+    sheet.insert(TextCellRef { row: 3, col: 2, char_offset: 0 }, "FALSE");
+    sheet.insert(TextCellRef { row: 3, col: 3, char_offset: 0 }, "4");
+    sheet.insert(TextCellRef { row: 3, col: 4, char_offset: 0 }, "-69");
+    sheet.insert(TextCellRef { row: 4, col: 0, char_offset: 0 }, "\"adEPPnfK\"");
+    sheet.insert(TextCellRef { row: 4, col: 1, char_offset: 0 }, "442.7");
+    sheet.insert(TextCellRef { row: 4, col: 2, char_offset: 0 }, "65.8");
+    sheet.insert(TextCellRef { row: 4, col: 3, char_offset: 0 }, "-370");
+    sheet.insert(TextCellRef { row: 5, col: 0, char_offset: 0 }, "=ABS(ROUNDUP(A2, 2))");
+    sheet.insert(TextCellRef { row: 5, col: 1, char_offset: 0 }, "=ROUND(0, 1)");
+    sheet.insert(TextCellRef { row: 5, col: 2, char_offset: 0 }, "=-4");
+    sheet.insert(TextCellRef { row: 5, col: 3, char_offset: 0 }, "=B3");
+    sheet.insert(TextCellRef { row: 5, col: 4, char_offset: 0 }, "=-43");
+    sheet.insert(TextCellRef { row: 6, col: 0, char_offset: 0 }, "=ABS(A6)");
+    sheet.insert(TextCellRef { row: 6, col: 1, char_offset: 0 }, "121");
+    sheet.insert(TextCellRef { row: 6, col: 2, char_offset: 0 }, "=IF((ROUNDDOWN(D3, 0) > ROUND(A3, 0)), D5, MIN(B3:D3))");
+    sheet.insert(TextCellRef { row: 6, col: 3, char_offset: 0 }, "=-26");
+    sheet.insert(TextCellRef { row: 6, col: 4, char_offset: 0 }, "=40");
+    sheet.insert(TextCellRef { row: 7, col: 0, char_offset: 0 }, "=IF((IF((B5 > E7), E2, C4) > ROUND(E7, 0)), IF((A7 > -21), B7, 47), PRODUCT(B4:D4))");
+    sheet.insert(TextCellRef { row: 7, col: 1, char_offset: 0 }, "225.89");
+    sheet.insert(TextCellRef { row: 7, col: 2, char_offset: 0 }, "TRUE");
+    sheet.insert(TextCellRef { row: 7, col: 3, char_offset: 0 }, "=E5");
+    sheet.insert(TextCellRef { row: 7, col: 4, char_offset: 0 }, "=-32");
+    sheet.insert(TextCellRef { row: 8, col: 0, char_offset: 0 }, "=CONCATENATE(\"SQRT(E8)\", \"E1\")");
+    sheet.insert(TextCellRef { row: 8, col: 1, char_offset: 0 }, "=UPPER(\"OR(C4 > 0, D3 < 100)\")");
+    sheet.insert(TextCellRef { row: 8, col: 2, char_offset: 0 }, "=10");
+    sheet.insert(TextCellRef { row: 8, col: 3, char_offset: 0 }, "=RIGHT(\"C5\", 2)");
+    sheet.insert(TextCellRef { row: 8, col: 4, char_offset: 0 }, "=C2");
+    sheet.insert(TextCellRef { row: 9, col: 0, char_offset: 0 }, "=E5");
+    sheet.insert(TextCellRef { row: 9, col: 1, char_offset: 0 }, "=(PRODUCT(A3:E5) / D6)");
+    sheet.insert(TextCellRef { row: 9, col: 2, char_offset: 0 }, "=SUM(MIN(A3, 19), (-4 / D5))");
+    sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=IF((D3 > C4), CONCATENATE(\"A5\", \"6\"), -23)");
+    sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=ABS(B8)");
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(7, 0));
+    println!("Seed 92353 target: {:?}", target);
+}
