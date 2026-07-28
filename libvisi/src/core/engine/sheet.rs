@@ -831,7 +831,7 @@ impl Sheet {
             if is_direct.get(i).copied().unwrap_or(false) {
                 if let ResultData::String(_) = arg {
                     if self.to_f64(arg).is_none() {
-                        return Some(ResultData::Error("Expected number".to_string()));
+                        return Some(ResultData::Error("#VALUE!".to_string()));
                     }
                 }
             }
