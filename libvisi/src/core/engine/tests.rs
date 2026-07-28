@@ -870,7 +870,7 @@ fn test_error_handling() {
     let res = sheet.get_result_data(&CellRef::new(0, 0));
     match res {
         ResultData::Error(e) => {
-            assert!(e.contains("ZeroDivisionError") || e.contains("division by zero"))
+            assert!(e.contains("#DIV/0!") || e.contains("ZeroDivisionError") || e.contains("division by zero"))
         }
         _ => panic!("Expected error, got {:?}", res),
     }
@@ -892,6 +892,371 @@ fn test_error_handling() {
     }
 }
 
+#[test]
+fn test_fuzz_reproducer_seed_843244() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_3_seed_843244/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let d9 = sheet.get_result_data(&CellRef::new(8, 3));
+            println!("D9 evaluated: {:?}", d9);
+            assert!(matches!(d9, ResultData::Error(ref e) if e.contains("#NUM!")), "Expected #NUM!, got {:?}", d9);
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_655058() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_5_seed_655058/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b8 = sheet.get_result_data(&CellRef::new(7, 1));
+            println!("B8 evaluated: {:?}", b8);
+            match b8 {
+                ResultData::Float(f) => assert!((f - 18.5011).abs() < 1e-3, "Expected ~18.5011 for B8, got {}", f),
+                other => panic!("Expected Float(~18.5011) for B8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_25814() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_3_seed_25814/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c7 = sheet.get_result_data(&CellRef::new(6, 2));
+            println!("C7 evaluated: {:?}", c7);
+            match c7 {
+                ResultData::Float(f) => assert!((f - 31.071067).abs() < 1e-3, "Expected ~31.071067 for C7, got {}", f),
+                other => panic!("Expected Float(~31.071067) for C7, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_711187() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_5_seed_711187/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a10 = sheet.get_result_data(&CellRef::new(9, 0));
+            println!("A10 evaluated: {:?}", a10);
+            match a10 {
+                ResultData::Float(f) => assert!((f - 139.2045).abs() < 1e-3, "Expected ~139.2045 for A10, got {}", f),
+                other => panic!("Expected Float(~139.2045) for A10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_870160() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_1_seed_870160/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a6 = sheet.get_result_data(&CellRef::new(5, 0));
+            println!("A6 evaluated: {:?}", a6);
+            match a6 {
+                ResultData::Float(f) => assert_eq!(f, 0.0),
+                other => panic!("Expected Float(0.0) for A6, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_97218() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_1_seed_97218/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c7 = sheet.get_result_data(&CellRef::new(6, 2));
+            println!("C7 evaluated: {:?}", c7);
+            assert!(matches!(c7, ResultData::Error(ref e) if e.contains("#VALUE!")), "Expected #VALUE! for C7, got {:?}", c7);
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_230672() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_3_seed_230672/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a8 = sheet.get_result_data(&CellRef::new(7, 0));
+            println!("A8 evaluated: {:?}", a8);
+            match a8 {
+                ResultData::Float(f) => assert_eq!(f, 49.0),
+                other => panic!("Expected Float(49.0) for A8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_140247() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_140247/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b7 = sheet.get_result_data(&CellRef::new(6, 1));
+            println!("B7 evaluated: {:?}", b7);
+            match b7 {
+                ResultData::Float(f) => assert_eq!(f, 28.0),
+                other => panic!("Expected Float(28.0) for B7, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_233445() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_233445/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b7 = sheet.get_result_data(&CellRef::new(6, 1));
+            println!("B7 evaluated: {:?}", b7);
+            assert!(matches!(b7, ResultData::Error(ref e) if e.contains("#DIV/0!")), "Expected #DIV/0! for B7, got {:?}", b7);
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_58482() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_4_seed_58482/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a9 = sheet.get_result_data(&CellRef::new(8, 0));
+            println!("A9 evaluated: {:?}", a9);
+            match a9 {
+                ResultData::Float(f) => assert_eq!(f, 0.0),
+                other => panic!("Expected Float(0.0) for A9, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_867362() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_6_seed_867362/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b10 = sheet.get_result_data(&CellRef::new(9, 1));
+            println!("B10 evaluated: {:?}", b10);
+            match b10 {
+                ResultData::Float(f) => assert_eq!(f, -2.0),
+                other => panic!("Expected Float(-2.0) for B10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_497384() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_497384/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a9 = sheet.get_result_data(&CellRef::new(8, 0));
+            println!("A9 evaluated: {:?}", a9);
+            match a9 {
+                ResultData::Float(f) => assert_eq!(f, -105.0),
+                other => panic!("Expected Float(-105.0) for A9, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_302307() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_3_seed_302307/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a10 = sheet.get_result_data(&CellRef::new(9, 0));
+            println!("A10 evaluated: {:?}", a10);
+            match a10 {
+                ResultData::Boolean(b) => assert_eq!(b, true),
+                other => panic!("Expected Boolean(true) for A10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_486091() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_4_seed_486091/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a10 = sheet.get_result_data(&CellRef::new(9, 0));
+            println!("A10 evaluated: {:?}", a10);
+            assert!(matches!(a10, ResultData::Error(ref e) if e.contains("#NUM!")), "Expected #NUM! for A10, got {:?}", a10);
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_995940() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_5_seed_995940/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b8 = sheet.get_result_data(&CellRef::new(7, 1));
+            println!("B8 evaluated: {:?}", b8);
+            match b8 {
+                ResultData::Float(f) => assert!((f - 20.665).abs() < 1e-3, "Expected ~20.665 for B8, got {}", f),
+                other => panic!("Expected Float(~20.665) for B8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_538533() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_7_seed_538533/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a8 = sheet.get_result_data(&CellRef::new(7, 0));
+            println!("A8 evaluated: {:?}", a8);
+            match a8 {
+                ResultData::Float(f) => assert_eq!(f, 50.0),
+                other => panic!("Expected Float(50.0) for A8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_971398() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_8_seed_971398/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a8 = sheet.get_result_data(&CellRef::new(7, 0));
+            println!("A8 evaluated: {:?}", a8);
+            match a8 {
+                ResultData::Float(f) => assert_eq!(f, 1.0),
+                other => panic!("Expected Float(1.0) for A8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_450293() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_450293/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b10 = sheet.get_result_data(&CellRef::new(9, 1));
+            println!("B10 evaluated: {:?}", b10);
+            match b10 {
+                ResultData::Float(f) => assert_eq!(f, -43.0),
+                other => panic!("Expected Float(-43.0) for B10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_83851() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_83851/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let e8 = sheet.get_result_data(&CellRef::new(7, 4));
+            println!("E8 evaluated: {:?}", e8);
+            match e8 {
+                ResultData::Float(f) => assert_eq!(f, 51.0),
+                other => panic!("Expected Float(51.0) for E8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_108321() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_10_seed_108321/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c9 = sheet.get_result_data(&CellRef::new(8, 2));
+            println!("C9 evaluated: {:?}", c9);
+            assert!(matches!(c9, ResultData::Error(ref e) if e.contains("#DIV/0!")), "Expected #DIV/0! for C9, got {:?}", c9);
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_581162() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_3_seed_581162/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a8 = sheet.get_result_data(&CellRef::new(7, 0));
+            println!("A8 evaluated: {:?}", a8);
+            match a8 {
+                ResultData::Float(f) => assert_eq!(f, -15.0),
+                other => panic!("Expected Float(-15.0) for A8, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_277129() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_1_seed_277129/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c7 = sheet.get_result_data(&CellRef::new(6, 2));
+            println!("C7 evaluated: {:?}", c7);
+            match c7 {
+                ResultData::Float(f) => assert!((f - -284.79).abs() < 1e-2, "Expected ~-284.79 for C7, got {}", f),
+                other => panic!("Expected Float(~-284.79) for C7, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_405910() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_405910/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a7 = sheet.get_result_data(&CellRef::new(6, 0));
+            println!("A7 evaluated: {:?}", a7);
+            match a7 {
+                ResultData::Float(f) => assert_eq!(f, 1.0),
+                other => panic!("Expected Float(1.0) for A7, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_758159() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_6_seed_758159/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a7 = sheet.get_result_data(&CellRef::new(6, 0));
+            println!("A7 evaluated: {:?}", a7);
+            assert!(matches!(a7, ResultData::Error(ref e) if e.contains("#NUM!")), "Expected #NUM! for A7, got {:?}", a7);
+        }
+    }
+}
 #[test]
 fn test_bracket_dependency_propagation() {
     let mut sheet = Sheet::new(SheetInit {
@@ -1243,6 +1608,131 @@ fn test_fuzz_reproducer_seed_516067() {
                 ResultData::Float(f) => assert_eq!(f, 216.0),
                 other => panic!("Expected Float(216.0) for B10, got {:?}", other),
             }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_643759() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_643759/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c7 = sheet.get_result_data(&CellRef::new(6, 2));
+            println!("C7 evaluated: {:?}", c7);
+            match c7 {
+                ResultData::Float(f) => assert_eq!(f, -282.0),
+                other => panic!("Expected Float(-282.0) for C7, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_8029() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_4_seed_8029/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b9 = sheet.get_result_data(&CellRef::new(8, 1));
+            println!("B9 evaluated: {:?}", b9);
+            match b9 {
+                ResultData::Float(f) => assert_eq!(f, -80.0),
+                other => panic!("Expected Float(-80.0) for B9, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_278502() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_5_seed_278502/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c7 = sheet.get_result_data(&CellRef::new(6, 2));
+            println!("C7 evaluated: {:?}", c7);
+            match c7 {
+                ResultData::Float(f) => assert_eq!(f, -52.0),
+                other => panic!("Expected Float(-52.0) for C7, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_842487() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_4_seed_842487/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let d9 = sheet.get_result_data(&CellRef::new(8, 3));
+            println!("D9 evaluated: {:?}", d9);
+            match d9 {
+                ResultData::Float(f) => assert_eq!(f, 0.0),
+                other => panic!("Expected Float(0.0) for D9, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_507065() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_1_seed_507065/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let b10 = sheet.get_result_data(&CellRef::new(9, 1));
+            println!("B10 evaluated: {:?}", b10);
+            match b10 {
+                ResultData::Float(f) => assert_eq!(f, 113.0),
+                other => panic!("Expected Float(113.0) for B10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_368811() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_2_seed_368811/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let c10 = sheet.get_result_data(&CellRef::new(9, 2));
+            println!("C10 evaluated: {:?}", c10);
+            match c10 {
+                ResultData::Float(f) => assert_eq!(f, -220.0),
+                other => panic!("Expected Float(-220.0) for C10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_357041() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_1_seed_357041/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let a10 = sheet.get_result_data(&CellRef::new(9, 0));
+            println!("A10 evaluated: {:?}", a10);
+            match a10 {
+                ResultData::Float(f) => assert_eq!(f, -8.0),
+                other => panic!("Expected Float(-8.0) for A10, got {:?}", other),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_reproducer_seed_320979() {
+    if let Ok(bytes) = std::fs::read("fuzz_results/failures/fail_iter_4_seed_320979/source.xlsx") {
+        if let Ok((sheets, _)) = crate::core::xlsx::import_xlsx_data(&bytes, &[], |_, _, _| {}) {
+            let mut sheet = sheets[0].sheet.clone();
+            sheet.commit(None).unwrap();
+            let d10 = sheet.get_result_data(&CellRef::new(9, 3));
+            println!("D10 evaluated: {:?}", d10);
+            assert!(matches!(d10, ResultData::Error(_)), "Expected Error for D10, got {:?}", d10);
         }
     }
 }
