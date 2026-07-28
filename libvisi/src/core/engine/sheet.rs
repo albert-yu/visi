@@ -1343,7 +1343,14 @@ impl Sheet {
                     _ => false,
                 };
                 arg_is_direct.push(is_direct_arg);
-                evaluated_args.push(self.evaluate_ast(arg, context, row, deps)?);
+                let eval_res = match self.evaluate_ast(arg, context, row, deps) {
+                    Ok(r) => r,
+                    Err(EngineError::EvalError(EvalError::UnknownFunction(err_str))) if err_str.starts_with('#') => {
+                        ResultData::Error(err_str)
+                    }
+                    Err(e) => return Err(e),
+                };
+                evaluated_args.push(eval_res);
             }
 
             if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" {
