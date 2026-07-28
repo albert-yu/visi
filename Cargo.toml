@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "libvisi",
+    "visi",
+]
+resolver = "2"
