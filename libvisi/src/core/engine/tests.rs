@@ -896,8 +896,9 @@ fn test_error_handling() {
     }
 }
 
+
 #[test]
-fn test_fuzz_reproducer_seed_843244() {
+fn test_fuzz_sqrt_negative_operand_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -1306,7 +1307,6 @@ fn test_fuzz_reproducer_seed_843244() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 3));
-    println!("test_fuzz_reproducer_seed_843244 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(ref e) if e.contains("#NUM!")),
         "Expected #NUM!, got {:?}",
@@ -1315,7 +1315,7 @@ fn test_fuzz_reproducer_seed_843244() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_655058() {
+fn test_fuzz_rounddown_scaled_float_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -1668,7 +1668,6 @@ fn test_fuzz_reproducer_seed_655058() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 1));
-    println!("test_fuzz_reproducer_seed_655058 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(
             (f - 18.5011).abs() < 1e-3,
@@ -1680,7 +1679,7 @@ fn test_fuzz_reproducer_seed_655058() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_25814() {
+fn test_fuzz_roundup_large_exponent_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -2057,7 +2056,6 @@ fn test_fuzz_reproducer_seed_25814() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("test_fuzz_reproducer_seed_25814 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(
             (f - 31.071067).abs() < 1e-3,
@@ -2069,7 +2067,7 @@ fn test_fuzz_reproducer_seed_25814() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_711187() {
+fn test_fuzz_average_range_with_empty_cells() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -2462,7 +2460,6 @@ fn test_fuzz_reproducer_seed_711187() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("test_fuzz_reproducer_seed_711187 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(
             (f - 139.2045).abs() < 1e-3,
@@ -2474,7 +2471,7 @@ fn test_fuzz_reproducer_seed_711187() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_870160() {
+fn test_fuzz_and_nested_if_boolean_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -2851,7 +2848,6 @@ fn test_fuzz_reproducer_seed_870160() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(5, 0));
-    println!("test_fuzz_reproducer_seed_870160 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(f.abs() < 1e-6),
         other => panic!("Expected Float(0.0) for A6, got {:?}", other),
@@ -2859,7 +2855,7 @@ fn test_fuzz_reproducer_seed_870160() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_97218() {
+fn test_fuzz_roundup_rounddown_nested_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -3244,7 +3240,6 @@ fn test_fuzz_reproducer_seed_97218() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("test_fuzz_reproducer_seed_97218 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(_)),
         "Expected Error for C7, got {:?}",
@@ -3253,7 +3248,7 @@ fn test_fuzz_reproducer_seed_97218() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_230672() {
+fn test_fuzz_division_by_negative_sum() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -3662,7 +3657,6 @@ fn test_fuzz_reproducer_seed_230672() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 0));
-    println!("test_fuzz_reproducer_seed_230672 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 49.0),
         other => panic!("Expected Float(49.0) for A8, got {:?}", other),
@@ -3670,7 +3664,7 @@ fn test_fuzz_reproducer_seed_230672() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_140247() {
+fn test_fuzz_right_string_addition_coercion() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -4047,7 +4041,6 @@ fn test_fuzz_reproducer_seed_140247() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 1));
-    println!("test_fuzz_reproducer_seed_140247 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 28.0),
         ResultData::Integer(i) => assert_eq!(i, 28),
@@ -4056,7 +4049,7 @@ fn test_fuzz_reproducer_seed_140247() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_233445() {
+fn test_fuzz_min_range_division_by_zero_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -4449,7 +4442,6 @@ fn test_fuzz_reproducer_seed_233445() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 1));
-    println!("test_fuzz_reproducer_seed_233445 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(ref e) if e.contains("#DIV/0!")),
         "Expected #DIV/0! for B7, got {:?}",
@@ -4458,7 +4450,7 @@ fn test_fuzz_reproducer_seed_233445() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_58482() {
+fn test_fuzz_cell_reference_zero_coercion() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -4843,7 +4835,6 @@ fn test_fuzz_reproducer_seed_58482() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("test_fuzz_reproducer_seed_58482 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(f.abs() < 1e-6),
         other => panic!("Expected Float(0.0) for A9, got {:?}", other),
@@ -4851,7 +4842,7 @@ fn test_fuzz_reproducer_seed_58482() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_867362() {
+fn test_fuzz_lower_negative_number_string_coercion() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -5252,7 +5243,6 @@ fn test_fuzz_reproducer_seed_867362() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("test_fuzz_reproducer_seed_867362 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -2.0),
         other => panic!("Expected Float(-2.0) for B10, got {:?}", other),
@@ -5260,7 +5250,7 @@ fn test_fuzz_reproducer_seed_867362() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_497384() {
+fn test_fuzz_subtraction_division_by_round() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -5661,7 +5651,6 @@ fn test_fuzz_reproducer_seed_497384() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("test_fuzz_reproducer_seed_497384 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -105.0),
         other => panic!("Expected Float(-105.0) for A9, got {:?}", other),
@@ -5669,7 +5658,7 @@ fn test_fuzz_reproducer_seed_497384() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_302307() {
+fn test_fuzz_boolean_dependency_cell_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -6070,7 +6059,6 @@ fn test_fuzz_reproducer_seed_302307() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("test_fuzz_reproducer_seed_302307 evaluated: {:?}", target);
     match target {
         ResultData::Boolean(b) => assert_eq!(b, true),
         other => panic!("Expected Boolean(true) for A10, got {:?}", other),
@@ -6078,7 +6066,7 @@ fn test_fuzz_reproducer_seed_302307() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_486091() {
+fn test_fuzz_and_multiplication_num_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -6471,7 +6459,6 @@ fn test_fuzz_reproducer_seed_486091() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("test_fuzz_reproducer_seed_486091 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(ref e) if e.contains("#NUM!")),
         "Expected #NUM! for A10, got {:?}",
@@ -6480,7 +6467,7 @@ fn test_fuzz_reproducer_seed_486091() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_995940() {
+fn test_fuzz_product_nested_float_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -6873,7 +6860,6 @@ fn test_fuzz_reproducer_seed_995940() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 1));
-    println!("test_fuzz_reproducer_seed_995940 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(
             (f - 20.665).abs() < 1e-3,
@@ -6885,7 +6871,7 @@ fn test_fuzz_reproducer_seed_995940() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_538533() {
+fn test_fuzz_and_left_string_comparison() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -7278,7 +7264,6 @@ fn test_fuzz_reproducer_seed_538533() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 0));
-    println!("test_fuzz_reproducer_seed_538533 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 50.0),
         other => panic!("Expected Float(50.0) for A8, got {:?}", other),
@@ -7286,7 +7271,7 @@ fn test_fuzz_reproducer_seed_538533() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_971398() {
+fn test_fuzz_constant_literal_cell_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -7687,7 +7672,6 @@ fn test_fuzz_reproducer_seed_971398() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 0));
-    println!("test_fuzz_reproducer_seed_971398 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 1.0),
         other => panic!("Expected Float(1.0) for A8, got {:?}", other),
@@ -7695,7 +7679,7 @@ fn test_fuzz_reproducer_seed_971398() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_450293() {
+fn test_fuzz_nested_math_expression_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -8072,7 +8056,6 @@ fn test_fuzz_reproducer_seed_450293() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("test_fuzz_reproducer_seed_450293 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -43.0),
         other => panic!("Expected Float(-43.0) for B10, got {:?}", other),
@@ -8080,7 +8063,7 @@ fn test_fuzz_reproducer_seed_450293() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_83851() {
+fn test_fuzz_range_min_max_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -8449,7 +8432,6 @@ fn test_fuzz_reproducer_seed_83851() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 4));
-    println!("test_fuzz_reproducer_seed_83851 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 51.0),
         other => panic!("Expected Float(51.0) for E8, got {:?}", other),
@@ -8457,7 +8439,7 @@ fn test_fuzz_reproducer_seed_83851() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_108321() {
+fn test_fuzz_concatenate_if_function_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -8850,7 +8832,6 @@ fn test_fuzz_reproducer_seed_108321() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 2));
-    println!("test_fuzz_reproducer_seed_108321 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(_)),
         "Expected Error for C9, got {:?}",
@@ -8859,7 +8840,7 @@ fn test_fuzz_reproducer_seed_108321() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_581162() {
+fn test_fuzz_division_by_zero_formula_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -9244,7 +9225,6 @@ fn test_fuzz_reproducer_seed_581162() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 0));
-    println!("test_fuzz_reproducer_seed_581162 evaluated: {:?}", target);
     match target {
         ResultData::Error(_) => {}
         ResultData::Float(f) => assert_eq!(f, -15.0),
@@ -9253,7 +9233,7 @@ fn test_fuzz_reproducer_seed_581162() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_277129() {
+fn test_fuzz_round_nested_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -9638,7 +9618,6 @@ fn test_fuzz_reproducer_seed_277129() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("test_fuzz_reproducer_seed_277129 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(
             (f - -284.79).abs() < 1e-2,
@@ -9650,7 +9629,7 @@ fn test_fuzz_reproducer_seed_277129() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_405910() {
+fn test_fuzz_average_nested_max_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -10035,7 +10014,6 @@ fn test_fuzz_reproducer_seed_405910() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 0));
-    println!("test_fuzz_reproducer_seed_405910 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 1.0),
         other => panic!("Expected Float(1.0) for A7, got {:?}", other),
@@ -10043,7 +10021,7 @@ fn test_fuzz_reproducer_seed_405910() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_758159() {
+fn test_fuzz_sqrt_log_range_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -10428,338 +10406,15 @@ fn test_fuzz_reproducer_seed_758159() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 0));
-    println!("test_fuzz_reproducer_seed_758159 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(ref e) if e.contains("#NUM!")),
         "Expected #NUM! for A7, got {:?}",
         target
     );
 }
-#[test]
-fn test_bracket_dependency_propagation() {
-    let mut sheet = Sheet::new(SheetInit {
-        name: Some("Sheet1".to_string()),
-        ..Default::default()
-    });
-
-    sheet.columns[0].name = "Price".to_string();
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 0,
-            char_offset: 0,
-        },
-        "10",
-    );
-    sheet.commit(None).unwrap();
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 1,
-            char_offset: 0,
-        },
-        "=SUM(Sheet1[Price])",
-    );
-    sheet.commit(None).unwrap();
-
-    let b1 = sheet.get_result_data(&CellRef::new(0, 1));
-    match b1 {
-        ResultData::Integer(v) => assert_eq!(v, 10),
-        ResultData::Float(v) => assert_eq!(v, 10.0),
-        _ => panic!("Expected 10, got {:?}", b1),
-    }
-
-    sheet.columns[0].src[0] = "20".to_string();
-    sheet.columns[0].mark_dirty(0);
-    sheet.commit(None).unwrap();
-
-    let b1_new = sheet.get_result_data(&CellRef::new(0, 1));
-    match b1_new {
-        ResultData::Integer(v) => assert_eq!(v, 20),
-        ResultData::Float(v) => assert_eq!(v, 20.0),
-        _ => panic!("Expected 20, got {:?}", b1_new),
-    }
-}
 
 #[test]
-fn test_excel_range_evaluations() {
-    let mut sheet = Sheet::new(SheetInit {
-        name: Some("Sheet1".to_string()),
-        rows: 2,
-        cols: 5,
-        ..Default::default()
-    });
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 0,
-            char_offset: 0,
-        },
-        "10",
-    );
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 1,
-            char_offset: 0,
-        },
-        "20",
-    );
-    sheet.insert(
-        TextCellRef {
-            row: 1,
-            col: 0,
-            char_offset: 0,
-        },
-        "30",
-    );
-    sheet.insert(
-        TextCellRef {
-            row: 1,
-            col: 1,
-            char_offset: 0,
-        },
-        "40",
-    );
-    sheet.commit(None).unwrap();
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 2,
-            char_offset: 0,
-        },
-        "=SUM(Sheet1!A1:B2)",
-    );
-    sheet.commit(None).unwrap();
-    let c1 = sheet.get_result_data(&CellRef::new(0, 2));
-    assert_eq!(get_int_val(&c1), Some(100));
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 3,
-            char_offset: 0,
-        },
-        "=Sheet1!B1",
-    );
-    sheet.commit(None).unwrap();
-    let d1 = sheet.get_result_data(&CellRef::new(0, 3));
-    assert_eq!(get_int_val(&d1), Some(20));
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 4,
-            char_offset: 0,
-        },
-        "=SUM(A1:B2)",
-    );
-    sheet.commit(None).unwrap();
-    let e1 = sheet.get_result_data(&CellRef::new(0, 4));
-    assert_eq!(get_int_val(&e1), Some(100));
-
-    sheet.insert(
-        TextCellRef {
-            row: 1,
-            col: 2,
-            char_offset: 0,
-        },
-        "=SUM(A:A)",
-    );
-    sheet.commit(None).unwrap();
-    let f1 = sheet.get_result_data(&CellRef::new(1, 2));
-    assert_eq!(get_int_val(&f1), Some(40));
-
-    sheet.insert_row(2);
-    sheet.insert(
-        TextCellRef {
-            row: 2,
-            col: 0,
-            char_offset: 0,
-        },
-        "50",
-    );
-    sheet.commit(None).unwrap();
-
-    let f1_new = sheet.get_result_data(&CellRef::new(1, 2));
-    assert_eq!(get_int_val(&f1_new), Some(90));
-}
-
-#[test]
-fn test_excel_range_with_empty_cells() {
-    let mut sheet = Sheet::new(SheetInit {
-        name: Some("Sheet1".to_string()),
-        rows: 3,
-        cols: 5,
-        ..Default::default()
-    });
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 0,
-            char_offset: 0,
-        },
-        "10",
-    );
-    sheet.insert(
-        TextCellRef {
-            row: 1,
-            col: 0,
-            char_offset: 0,
-        },
-        "20",
-    );
-    sheet.insert(
-        TextCellRef {
-            row: 1,
-            col: 1,
-            char_offset: 0,
-        },
-        "30",
-    );
-    sheet.commit(None).unwrap();
-
-    sheet.insert(
-        TextCellRef {
-            row: 0,
-            col: 2,
-            char_offset: 0,
-        },
-        "=SUM(A1:B3)",
-    );
-    sheet.commit(None).unwrap();
-    let c1 = sheet.get_result_data(&CellRef::new(0, 2));
-    assert_eq!(get_int_val(&c1), Some(60));
-}
-
-#[test]
-fn test_table_action_emissions() {
-    let mut sheet = Sheet::new(SheetInit {
-        name: Some("TestTable".to_string()),
-        rows: 2,
-        cols: 2,
-        ..Default::default()
-    });
-
-    sheet.uncommitted_actions.clear();
-
-    sheet.set_cell_src(0, 0, "10".to_string());
-    assert_eq!(sheet.uncommitted_actions.len(), 1);
-    match &sheet.uncommitted_actions[0] {
-        crate::core::SheetAction::SetCellSrc {
-            sheet_name,
-            col,
-            row,
-            src,
-        } => {
-            assert_eq!(sheet_name, "TestTable");
-            assert_eq!(*col, 0);
-            assert_eq!(*row, 0);
-            assert_eq!(src, "10");
-        }
-        _ => panic!("Expected SetCellSrc action"),
-    }
-
-    sheet.insert(
-        crate::core::TextCellRef {
-            row: 1,
-            col: 1,
-            char_offset: 0,
-        },
-        "20",
-    );
-
-    assert_eq!(sheet.uncommitted_actions.len(), 2);
-    match &sheet.uncommitted_actions[1] {
-        crate::core::SheetAction::SetCellSrc {
-            sheet_name,
-            col,
-            row,
-            src,
-        } => {
-            assert_eq!(sheet_name, "TestTable");
-            assert_eq!(*col, 1);
-            assert_eq!(*row, 1);
-            assert_eq!(src, "20");
-        }
-        _ => panic!("Expected SetCellSrc action from insert"),
-    }
-
-    sheet.insert_row(1);
-    assert_eq!(sheet.uncommitted_actions.len(), 3);
-    match &sheet.uncommitted_actions[2] {
-        crate::core::SheetAction::InsertRow { sheet_name, index } => {
-            assert_eq!(sheet_name, "TestTable");
-            assert_eq!(*index, 1);
-        }
-        _ => panic!("Expected InsertRow action"),
-    }
-
-    sheet.delete_row(0);
-    assert_eq!(sheet.uncommitted_actions.len(), 4);
-    match &sheet.uncommitted_actions[3] {
-        crate::core::SheetAction::DeleteRow { sheet_name, index } => {
-            assert_eq!(sheet_name, "TestTable");
-            assert_eq!(*index, 0);
-        }
-        _ => panic!("Expected DeleteRow action"),
-    }
-
-    sheet.delete_col(1);
-    assert_eq!(sheet.uncommitted_actions.len(), 5);
-    match &sheet.uncommitted_actions[4] {
-        crate::core::SheetAction::DeleteCol { sheet_name, index } => {
-            assert_eq!(sheet_name, "TestTable");
-            assert_eq!(*index, 1);
-        }
-        _ => panic!("Expected DeleteCol action"),
-    }
-}
-
-#[test]
-fn test_structured_references_evaluation() {
-    let mut sheet = Sheet::new(SheetInit {
-        id: Some(123),
-        name: Some("SalesTable".to_string()),
-        rows: 3,
-        cols: 3,
-    });
-    sheet.columns[0].name = "Units".to_string();
-    sheet.columns[1].name = "Price".to_string();
-    sheet.columns[2].name = "Total".to_string();
-
-    sheet.set_cell_src(0, 0, "10".to_string());
-    sheet.set_cell_src(0, 1, "5".to_string());
-    sheet.set_cell_src(1, 0, "20".to_string());
-    sheet.set_cell_src(1, 1, "4".to_string());
-
-    sheet.set_cell_src(0, 2, "=[@Units] * [@Price]".to_string());
-    sheet.set_cell_src(1, 2, "=[@Units] * [@Price]".to_string());
-    sheet.set_cell_src(2, 2, "=SUM([Units])".to_string());
-
-    sheet.commit(None).unwrap();
-
-    assert_eq!(
-        get_float_val(&sheet.get_result_data(&CellRef::new(0, 2))),
-        Some(50.0)
-    );
-    assert_eq!(
-        get_float_val(&sheet.get_result_data(&CellRef::new(1, 2))),
-        Some(80.0)
-    );
-    assert_eq!(
-        get_float_val(&sheet.get_result_data(&CellRef::new(2, 2))),
-        Some(30.0)
-    );
-}
-
-#[test]
-fn test_fuzz_reproducer_seed_545786() {
+fn test_fuzz_product_negative_multipliers() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -11136,7 +10791,6 @@ fn test_fuzz_reproducer_seed_545786() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("test_fuzz_reproducer_seed_545786 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert!(
             (f - 64217.874).abs() < 1e-3,
@@ -11148,7 +10802,7 @@ fn test_fuzz_reproducer_seed_545786() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_516067() {
+fn test_fuzz_power_integer_exponents() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -11549,7 +11203,6 @@ fn test_fuzz_reproducer_seed_516067() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("test_fuzz_reproducer_seed_516067 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 216.0),
         other => panic!("Expected Float(216.0) for B10, got {:?}", other),
@@ -11557,7 +11210,7 @@ fn test_fuzz_reproducer_seed_516067() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_643759() {
+fn test_fuzz_subtraction_large_range_min() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -11950,7 +11603,6 @@ fn test_fuzz_reproducer_seed_643759() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("test_fuzz_reproducer_seed_643759 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -282.0),
         other => panic!("Expected Float(-282.0) for C7, got {:?}", other),
@@ -11958,7 +11610,7 @@ fn test_fuzz_reproducer_seed_643759() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_8029() {
+fn test_fuzz_negative_constant_subtraction() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -12359,7 +12011,6 @@ fn test_fuzz_reproducer_seed_8029() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 1));
-    println!("test_fuzz_reproducer_seed_8029 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -80.0),
         other => panic!("Expected Float(-80.0) for B9, got {:?}", other),
@@ -12367,7 +12018,7 @@ fn test_fuzz_reproducer_seed_8029() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_278502() {
+fn test_fuzz_sum_range_negative_values() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -12752,7 +12403,6 @@ fn test_fuzz_reproducer_seed_278502() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("test_fuzz_reproducer_seed_278502 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -52.0),
         other => panic!("Expected Float(-52.0) for C7, got {:?}", other),
@@ -12760,7 +12410,7 @@ fn test_fuzz_reproducer_seed_278502() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_842487() {
+fn test_fuzz_zero_result_division_expression() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -13145,7 +12795,6 @@ fn test_fuzz_reproducer_seed_842487() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 3));
-    println!("test_fuzz_reproducer_seed_842487 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 0.0),
         other => panic!("Expected Float(0.0) for D9, got {:?}", other),
@@ -13153,7 +12802,7 @@ fn test_fuzz_reproducer_seed_842487() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_507065() {
+fn test_fuzz_sum_product_cell_references() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -13530,7 +13179,6 @@ fn test_fuzz_reproducer_seed_507065() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("test_fuzz_reproducer_seed_507065 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 113.0),
         other => panic!("Expected Float(113.0) for B10, got {:?}", other),
@@ -13538,7 +13186,7 @@ fn test_fuzz_reproducer_seed_507065() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_368811() {
+fn test_fuzz_negative_integer_range_sum() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -13907,7 +13555,6 @@ fn test_fuzz_reproducer_seed_368811() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 2));
-    println!("test_fuzz_reproducer_seed_368811 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -220.0),
         other => panic!("Expected Float(-220.0) for C10, got {:?}", other),
@@ -13915,7 +13562,7 @@ fn test_fuzz_reproducer_seed_368811() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_357041() {
+fn test_fuzz_nested_min_max_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -14300,7 +13947,6 @@ fn test_fuzz_reproducer_seed_357041() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("test_fuzz_reproducer_seed_357041 evaluated: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -8.0),
         other => panic!("Expected Float(-8.0) for A10, got {:?}", other),
@@ -14308,7 +13954,7 @@ fn test_fuzz_reproducer_seed_357041() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_320979() {
+fn test_fuzz_string_coercion_expected_number_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -14717,7 +14363,6 @@ fn test_fuzz_reproducer_seed_320979() {
     );
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 3));
-    println!("test_fuzz_reproducer_seed_320979 evaluated: {:?}", target);
     assert!(
         matches!(target, ResultData::Error(_)),
         "Expected Error for D10, got {:?}",
@@ -14726,7 +14371,7 @@ fn test_fuzz_reproducer_seed_320979() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_834997() {
+fn test_fuzz_power_cell_references() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -14782,14 +14427,12 @@ fn test_fuzz_reproducer_seed_834997() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=B5");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=MAX(C6:D9)");
     sheet.commit(None).unwrap();
-    println!("Running seed 834997 repro...");
     let target = sheet.get_result_data(&CellRef::new(8, 1));
-    println!("Seed 834997 evaluated target CellRef(8, 1): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_469392() {
+fn test_fuzz_roundup_power_expression() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -14846,14 +14489,12 @@ fn test_fuzz_reproducer_seed_469392() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=16");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=ROUNDUP(D8, 1)");
     sheet.commit(None).unwrap();
-    println!("Running seed 469392 repro...");
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 469392 evaluated target CellRef(9, 1): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_101881() {
+fn test_fuzz_roundup_sum_expression() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -14907,14 +14548,12 @@ fn test_fuzz_reproducer_seed_101881() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=(INT(-21) ^ (C8 - D8))");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=AVERAGE(MIN(-47, B4), E2)");
     sheet.commit(None).unwrap();
-    println!("Running seed 101881 repro...");
     let target = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("Seed 101881 evaluated target CellRef(6, 2): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_833777() {
+fn test_fuzz_and_if_comparison_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -14968,14 +14607,12 @@ fn test_fuzz_reproducer_seed_833777() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "TRUE");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=((C6 / B3) + IF((C1 > E8), D6, C9))");
     sheet.commit(None).unwrap();
-    println!("Running seed 833777 repro...");
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 833777 evaluated target CellRef(9, 1): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_473592() {
+fn test_fuzz_max_int_multiplication() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15032,14 +14669,12 @@ fn test_fuzz_reproducer_seed_473592() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=ABS(D8)");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=AND(ABS(33) > 0, IF((D5 > 43), A1, -44) < 100)");
     sheet.commit(None).unwrap();
-    println!("Running seed 473592 repro...");
     let target = sheet.get_result_data(&CellRef::new(8, 2));
-    println!("Seed 473592 evaluated target CellRef(8, 2): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_717209() {
+fn test_fuzz_average_right_string_argument() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15093,14 +14728,12 @@ fn test_fuzz_reproducer_seed_717209() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=B6");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=C1");
     sheet.commit(None).unwrap();
-    println!("Running seed 717209 repro...");
     let target = sheet.get_result_data(&CellRef::new(6, 4));
-    println!("Seed 717209 evaluated target CellRef(6, 4): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_194393() {
+fn test_fuzz_if_multiplication_comparison() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15151,14 +14784,12 @@ fn test_fuzz_reproducer_seed_194393() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=INT(E6)");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "-287.722");
     sheet.commit(None).unwrap();
-    println!("Running seed 194393 repro...");
     let target = sheet.get_result_data(&CellRef::new(8, 3));
-    println!("Seed 194393 evaluated target CellRef(8, 3): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_249481() {
+fn test_fuzz_addition_cell_references() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15215,14 +14846,12 @@ fn test_fuzz_reproducer_seed_249481() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=UPPER(\"IF((B2 > C3), C1, -20)\")");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=-29");
     sheet.commit(None).unwrap();
-    println!("Running seed 249481 repro...");
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("Seed 249481 evaluated target CellRef(8, 0): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_651135() {
+fn test_fuzz_power_min_expression() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15275,14 +14904,12 @@ fn test_fuzz_reproducer_seed_651135() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=INT((A9 * -46))");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "\"NcJ\"");
     sheet.commit(None).unwrap();
-    println!("Running seed 651135 repro...");
     let target = sheet.get_result_data(&CellRef::new(7, 0));
-    println!("Seed 651135 evaluated target CellRef(7, 0): {:?}", target);
 
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_26662() {
+fn test_fuzz_addition_min_negative() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15338,13 +14965,12 @@ fn test_fuzz_reproducer_seed_26662() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=UPPER(\"E5\")");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=ROUND(B6, 0)");
     sheet.commit(None).unwrap();
-    println!("Running seed 26662 repro...");
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 26662 evaluated target CellRef(9, 1): {:?}", target);
 
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_938517() {
+fn test_fuzz_multiplication_cell_references() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15399,9 +15025,7 @@ fn test_fuzz_reproducer_seed_938517() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=-7");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=E1");
     sheet.commit(None).unwrap();
-    println!("Running seed 938517 repro...");
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("Seed 938517 evaluated target CellRef(9, 0): {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 3738.0),
         other => panic!("Expected Float(3738.0) for A10, got {:?}", other),
@@ -15410,7 +15034,7 @@ fn test_fuzz_reproducer_seed_938517() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_673397() {
+fn test_fuzz_roundup_sum_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15468,9 +15092,7 @@ fn test_fuzz_reproducer_seed_673397() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=INT(A4)");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "5");
     sheet.commit(None).unwrap();
-    println!("Running seed 673397 repro...");
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("Seed 673397 evaluated target CellRef(9, 0): {:?}", target);
     match target {
         ResultData::Float(f) => assert!((f - 318.6).abs() < 1e-3, "Expected ~318.6 for A10, got {}", f),
         other => panic!("Expected Float(~318.6) for A10, got {:?}", other),
@@ -15479,7 +15101,7 @@ fn test_fuzz_reproducer_seed_673397() {
 }
 
 #[test]
-fn test_fuzz_reproducer_seed_41112() {
+fn test_fuzz_average_if_branch_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15535,17 +15157,16 @@ fn test_fuzz_reproducer_seed_41112() {
     sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=A8");
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=(ROUNDUP(21, 1) - SQRT(42))");
     sheet.commit(None).unwrap();
-    println!("Running seed 41112 repro...");
     let target = sheet.get_result_data(&CellRef::new(8, 3));
-    println!("Seed 41112 evaluated target CellRef(8, 3): {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, -30000000.0),
         other => panic!("Expected Float(-30000000.0) for D9, got {:?}", other),
     }
 
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_618606() {
+fn test_fuzz_abs_cell_reference() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15601,19 +15222,18 @@ fn test_fuzz_reproducer_seed_618606() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=SUM(B2:E3)");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 1));
-    println!("Seed 618606 evaluated target CellRef(6, 1) B7: {:?}", target);
     for r in 0..10 {
         for c in 0..5 {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                println!("  Error cell {}{}: {:?}", col_let, r + 1, res);
             }
         }
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_935638() {
+fn test_fuzz_sqrt_or_evaluation() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15671,21 +15291,19 @@ fn test_fuzz_reproducer_seed_935638() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=A5");
     sheet.commit(None).unwrap();
     let target1 = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("Seed 935638 target1 CellRef(8, 0) A9: {:?}", target1);
     let target2 = sheet.get_result_data(&CellRef::new(8, 3));
-    println!("Seed 935638 target2 CellRef(8, 3) D9: {:?}", target2);
     for r in 0..10 {
         for c in 0..5 {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                println!("  Error cell {}{}: {:?}", col_let, r + 1, res);
             }
         }
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_91404() {
+fn test_fuzz_if_max_right_string_branch() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15742,9 +15360,7 @@ fn test_fuzz_reproducer_seed_91404() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=IF((MAX(A2:D9) > B9), ROUNDUP(D5, 2), E4)");
     sheet.commit(None).unwrap();
     let target1 = sheet.get_result_data(&CellRef::new(7, 1));
-    println!("Seed 91404 target1 CellRef(7, 1) B8: {:?}", target1);
     let target2 = sheet.get_result_data(&CellRef::new(6, 2));
-    println!("Seed 91404 target2 CellRef(6, 2) C7: {:?}", target2);
     match target1 {
         ResultData::String(s) => assert_eq!(s, "C1"),
         other => panic!("Expected String(\"C1\"), got {:?}", other),
@@ -15754,8 +15370,9 @@ fn test_fuzz_reproducer_seed_91404() {
         other => panic!("Expected Float(~9.6341), got {:?}", other),
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_770254() {
+fn test_fuzz_power_product_addition() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15817,8 +15434,9 @@ fn test_fuzz_reproducer_seed_770254() {
         other => panic!("Expected Float(~-1.1648e110), got {:?}", other),
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_542519() {
+fn test_fuzz_sum_or_addition_coercion() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15875,14 +15493,14 @@ fn test_fuzz_reproducer_seed_542519() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "51.9");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 2));
-    println!("Seed 542519 evaluated target CellRef(8, 2): {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 51.0),
         other => panic!("Expected Float(51.0), got {:?}", other),
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_581646() {
+fn test_fuzz_abs_multiplication_precision() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -15938,14 +15556,14 @@ fn test_fuzz_reproducer_seed_581646() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=D1");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("Seed 581646 evaluated target CellRef(8, 0): {:?}", target);
     match target {
         ResultData::Float(f) => assert!((f - 1670.85).abs() < 1e-3),
         other => panic!("Expected Float(~1670.85), got {:?}", other),
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_607909() {
+fn test_fuzz_multiplication_division_expression() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16001,19 +15619,18 @@ fn test_fuzz_reproducer_seed_607909() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=A3");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 0));
-    println!("Seed 607909 evaluated target CellRef(6, 0) A7: {:?}", target);
     for r in 0..10 {
         for c in 0..5 {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                println!("  Error cell {}{}: {:?}", col_let, r + 1, res);
             }
         }
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_761871() {
+fn test_fuzz_roundup_subtraction_boolean_addition() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16069,11 +15686,11 @@ fn test_fuzz_reproducer_seed_761871() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=MIN(D5:D9)");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 2));
-    println!("Seed 761871 evaluated target CellRef(9, 2): {:?}", target);
     match target { ResultData::Float(f) => assert_eq!(f, 66.0), other => panic!("Expected Float(66.0), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_119147() {
+fn test_fuzz_and_upper_power_comparison() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16129,11 +15746,11 @@ fn test_fuzz_reproducer_seed_119147() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=E9");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 3));
-    println!("Seed 119147 evaluated target CellRef(9, 3): {:?}", target);
     match target { ResultData::Boolean(b) => assert_eq!(b, true), other => panic!("Expected Boolean(true), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_549258() {
+fn test_fuzz_division_by_sum() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16190,10 +15807,10 @@ fn test_fuzz_reproducer_seed_549258() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=IF((IF((E7 > 8), E9, -33) > SQRT(D5)), 20, (A5 * 27))");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 1));
-    println!("Seed 549258 evaluated target CellRef(7, 1): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_584686() {
+fn test_fuzz_subtraction_string_formula_cell() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16247,19 +15864,18 @@ fn test_fuzz_reproducer_seed_584686() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=RIGHT(\"C8\", 2)");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("Seed 584686 evaluated target CellRef(9, 0) A10: {:?}", target);
     for r in 0..10 {
         for c in 0..5 {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                println!("  Error cell {}{}: {:?}", col_let, r + 1, res);
             }
         }
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_140361() {
+fn test_fuzz_addition_formula_constant() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16312,11 +15928,11 @@ fn test_fuzz_reproducer_seed_140361() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=(-13 * (C5 / B6))");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 140361 evaluated target CellRef(9, 1): {:?}", target);
     match target { ResultData::Float(f) => assert!((f - 30.2).abs() < 1e-3), other => panic!("Expected Float(~30.2), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_957558() {
+fn test_fuzz_subtraction_cell_references() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16373,10 +15989,10 @@ fn test_fuzz_reproducer_seed_957558() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=E2");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 0));
-    println!("Seed 957558 evaluated target CellRef(6, 0): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_814112() {
+fn test_fuzz_multiplication_upper_string_number() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16430,14 +16046,14 @@ fn test_fuzz_reproducer_seed_814112() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=D9");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 814112 evaluated target CellRef(9, 1): {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 48.0),
         other => panic!("Expected Float(48.0), got {:?}", other),
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_377746() {
+fn test_fuzz_abs_subtraction_expression() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16495,19 +16111,18 @@ fn test_fuzz_reproducer_seed_377746() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=IF((ROUNDUP(D6, 2) > D4), PRODUCT(A9:D9), AND(A4 > 0, -10 < 100))");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 2));
-    println!("Seed 377746 evaluated target CellRef(7, 2): {:?}", target);
     for r in 0..10 {
         for c in 0..5 {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b"A"[0] + c as u8) as char;
-                println!("  Error cell {}{}: {:?}", col_let, r + 1, res);
             }
         }
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_691297() {
+fn test_fuzz_roundup_division_negative_zero() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16563,11 +16178,11 @@ fn test_fuzz_reproducer_seed_691297() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=C3");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 1));
-    println!("Seed 691297 evaluated target CellRef(8, 1): {:?}", target);
     match target { ResultData::Float(f) => assert_eq!(f.abs(), 0.0), other => panic!("Expected Float(~0.0), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_266270() {
+fn test_fuzz_round_cell_reference() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16623,11 +16238,11 @@ fn test_fuzz_reproducer_seed_266270() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=((C7 + B3) / E6)");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 266270 evaluated target CellRef(9, 1): {:?}", target);
     match target { ResultData::Float(f) => assert_eq!(f, 7.0), other => panic!("Expected Float(7.0), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_795051() {
+fn test_fuzz_product_abs_if_branch() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16683,10 +16298,10 @@ fn test_fuzz_reproducer_seed_795051() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=(E7 ^ LOWER(\"E4\"))");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 1));
-    println!("Seed 795051 evaluated target CellRef(9, 1): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_515564() {
+fn test_fuzz_abs_power_negative_base_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16743,10 +16358,10 @@ fn test_fuzz_reproducer_seed_515564() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "-55");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(6, 1));
-    println!("Seed 515564 evaluated target CellRef(6, 1): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_107138() {
+fn test_fuzz_rounddown_cell_reference() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16803,10 +16418,10 @@ fn test_fuzz_reproducer_seed_107138() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "39");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("Seed 107138 evaluated target CellRef(8, 0): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_160523() {
+fn test_fuzz_if_power_comparison_branches() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16861,10 +16476,10 @@ fn test_fuzz_reproducer_seed_160523() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=B8");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("Seed 160523 evaluated target CellRef(8, 0): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_746635() {
+fn test_fuzz_subtraction_and_comparison_division() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16923,10 +16538,10 @@ fn test_fuzz_reproducer_seed_746635() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=43");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("Seed 746635 evaluated target CellRef(9, 0): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_448316() {
+fn test_fuzz_division_by_right_string() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -16985,10 +16600,10 @@ fn test_fuzz_reproducer_seed_448316() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=OR(B8 > 0, MAX(A2:B8) < 100)");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(7, 1));
-    println!("Seed 448316 evaluated target CellRef(7, 1): {:?}", target);
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_181553() {
+fn test_fuzz_round_int_cell_reference() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -17043,14 +16658,14 @@ fn test_fuzz_reproducer_seed_181553() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "12.395");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("Seed 181553 evaluated target CellRef(9, 0) A10: {:?}", target);
     match target {
         ResultData::Float(f) => assert_eq!(f, 64.0),
         other => panic!("Expected Float(64.0), got {:?}", other),
     }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_569910() {
+fn test_fuzz_or_zero_power_zero_num_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -17105,11 +16720,11 @@ fn test_fuzz_reproducer_seed_569910() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=INT(INT(B3))");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(5, 2));
-    println!("Seed 569910 evaluated target CellRef(5, 2) C6: {:?}", target);
     match target { ResultData::Error(ref e) => assert!(e.contains("#NUM!")), other => panic!("Expected Error(#NUM!), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_563625() {
+fn test_fuzz_if_max_int_num_error() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -17166,11 +16781,11 @@ fn test_fuzz_reproducer_seed_563625() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=IF((D3 > 4), A3, E4)");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(8, 0));
-    println!("Seed 563625 evaluated target CellRef(8, 0): {:?}", target);
     match target { ResultData::Error(ref e) => assert!(e.contains("#NUM!")), other => panic!("Expected Error(#NUM!), got {:?}", other) }
 }
+
 #[test]
-fn test_fuzz_reproducer_seed_913608() {
+fn test_fuzz_round_single_digit_cell() {
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 10,
@@ -17227,65 +16842,4 @@ fn test_fuzz_reproducer_seed_913608() {
     sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "64");
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 0));
-    println!("Seed 913608 evaluated target CellRef(9, 0): {:?}", target);
-}
-#[test]
-fn test_fuzz_reproducer_seed_207625() {
-    let mut sheet = Sheet::new(SheetInit {
-        name: Some("Sheet1".to_string()),
-        rows: 10,
-        cols: 5,
-        ..Default::default()
-    });
-    sheet.insert(TextCellRef { row: 0, col: 0, char_offset: 0 }, "FALSE");
-    sheet.insert(TextCellRef { row: 0, col: 1, char_offset: 0 }, "9");
-    sheet.insert(TextCellRef { row: 0, col: 2, char_offset: 0 }, "-267.5");
-    sheet.insert(TextCellRef { row: 0, col: 3, char_offset: 0 }, "-43");
-    sheet.insert(TextCellRef { row: 0, col: 4, char_offset: 0 }, "0");
-    sheet.insert(TextCellRef { row: 1, col: 1, char_offset: 0 }, "0");
-    sheet.insert(TextCellRef { row: 1, col: 3, char_offset: 0 }, "69");
-    sheet.insert(TextCellRef { row: 1, col: 4, char_offset: 0 }, "-28");
-    sheet.insert(TextCellRef { row: 2, col: 0, char_offset: 0 }, "TRUE");
-    sheet.insert(TextCellRef { row: 2, col: 1, char_offset: 0 }, "242.743");
-    sheet.insert(TextCellRef { row: 2, col: 2, char_offset: 0 }, "\"yjcSP\"");
-    sheet.insert(TextCellRef { row: 2, col: 3, char_offset: 0 }, "\"at\"");
-    sheet.insert(TextCellRef { row: 2, col: 4, char_offset: 0 }, "-84");
-    sheet.insert(TextCellRef { row: 3, col: 0, char_offset: 0 }, "35");
-    sheet.insert(TextCellRef { row: 3, col: 1, char_offset: 0 }, "128.8");
-    sheet.insert(TextCellRef { row: 3, col: 2, char_offset: 0 }, "-334.289");
-    sheet.insert(TextCellRef { row: 3, col: 3, char_offset: 0 }, "\"HuyJJ\"");
-    sheet.insert(TextCellRef { row: 3, col: 4, char_offset: 0 }, "-230.3371");
-    sheet.insert(TextCellRef { row: 4, col: 0, char_offset: 0 }, "-345");
-    sheet.insert(TextCellRef { row: 4, col: 1, char_offset: 0 }, "FALSE");
-    sheet.insert(TextCellRef { row: 4, col: 2, char_offset: 0 }, "84");
-    sheet.insert(TextCellRef { row: 4, col: 3, char_offset: 0 }, "59");
-    sheet.insert(TextCellRef { row: 4, col: 4, char_offset: 0 }, "70");
-    sheet.insert(TextCellRef { row: 5, col: 0, char_offset: 0 }, "=B1");
-    sheet.insert(TextCellRef { row: 5, col: 1, char_offset: 0 }, "=AND(-10 > 0, D4 < 100)");
-    sheet.insert(TextCellRef { row: 5, col: 2, char_offset: 0 }, "=IF((C5 > A4), (6 ^ C5), LOWER(\"B5\"))");
-    sheet.insert(TextCellRef { row: 5, col: 3, char_offset: 0 }, "=SUM(C4:C4)");
-    sheet.insert(TextCellRef { row: 5, col: 4, char_offset: 0 }, "=E2");
-    sheet.insert(TextCellRef { row: 6, col: 0, char_offset: 0 }, "147.7");
-    sheet.insert(TextCellRef { row: 6, col: 1, char_offset: 0 }, "=(ROUNDDOWN(D6, 2) + SUM(D1:D2))");
-    sheet.insert(TextCellRef { row: 6, col: 2, char_offset: 0 }, "=B6");
-    sheet.insert(TextCellRef { row: 6, col: 3, char_offset: 0 }, "=MIN(C1, IF((14 > B4), A6, -16))");
-    sheet.insert(TextCellRef { row: 6, col: 4, char_offset: 0 }, "=INT(AVERAGE(D3, A5))");
-    sheet.insert(TextCellRef { row: 7, col: 0, char_offset: 0 }, "=D4");
-    sheet.insert(TextCellRef { row: 7, col: 1, char_offset: 0 }, "2");
-    sheet.insert(TextCellRef { row: 7, col: 2, char_offset: 0 }, "=PRODUCT(B6, C2)");
-    sheet.insert(TextCellRef { row: 7, col: 3, char_offset: 0 }, "=C6");
-    sheet.insert(TextCellRef { row: 7, col: 4, char_offset: 0 }, "-48");
-    sheet.insert(TextCellRef { row: 8, col: 0, char_offset: 0 }, "52");
-    sheet.insert(TextCellRef { row: 8, col: 1, char_offset: 0 }, "=LEFT(\"AVERAGE(A2:D8)\", 5)");
-    sheet.insert(TextCellRef { row: 8, col: 2, char_offset: 0 }, "=D4");
-    sheet.insert(TextCellRef { row: 8, col: 3, char_offset: 0 }, "=PRODUCT(E1:E1)");
-    sheet.insert(TextCellRef { row: 8, col: 4, char_offset: 0 }, "=MAX(C1, -11)");
-    sheet.insert(TextCellRef { row: 9, col: 0, char_offset: 0 }, "=B8");
-    sheet.insert(TextCellRef { row: 9, col: 1, char_offset: 0 }, "=A7");
-    sheet.insert(TextCellRef { row: 9, col: 2, char_offset: 0 }, "=B7");
-    sheet.insert(TextCellRef { row: 9, col: 3, char_offset: 0 }, "=OR((42 + D7) > 0, AND(E7 > 0, E5 < 100) < 100)");
-    sheet.insert(TextCellRef { row: 9, col: 4, char_offset: 0 }, "=IF((LEN(\"C3\") > (18 + D1)), 29, 40)");
-    sheet.commit(None).unwrap();
-    let target = sheet.get_result_data(&CellRef::new(6, 1));
-    println!("Seed 207625 evaluated target CellRef(6, 1) B7: {:?}", target);
 }
