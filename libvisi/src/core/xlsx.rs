@@ -90,6 +90,17 @@ pub fn import_xlsx_data(
                     let f_cells = formula_rows.as_mut().map(|fr| fr.next().unwrap());
 
                     for col_idx in 0..cols {
+                        let cell_value = &r_cells[col_idx];
+                        let init_res = match cell_value {
+                            calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
+                            calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
+                            calamine::Data::String(s) => crate::core::engine::ResultData::String(s.clone()),
+                            calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
+                            calamine::Data::Error(e) => crate::core::engine::ResultData::Error(format!("{:?}", e)),
+                            _ => crate::core::engine::ResultData::None,
+                        };
+                        columns[col_idx].data.set(row_idx, init_res);
+
                         if let Some(f_cells_slice) = f_cells {
                             let formula = &f_cells_slice[col_idx];
                             if !formula.is_empty() {
@@ -100,7 +111,6 @@ pub fn import_xlsx_data(
                             }
                         }
 
-                        let cell_value = &r_cells[col_idx];
                         let cell_src = match cell_value {
                             calamine::Data::Empty => String::new(),
                             calamine::Data::String(s) => s.clone(),
@@ -121,6 +131,19 @@ pub fn import_xlsx_data(
                     for col_idx in 0..cols {
                         let col_u32 = col_idx as u32;
 
+                        let cell_value = range
+                            .get_value((row_u32, col_u32))
+                            .unwrap_or(&calamine::Data::Empty);
+                        let init_res = match cell_value {
+                            calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
+                            calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
+                            calamine::Data::String(s) => crate::core::engine::ResultData::String(s.clone()),
+                            calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
+                            calamine::Data::Error(e) => crate::core::engine::ResultData::Error(format!("{:?}", e)),
+                            _ => crate::core::engine::ResultData::None,
+                        };
+                        columns[col_idx].data.set(row_idx, init_res);
+
                         if let Some(ref f_range) = formula_range {
                             if let Some(formula) = f_range.get_value((row_u32, col_u32)) {
                                 if !formula.is_empty() {
@@ -133,9 +156,6 @@ pub fn import_xlsx_data(
                             }
                         }
 
-                        let cell_value = range
-                            .get_value((row_u32, col_u32))
-                            .unwrap_or(&calamine::Data::Empty);
                         let cell_src = match cell_value {
                             calamine::Data::Empty => String::new(),
                             calamine::Data::String(s) => s.clone(),
@@ -218,6 +238,60 @@ pub fn import_xlsx_data(
     Ok((imported_tables, imported_charts))
 }
 
+fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String {
+    match res_data {
+        crate::core::engine::ResultData::Integer(i) => i.to_string(),
+        crate::core::engine::ResultData::Float(f) => {
+            if f.is_nan() || f.is_infinite() {
+                "#NUM!".to_string()
+            } else {
+                f.to_string()
+            }
+        }
+        crate::core::engine::ResultData::Boolean(b) => {
+            if *b {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
+        crate::core::engine::ResultData::String(s) => s.clone(),
+        crate::core::engine::ResultData::Error(e) => {
+            let upper = e.to_uppercase();
+            if upper.contains("#DIV/0!") {
+                "#DIV/0!".to_string()
+            } else if upper.contains("#N/A") {
+                "#N/A".to_string()
+            } else if upper.contains("#REF!") {
+                "#REF!".to_string()
+            } else if upper.contains("#NUM!") {
+                "#NUM!".to_string()
+            } else if upper.contains("#NAME?") {
+                "#NAME?".to_string()
+            } else if upper.contains("#NULL!") {
+                "#NULL!".to_string()
+            } else if upper.contains("#CALC!") {
+                "#CALC!".to_string()
+            } else if upper.contains("#SPILL!") {
+                "#SPILL!".to_string()
+            } else if upper.starts_with('#') {
+                e.clone()
+            } else {
+                "#VALUE!".to_string()
+            }
+        }
+        crate::core::engine::ResultData::None => "".to_string(),
+        crate::core::engine::ResultData::List(l) => {
+            if let Some(first) = l.first() {
+                format_result_for_xlsx(first)
+            } else {
+                "".to_string()
+            }
+        }
+        _ => res_data.to_string(),
+    }
+}
+
 pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
@@ -266,8 +340,15 @@ pub fn export_xlsx_data(
                 for row_idx in 0..sheet.row_count() {
                     let cell_src = col.src.get(row_idx).cloned().unwrap_or_default();
                     if cell_src.starts_with('=') {
+                        let mut formula = rust_xlsxwriter::Formula::new(&cell_src[1..]);
+                        if let Some(res_data) = col.data.get(row_idx) {
+                            let res_str = format_result_for_xlsx(&res_data);
+                            if !res_str.is_empty() {
+                                formula = formula.set_result(res_str);
+                            }
+                        }
                         worksheet
-                            .write_formula(row_idx as u32, col_idx as u16, &cell_src[1..])
+                            .write_formula(row_idx as u32, col_idx as u16, formula)
                             .map_err(|e| format!("Failed to write Excel formula: {}", e))?;
                     } else if let Ok(val_f64) = cell_src.parse::<f64>() {
                         worksheet
@@ -1104,5 +1185,36 @@ mod tests {
             imported_chart.chart_type,
             crate::core::chart::ChartType::Line
         );
+    }
+
+    #[test]
+    fn test_xlsx_formula_v_caching() {
+        let mut columns = Vec::new();
+        let mut col1 = DataColumn::new(3);
+        col1.name = "A".to_string();
+        col1.src = vec!["10".to_string(), "20".to_string(), "=A1 + A2".to_string()].into();
+        col1.data.set(0, crate::core::engine::ResultData::Integer(10));
+        col1.data.set(1, crate::core::engine::ResultData::Integer(20));
+        col1.data.set(2, crate::core::engine::ResultData::Integer(30));
+        columns.push(col1);
+
+        let sheet = Sheet {
+            id: 1,
+            name: "Sheet1".to_string(),
+            columns,
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+
+        let cursor = std::io::Cursor::new(xlsx_data);
+        let mut zip = zip::ZipArchive::new(cursor).unwrap();
+        let mut sheet_file = zip.by_name("xl/worksheets/sheet1.xml").unwrap();
+        let mut xml_content = String::new();
+        std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
+
+        assert!(xml_content.contains("<v>30</v>"));
     }
 }
