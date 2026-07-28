@@ -669,6 +669,9 @@ impl Sheet {
                                 Ok(ResultData::Float(lf / rf))
                             }
                             Op::Exp => {
+                                if lf == 0.0 && rf == 0.0 {
+                                    return Ok(ResultData::Error("#NUM!".to_string()));
+                                }
                                 if lf == 0.0 && rf < 0.0 {
                                     return Ok(ResultData::Error("#DIV/0!".to_string()));
                                 }
