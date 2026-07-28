@@ -1646,27 +1646,31 @@ impl Sheet {
                 }
                 "ROUND" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "ROUND")?;
-                    let val_clean = (val * 1e10).round() / 1e10;
                     let digits = if evaluated_args.len() >= 2 {
                         self.to_f64_arg(evaluated_args.get(1), "ROUND")? as i32
                     } else {
                         0
                     };
                     let factor = 10.0f64.powi(digits);
-                    let scaled = (val_clean * factor * 1e10).round() / 1e10;
+                    let mut scaled = val * factor;
+                    if scaled.abs() >= 1e-12 {
+                        scaled = (scaled * 1e12).round() / 1e12;
+                    }
                     Ok(ResultData::Float(scaled.round() / factor))
                 }
                 "ROUNDUP" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "ROUNDUP")?;
-                    let val_clean = (val * 1e10).round() / 1e10;
                     let digits = if evaluated_args.len() >= 2 {
                         self.to_f64_arg(evaluated_args.get(1), "ROUNDUP")? as i32
                     } else {
                         0
                     };
                     let factor = 10.0f64.powi(digits);
-                    let scaled = (val_clean * factor * 1e10).round() / 1e10;
-                    let rounded = if val_clean >= 0.0 {
+                    let mut scaled = val * factor;
+                    if scaled.abs() >= 1e-12 {
+                        scaled = (scaled * 1e12).round() / 1e12;
+                    }
+                    let rounded = if val >= 0.0 {
                         scaled.ceil() / factor
                     } else {
                         scaled.floor() / factor
@@ -1675,15 +1679,17 @@ impl Sheet {
                 }
                 "ROUNDDOWN" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "ROUNDDOWN")?;
-                    let val_clean = (val * 1e10).round() / 1e10;
                     let digits = if evaluated_args.len() >= 2 {
                         self.to_f64_arg(evaluated_args.get(1), "ROUNDDOWN")? as i32
                     } else {
                         0
                     };
                     let factor = 10.0f64.powi(digits);
-                    let scaled = (val_clean * factor * 1e10).round() / 1e10;
-                    let rounded = if val_clean >= 0.0 {
+                    let mut scaled = val * factor;
+                    if scaled.abs() >= 1e-12 {
+                        scaled = (scaled * 1e12).round() / 1e12;
+                    }
+                    let rounded = if val >= 0.0 {
                         scaled.floor() / factor
                     } else {
                         scaled.ceil() / factor
