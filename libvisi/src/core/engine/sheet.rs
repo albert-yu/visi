@@ -881,18 +881,27 @@ impl Sheet {
         None
     }
 
-    fn check_direct_string_error(
+    fn check_arg_errors(
         &self,
         args: &[ResultData],
         is_direct: &[bool],
     ) -> Option<ResultData> {
         for (i, arg) in args.iter().enumerate() {
-            if is_direct.get(i).copied().unwrap_or(false) {
-                if let ResultData::String(_) = arg {
-                    if self.to_f64(arg).is_none() {
-                        return Some(ResultData::Error("#VALUE!".to_string()));
+            match arg {
+                ResultData::Error(_) => return Some(arg.clone()),
+                ResultData::List(list) => {
+                    if let Some(err) = self.check_arg_errors(list, &[]) {
+                        return Some(err);
                     }
                 }
+                ResultData::String(_) => {
+                    if is_direct.get(i).copied().unwrap_or(false) {
+                        if self.to_f64(arg).is_none() {
+                            return Some(ResultData::Error("#VALUE!".to_string()));
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         None
@@ -1428,11 +1437,8 @@ impl Sheet {
             match upper_name.as_str() {
                 "SUM" => {
                     if let Some(err) =
-                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
                     {
-                        return Ok(err);
-                    }
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1443,11 +1449,8 @@ impl Sheet {
                 }
                 "AVERAGE" => {
                     if let Some(err) =
-                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
                     {
-                        return Ok(err);
-                    }
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1464,9 +1467,6 @@ impl Sheet {
                     }
                 }
                 "COUNT" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     let mut count = 0;
                     for arg in evaluated_args {
                         count += self.count_helper(&arg);
@@ -1475,11 +1475,8 @@ impl Sheet {
                 }
                 "MIN" => {
                     if let Some(err) =
-                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
                     {
-                        return Ok(err);
-                    }
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut min_val = f64::INFINITY;
@@ -1494,11 +1491,8 @@ impl Sheet {
                 }
                 "MAX" => {
                     if let Some(err) =
-                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
                     {
-                        return Ok(err);
-                    }
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut max_val = f64::NEG_INFINITY;
@@ -2145,11 +2139,8 @@ impl Sheet {
                 }
                 "PRODUCT" => {
                     if let Some(err) =
-                        self.check_direct_string_error(&evaluated_args, &arg_is_direct)
+                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
                     {
-                        return Ok(err);
-                    }
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
                     }
                     let mut prod = 1.0;
