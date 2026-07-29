@@ -7,7 +7,7 @@ pub mod sheet;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_errors;
+mod tests_fuzz;
 
 pub use cell::{CellRef, Dependency, EngineError, RefType, TextCellRef, generate_unique_id};
 pub use column::{ColumnData, DataColumn};
