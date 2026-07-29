@@ -219,11 +219,7 @@ impl Sheet {
                             Ok(r) => r,
                             Err(e) => (ResultData::Error(e.to_string()), vec![]),
                         };
-                    let final_res = if let ResultData::None = res {
-                        ResultData::Float(0.0)
-                    } else {
-                        res
-                    };
+                    let final_res = res;
                     (final_res, deps, Some(compiled))
                 }
             };
