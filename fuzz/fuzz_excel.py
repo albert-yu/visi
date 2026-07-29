@@ -247,8 +247,8 @@ class ExcelDriver:
                     close workbooks saving no
                 end try
                 try
-                    set filePath to (POSIX file "{abs_output}") as string
-                    open file filePath
+                    set targetFile to POSIX file "{abs_output}"
+                    open targetFile
                     calculate
                     save active workbook
                     close active workbook saving no
