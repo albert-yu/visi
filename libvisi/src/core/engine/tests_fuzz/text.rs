@@ -2020,3 +2020,19 @@ fn test_fuzz_if_concatenate_scientific_string() {
         other => panic!("Expected String -44E6, got {:?}", other),
     }
 }
+
+#[test]
+fn test_fuzz_lower_empty_cell_addition_value_error() {
+    let sheet_src = [
+        ["", "", "", "", ""],
+        ["", "=LOWER(E1) + 42", "", "", ""],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(1, 1));
+    match target {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("Expected #VALUE!, got {:?}", other),
+    }
+}
+

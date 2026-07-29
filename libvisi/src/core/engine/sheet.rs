@@ -2091,7 +2091,7 @@ impl Sheet {
                         return Ok(ResultData::None);
                     }
                     match &evaluated_args[0] {
-                        ResultData::None => Ok(ResultData::None),
+                        ResultData::None => Ok(ResultData::String(String::new())),
                         ResultData::Error(e) => Ok(ResultData::Error(e.clone())),
                         v => Ok(ResultData::String(v.to_string().to_uppercase())),
                     }
@@ -2101,7 +2101,7 @@ impl Sheet {
                         return Ok(ResultData::None);
                     }
                     match &evaluated_args[0] {
-                        ResultData::None => Ok(ResultData::None),
+                        ResultData::None => Ok(ResultData::String(String::new())),
                         ResultData::Error(e) => Ok(ResultData::Error(e.clone())),
                         v => Ok(ResultData::String(v.to_string().to_lowercase())),
                     }
@@ -2111,7 +2111,7 @@ impl Sheet {
                         return Ok(ResultData::None);
                     }
                     match &evaluated_args[0] {
-                        ResultData::None => Ok(ResultData::None),
+                        ResultData::None => Ok(ResultData::String(String::new())),
                         ResultData::Error(e) => Ok(ResultData::Error(e.clone())),
                         v => Ok(ResultData::String(self.proper(&v.to_string()))),
                     }
