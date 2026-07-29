@@ -348,6 +348,7 @@ pub fn export_xlsx_data(
             worksheet
                 .set_name(&worksheet_name)
                 .map_err(|e| format!("Failed to set worksheet name: {}", e))?;
+            worksheet.set_formula_result_default("");
 
             for col_idx in 0..sheet.columns.len() {
                 let col = &sheet.columns[col_idx];

@@ -263,9 +263,13 @@ class ExcelDriver:
             res = None
             for attempt in range(5):
                 time.sleep(0.5)
-                res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if res.returncode == 0:
-                    break
+                try:
+                    res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+                    if res.returncode == 0:
+                        break
+                except subprocess.TimeoutExpired:
+                    subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(1.0)
             if res is not None and res.returncode != 0:
                 raise RuntimeError(f"Excel AppleScript failed:\nSTDERR: {res.stderr}")
 

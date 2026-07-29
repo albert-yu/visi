@@ -2051,4 +2051,20 @@ fn test_fuzz_round_non_numeric_string_value_error() {
     }
 }
 
+#[test]
+fn test_fuzz_left_empty_cell_result() {
+    let sheet_src = [
+        ["", "", "", "", ""],
+        ["", "=LEFT(A1, 3)", "", "", ""],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(1, 1));
+    match target {
+        ResultData::String(s) => assert_eq!(s, ""),
+        other => panic!("Expected String empty, got {:?}", other),
+    }
+}
+
+
 
