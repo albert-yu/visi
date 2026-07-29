@@ -15,6 +15,6 @@ Thumbs.db
 *.swo
 
 # Fuzzing test harness artifacts
-fuzz/venv/
+venv
 fuzz_results/
-
+__pycache__
