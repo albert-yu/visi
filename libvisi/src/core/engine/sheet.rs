@@ -717,13 +717,17 @@ impl Sheet {
         match (l, r) {
             (ResultData::None, ResultData::None) => return std::cmp::Ordering::Equal,
             (ResultData::None, ResultData::Integer(b)) => {
-                return 0.0.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal);
+                return 0.0
+                    .partial_cmp(&(*b as f64))
+                    .unwrap_or(std::cmp::Ordering::Equal);
             }
             (ResultData::None, ResultData::Float(b)) => {
                 return 0.0.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
             }
             (ResultData::Integer(a), ResultData::None) => {
-                return (*a as f64).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal);
+                return (*a as f64)
+                    .partial_cmp(&0.0)
+                    .unwrap_or(std::cmp::Ordering::Equal);
             }
             (ResultData::Float(a), ResultData::None) => {
                 return a.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal);
@@ -760,9 +764,7 @@ impl Sheet {
                 .partial_cmp(&(*b as f64))
                 .unwrap_or(std::cmp::Ordering::Equal),
             (ResultData::Boolean(a), ResultData::Boolean(b)) => a.cmp(b),
-            (ResultData::String(a), ResultData::String(b)) => {
-                Self::compare_excel_strings(a, b)
-            }
+            (ResultData::String(a), ResultData::String(b)) => Self::compare_excel_strings(a, b),
             _ => std::cmp::Ordering::Equal,
         }
     }
@@ -853,21 +855,16 @@ impl Sheet {
         }
     }
 
-    fn to_f64_arg(&self, arg_opt: Option<&ResultData>, fn_name: &str) -> Result<f64, EngineError> {
-        let val = arg_opt.ok_or_else(|| {
-            EngineError::EvalError(EvalError::UnknownFunction(format!(
-                "{} requires argument",
-                fn_name
-            )))
-        })?;
+    fn get_f64_arg(&self, arg_opt: Option<&ResultData>) -> Result<f64, ResultData> {
+        let val = match arg_opt {
+            Some(v) => v,
+            None => return Err(ResultData::Error("#VALUE!".to_string())),
+        };
         if let ResultData::Error(e) = val {
-            return Err(EngineError::EvalError(EvalError::UnknownFunction(
-                e.clone(),
-            )));
+            return Err(ResultData::Error(e.clone()));
         }
-        self.to_f64(val).ok_or_else(|| {
-            EngineError::EvalError(EvalError::UnknownFunction("#VALUE!".to_string()))
-        })
+        self.to_f64(val)
+            .ok_or_else(|| ResultData::Error("#VALUE!".to_string()))
     }
 
     fn find_error_in_args(args: &[ResultData]) -> Option<ResultData> {
@@ -885,11 +882,7 @@ impl Sheet {
         None
     }
 
-    fn check_arg_errors(
-        &self,
-        args: &[ResultData],
-        is_direct: &[bool],
-    ) -> Option<ResultData> {
+    fn check_arg_errors(&self, args: &[ResultData], is_direct: &[bool]) -> Option<ResultData> {
         for (i, arg) in args.iter().enumerate() {
             match arg {
                 ResultData::Error(_) => return Some(arg.clone()),
@@ -1424,7 +1417,9 @@ impl Sheet {
                 arg_is_direct.push(is_direct_arg);
                 let eval_res = match self.evaluate_ast(arg, context, row, deps) {
                     Ok(r) => r,
-                    Err(EngineError::EvalError(EvalError::UnknownFunction(err_str))) if err_str.starts_with('#') => {
+                    Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
+                        if err_str.starts_with('#') =>
+                    {
                         ResultData::Error(err_str)
                     }
                     Err(e) => return Err(e),
@@ -1440,9 +1435,7 @@ impl Sheet {
 
             match upper_name.as_str() {
                 "SUM" => {
-                    if let Some(err) =
-                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
-                    {
+                    if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1452,9 +1445,7 @@ impl Sheet {
                     Ok(ResultData::Float(sum))
                 }
                 "AVERAGE" => {
-                    if let Some(err) =
-                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
-                    {
+                    if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);
                     }
                     let mut sum = 0.0;
@@ -1478,9 +1469,7 @@ impl Sheet {
                     Ok(ResultData::Float(count as f64))
                 }
                 "MIN" => {
-                    if let Some(err) =
-                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
-                    {
+                    if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);
                     }
                     let mut min_val = f64::INFINITY;
@@ -1494,9 +1483,7 @@ impl Sheet {
                     }
                 }
                 "MAX" => {
-                    if let Some(err) =
-                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
-                    {
+                    if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);
                     }
                     let mut max_val = f64::NEG_INFINITY;
@@ -2142,9 +2129,7 @@ impl Sheet {
                     }
                 }
                 "PRODUCT" => {
-                    if let Some(err) =
-                        self.check_arg_errors(&evaluated_args, &arg_is_direct)
-                    {
+                    if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);
                     }
                     let mut prod = 1.0;
