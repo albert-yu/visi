@@ -108,6 +108,13 @@ pub fn import_xlsx_data(
                         if let Some(f_cells_slice) = f_cells {
                             let formula = &f_cells_slice[col_idx];
                             if !formula.is_empty() {
+                                if matches!(cell_value, calamine::Data::Empty)
+                                    || matches!(cell_value, calamine::Data::String(s) if s.is_empty())
+                                {
+                                    columns[col_idx]
+                                        .data
+                                        .set(row_idx, crate::core::engine::ResultData::None);
+                                }
                                 let cell_src = format!("={}", formula);
                                 max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                                 columns[col_idx].src[row_idx] = cell_src;
@@ -155,6 +162,13 @@ pub fn import_xlsx_data(
                         if let Some(ref f_range) = formula_range {
                             if let Some(formula) = f_range.get_value((row_u32, col_u32)) {
                                 if !formula.is_empty() {
+                                    if matches!(cell_value, calamine::Data::Empty)
+                                        || matches!(cell_value, calamine::Data::String(s) if s.is_empty())
+                                    {
+                                        columns[col_idx]
+                                            .data
+                                            .set(row_idx, crate::core::engine::ResultData::None);
+                                    }
                                     let cell_src = if formula.starts_with('=') {
                                         formula.to_string()
                                     } else {

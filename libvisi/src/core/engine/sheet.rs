@@ -369,7 +369,15 @@ impl Sheet {
             .map_err(|e| EngineError::EvalError(EvalError::UnknownFunction(e)))?;
 
         let mut deps = Vec::new();
-        let result = self.evaluate_ast(&ast, context, row, &mut deps)?;
+        let result = match self.evaluate_ast(&ast, context, row, &mut deps) {
+            Ok(r) => r,
+            Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
+                if err_str.starts_with('#') =>
+            {
+                ResultData::Error(err_str)
+            }
+            Err(e) => return Err(e),
+        };
         Ok((result, deps))
     }
 

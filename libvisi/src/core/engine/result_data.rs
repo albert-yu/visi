@@ -33,7 +33,7 @@ impl ResultData {
                 }
             }
             ResultData::Integer(i) => format!("{}", i),
-            ResultData::Float(f) => format!("{}", f),
+            ResultData::Float(f) => format_excel_number(*f),
             ResultData::String(s) => s.clone(),
             ResultData::List(l) => {
                 let items: Vec<String> = l.iter().map(|i| i.to_string()).collect();
@@ -107,5 +107,49 @@ impl ResultData {
         } else {
             None
         }
+    }
+}
+
+pub fn format_excel_number(f: f64) -> String {
+    if f == 0.0 {
+        return "0".to_string();
+    }
+    if f.is_nan() || f.is_infinite() {
+        return "#NUM!".to_string();
+    }
+
+    let abs_f = f.abs();
+
+    if abs_f >= 1e11 || abs_f < 1e-5 {
+        let formatted = format!("{:.14E}", f);
+        let parts: Vec<&str> = formatted.split('E').collect();
+        if parts.len() == 2 {
+            let mut mantissa = parts[0].to_string();
+            if mantissa.contains('.') {
+                while mantissa.ends_with('0') {
+                    mantissa.pop();
+                }
+                if mantissa.ends_with('.') {
+                    mantissa.pop();
+                }
+            }
+            let exp: i32 = parts[1].parse().unwrap_or(0);
+            return format!("{}E{:+03}", mantissa, exp);
+        }
+        formatted
+    } else {
+        let log10 = abs_f.log10().floor();
+        let decimals = ((14.0 - log10) as i32).clamp(0, 19) as usize;
+        let formatted = format!("{:.1$}", f, decimals);
+        let mut trimmed = formatted;
+        if trimmed.contains('.') {
+            while trimmed.ends_with('0') {
+                trimmed.pop();
+            }
+            if trimmed.ends_with('.') {
+                trimmed.pop();
+            }
+        }
+        trimmed
     }
 }

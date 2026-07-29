@@ -2081,6 +2081,29 @@ fn test_fuzz_average_range_with_string_and_boolean_cells() {
     }
 }
 
+#[test]
+fn test_fuzz_upper_float_sigfig_precision() {
+    let sheet_src = [
+        ["1", "2", "3", "4", "5"],
+        ["6", "7", "8", "-271.62", "10"],
+        ["11", "12", "13", "14", "15"],
+        ["16", "17", "18", "19", "20"],
+        ["21", "22", "23", "24", "25"],
+        ["26", "27", "28", "29", "30"],
+        ["31", "32", "33", "34", "35"],
+        ["36", "37", "38", "39", "40"],
+        ["41", "42", "43", "44", "45"],
+        ["46", "=UPPER((-7 / D2))", "48", "49", "50"],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(9, 1));
+    match target {
+        ResultData::String(s) => assert_eq!(s, "0.0257712981371033"),
+        other => panic!("Expected String('0.0257712981371033'), got {:?}", other),
+    }
+}
+
 
 
 

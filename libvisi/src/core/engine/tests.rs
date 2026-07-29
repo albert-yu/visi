@@ -895,3 +895,4 @@ fn test_error_handling() {
         _ => panic!("Expected error to propagate, got {:?}", res2),
     }
 }
+

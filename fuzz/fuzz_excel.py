@@ -482,6 +482,18 @@ class DifferentialComparator:
         if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
             return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
 
+        # If one is a number and the other is a numeric string (e.g. 0.0394 vs ".0394", 8 vs "08")
+        if isinstance(v1, (int, float)) and isinstance(v2, str):
+            try:
+                return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
+            except ValueError:
+                pass
+        if isinstance(v2, (int, float)) and isinstance(v1, str):
+            try:
+                return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
+            except ValueError:
+                pass
+
         # If both are error strings or text strings
         if isinstance(v1, str) and isinstance(v2, str):
             if v1.upper() in self.EXCEL_ERRORS or v2.upper() in self.EXCEL_ERRORS:
