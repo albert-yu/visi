@@ -1419,7 +1419,7 @@ impl Sheet {
                 evaluated_args.push(eval_res);
             }
 
-            if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" && upper_name != "AND" && upper_name != "OR" {
+            if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" {
                 if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                     return Ok(err);
                 }
