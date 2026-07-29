@@ -679,11 +679,11 @@ impl Sheet {
                                     if rf.fract() != 0.0 || rf.abs() > 1e6 {
                                         return Ok(ResultData::Error("#NUM!".to_string()));
                                     }
-                                    let res = lf.powi(rf as i32);
-                                    if res == 0.0 || res.is_nan() || res.is_infinite() {
-                                        return Ok(ResultData::Error("#NUM!".to_string()));
-                                    }
-                                    return Ok(ResultData::Float(res));
+                                     let res = lf.powi(rf as i32);
+                                     if res.is_nan() || res.is_infinite() {
+                                         return Ok(ResultData::Error("#NUM!".to_string()));
+                                     }
+                                     return Ok(ResultData::Float(res));
                                 }
                                 let res = lf.powf(rf);
                                 if res.is_nan() || res.is_infinite() {

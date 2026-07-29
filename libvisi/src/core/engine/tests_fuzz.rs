@@ -8313,3 +8313,33 @@ fn test_fuzz_nested_logical_and_or_numeric_comparison() {
     }
 }
 
+#[test]
+fn test_fuzz_zero_base_positive_exponent_evaluation() {
+    let sheet_src = [
+        ["0", "5", "10", "15", "20"],
+        ["0", "1", "2", "3", "4"],
+        ["0", "0", "0", "0", "0"],
+        ["1", "2", "3", "4", "5"],
+        ["-1", "-2", "-3", "-4", "-5"],
+        ["=A1", "=B1", "=C1", "=D1", "=E1"],
+        ["=A2", "=B2", "=C2", "=D2", "=E2"],
+        ["=A3", "=B3", "=C3", "=D3", "=E3"],
+        ["=A4", "=B4", "=C4", "=D4", "=E4"],
+        [
+            "=A1",
+            "=B1",
+            "=C1",
+            "=D1",
+            "=(E3 * (A1 ^ B1))",
+        ],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(9, 4));
+    match target {
+        ResultData::Float(f) => assert_eq!(f, 0.0),
+        other => panic!("Expected Float(0.0), got {:?}", other),
+    }
+}
+
+
