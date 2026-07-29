@@ -2073,26 +2073,33 @@ impl Sheet {
                 }
                 "UPPER" => {
                     if evaluated_args.is_empty() {
-                        return Ok(ResultData::String(String::new()));
+                        return Ok(ResultData::None);
                     }
-                    Ok(ResultData::String(
-                        evaluated_args[0].to_string().to_uppercase(),
-                    ))
+                    match &evaluated_args[0] {
+                        ResultData::None => Ok(ResultData::None),
+                        ResultData::Error(e) => Ok(ResultData::Error(e.clone())),
+                        v => Ok(ResultData::String(v.to_string().to_uppercase())),
+                    }
                 }
                 "LOWER" => {
                     if evaluated_args.is_empty() {
-                        return Ok(ResultData::String(String::new()));
+                        return Ok(ResultData::None);
                     }
-                    Ok(ResultData::String(
-                        evaluated_args[0].to_string().to_lowercase(),
-                    ))
+                    match &evaluated_args[0] {
+                        ResultData::None => Ok(ResultData::None),
+                        ResultData::Error(e) => Ok(ResultData::Error(e.clone())),
+                        v => Ok(ResultData::String(v.to_string().to_lowercase())),
+                    }
                 }
                 "PROPER" => {
                     if evaluated_args.is_empty() {
-                        return Ok(ResultData::String(String::new()));
+                        return Ok(ResultData::None);
                     }
-                    let s = evaluated_args[0].to_string();
-                    Ok(ResultData::String(self.proper(&s)))
+                    match &evaluated_args[0] {
+                        ResultData::None => Ok(ResultData::None),
+                        ResultData::Error(e) => Ok(ResultData::Error(e.clone())),
+                        v => Ok(ResultData::String(self.proper(&v.to_string()))),
+                    }
                 }
                 "ISNUMBER" => {
                     if evaluated_args.is_empty() {
