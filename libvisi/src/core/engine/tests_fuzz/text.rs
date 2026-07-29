@@ -2066,5 +2066,21 @@ fn test_fuzz_left_empty_cell_result() {
     }
 }
 
+#[test]
+fn test_fuzz_average_range_with_string_and_boolean_cells() {
+    let sheet_src = [
+        ["10", "FALSE", "\"20\"", "30", ""],
+        ["", "=AVERAGE(A1:E1)", "", "", ""],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(1, 1));
+    match target {
+        ResultData::Float(f) => assert_eq!(f, 20.0),
+        other => panic!("Expected Float(20.0), got {:?}", other),
+    }
+}
+
+
 
 

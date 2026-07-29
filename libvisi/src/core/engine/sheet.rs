@@ -195,7 +195,10 @@ impl Sheet {
             let (result, new_deps, compiled_to_cache) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
                 if !src.starts_with('=') {
-                    let res = if src.is_empty() {
+                    let existing = self.get_result_data(&cell_ref);
+                    let res = if !matches!(existing, ResultData::None) {
+                        existing
+                    } else if src.is_empty() {
                         ResultData::None
                     } else if let Ok(i) = src.parse::<i64>() {
                         ResultData::Integer(i)
@@ -219,7 +222,11 @@ impl Sheet {
                             Ok(r) => r,
                             Err(e) => (ResultData::Error(e.to_string()), vec![]),
                         };
-                    let final_res = res;
+                    let final_res = if let ResultData::None = res {
+                        ResultData::Float(0.0)
+                    } else {
+                        res
+                    };
                     (final_res, deps, Some(compiled))
                 }
             };
@@ -643,13 +650,13 @@ impl Sheet {
                         if let ResultData::Error(_) = &l_val {
                             return Ok(l_val);
                         }
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
                         let lf = match self.to_f64(&l_val) {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
                         };
-                        if let ResultData::Error(_) = &r_val {
-                            return Ok(r_val);
-                        }
                         let rf = match self.to_f64(&r_val) {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
