@@ -137,13 +137,13 @@ class ExcelFuzzGenerator:
             elif fn_type == "text":
                 fn = random.choice(self.FUNCTIONS_TEXT)
                 if fn in ["LEFT", "RIGHT"]:
-                    return f'{fn}("{gen_expr(depth+1)}", {random.randint(1, 5)})'
+                    return f'{fn}({gen_expr(depth+1)}, {random.randint(1, 5)})'
                 elif fn == "LEN":
-                    return f'LEN("{gen_expr(depth+1)}")'
+                    return f'LEN({gen_expr(depth+1)})'
                 elif fn in ["UPPER", "LOWER"]:
-                    return f'{fn}("{gen_expr(depth+1)}")'
+                    return f'{fn}({gen_expr(depth+1)})'
                 else:
-                    return f'CONCATENATE("{gen_expr(depth+1)}", "{gen_expr(depth+1)}")'
+                    return f'CONCATENATE({gen_expr(depth+1)}, {gen_expr(depth+1)})'
 
         return "=" + gen_expr(0)
 
@@ -238,6 +238,8 @@ class ExcelDriver:
         elif self.driver_type == "applescript":
             # macOS AppleScript Excel recalculation driver
             app_name = self.excel_path if self.excel_path else "Microsoft Excel"
+            if app_name.endswith(".app"):
+                app_name = os.path.splitext(os.path.basename(app_name))[0]
             script = f'''
             tell application "{app_name}"
                 set display alerts to false
@@ -250,11 +252,11 @@ class ExcelDriver:
                     calculate
                     save active workbook
                     close active workbook saving no
-                on error errText
+                on error errText number errNum
                     try
                         close workbooks saving no
                     end try
-                    error errText
+                    error errText number errNum
                 end try
             end tell
             '''
@@ -572,7 +574,7 @@ def main():
 
                 # Save failure artifact
                 fail_case_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
-                shutil.copytree(temp_dir, fail_case_dir)
+                shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
         except Exception as err:
@@ -580,7 +582,7 @@ def main():
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(failures_dir, f"error_iter_{i}_seed_{iter_seed}")
             if os.path.exists(temp_dir):
-                shutil.copytree(temp_dir, fail_case_dir)
+                shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
 
         finally:
             if os.path.exists(temp_dir):

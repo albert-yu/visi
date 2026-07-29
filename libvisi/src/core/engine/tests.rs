@@ -524,7 +524,7 @@ fn test_concatenation() {
     test_strings("=CONCATENATE(str(5), \" items\")", "5 items").unwrap();
     test_strings("=CONCATENATE(\"Value: \", str(42))", "Value: 42").unwrap();
     test_strings("=CONCATENATE(str(3.14), \" is pi\")", "3.14 is pi").unwrap();
-    test_strings("=CONCATENATE(\"Result: \", str(True))", "Result: True").unwrap();
+    test_strings("=CONCATENATE(\"Result: \", str(True))", "Result: TRUE").unwrap();
 }
 
 #[test]

@@ -27,9 +27,9 @@ impl ResultData {
             ResultData::None => "".to_string(),
             ResultData::Boolean(b) => {
                 if *b {
-                    "True".to_string()
+                    "TRUE".to_string()
                 } else {
-                    "False".to_string()
+                    "FALSE".to_string()
                 }
             }
             ResultData::Integer(i) => format!("{}", i),

@@ -8283,3 +8283,33 @@ fn test_fuzz_boolean_subtraction_roundup_val() {
         other => panic!("Expected -2289.6, got {:?}", other),
     }
 }
+
+#[test]
+fn test_fuzz_nested_logical_and_or_numeric_comparison() {
+    let sheet_src = [
+        ["15", "42", "-10", "50", "-97"],
+        ["92", "-48", "TRUE", "\"NqhvDZ\"", "69"],
+        ["2", "FALSE", "2", "-95", ""],
+        ["\"bmWR\"", "26", "481.1", "FALSE", "FALSE"],
+        ["-86", "-66", "10", "-82.502", "-80"],
+        ["=A1", "=B1", "=C1", "=D1", "=E1"],
+        ["=A2", "=B2", "=C2", "=D2", "=E2"],
+        ["=A3", "=B3", "=C3", "=D3", "=E3"],
+        ["=A4", "=B4", "=C4", "=D4", "=E4"],
+        [
+            "=A1",
+            "=B1",
+            "=C1",
+            "=D1",
+            "=AND(OR(15 > 0, D4 < 100) > 0, AND(C5 > 0, B4 < 100))",
+        ],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(9, 4));
+    match target {
+        ResultData::Boolean(b) => assert_eq!(b, true),
+        other => panic!("Expected Boolean(true), got {:?}", other),
+    }
+}
+
