@@ -675,14 +675,18 @@ impl Sheet {
                                 if lf == 0.0 && rf < 0.0 {
                                     return Ok(ResultData::Error("#DIV/0!".to_string()));
                                 }
-                                let res =
-                                    if lf < 0.0 && rf.fract() == 0.0 && rf.abs() <= i32::MAX as f64
-                                    {
-                                        lf.powi(rf as i32)
-                                    } else {
-                                        lf.powf(rf)
-                                    };
-                                if res.is_nan() || res.is_infinite() {
+                                if lf < 0.0 {
+                                    if rf.fract() != 0.0 || rf.abs() > 1e6 {
+                                        return Ok(ResultData::Error("#NUM!".to_string()));
+                                    }
+                                    let res = lf.powi(rf as i32);
+                                    if res == 0.0 || res.is_nan() || res.is_infinite() {
+                                        return Ok(ResultData::Error("#NUM!".to_string()));
+                                    }
+                                    return Ok(ResultData::Float(res));
+                                }
+                                let res = lf.powf(rf);
+                                if (res == 0.0 && lf != 0.0) || res.is_nan() || res.is_infinite() {
                                     return Ok(ResultData::Error("#NUM!".to_string()));
                                 }
                                 Ok(ResultData::Float(res))
