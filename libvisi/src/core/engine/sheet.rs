@@ -1118,14 +1118,30 @@ impl Sheet {
         }
     }
 
-    fn to_bool(&self, val: &ResultData) -> bool {
+    fn to_bool_opt(&self, val: &ResultData) -> Option<bool> {
         match val {
-            ResultData::Boolean(b) => *b,
-            ResultData::Integer(i) => *i != 0,
-            ResultData::Float(f) => *f != 0.0,
-            ResultData::String(s) => !s.is_empty() && s.to_lowercase() != "false",
-            _ => false,
+            ResultData::Boolean(b) => Some(*b),
+            ResultData::Integer(i) => Some(*i != 0),
+            ResultData::Float(f) => Some(*f != 0.0),
+            ResultData::String(s) => {
+                let s_trim = s.trim();
+                if s_trim.eq_ignore_ascii_case("true") {
+                    Some(true)
+                } else if s_trim.eq_ignore_ascii_case("false") {
+                    Some(false)
+                } else if let Ok(f) = s_trim.parse::<f64>() {
+                    Some(f != 0.0)
+                } else {
+                    None
+                }
+            }
+            ResultData::None => Some(false),
+            _ => None,
         }
+    }
+
+    fn to_bool(&self, val: &ResultData) -> bool {
+        self.to_bool_opt(val).unwrap_or(false)
     }
 
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
@@ -1363,7 +1379,10 @@ impl Sheet {
                 if let ResultData::Error(_) = cond_val {
                     return Ok(cond_val);
                 }
-                let condition = self.to_bool(&cond_val);
+                let condition = match self.to_bool_opt(&cond_val) {
+                    Some(b) => b,
+                    None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                };
                 if condition {
                     return self.evaluate_ast(&args[1], context, row, deps);
                 } else {
