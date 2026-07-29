@@ -121,22 +121,20 @@ pub fn format_excel_number(f: f64) -> String {
     let abs_f = f.abs();
 
     if abs_f >= 1e11 || abs_f < 1e-5 {
-        let formatted = format!("{:.14E}", f);
-        let parts: Vec<&str> = formatted.split('E').collect();
-        if parts.len() == 2 {
-            let mut mantissa = parts[0].to_string();
-            if mantissa.contains('.') {
-                while mantissa.ends_with('0') {
-                    mantissa.pop();
-                }
-                if mantissa.ends_with('.') {
-                    mantissa.pop();
-                }
+        let exp = abs_f.log10().floor() as i32;
+        let mantissa = f / 10.0f64.powi(exp);
+        let factor = 10.0f64.powi(14);
+        let rounded_mantissa = (mantissa * factor).round() / factor;
+        let mut s = format!("{:.14}", rounded_mantissa);
+        if s.contains('.') {
+            while s.ends_with('0') {
+                s.pop();
             }
-            let exp: i32 = parts[1].parse().unwrap_or(0);
-            return format!("{}E{:+03}", mantissa, exp);
+            if s.ends_with('.') {
+                s.pop();
+            }
         }
-        formatted
+        format!("{}E{:+03}", s, exp)
     } else {
         let log10 = abs_f.log10().floor();
         let decimals = ((14.0 - log10) as i32).clamp(0, 19) as usize;
