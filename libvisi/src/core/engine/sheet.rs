@@ -647,13 +647,13 @@ impl Sheet {
                         if let ResultData::Error(_) = &l_val {
                             return Ok(l_val);
                         }
-                        if let ResultData::Error(_) = &r_val {
-                            return Ok(r_val);
-                        }
                         let lf = match self.to_f64(&l_val) {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
                         };
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
                         let rf = match self.to_f64(&r_val) {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
@@ -1933,6 +1933,9 @@ impl Sheet {
                                         }
                                     } else if !self.to_bool(item) {
                                         res = false;
+                                        if first_err.is_none() {
+                                            return Ok(ResultData::Boolean(false));
+                                        }
                                         break;
                                     }
                                 }
@@ -1940,11 +1943,11 @@ impl Sheet {
                             other => {
                                 if !self.to_bool(other) {
                                     res = false;
+                                    if first_err.is_none() {
+                                        return Ok(ResultData::Boolean(false));
+                                    }
                                 }
                             }
-                        }
-                        if !res {
-                            return Ok(ResultData::Boolean(false));
                         }
                     }
                     if let Some(err) = first_err {
@@ -1974,6 +1977,9 @@ impl Sheet {
                                         }
                                     } else if self.to_bool(item) {
                                         res = true;
+                                        if first_err.is_none() {
+                                            return Ok(ResultData::Boolean(true));
+                                        }
                                         break;
                                     }
                                 }
@@ -1981,11 +1987,11 @@ impl Sheet {
                             other => {
                                 if self.to_bool(other) {
                                     res = true;
+                                    if first_err.is_none() {
+                                        return Ok(ResultData::Boolean(true));
+                                    }
                                 }
                             }
-                        }
-                        if res {
-                            return Ok(ResultData::Boolean(true));
                         }
                     }
                     if let Some(err) = first_err {
