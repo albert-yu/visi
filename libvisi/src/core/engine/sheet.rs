@@ -195,11 +195,10 @@ impl Sheet {
             let (result, new_deps, compiled_to_cache) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
                 if !src.starts_with('=') {
-                    let existing = self.get_result_data(&cell_ref);
-                    let res = if !matches!(existing, ResultData::None) {
-                        existing
-                    } else if src.is_empty() {
+                    let res = if src.is_empty() {
                         ResultData::None
+                    } else if src.starts_with('"') && src.ends_with('"') && src.len() >= 2 {
+                        ResultData::String(src[1..src.len() - 1].to_string())
                     } else if let Ok(i) = src.parse::<i64>() {
                         ResultData::Integer(i)
                     } else if let Ok(f) = src.parse::<f64>() {

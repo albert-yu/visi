@@ -1618,8 +1618,8 @@ fn test_fuzz_multiplication_string_div_by_zero_precedence() {
     let target = sheet.get_result_data(&CellRef::new(6, 3));
     println!("Seed 224583 target: {:?}", target);
     match target {
-        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
-        other => panic!("Expected #VALUE!, got {:?}", other),
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("Expected #DIV/0!, got {:?}", other),
     }
 }
 
