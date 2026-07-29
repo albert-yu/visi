@@ -2036,3 +2036,19 @@ fn test_fuzz_lower_empty_cell_addition_value_error() {
     }
 }
 
+#[test]
+fn test_fuzz_round_non_numeric_string_value_error() {
+    let sheet_src = [
+        ["\"TRUE\"", "", "", "", ""],
+        ["", "=ROUND(A1, 2)", "", "", ""],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(1, 1));
+    match target {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("Expected #VALUE!, got {:?}", other),
+    }
+}
+
+

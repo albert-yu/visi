@@ -356,9 +356,12 @@ pub fn export_xlsx_data(
                     if cell_src.starts_with('=') {
                         let mut formula = rust_xlsxwriter::Formula::new(&cell_src[1..]);
                         if let Some(res_data) = col.data.get(row_idx) {
-                            let res_str = format_result_for_xlsx(&res_data);
-                            if !res_str.is_empty() {
-                                formula = formula.set_result(res_str);
+                            match res_data {
+                                crate::core::engine::ResultData::None => {}
+                                _ => {
+                                    let res_str = format_result_for_xlsx(&res_data);
+                                    formula = formula.set_result(res_str);
+                                }
                             }
                         }
                         worksheet

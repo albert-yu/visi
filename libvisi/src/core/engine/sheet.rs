@@ -829,11 +829,7 @@ impl Sheet {
             ResultData::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
             ResultData::String(s) => {
                 let s_trim = s.trim();
-                if s_trim.eq_ignore_ascii_case("true") {
-                    Some(1.0)
-                } else if s_trim.eq_ignore_ascii_case("false") {
-                    Some(0.0)
-                } else if Self::is_excel_number_str(s_trim) {
+                if Self::is_excel_number_str(s_trim) {
                     if let Ok(f) = s_trim.parse::<f64>() {
                         return Some(f);
                     }
