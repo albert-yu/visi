@@ -778,7 +778,7 @@ fn test_fuzz_product_nested_float_precision() {
     let target = sheet.get_result_data(&CellRef::new(7, 1));
     match target {
         ResultData::Float(f) => assert!(
-            (f - 20.665).abs() < 1e-3,
+            (f - 27.55333333).abs() < 1e-3,
             "Expected ~27.5533 for B8, got {}",
             f
         ),
