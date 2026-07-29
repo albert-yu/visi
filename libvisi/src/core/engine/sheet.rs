@@ -686,7 +686,7 @@ impl Sheet {
                                     return Ok(ResultData::Float(res));
                                 }
                                 let res = lf.powf(rf);
-                                if (res == 0.0 && lf != 0.0) || res.is_nan() || res.is_infinite() {
+                                if res.is_nan() || res.is_infinite() {
                                     return Ok(ResultData::Error("#NUM!".to_string()));
                                 }
                                 Ok(ResultData::Float(res))
