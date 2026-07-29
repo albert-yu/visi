@@ -1419,7 +1419,7 @@ impl Sheet {
                 evaluated_args.push(eval_res);
             }
 
-            if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" {
+            if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" && upper_name != "AND" && upper_name != "OR" {
                 if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                     return Ok(err);
                 }
@@ -1913,18 +1913,25 @@ impl Sheet {
                 }
 
                 "AND" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if evaluated_args.is_empty() {
-                        return Ok(ResultData::Boolean(false));
+                        return Ok(ResultData::Boolean(true));
                     }
                     let mut res = true;
+                    let mut first_err = None;
                     for arg in &evaluated_args {
                         match arg {
+                            ResultData::Error(e) => {
+                                if first_err.is_none() {
+                                    first_err = Some(ResultData::Error(e.clone()));
+                                }
+                            }
                             ResultData::List(list) => {
                                 for item in list {
-                                    if !self.to_bool(item) {
+                                    if let ResultData::Error(e) = item {
+                                        if first_err.is_none() {
+                                            first_err = Some(ResultData::Error(e.clone()));
+                                        }
+                                    } else if !self.to_bool(item) {
                                         res = false;
                                         break;
                                     }
@@ -1937,24 +1944,35 @@ impl Sheet {
                             }
                         }
                         if !res {
-                            break;
+                            return Ok(ResultData::Boolean(false));
                         }
                     }
-                    Ok(ResultData::Boolean(res))
+                    if let Some(err) = first_err {
+                        Ok(err)
+                    } else {
+                        Ok(ResultData::Boolean(res))
+                    }
                 }
                 "OR" => {
-                    if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                        return Ok(err);
-                    }
                     if evaluated_args.is_empty() {
                         return Ok(ResultData::Boolean(false));
                     }
                     let mut res = false;
+                    let mut first_err = None;
                     for arg in &evaluated_args {
                         match arg {
+                            ResultData::Error(e) => {
+                                if first_err.is_none() {
+                                    first_err = Some(ResultData::Error(e.clone()));
+                                }
+                            }
                             ResultData::List(list) => {
                                 for item in list {
-                                    if self.to_bool(item) {
+                                    if let ResultData::Error(e) = item {
+                                        if first_err.is_none() {
+                                            first_err = Some(ResultData::Error(e.clone()));
+                                        }
+                                    } else if self.to_bool(item) {
                                         res = true;
                                         break;
                                     }
@@ -1967,10 +1985,14 @@ impl Sheet {
                             }
                         }
                         if res {
-                            break;
+                            return Ok(ResultData::Boolean(true));
                         }
                     }
-                    Ok(ResultData::Boolean(res))
+                    if let Some(err) = first_err {
+                        Ok(err)
+                    } else {
+                        Ok(ResultData::Boolean(res))
+                    }
                 }
                 "NOT" => {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
