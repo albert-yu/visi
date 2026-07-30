@@ -81,22 +81,26 @@ fn test_workbook_table_crud_and_evaluation() {
     let total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
     assert_eq!(total.to_string(), "30");
 
-    // Rename a column and the table itself. Renames don't cascade to
-    // existing formula text (matching sheet/chart renames elsewhere in this
-    // codebase, which don't either), so the table metadata reflects the new
-    // names immediately but the formula above now refers to a table name
-    // that no longer exists until it's rewritten to match.
+    // Rename a column and the table itself. Like Excel, both cascade into
+    // existing formula text -- the SUM formula above (still untouched by
+    // this test) must keep resolving and computing the same result after
+    // both renames, without ever being rewritten by hand.
     wb.rename_table_column("Sales", 1, "Total").unwrap();
     assert_eq!(
         wb.find_table("Sales").unwrap().1.columns,
         vec!["Name", "Total"]
     );
+    let src_after_col_rename = wb.sheets[0].get_src(&libvisi::core::CellRef::new(0, 2)).cloned();
+    assert_eq!(src_after_col_rename.as_deref(), Some("=SUM(Sales[Total])"));
+    let total_after_col_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    assert_eq!(total_after_col_rename.to_string(), "30");
+
     wb.rename_table("Sales", "Revenue").unwrap();
     assert!(wb.find_table("Sales").is_none());
     assert!(wb.find_table("Revenue").is_some());
 
-    wb.set_cell(0, 0, 2, "=SUM(Revenue[Total])".to_string());
-    wb.evaluate().unwrap();
+    let src_after_rename = wb.sheets[0].get_src(&libvisi::core::CellRef::new(0, 2)).cloned();
+    assert_eq!(src_after_rename.as_deref(), Some("=SUM(Revenue[Total])"));
     let total_after_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
     assert_eq!(total_after_rename.to_string(), "30");
 

@@ -1018,48 +1018,160 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                     String::new()
                 };
 
-                if *is_this_row {
-                    if col_name.is_empty() {
-                        result.push_str(&format!("{}[@]", prefix));
-                    } else {
-                        result.push_str(&format!("{}[@{}]", prefix, col_name));
-                    }
-                } else {
-                    match section {
-                        SheetSection::Headers => {
-                            if col_name.is_empty() {
-                                result.push_str(&format!("{}[#Headers]", prefix));
-                            } else {
-                                result.push_str(&format!("{}[[#Headers], [{}]]", prefix, col_name));
-                            }
-                        }
-                        SheetSection::Totals => {
-                            if col_name.is_empty() {
-                                result.push_str(&format!("{}[#Totals]", prefix));
-                            } else {
-                                result.push_str(&format!("{}[[#Totals], [{}]]", prefix, col_name));
-                            }
-                        }
-                        SheetSection::Data => {
-                            if col_name.is_empty() {
-                                result.push_str(&format!("{}[#Data]", prefix));
-                            } else {
-                                result.push_str(&format!("{}[{}]", prefix, col_name));
-                            }
-                        }
-                        SheetSection::All => {
-                            if col_name.is_empty() {
-                                result.push_str(&format!("{}[#All]", prefix));
-                            } else {
-                                result.push_str(&format!("{}[[#All], [{}]]", prefix, col_name));
-                            }
-                        }
-                    }
-                }
+                result.push_str(&render_structured_ref_text(
+                    &prefix, &col_name, *is_this_row, *section,
+                ));
             }
         }
     }
     result
+}
+
+/// Renders a structured reference's `[...]` suffix (everything after the
+/// leading table/sheet name), given its already-resolved column name (empty
+/// for a whole-table/whole-row reference), `is_this_row` flag, and section.
+/// Shared by `serialize_formula` (id-based re-rendering) and
+/// `rewrite_structured_table_reference` (text-based rename rewriting) so
+/// both stay in sync on the canonical bracket syntax.
+fn render_structured_ref_text(
+    prefix: &str,
+    col_name: &str,
+    is_this_row: bool,
+    section: SheetSection,
+) -> String {
+    if is_this_row {
+        if col_name.is_empty() {
+            format!("{}[@]", prefix)
+        } else {
+            format!("{}[@{}]", prefix, col_name)
+        }
+    } else {
+        match section {
+            SheetSection::Headers => {
+                if col_name.is_empty() {
+                    format!("{}[#Headers]", prefix)
+                } else {
+                    format!("{}[[#Headers], [{}]]", prefix, col_name)
+                }
+            }
+            SheetSection::Totals => {
+                if col_name.is_empty() {
+                    format!("{}[#Totals]", prefix)
+                } else {
+                    format!("{}[[#Totals], [{}]]", prefix, col_name)
+                }
+            }
+            SheetSection::Data => {
+                if col_name.is_empty() {
+                    format!("{}[#Data]", prefix)
+                } else {
+                    format!("{}[{}]", prefix, col_name)
+                }
+            }
+            SheetSection::All => {
+                if col_name.is_empty() {
+                    format!("{}[#All]", prefix)
+                } else {
+                    format!("{}[[#All], [{}]]", prefix, col_name)
+                }
+            }
+        }
+    }
+}
+
+/// Rewrites every structured reference to `table_name` within a single
+/// cell's formula source (e.g. `"=SUM(Sales[Amount])"`), so that renaming
+/// an ExcelTable (and/or one of its columns) can update dependent formulas
+/// the same way Excel does. `new_table_name` renames the table itself (in
+/// every matching reference's leading name); `col_rename` renames one
+/// column, `(old_name, new_name)`, wherever it's referenced on this table.
+/// Either or both may be supplied. Non-formula cells and formulas that
+/// don't reference `table_name` at all are left alone (returns `None`).
+pub fn rewrite_structured_table_reference(
+    formula_src: &str,
+    table_name: &str,
+    new_table_name: Option<&str>,
+    col_rename: Option<(&str, &str)>,
+) -> Option<String> {
+    if !formula_src.starts_with('=') {
+        return None;
+    }
+    let chars: Vec<char> = formula_src.chars().collect();
+    let mut result = String::new();
+    let mut last_idx = 0;
+    let mut changed = false;
+
+    let mut in_quote = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = in_quote {
+            if c == '\\' {
+                i += 2;
+                continue;
+            } else if c == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some((found_ref, next_i)) = try_parse_ref(&chars, i) {
+            if let FoundRef::Structured {
+                sheet,
+                column,
+                is_this_row,
+                section,
+            } = &found_ref
+            {
+                let matches_table = sheet
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(table_name));
+                if matches_table {
+                    let rendered_table_name = new_table_name.unwrap_or(table_name);
+                    let rendered_col_name = match (column, col_rename) {
+                        (Some(col), Some((old_col, new_col)))
+                            if col.eq_ignore_ascii_case(old_col) =>
+                        {
+                            new_col.to_string()
+                        }
+                        (Some(col), _) => col.clone(),
+                        (None, _) => String::new(),
+                    };
+                    let rendered = render_structured_ref_text(
+                        rendered_table_name,
+                        &rendered_col_name,
+                        *is_this_row,
+                        *section,
+                    );
+
+                    // Only treat this as an actual edit if the re-rendered
+                    // text differs from what was already there -- e.g. a
+                    // column rename shouldn't mark every reference to this
+                    // table as "changed", only ones naming the old column.
+                    let original: String = chars[i..next_i].iter().collect();
+                    if rendered != original {
+                        result.push_str(&chars[last_idx..i].iter().collect::<String>());
+                        result.push_str(&rendered);
+                        changed = true;
+                        last_idx = next_i;
+                    }
+                }
+            }
+            i = next_i;
+        } else {
+            if c == '"' || c == '\'' {
+                in_quote = Some(c);
+            }
+            i += 1;
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+    result.push_str(&chars[last_idx..].iter().collect::<String>());
+    Some(result)
 }
 
 pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
@@ -2207,5 +2319,77 @@ mod tests {
             // Round-trips back to the same whole-section syntax.
             assert_eq!(serialize_formula(&f, &sheets), input);
         }
+    }
+
+    #[test]
+    fn test_rewrite_structured_table_reference_renames_table() {
+        let rewritten = rewrite_structured_table_reference(
+            "=SUM(Sales[Amount])",
+            "Sales",
+            Some("Revenue"),
+            None,
+        );
+        assert_eq!(rewritten.as_deref(), Some("=SUM(Revenue[Amount])"));
+    }
+
+    #[test]
+    fn test_rewrite_structured_table_reference_renames_column() {
+        let rewritten = rewrite_structured_table_reference(
+            "=SUM(Sales[Amount])",
+            "Sales",
+            None,
+            Some(("Amount", "Total")),
+        );
+        assert_eq!(rewritten.as_deref(), Some("=SUM(Sales[Total])"));
+    }
+
+    #[test]
+    fn test_rewrite_structured_table_reference_handles_multiple_refs_and_forms() {
+        let rewritten = rewrite_structured_table_reference(
+            "=Sales[@Amount] + SUM(Sales[Amount]) + Sales[[#Headers],[Amount]]",
+            "Sales",
+            Some("Revenue"),
+            Some(("Amount", "Total")),
+        );
+        assert_eq!(
+            rewritten.as_deref(),
+            Some("=Revenue[@Total] + SUM(Revenue[Total]) + Revenue[[#Headers], [Total]]")
+        );
+    }
+
+    #[test]
+    fn test_rewrite_structured_table_reference_ignores_other_tables_and_columns() {
+        // A different table's structured ref, and a plain (non-structured)
+        // cell ref, must be left byte-for-byte untouched.
+        let rewritten = rewrite_structured_table_reference(
+            "=SUM(Other[Amount]) + A1",
+            "Sales",
+            Some("Revenue"),
+            None,
+        );
+        assert_eq!(rewritten, None);
+
+        // Same table, but a column name that doesn't match the rename must
+        // also be left alone.
+        let rewritten2 = rewrite_structured_table_reference(
+            "=Sales[Quantity]",
+            "Sales",
+            None,
+            Some(("Amount", "Total")),
+        );
+        assert_eq!(rewritten2, None);
+    }
+
+    #[test]
+    fn test_rewrite_structured_table_reference_ignores_non_formula_cells() {
+        // A plain text cell that happens to contain matching-looking text
+        // is not a formula and must not be touched.
+        let rewritten = rewrite_structured_table_reference(
+            "Sales[Amount] is a great product",
+            "Sales",
+            Some("Revenue"),
+            None,
+        );
+        assert_eq!(rewritten, None);
     }
 }

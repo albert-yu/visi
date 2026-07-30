@@ -438,7 +438,40 @@ impl WorkbookManager {
             return Err(format!("Table name '{}' is already taken", new_name));
         }
         let idx = self.find_table_sheet_index(old_name)?;
-        self.sheets[idx].rename_table(old_name, new_name)
+        self.sheets[idx].rename_table(old_name, new_name)?;
+        // Excel updates every structured reference to a renamed table, so a
+        // formula like `=SUM(Sales[Amount])` keeps working after "Sales" is
+        // renamed; match that instead of silently breaking those formulas.
+        self.rewrite_table_references(old_name, Some(new_name), None);
+        self.evaluate()
+    }
+
+    /// Rewrites every formula in the workbook that structurally references
+    /// `table_name` (optionally renaming the table and/or one column),
+    /// mirroring how Excel keeps structured references in sync when a Table
+    /// or one of its column headers is renamed.
+    fn rewrite_table_references(
+        &mut self,
+        table_name: &str,
+        new_table_name: Option<&str>,
+        col_rename: Option<(&str, &str)>,
+    ) {
+        for sheet in &mut self.sheets {
+            for col_idx in 0..sheet.columns.len() {
+                let row_count = sheet.columns[col_idx].src.len();
+                for row_idx in 0..row_count {
+                    let src = sheet.columns[col_idx].src[row_idx].clone();
+                    if let Some(new_src) = libvisi::core::parser::rewrite_structured_table_reference(
+                        &src,
+                        table_name,
+                        new_table_name,
+                        col_rename,
+                    ) {
+                        sheet.set_cell_src(row_idx, col_idx, new_src);
+                    }
+                }
+            }
+        }
     }
 
     /// Resize a table by moving its bottom-right corner.
@@ -460,6 +493,19 @@ impl WorkbookManager {
         new_name: &str,
     ) -> Result<(), String> {
         let idx = self.find_table_sheet_index(table_name)?;
-        self.sheets[idx].rename_table_column(table_name, col_index, new_name)
+        let old_col_name = self.sheets[idx]
+            .find_table(table_name)
+            .and_then(|t| t.columns.get(col_index).cloned())
+            .ok_or_else(|| {
+                format!(
+                    "Column index {} out of bounds for table '{}'",
+                    col_index, table_name
+                )
+            })?;
+        self.sheets[idx].rename_table_column(table_name, col_index, new_name)?;
+        // As with rename_table, keep dependent formulas working across the
+        // rename instead of leaving them referencing the old column name.
+        self.rewrite_table_references(table_name, None, Some((&old_col_name, new_name)));
+        self.evaluate()
     }
 }
