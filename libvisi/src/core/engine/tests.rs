@@ -1353,3 +1353,71 @@ fn test_excel_table_structured_reference_survives_commit() {
         Some(30.0)
     );
 }
+
+#[test]
+fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column() {
+    // A structured column reference must depend on only the table's own
+    // data rows (like a bounded range reference, e.g. A1:A100), not the
+    // whole sheet column. Verified against real Excel: placing a summary
+    // formula like `=SUM(Inventory[Price])` in the same column as the
+    // table but outside its rows is NOT circular there, and changing it
+    // doesn't need a whole-column dependency to invalidate correctly --
+    // only per-row dependencies on the table's own rows do.
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 6,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "Item".to_string());
+    sheet.set_cell_src(0, 1, "Price".to_string());
+    sheet.set_cell_src(1, 0, "Widget".to_string());
+    sheet.set_cell_src(1, 1, "9.99".to_string());
+    sheet.set_cell_src(2, 0, "Gadget".to_string());
+    sheet.set_cell_src(2, 1, "19.99".to_string());
+    sheet.set_cell_src(3, 0, "Gizmo".to_string());
+    sheet.set_cell_src(3, 1, "4.5".to_string());
+    sheet.commit(None).unwrap();
+
+    sheet
+        .add_table("Inventory".to_string(), 0, 0, 3, 1, true, false)
+        .unwrap();
+
+    // Row 5 (0-based): same "Price" column (1) as the table, but well
+    // outside the table's own rows (0..=3).
+    sheet.set_cell_src(5, 1, "=SUM(Inventory[Price])".to_string());
+    sheet.commit(None).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(5, 1))),
+        Some(34.48)
+    );
+
+    // No whole-column dependency should exist for column 1 -- only
+    // per-row dependencies on the table's own data rows (1..=3; row 0 is
+    // the header, excluded). If this ever regresses to a whole-column
+    // dependency, the summary formula would depend on its own cell (since
+    // it also lives in column 1) and false-positive as circular, which
+    // real Excel does not do.
+    assert!(
+        !sheet.dependencies.contains_key(&Dependency::LocalColumn(1)),
+        "structured table reference must not register a whole-column dependency"
+    );
+    for r in 1..=3 {
+        assert!(
+            sheet
+                .dependencies
+                .contains_key(&Dependency::Local(CellRef::new(r, 1))),
+            "expected a per-row dependency on row {r}"
+        );
+    }
+
+    // Changing an in-table cell must still correctly invalidate and
+    // recompute the summary formula.
+    sheet.set_cell_src(1, 1, "100".to_string());
+    sheet.commit(None).unwrap();
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(5, 1))),
+        Some(124.49)
+    );
+}

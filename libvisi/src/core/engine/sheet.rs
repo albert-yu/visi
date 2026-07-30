@@ -518,20 +518,33 @@ impl Sheet {
                                     Ok(results.into_iter().next().unwrap_or(ResultData::None))
                                 }
                             } else {
+                                // A table's column reference is bounded to
+                                // its own data rows, not the whole sheet
+                                // column -- so, like any other bounded range
+                                // (e.g. A1:A100), each cell in that range
+                                // gets its own dependency rather than a
+                                // whole-column one. Otherwise a formula
+                                // placed in the same column but *outside*
+                                // the table (a common layout, since summary
+                                // formulas often sit right below or beside
+                                // a table) would register a dependency on
+                                // its own cell and falsely trip circular-
+                                // dependency detection, which real Excel
+                                // does not do.
                                 let mut results = Vec::new();
                                 for &(_, col_idx) in &col_indices {
-                                    if is_self {
-                                        deps.push(Dependency::LocalColumn(col_idx));
-                                    } else {
-                                        deps.push(Dependency::RemoteColumn {
-                                            sheet: sheet_name.clone(),
-                                            col: col_idx,
-                                        });
-                                    }
                                     for r in
                                         excel_table.data_start_row()..=excel_table.data_end_row()
                                     {
                                         let cell_ref = CellRef::new(r, col_idx);
+                                        if is_self {
+                                            deps.push(Dependency::Local(cell_ref));
+                                        } else {
+                                            deps.push(Dependency::Remote {
+                                                sheet: sheet_name.clone(),
+                                                cell: cell_ref,
+                                            });
+                                        }
                                         results.push(table_sheet.get_result_data(&cell_ref));
                                     }
                                 }
