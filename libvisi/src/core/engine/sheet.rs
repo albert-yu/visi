@@ -1457,7 +1457,15 @@ impl Sheet {
                 evaluated_args.push(eval_res);
             }
 
-            if upper_name != "IFERROR" && upper_name != "ISERROR" && upper_name != "ISNA" {
+            let uses_ordered_arg_error_check = matches!(
+                upper_name.as_str(),
+                "SUM" | "AVERAGE" | "MIN" | "MAX" | "PRODUCT"
+            );
+            if upper_name != "IFERROR"
+                && upper_name != "ISERROR"
+                && upper_name != "ISNA"
+                && !uses_ordered_arg_error_check
+            {
                 if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                     return Ok(err);
                 }

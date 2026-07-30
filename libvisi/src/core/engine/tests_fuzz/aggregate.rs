@@ -1217,3 +1217,49 @@ fn test_fuzz_roundup_min_float_precision_val() {
         other => panic!("Expected ~23205.8, got {:?}", other),
     }
 }
+
+#[test]
+fn test_fuzz_product_direct_text_arg_error_precedence() {
+    let sheet_src = [
+        ["\"ddzXs\"", "-76", "-37", "FALSE", "-68"],
+        ["-3", "-265.23", "", "\"Y2aD2X\"", "FALSE"],
+        ["75", "-475.29", "", "FALSE", "-4"],
+        ["\"F\"", "\"X\"", "-188", "\"W3W\"", "10"],
+        ["", "TRUE", "-91", "\"ESQVPT\"", "396.8"],
+        [
+            "10",
+            "=ROUNDUP(A5, 1)",
+            "=AND(D1 > 0, CONCATENATE(-34, -25) < 100)",
+            "=C2",
+            "=LEFT(E5, 2)",
+        ],
+        [
+            "=-28",
+            "=B4",
+            "-35",
+            "=E3",
+            "=PRODUCT(UPPER(A4), (D3 ^ -32))",
+        ],
+        ["=B5", "=D3", "18", "=LEFT(-17, 3)", "=A7"],
+        [
+            "=AVERAGE(IF((E5 > B7), C2, C3), OR(E5 > 0, 25 < 100))",
+            "=33",
+            "=CONCATENATE(SQRT(D1), -22)",
+            "=B8",
+            "=ROUNDUP(RIGHT(C8, 1), 2)",
+        ],
+        ["0", "\"Ue\"", "=A4", "=(D9 - 16)", "=C6"],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(6, 4));
+    println!("Seed 787979 target E7: {:?}", target);
+    match target {
+        ResultData::Error(ref e) => assert!(
+            e.contains("#VALUE!"),
+            "Expected #VALUE! for E7 (Excel evaluates the direct text arg \"F\" before the #DIV/0! from D3^-32), got {:?}",
+            target
+        ),
+        other => panic!("Expected Error(#VALUE!) for E7, got {:?}", other),
+    }
+}
