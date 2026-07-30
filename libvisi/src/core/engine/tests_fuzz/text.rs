@@ -1582,7 +1582,7 @@ fn test_fuzz_or_multiplication_string_error_order() {
 }
 
 #[test]
-fn test_fuzz_multiplication_string_div_by_zero_precedence() {
+fn test_fuzz_multiplication_string_value_error_precedence() {
     let sheet_src = [
         ["37", "-148.27", "261.06", "68", "179"],
         ["", "\"QUR\"", "TRUE", "-73", "\"vyeKi\""],
@@ -1618,8 +1618,8 @@ fn test_fuzz_multiplication_string_div_by_zero_precedence() {
     let target = sheet.get_result_data(&CellRef::new(6, 3));
     println!("Seed 224583 target: {:?}", target);
     match target {
-        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
-        other => panic!("Expected #DIV/0!, got {:?}", other),
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("Expected #VALUE!, got {:?}", other),
     }
 }
 
@@ -2104,6 +2104,62 @@ fn test_fuzz_upper_float_sigfig_precision() {
     }
 }
 
-
+#[test]
+fn test_fuzz_addition_left_text_sqrt_error_precedence() {
+    let sheet_src = [
+        ["TRUE", "3", "-35", "-2", "-59"],
+        ["84", "0", "-137.545", "\"ZlRQ\"", "65"],
+        ["", "0", "180.62", "TRUE", "TRUE"],
+        ["8", "\"jI\"", "-313.909", "", "TRUE"],
+        ["", "\"k\"", "-131.18", "\"aEdVj2om\"", "\"bCoVBiWR\""],
+        [
+            "=INT(D2)",
+            "=C4",
+            "=(RIGHT(-42, 5) / IF((D2 > C3), D5, C5))",
+            "=OR(LOWER(C2) > 0, OR(A1 > 0, E3 < 100) < 100)",
+            "=LEN(B1)",
+        ],
+        [
+            "=9",
+            "=AVERAGE(B2:D2)",
+            "=38",
+            "FALSE",
+            "=D6",
+        ],
+        [
+            "=AVERAGE(B1:C4)",
+            "=INT(MAX(C6, -48))",
+            "=19",
+            "=LOWER(40)",
+            "=SQRT(ROUNDDOWN(A2, 1))",
+        ],
+        [
+            "=PRODUCT(E3, E6)",
+            "=C2",
+            "=ROUNDUP((B1 + C5), 0)",
+            "=UPPER(MIN(E2:E3))",
+            "=E3",
+        ],
+        [
+            "=ROUNDDOWN(ROUNDUP(A9, 2), 0)",
+            "=AND(IF((D9 > E3), B4, A7) > 0, OR(E1 > 0, -28 < 100) < 100)",
+            "=(INT(B9) - IF((-6 > C6), 8, E5))",
+            "=RIGHT(IF((B7 > B9), C8, D3), 1)",
+            "=(D2 + SQRT(C1))",
+        ],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(9, 4));
+    println!("Seed 688675 target E10: {:?}", target);
+    match target {
+        ResultData::Error(ref e) => assert!(
+            e.contains("#VALUE!"),
+            "Expected #VALUE! for E10 (D2 is non-numeric text, which Excel flags before the #NUM! from SQRT(C1) on the right), got {:?}",
+            target
+        ),
+        other => panic!("Expected Error(#VALUE!) for E10, got {:?}", other),
+    }
+}
 
 
