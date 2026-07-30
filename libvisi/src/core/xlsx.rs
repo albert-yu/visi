@@ -7,6 +7,25 @@ pub struct ImportedSheet {
     pub sheet: Sheet,
 }
 
+/// Quote a text cell's raw string when it would otherwise be re-parsed as a
+/// number, boolean, or formula (see `Sheet::commit`'s literal-cell parsing),
+/// so a text cell like "1" stays text instead of becoming the number 1.
+fn text_cell_src(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    let looks_ambiguous = s.starts_with('=')
+        || s.parse::<i64>().is_ok()
+        || s.parse::<f64>().is_ok()
+        || s.eq_ignore_ascii_case("true")
+        || s.eq_ignore_ascii_case("false");
+    if looks_ambiguous {
+        format!("\"{}\"", s)
+    } else {
+        s.to_string()
+    }
+}
+
 pub fn import_xlsx_data(
     buffer: &[u8],
     existing_sheets: &[Sheet],
@@ -124,7 +143,7 @@ pub fn import_xlsx_data(
 
                         let cell_src = match cell_value {
                             calamine::Data::Empty => String::new(),
-                            calamine::Data::String(s) => s.clone(),
+                            calamine::Data::String(s) => text_cell_src(s),
                             calamine::Data::Float(f) => f.to_string(),
                             calamine::Data::Int(i) => i.to_string(),
                             calamine::Data::Bool(b) => b.to_string(),
@@ -185,7 +204,7 @@ pub fn import_xlsx_data(
 
                         let cell_src = match cell_value {
                             calamine::Data::Empty => String::new(),
-                            calamine::Data::String(s) => s.clone(),
+                            calamine::Data::String(s) => text_cell_src(s),
                             calamine::Data::Float(f) => f.to_string(),
                             calamine::Data::Int(i) => i.to_string(),
                             calamine::Data::Bool(b) => b.to_string(),
@@ -391,8 +410,16 @@ pub fn export_xlsx_data(
                             .write_boolean(row_idx as u32, col_idx as u16, val_bool)
                             .map_err(|e| format!("Failed to write Excel boolean: {}", e))?;
                     } else if !cell_src.is_empty() {
+                        let text = if cell_src.starts_with('"')
+                            && cell_src.ends_with('"')
+                            && cell_src.len() >= 2
+                        {
+                            &cell_src[1..cell_src.len() - 1]
+                        } else {
+                            cell_src.as_str()
+                        };
                         worksheet
-                            .write_string(row_idx as u32, col_idx as u16, &cell_src)
+                            .write_string(row_idx as u32, col_idx as u16, text)
                             .map_err(|e| format!("Failed to write Excel string: {}", e))?;
                     }
                 }
@@ -1250,5 +1277,47 @@ mod tests {
         std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
 
         assert!(xml_content.contains("<v>30</v>"));
+    }
+
+    #[test]
+    fn test_xlsx_numeric_looking_text_cell_preserves_type() {
+        // A cell whose text content looks like a number (e.g. imported from a
+        // spreadsheet where the user typed "1" into a text-formatted cell)
+        // must round-trip as text, not silently become the number 1.
+        let mut columns = Vec::new();
+        let mut col1 = DataColumn::new(1);
+        col1.name = "A".to_string();
+        col1.src = vec!["\"1\"".to_string()].into();
+        columns.push(col1);
+
+        let sheet = Sheet {
+            id: 1,
+            name: "Sheet1".to_string(),
+            columns,
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+
+        // The exported xlsx should contain the plain text "1", not a literal
+        // quote-wrapped string.
+        let cursor = std::io::Cursor::new(xlsx_data.clone());
+        let mut zip = zip::ZipArchive::new(cursor).unwrap();
+        let mut sheet_file = zip.by_name("xl/worksheets/sheet1.xml").unwrap();
+        let mut xml_content = String::new();
+        std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
+        assert!(!xml_content.contains("&quot;1&quot;"));
+
+        let (imported_tables, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let mut imported_sheet = imported_tables.into_iter().next().unwrap().sheet;
+        imported_sheet.columns[0].mark_dirty(0);
+        imported_sheet.commit(None).unwrap();
+
+        match imported_sheet.columns[0].data.get(0) {
+            Some(crate::core::engine::ResultData::String(s)) => assert_eq!(s, "1"),
+            other => panic!("Expected ResultData::String(\"1\"), got {:?}", other),
+        }
     }
 }

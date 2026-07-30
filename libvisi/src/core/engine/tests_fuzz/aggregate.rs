@@ -1263,3 +1263,54 @@ fn test_fuzz_product_direct_text_arg_error_precedence() {
         other => panic!("Expected Error(#VALUE!) for E7, got {:?}", other),
     }
 }
+
+#[test]
+fn test_fuzz_average_range_ignores_text_cell() {
+    let sheet_src = [
+        ["3", "292.843", "290.419", "-42", "3"],
+        ["FALSE", "-76", "TRUE", "-26", "487.552"],
+        ["115.5", "1", "-431", "", ""],
+        ["16", "74", "-57", "303.83", "\"gIp\""],
+        ["-64", "\"PyUBvLT\"", "", "-175.247", ""],
+        [
+            "",
+            "=MIN(CONCATENATE(C3, E2), B3)",
+            "=ABS(B4)",
+            "=A1",
+            "=(MAX(C3:D4) ^ AVERAGE(C3:E3))",
+        ],
+        ["=E1", "=RIGHT(B4, 3)", "8", "=AVERAGE(A3:C3)", "=D1"],
+        [
+            "=A3",
+            "=AND(IF((D5 > -29), D1, A2) > 0, C6 < 100)",
+            "\"3lM3\"",
+            "=D5",
+            "\"1\"",
+        ],
+        [
+            "=-30",
+            "=IF((MAX(E1:E3) > LEFT(-11, 4)), OR(D3 > 0, D7 < 100), MAX(E2, B2))",
+            "=UPPER(LEN(A2))",
+            "=E3",
+            "=(ABS(C2) ^ OR(A6 > 0, D6 < 100))",
+        ],
+        [
+            "=RIGHT(AVERAGE(E6:E9), 4)",
+            "=28",
+            "=B5",
+            "=IF((INT(-47) > PRODUCT(E8:E8)), -1, MIN(A8, 44))",
+            "4",
+        ],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(9, 0));
+    println!("Seed 29632 target A10: {:?}", target);
+    match target {
+        ResultData::String(ref s) => assert_eq!(
+            s, "6667",
+            "Expected \"6667\" for A10 (AVERAGE(E6:E9) must ignore the text cell E8=\"1\", giving -41/3, not treat it as the number 1)"
+        ),
+        other => panic!("Expected String(\"6667\") for A10, got {:?}", other),
+    }
+}
