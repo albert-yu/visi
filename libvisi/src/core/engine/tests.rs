@@ -896,3 +896,284 @@ fn test_error_handling() {
     }
 }
 
+#[test]
+fn test_structured_reference_basic_column() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 3,
+        cols: 3,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+    sheet.columns[1].name = "Cost".to_string();
+
+    sheet.set_cell_src(0, 0, "10".to_string());
+    sheet.set_cell_src(1, 0, "20".to_string());
+    sheet.set_cell_src(2, 0, "30".to_string());
+    // Unqualified structured reference (same sheet).
+    sheet.set_cell_src(0, 2, "=SUM([Sales])".to_string());
+    // Qualified with the table (sheet) name.
+    sheet.set_cell_src(1, 2, "=SUM(table_1[Sales])".to_string());
+    sheet.commit(None).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 2))),
+        Some(60.0)
+    );
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(1, 2))),
+        Some(60.0)
+    );
+}
+
+#[test]
+fn test_structured_reference_this_row() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 3,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+    sheet.columns[1].name = "Cost".to_string();
+    sheet.columns[2].name = "Profit".to_string();
+
+    sheet.set_cell_src(0, 0, "100".to_string());
+    sheet.set_cell_src(0, 1, "40".to_string());
+    sheet.set_cell_src(1, 0, "200".to_string());
+    sheet.set_cell_src(1, 1, "50".to_string());
+
+    sheet.set_cell_src(0, 2, "=[@Sales] - [@Cost]".to_string());
+    sheet.set_cell_src(1, 2, "=[@Sales] - [@Cost]".to_string());
+    sheet.commit(None).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 2))),
+        Some(60.0)
+    );
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(1, 2))),
+        Some(150.0)
+    );
+}
+
+#[test]
+fn test_structured_reference_headers_and_totals_sections() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+    sheet.columns[1].name = "Cost".to_string();
+
+    let (res, _) = sheet.eval("=table_1[[#Headers],[Sales]]", None).unwrap();
+    assert_eq!(get_string_val(&res), Some("Sales".to_string()));
+
+    let (res_bare, _) = sheet.eval("=[[#Headers],[Cost]]", None).unwrap();
+    assert_eq!(get_string_val(&res_bare), Some("Cost".to_string()));
+
+    // No totals row concept exists on the underlying table, so a totals
+    // reference resolves to an empty/None result rather than erroring.
+    let (res_totals, _) = sheet.eval("=[[#Totals],[Sales]]", None).unwrap();
+    assert!(matches!(res_totals, ResultData::None));
+}
+
+#[test]
+fn test_structured_reference_cross_sheet() {
+    let mut sheet2 = Sheet::new(SheetInit {
+        name: Some("Sheet2".to_string()),
+        rows: 2,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet2.columns[0].name = "Revenue".to_string();
+    sheet2.set_cell_src(0, 0, "111".to_string());
+    sheet2.set_cell_src(1, 0, "222".to_string());
+    sheet2.commit(None).unwrap();
+
+    let mut sheet1 = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 1,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet1.set_cell_src(0, 0, "=SUM(Sheet2[Revenue])".to_string());
+
+    let mut context = Context::default();
+    context.sheets.insert("Sheet2".to_string(), &sheet2);
+    sheet1.commit(Some(&context)).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet1.get_result_data(&CellRef::new(0, 0))),
+        Some(333.0)
+    );
+}
+
+#[test]
+fn test_structured_reference_aggregates_ignore_text_like_a_range() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 3,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+
+    sheet.set_cell_src(0, 0, "10".to_string());
+    sheet.set_cell_src(1, 0, "\"n/a\"".to_string());
+    sheet.set_cell_src(2, 0, "20".to_string());
+    sheet.set_cell_src(0, 1, "=SUM([Sales])".to_string());
+    sheet.set_cell_src(1, 1, "=AVERAGE([Sales])".to_string());
+    sheet.commit(None).unwrap();
+
+    // A structured reference behaves like a range reference: non-numeric
+    // text cells are ignored rather than raising #VALUE!.
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 1))),
+        Some(30.0)
+    );
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(1, 1))),
+        Some(15.0)
+    );
+}
+
+#[test]
+fn test_structured_reference_this_row_used_directly_in_sum_ignores_text() {
+    // `[@Column]` evaluates to a single scalar cell value (like a plain
+    // `CellRef`), not a `List`. When passed directly as a function argument
+    // (e.g. `SUM([@Sales])`), a non-numeric text cell must be ignored just
+    // like `SUM(A1)` would ignore a text cell in A1 -- not raise #VALUE!.
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+
+    sheet.set_cell_src(0, 0, "10".to_string());
+    sheet.set_cell_src(1, 0, "\"n/a\"".to_string());
+    sheet.set_cell_src(0, 1, "=SUM([@Sales])".to_string());
+    sheet.set_cell_src(1, 1, "=SUM([@Sales])".to_string());
+    sheet.commit(None).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 1))),
+        Some(10.0)
+    );
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(1, 1))),
+        Some(0.0)
+    );
+}
+
+#[test]
+fn test_structured_reference_whole_table_data_section() {
+    let mut sheet2 = Sheet::new(SheetInit {
+        name: Some("Sheet2".to_string()),
+        rows: 2,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet2.columns[0].name = "A".to_string();
+    sheet2.columns[1].name = "B".to_string();
+    sheet2.set_cell_src(0, 0, "1".to_string());
+    sheet2.set_cell_src(1, 0, "2".to_string());
+    sheet2.set_cell_src(0, 1, "3".to_string());
+    sheet2.set_cell_src(1, 1, "4".to_string());
+    sheet2.commit(None).unwrap();
+
+    let mut sheet1 = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 1,
+        cols: 1,
+        ..Default::default()
+    });
+    // `[#Data]` with no column name spans every column in the table.
+    sheet1.set_cell_src(0, 0, "=SUM(Sheet2[#Data])".to_string());
+
+    let mut context = Context::default();
+    context.sheets.insert("Sheet2".to_string(), &sheet2);
+    sheet1.commit(Some(&context)).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet1.get_result_data(&CellRef::new(0, 0))),
+        Some(10.0)
+    );
+}
+
+#[test]
+fn test_structured_reference_whole_row_no_column() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 3,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+    sheet.columns[1].name = "Cost".to_string();
+    sheet.columns[2].name = "Extra".to_string();
+
+    sheet.set_cell_src(0, 0, "10".to_string());
+    sheet.set_cell_src(0, 1, "3".to_string());
+    sheet.set_cell_src(0, 2, "2".to_string());
+    sheet.commit(None).unwrap();
+
+    // `[@]` (this row, no column) spans every column of the current row.
+    let (res, _) = sheet.eval_with_row("=SUM([@])", None, Some(0)).unwrap();
+    assert_eq!(get_float_val(&res), Some(15.0));
+}
+
+#[test]
+fn test_structured_reference_missing_column_errors() {
+    let sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 2,
+        ..Default::default()
+    });
+    assert!(sheet.eval("=[NoSuchColumn]", None).is_err());
+}
+
+#[test]
+fn test_structured_reference_missing_table_errors() {
+    let sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 1,
+        cols: 1,
+        ..Default::default()
+    });
+    assert!(sheet.eval("=NoSuchTable[Col]", None).is_err());
+}
+
+#[test]
+fn test_structured_reference_recomputes_on_column_change() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.columns[0].name = "Sales".to_string();
+
+    sheet.set_cell_src(0, 0, "10".to_string());
+    sheet.set_cell_src(1, 0, "20".to_string());
+    sheet.set_cell_src(0, 1, "=SUM([Sales])".to_string());
+    sheet.commit(None).unwrap();
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 1))),
+        Some(30.0)
+    );
+
+    // Changing a cell elsewhere in the referenced column should invalidate
+    // and recompute the dependent structured-reference formula.
+    sheet.set_cell_src(1, 0, "50".to_string());
+    sheet.commit(None).unwrap();
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 1))),
+        Some(60.0)
+    );
+}

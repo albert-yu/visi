@@ -345,7 +345,9 @@ fn parse_structured_specifier(
         idx += 1;
         if idx < chars.len() && chars[idx] == '[' {
             if let Some((col_name, next_idx)) = parse_bracketed_term(chars, idx) {
-                column = Some(col_name);
+                if !col_name.is_empty() {
+                    column = Some(col_name);
+                }
                 idx = next_idx;
             } else {
                 return None;
@@ -356,7 +358,12 @@ fn parse_structured_specifier(
                 col_name.push(chars[idx]);
                 idx += 1;
             }
-            column = Some(col_name.trim().to_string());
+            let trimmed = col_name.trim().to_string();
+            column = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
         }
         if idx < chars.len() && chars[idx] == ']' {
             return Some((column, is_this_row, section, idx + 1));
@@ -382,13 +389,15 @@ fn parse_structured_specifier(
                 }
                 if idx < chars.len() && chars[idx] == '[' {
                     if let Some((col_name, next_idx2)) = parse_bracketed_term(chars, idx) {
-                        column = Some(col_name);
+                        if !col_name.is_empty() {
+                            column = Some(col_name);
+                        }
                         idx = next_idx2;
                     } else {
                         return None;
                     }
                 }
-            } else {
+            } else if !term1.is_empty() {
                 column = Some(term1);
             }
         } else {
@@ -443,7 +452,7 @@ fn parse_structured_specifier(
             "#All" => section = SheetSection::All,
             _ => {}
         }
-    } else {
+    } else if !term.is_empty() {
         column = Some(term);
     }
 
@@ -987,20 +996,41 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 };
 
                 if *is_this_row {
-                    result.push_str(&format!("{}[@{}]", prefix, col_name));
+                    if col_name.is_empty() {
+                        result.push_str(&format!("{}[@]", prefix));
+                    } else {
+                        result.push_str(&format!("{}[@{}]", prefix, col_name));
+                    }
                 } else {
                     match section {
                         SheetSection::Headers => {
-                            result.push_str(&format!("{}[[#Headers], [{}]]", prefix, col_name));
+                            if col_name.is_empty() {
+                                result.push_str(&format!("{}[#Headers]", prefix));
+                            } else {
+                                result
+                                    .push_str(&format!("{}[[#Headers], [{}]]", prefix, col_name));
+                            }
                         }
                         SheetSection::Totals => {
-                            result.push_str(&format!("{}[[#Totals], [{}]]", prefix, col_name));
+                            if col_name.is_empty() {
+                                result.push_str(&format!("{}[#Totals]", prefix));
+                            } else {
+                                result.push_str(&format!("{}[[#Totals], [{}]]", prefix, col_name));
+                            }
                         }
                         SheetSection::Data => {
-                            result.push_str(&format!("{}[{}]", prefix, col_name));
+                            if col_name.is_empty() {
+                                result.push_str(&format!("{}[#Data]", prefix));
+                            } else {
+                                result.push_str(&format!("{}[{}]", prefix, col_name));
+                            }
                         }
                         SheetSection::All => {
-                            result.push_str(&format!("{}[[#All], [{}]]", prefix, col_name));
+                            if col_name.is_empty() {
+                                result.push_str(&format!("{}[#All]", prefix));
+                            } else {
+                                result.push_str(&format!("{}[[#All], [{}]]", prefix, col_name));
+                            }
                         }
                     }
                 }
@@ -2068,6 +2098,87 @@ mod tests {
                 }
             }
             _ => panic!("Expected BinaryOp"),
+        }
+    }
+
+    #[test]
+    fn test_structured_reference_whole_row_no_column() {
+        let mut table1 = Sheet::new(crate::core::SheetInit {
+            id: Some(123),
+            name: Some("Sheet1".to_string()),
+            rows: 5,
+            cols: 2,
+        });
+        table1.columns[0].name = "Sales".to_string();
+        table1.columns[0].id = 1;
+        table1.columns[1].name = "Cost".to_string();
+        table1.columns[1].id = 2;
+        let sheets = vec![table1];
+
+        // `[@]` (this row, no specific column) should parse with column = None,
+        // not a column literally named "".
+        let f = compile_formula("=[@]", &sheets);
+        match &f.parts[1] {
+            FormulaPart::StructuredReference {
+                col_id,
+                is_this_row,
+                section,
+                ..
+            } => {
+                assert_eq!(*col_id, None);
+                assert!(is_this_row);
+                assert_eq!(*section, SheetSection::Data);
+            }
+            _ => panic!("Expected StructuredReference, got {:?}", f.parts[1]),
+        }
+        assert_eq!(serialize_formula(&f, &sheets), "=[@]");
+
+        let ast = parse_excel_formula("[@]").unwrap();
+        match ast {
+            Expr::StructuredRef {
+                column, is_this_row, ..
+            } => {
+                assert_eq!(column, None);
+                assert!(is_this_row);
+            }
+            _ => panic!("Expected StructuredRef"),
+        }
+    }
+
+    #[test]
+    fn test_structured_reference_whole_table_sections_no_column() {
+        let mut table1 = Sheet::new(crate::core::SheetInit {
+            id: Some(123),
+            name: Some("Sheet1".to_string()),
+            rows: 5,
+            cols: 2,
+        });
+        table1.columns[0].name = "Sales".to_string();
+        table1.columns[1].name = "Cost".to_string();
+        let sheets = vec![table1];
+
+        for (input, expected_section) in [
+            ("=[#Data]", SheetSection::Data),
+            ("=[#All]", SheetSection::All),
+            ("=[#Headers]", SheetSection::Headers),
+            ("=[#Totals]", SheetSection::Totals),
+        ] {
+            let f = compile_formula(input, &sheets);
+            match &f.parts[1] {
+                FormulaPart::StructuredReference {
+                    col_id,
+                    is_this_row,
+                    section,
+                    ..
+                } => {
+                    assert_eq!(*col_id, None, "input: {input}");
+                    assert!(!is_this_row, "input: {input}");
+                    assert_eq!(*section, expected_section, "input: {input}");
+                }
+                _ => panic!("Expected StructuredReference for {input}, got {:?}", f.parts[1]),
+            }
+            // Round-trips back to the same whole-section syntax.
+            assert_eq!(serialize_formula(&f, &sheets), input);
         }
     }
 }

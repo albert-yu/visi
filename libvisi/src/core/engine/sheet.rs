@@ -427,29 +427,43 @@ impl Sheet {
                     ))));
                 };
 
-                let col_idx = if let Some(col_name) = column {
-                    if let Some(pos) = target_table
+                // `column: None` means the reference spans every column in the table
+                // (e.g. `Table1[#Data]` or `[@]`), rather than a single named column.
+                let col_indices: Vec<usize> = if let Some(col_name) = column {
+                    let pos = target_table
                         .columns
                         .iter()
                         .position(|c| c.name == *col_name)
-                    {
-                        pos
-                    } else {
-                        return Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                            "Column not found: {}",
-                            col_name
-                        ))));
-                    }
+                        .ok_or_else(|| {
+                            EngineError::EvalError(EvalError::UnknownFunction(format!(
+                                "Column not found: {}",
+                                col_name
+                            )))
+                        })?;
+                    vec![pos]
                 } else {
-                    0
+                    (0..target_table.columns.len()).collect()
                 };
+                let is_whole_table = column.is_none();
 
                 match section {
                     SheetSection::Headers => {
-                        if let Some(col) = target_table.columns.get(col_idx) {
-                            Ok(ResultData::String(col.name.clone()))
+                        let names: Vec<ResultData> = col_indices
+                            .iter()
+                            .map(|&idx| {
+                                ResultData::String(
+                                    target_table
+                                        .columns
+                                        .get(idx)
+                                        .map(|c| c.name.clone())
+                                        .unwrap_or_default(),
+                                )
+                            })
+                            .collect();
+                        if is_whole_table {
+                            Ok(ResultData::List(names))
                         } else {
-                            Ok(ResultData::None)
+                            Ok(names.into_iter().next().unwrap_or(ResultData::None))
                         }
                     }
                     SheetSection::Totals => Ok(ResultData::None),
@@ -461,29 +475,39 @@ impl Sheet {
                                         .to_string(),
                                 ))
                             })?;
-                            let cell_ref = CellRef::new(r, col_idx);
-                            if is_self {
-                                deps.push(Dependency::Local(cell_ref));
-                            } else {
-                                deps.push(Dependency::Remote {
-                                    sheet: sheet_name,
-                                    cell: cell_ref,
-                                });
-                            }
-                            Ok(target_table.get_result_data(&cell_ref))
-                        } else {
-                            if is_self {
-                                deps.push(Dependency::LocalColumn(col_idx));
-                            } else {
-                                deps.push(Dependency::RemoteColumn {
-                                    sheet: sheet_name,
-                                    col: col_idx,
-                                });
-                            }
                             let mut results = Vec::new();
-                            for r in 0..target_table.row_count() {
+                            for &col_idx in &col_indices {
                                 let cell_ref = CellRef::new(r, col_idx);
+                                if is_self {
+                                    deps.push(Dependency::Local(cell_ref));
+                                } else {
+                                    deps.push(Dependency::Remote {
+                                        sheet: sheet_name.clone(),
+                                        cell: cell_ref,
+                                    });
+                                }
                                 results.push(target_table.get_result_data(&cell_ref));
+                            }
+                            if is_whole_table {
+                                Ok(ResultData::List(results))
+                            } else {
+                                Ok(results.into_iter().next().unwrap_or(ResultData::None))
+                            }
+                        } else {
+                            let mut results = Vec::new();
+                            for &col_idx in &col_indices {
+                                if is_self {
+                                    deps.push(Dependency::LocalColumn(col_idx));
+                                } else {
+                                    deps.push(Dependency::RemoteColumn {
+                                        sheet: sheet_name.clone(),
+                                        col: col_idx,
+                                    });
+                                }
+                                for r in 0..target_table.row_count() {
+                                    let cell_ref = CellRef::new(r, col_idx);
+                                    results.push(target_table.get_result_data(&cell_ref));
+                                }
                             }
                             Ok(ResultData::List(results))
                         }
@@ -1437,7 +1461,9 @@ impl Sheet {
             let mut arg_is_direct = Vec::new();
             for arg in args {
                 let is_direct_arg = match arg {
-                    Expr::CellRef { .. } | Expr::RangeRef { .. } => false,
+                    Expr::CellRef { .. } | Expr::RangeRef { .. } | Expr::StructuredRef { .. } => {
+                        false
+                    }
                     Expr::FunctionCall { name, .. } => {
                         let n = name.to_uppercase();
                         n != "IF" && n != "IFERROR" && n != "CHOOSE"
