@@ -1177,3 +1177,179 @@ fn test_structured_reference_recomputes_on_column_change() {
         Some(60.0)
     );
 }
+
+#[test]
+fn test_excel_table_structured_reference_respects_table_row_bounds() {
+    // Column 0 has data both above and below the defined table's row range;
+    // a structured reference into the table must only see the table's own
+    // rows, unlike the legacy whole-sheet fallback which scans every row.
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 5,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "999".to_string()); // above the table
+    sheet.set_cell_src(1, 0, "Amount".to_string()); // header row
+    sheet.set_cell_src(2, 0, "10".to_string());
+    sheet.set_cell_src(3, 0, "20".to_string());
+    sheet.set_cell_src(4, 0, "888".to_string()); // below the table
+    sheet.commit(None).unwrap();
+
+    sheet
+        .add_table("Sales".to_string(), 1, 0, 3, 0, true, false)
+        .unwrap();
+
+    let (res, _) = sheet.eval("=SUM(Sales[Amount])", None).unwrap();
+    assert_eq!(get_float_val(&res), Some(30.0));
+}
+
+#[test]
+fn test_excel_table_totals_row_returns_real_value() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 4,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "Amount".to_string());
+    sheet.set_cell_src(1, 0, "10".to_string());
+    sheet.set_cell_src(2, 0, "20".to_string());
+    sheet.set_cell_src(3, 0, "=SUM(A2:A3)".to_string());
+    sheet.commit(None).unwrap();
+
+    sheet
+        .add_table("Sales".to_string(), 0, 0, 3, 0, true, true)
+        .unwrap();
+
+    let (res, _) = sheet.eval("=Sales[[#Totals],[Amount]]", None).unwrap();
+    assert_eq!(get_float_val(&res), Some(30.0));
+}
+
+#[test]
+fn test_excel_table_totals_section_without_totals_row_is_none() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 3,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "Amount".to_string());
+    sheet.set_cell_src(1, 0, "10".to_string());
+    sheet.set_cell_src(2, 0, "20".to_string());
+    sheet.commit(None).unwrap();
+
+    // has_totals_row = false: no totals row is reserved at all.
+    sheet
+        .add_table("Sales".to_string(), 0, 0, 2, 0, true, false)
+        .unwrap();
+
+    let (res, _) = sheet.eval("=Sales[[#Totals],[Amount]]", None).unwrap();
+    assert!(matches!(res, ResultData::None));
+}
+
+#[test]
+fn test_excel_table_headers_use_stored_table_column_name() {
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 3,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "Amount".to_string());
+    sheet.set_cell_src(1, 0, "10".to_string());
+    sheet.set_cell_src(2, 0, "20".to_string());
+    sheet.commit(None).unwrap();
+
+    sheet
+        .add_table("Sales".to_string(), 0, 0, 2, 0, true, false)
+        .unwrap();
+
+    let (res, _) = sheet.eval("=Sales[[#Headers],[Amount]]", None).unwrap();
+    assert_eq!(get_string_val(&res), Some("Amount".to_string()));
+}
+
+#[test]
+fn test_excel_table_cross_sheet_reference() {
+    let mut sheet2 = Sheet::new(SheetInit {
+        name: Some("Sheet2".to_string()),
+        rows: 3,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet2.set_cell_src(0, 0, "Amount".to_string());
+    sheet2.set_cell_src(1, 0, "100".to_string());
+    sheet2.set_cell_src(2, 0, "200".to_string());
+    sheet2.commit(None).unwrap();
+    sheet2
+        .add_table("Revenue".to_string(), 0, 0, 2, 0, true, false)
+        .unwrap();
+
+    let sheet1 = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 1,
+        cols: 1,
+        ..Default::default()
+    });
+
+    let mut context = Context::default();
+    context.sheets.insert("Sheet2".to_string(), &sheet2);
+
+    let (res, _) = sheet1
+        .eval("=SUM(Revenue[Amount])", Some(&context))
+        .unwrap();
+    assert_eq!(get_float_val(&res), Some(300.0));
+}
+
+#[test]
+fn test_excel_table_structured_reference_survives_commit() {
+    // Regression test: `commit()` re-derives each formula's evaluated
+    // source text via `compile_formula`/`serialize_formula` on every run
+    // (see Sheet::commit), not just the first time. That recompilation
+    // step must recognize a real ExcelTable's columns -- if it instead
+    // tried to resolve them the legacy way (as plain DataColumn names, all
+    // of which are blank for a table's columns), it would rewrite the
+    // formula's column name to a bogus placeholder and break it, even
+    // though a direct `sheet.eval()` call (bypassing compile_formula) would
+    // have worked fine.
+    let mut sheet = Sheet::new(SheetInit {
+        name: Some("Sheet1".to_string()),
+        rows: 4,
+        cols: 3,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "Name".to_string());
+    sheet.set_cell_src(0, 1, "Amount".to_string());
+    sheet.set_cell_src(1, 0, "Widget".to_string());
+    sheet.set_cell_src(1, 1, "10".to_string());
+    sheet.set_cell_src(2, 0, "Gadget".to_string());
+    sheet.set_cell_src(2, 1, "20".to_string());
+    sheet.commit(None).unwrap();
+
+    sheet
+        .add_table("Sales".to_string(), 0, 0, 2, 1, true, false)
+        .unwrap();
+
+    sheet.set_cell_src(0, 2, "=SUM(Sales[Amount])".to_string());
+    sheet.set_cell_src(1, 2, "=Sales[[#Headers],[Amount]]".to_string());
+    sheet.commit(None).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 2))),
+        Some(30.0)
+    );
+    assert_eq!(
+        get_string_val(&sheet.get_result_data(&CellRef::new(1, 2))),
+        Some("Amount".to_string())
+    );
+
+    // Committing again (as e.g. re-evaluating an already-saved workbook
+    // would) must keep working -- this is what actually exercises the
+    // repeated compile_formula/serialize_formula round-trip.
+    sheet.mark_all_dirty();
+    sheet.commit(None).unwrap();
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 2))),
+        Some(30.0)
+    );
+}

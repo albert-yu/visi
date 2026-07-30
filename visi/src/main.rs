@@ -7,7 +7,7 @@ use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
     ExportArgs, ExportFormat, InfoArgs, OutputFormat, ReadArgs, RowArgs, RowSubcommands, SetArgs,
-    SheetArgs, SheetSubcommands,
+    SheetArgs, SheetSubcommands, TableArgs, TableSubcommands,
 };
 use visi::engine::WorkbookManager;
 use visi::format::{get_cell_display_val, render_grid};
@@ -29,6 +29,7 @@ fn main() {
         Commands::Row(args) => handle_row(args, quiet),
         Commands::Col(args) => handle_col(args, quiet),
         Commands::Chart(args) => handle_chart(args, quiet),
+        Commands::Table(args) => handle_table(args, quiet),
         Commands::Export(args) => handle_export(args),
     }
 }
@@ -629,6 +630,243 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 eprintln!(
                     "Deleted chart ID {} and saved to '{}'.",
                     del_args.id, save_path
+                );
+            }
+        }
+    }
+}
+
+/// Resolves a table column specifier that's either a 1-based index (e.g.
+/// "2") or an existing column name (case-insensitive), returning a 0-based
+/// index relative to the table.
+fn resolve_table_column_index(
+    table: &libvisi::core::ExcelTable,
+    spec: &str,
+) -> Result<usize, String> {
+    let trimmed = spec.trim();
+    if let Ok(n) = trimmed.parse::<usize>() {
+        if n == 0 || n > table.columns.len() {
+            return Err(format!(
+                "Column index {} out of bounds (table '{}' has {} columns)",
+                n,
+                table.name,
+                table.columns.len()
+            ));
+        }
+        return Ok(n - 1);
+    }
+    table.local_column_index(trimmed).ok_or_else(|| {
+        format!(
+            "Column '{}' not found in table '{}' (columns: {})",
+            spec,
+            table.name,
+            table.columns.join(", ")
+        )
+    })
+}
+
+fn handle_table(args: TableArgs, quiet: bool) {
+    match args.command {
+        TableSubcommands::List(list_args) => {
+            let wb = WorkbookManager::load_file(&list_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            let tables = wb.list_tables();
+
+            if list_args.json {
+                let json_tables = json!(
+                    tables
+                        .iter()
+                        .map(|(sheet_name, t)| json!({
+                            "name": t.name,
+                            "sheet": sheet_name,
+                            "range": format!(
+                                "{}{}:{}{}",
+                                col_idx_to_letters(t.start_col), t.start_row + 1,
+                                col_idx_to_letters(t.end_col), t.end_row + 1
+                            ),
+                            "columns": t.columns,
+                            "has_header_row": t.has_header_row,
+                            "has_totals_row": t.has_totals_row
+                        }))
+                        .collect::<Vec<_>>()
+                );
+                println!("{}", serde_json::to_string_pretty(&json_tables).unwrap());
+            } else {
+                if tables.is_empty() {
+                    println!("No tables found in workbook.");
+                    return;
+                }
+                println!(
+                    "{:<15} {:<15} {:<12} {:<8} {:<8} {}",
+                    "Name", "Sheet", "Range", "Header", "Totals", "Columns"
+                );
+                println!("{}", "-".repeat(90));
+                for (sheet_name, t) in &tables {
+                    let range = format!(
+                        "{}{}:{}{}",
+                        col_idx_to_letters(t.start_col),
+                        t.start_row + 1,
+                        col_idx_to_letters(t.end_col),
+                        t.end_row + 1
+                    );
+                    println!(
+                        "{:<15} {:<15} {:<12} {:<8} {:<8} {}",
+                        t.name,
+                        sheet_name,
+                        range,
+                        t.has_header_row,
+                        t.has_totals_row,
+                        t.columns.join(", ")
+                    );
+                }
+            }
+        }
+        TableSubcommands::Add(add_args) => {
+            let mut wb = WorkbookManager::load_file(&add_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let (range_sheet, start_row, start_col, end_row, end_col) =
+                parse_range_ref(&add_args.range)
+                    .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+
+            let sheet_name = match add_args.sheet.or(range_sheet) {
+                Some(name) => name,
+                None => {
+                    let s_idx = wb
+                        .find_sheet_index(None)
+                        .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+                    wb.sheets[s_idx].name.clone()
+                }
+            };
+
+            let table_id = wb
+                .add_table(
+                    Some(&sheet_name),
+                    &add_args.name,
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    !add_args.no_header_row,
+                    add_args.totals_row,
+                )
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path = resolve_output_path(add_args.output, add_args.in_place, &add_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Added table '{}' (ID {}) on sheet '{}' and saved to '{}'.",
+                    add_args.name, table_id, sheet_name, save_path
+                );
+            }
+        }
+        TableSubcommands::Delete(del_args) => {
+            let mut wb = WorkbookManager::load_file(&del_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            wb.delete_table(&del_args.name).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_USAGE_ERROR);
+            });
+            let save_path = resolve_output_path(del_args.output, del_args.in_place, &del_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Deleted table '{}' and saved to '{}'.",
+                    del_args.name, save_path
+                );
+            }
+        }
+        TableSubcommands::Rename(ren_args) => {
+            let mut wb = WorkbookManager::load_file(&ren_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            wb.rename_table(&ren_args.old, &ren_args.new)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+            let save_path = resolve_output_path(ren_args.output, ren_args.in_place, &ren_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Renamed table '{}' -> '{}' and saved to '{}'.",
+                    ren_args.old, ren_args.new, save_path
+                );
+            }
+        }
+        TableSubcommands::Resize(resize_args) => {
+            let mut wb = WorkbookManager::load_file(&resize_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let (_, start_row, start_col, end_row, end_col) = parse_range_ref(&resize_args.range)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+
+            let (_, existing) = wb.find_table(&resize_args.name).unwrap_or_else(|| {
+                exit_with_error(
+                    format!("Table '{}' not found", resize_args.name),
+                    EXIT_USAGE_ERROR,
+                )
+            });
+            if (start_row, start_col) != (existing.start_row, existing.start_col) {
+                exit_with_error(
+                    format!(
+                        "Cannot move a table's top-left corner (table '{}' starts at {}{}); \
+                         specify a range with the same starting cell",
+                        resize_args.name,
+                        col_idx_to_letters(existing.start_col),
+                        existing.start_row + 1
+                    ),
+                    EXIT_USAGE_ERROR,
+                );
+            }
+
+            wb.resize_table(&resize_args.name, end_row, end_col)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path =
+                resolve_output_path(resize_args.output, resize_args.in_place, &resize_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Resized table '{}' and saved to '{}'.",
+                    resize_args.name, save_path
+                );
+            }
+        }
+        TableSubcommands::RenameColumn(rc_args) => {
+            let mut wb = WorkbookManager::load_file(&rc_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let (_, table) = wb.find_table(&rc_args.name).unwrap_or_else(|| {
+                exit_with_error(
+                    format!("Table '{}' not found", rc_args.name),
+                    EXIT_USAGE_ERROR,
+                )
+            });
+            let col_index = resolve_table_column_index(table, &rc_args.column)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+
+            wb.rename_table_column(&rc_args.name, col_index, &rc_args.new_name)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+
+            let save_path = resolve_output_path(rc_args.output, rc_args.in_place, &rc_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Renamed column '{}' -> '{}' in table '{}' and saved to '{}'.",
+                    rc_args.column, rc_args.new_name, rc_args.name, save_path
                 );
             }
         }

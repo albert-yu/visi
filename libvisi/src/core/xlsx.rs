@@ -46,6 +46,12 @@ pub fn import_xlsx_data(
     let sheet_names = workbook.sheet_names();
     let total_sheets = sheet_names.len();
     let mut imported_tables = Vec::new();
+    // Maps each worksheet's original name to the (possibly de-duplicated)
+    // name it was actually imported under, so Excel Table definitions --
+    // read separately below, keyed by original sheet name -- can be
+    // attached to the right imported Sheet.
+    let mut orig_to_assigned_name: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -219,10 +225,12 @@ pub fn import_xlsx_data(
             }
             let elapsed_cells = start_cells.elapsed();
 
+            orig_to_assigned_name.insert(orig_sheet_name.clone(), sheet_name.clone());
             let new_table = Sheet {
                 id: rand::random::<u64>(),
                 name: sheet_name,
                 columns,
+                tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
                 uncommitted_actions: Vec::new(),
@@ -244,6 +252,58 @@ pub fn import_xlsx_data(
 
     if imported_tables.is_empty() {
         return Err("No worksheets found in the Excel file".to_string());
+    }
+
+    // Import Excel Table (ListObject) definitions, attaching each one to
+    // its owning sheet. Name, sheet, and column names come straight from
+    // calamine; the exact header/totals row presence is read directly from
+    // the table's own XML since calamine doesn't expose those counts.
+    if workbook.load_tables().is_ok() {
+        let table_names: Vec<String> = workbook.table_names().into_iter().cloned().collect();
+        for table_name in table_names {
+            let Ok(table) = workbook.table_by_name(&table_name) else {
+                continue;
+            };
+            let Some(assigned_sheet_name) = orig_to_assigned_name.get(table.sheet_name()) else {
+                continue;
+            };
+            let Some(imported) = imported_tables
+                .iter_mut()
+                .find(|t: &&mut ImportedSheet| &t.sheet.name == assigned_sheet_name)
+            else {
+                continue;
+            };
+            let (Some((data_start_row, data_start_col)), Some((data_end_row, data_end_col))) =
+                (table.data().start(), table.data().end())
+            else {
+                continue;
+            };
+            let (has_header_row, has_totals_row) = read_table_row_flags(buffer, &table_name);
+
+            let start_row = (data_start_row as usize).saturating_sub(usize::from(has_header_row));
+            let end_row = data_end_row as usize + usize::from(has_totals_row);
+            let start_col = data_start_col as usize;
+            let end_col = data_end_col as usize;
+
+            // Guard against ranges that don't fit the imported sheet (e.g. a
+            // table whose sheet fell back to the default empty-sheet size).
+            if end_row >= imported.sheet.row_count() || end_col >= imported.sheet.col_count() {
+                continue;
+            }
+
+            imported.sheet.tables.push(crate::core::table::ExcelTable {
+                id: rand::random::<u64>(),
+                name: table_name.clone(),
+                sheet_id: imported.sheet.id,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                has_header_row,
+                has_totals_row,
+                columns: table.columns().to_vec(),
+            });
+        }
     }
 
     log::info!(
@@ -423,6 +483,35 @@ pub fn export_xlsx_data(
                             .map_err(|e| format!("Failed to write Excel string: {}", e))?;
                     }
                 }
+            }
+
+            // Export Excel Tables (ListObjects) defined on this sheet. Cell
+            // values/formulas were already written above; a `TableColumn`
+            // with no total/formula set leaves the totals row and data cells
+            // alone, so `add_table` only adds table metadata (name, header
+            // row, autofilter, style) without touching content we already
+            // wrote -- except the header row, which it re-writes with the
+            // same column name we already used to populate it.
+            for table in &sheet.tables {
+                let rx_columns: Vec<rust_xlsxwriter::TableColumn> = table
+                    .columns
+                    .iter()
+                    .map(|name| rust_xlsxwriter::TableColumn::new().set_header(name))
+                    .collect();
+                let rx_table = rust_xlsxwriter::Table::new()
+                    .set_name(&table.name)
+                    .set_header_row(table.has_header_row)
+                    .set_total_row(table.has_totals_row)
+                    .set_columns(&rx_columns);
+                worksheet
+                    .add_table(
+                        table.start_row as u32,
+                        table.start_col as u16,
+                        table.end_row as u32,
+                        table.end_col as u16,
+                        &rx_table,
+                    )
+                    .map_err(|e| format!("Failed to add Excel table '{}': {}", table.name, e))?;
             }
         }
     }
@@ -1043,6 +1132,55 @@ fn get_zip_file_content(
     Some(content)
 }
 
+/// Reads `headerRowCount`/`totalsRowCount` directly from a table's own XML
+/// part (`xl/tables/table*.xml`), matched by its `displayName`. calamine's
+/// `Table::data()` already excludes the header row (and, in the common
+/// case, the totals row) but doesn't expose these counts directly. Defaults
+/// to `(true, false)` -- a header row and no totals row -- if the table's
+/// XML can't be found or parsed, matching how most real-world tables are
+/// configured.
+fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(buffer)) else {
+        return (true, false);
+    };
+    let table_files: Vec<String> = archive
+        .file_names()
+        .filter(|n| n.starts_with("xl/tables/") && n.ends_with(".xml"))
+        .map(|s| s.to_string())
+        .collect();
+
+    for file_name in table_files {
+        let Some(xml_content) = get_zip_file_content(&mut archive, &file_name) else {
+            continue;
+        };
+        let mut reader = quick_xml::Reader::from_str(&xml_content);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Start(ref e))
+                | Ok(quick_xml::events::Event::Empty(ref e))
+                    if e.local_name().as_ref() == b"table" =>
+                {
+                    let display_name = get_attr(e, b"displayName").unwrap_or_default();
+                    if display_name == table_name {
+                        let header_row_count = get_attr(e, b"headerRowCount")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(1);
+                        let totals_row_count = get_attr(e, b"totalsRowCount")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        return (header_row_count != 0, totals_row_count != 0);
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+    (true, false)
+}
+
 fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
         .map_err(|e| format!("Failed to open zip: {}", e))?;
@@ -1129,6 +1267,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
@@ -1156,6 +1295,58 @@ mod tests {
     }
 
     #[test]
+    fn test_xlsx_excel_table_import_export_cycle() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 4,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Name".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet.set_cell_src(1, 0, "Widget".to_string());
+        sheet.set_cell_src(1, 1, "10".to_string());
+        sheet.set_cell_src(2, 0, "Gadget".to_string());
+        sheet.set_cell_src(2, 1, "20".to_string());
+        sheet.set_cell_src(3, 1, "=SUM(B2:B3)".to_string());
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 3, 1, true, true)
+            .unwrap();
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+        let (imported_tables, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_tables.len(), 1);
+
+        let imported_sheet = &imported_tables[0].sheet;
+        assert_eq!(imported_sheet.tables.len(), 1);
+        let table = &imported_sheet.tables[0];
+        assert_eq!(table.name, "Sales");
+        assert_eq!(table.columns, vec!["Name", "Amount"]);
+        assert_eq!((table.start_row, table.start_col), (0, 0));
+        assert_eq!((table.end_row, table.end_col), (3, 1));
+        assert!(table.has_header_row);
+        assert!(table.has_totals_row);
+        assert_eq!(table.data_start_row(), 1);
+        assert_eq!(table.data_end_row(), 2);
+
+        // The structured reference over the re-imported table should still
+        // only see the table's own data rows.
+        let mut imported_sheet = imported_sheet.clone();
+        imported_sheet.mark_all_dirty();
+        imported_sheet.commit(None).unwrap();
+        let (res, _) = imported_sheet.eval("=SUM(Sales[Amount])", None).unwrap();
+        assert_eq!(
+            match res {
+                crate::core::engine::ResultData::Float(f) => Some(f),
+                crate::core::engine::ResultData::Integer(i) => Some(i as f64),
+                _ => None,
+            },
+            Some(30.0)
+        );
+    }
+
+    #[test]
     fn test_xlsx_empty_table_preservation() {
         // Create an empty sheet (e.g., 5 columns, 10 rows, all empty strings)
         let mut columns = Vec::new();
@@ -1169,6 +1360,7 @@ mod tests {
             id: 2,
             name: "EmptyTable".to_string(),
             columns,
+            tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
@@ -1206,6 +1398,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
@@ -1263,6 +1456,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
@@ -1294,6 +1488,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),

@@ -52,7 +52,73 @@ fn test_workbook_create_and_formula_evaluation() {
     let _ = fs::remove_file(out_path);
 }
 
+#[test]
+fn test_workbook_table_crud_and_evaluation() {
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_table_crud.xlsx");
+    let file_str = file_path.to_str().unwrap();
 
+    // Start from an empty workbook, exactly like `visi set` does for a
+    // nonexistent file, then populate it via the same WorkbookManager API
+    // the CLI itself calls into.
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    wb.set_cell(0, 0, 0, "Name".to_string());
+    wb.set_cell(0, 0, 1, "Amount".to_string());
+    wb.set_cell(0, 1, 0, "Widget".to_string());
+    wb.set_cell(0, 1, 1, "10".to_string());
+    wb.set_cell(0, 2, 0, "Gadget".to_string());
+    wb.set_cell(0, 2, 1, "20".to_string());
+    wb.evaluate().unwrap();
+
+    let table_id = wb
+        .add_table(None, "Sales", 0, 0, 2, 1, true, false)
+        .unwrap();
+    assert!(wb.find_table("Sales").is_some());
+    assert_eq!(wb.list_tables().len(), 1);
+
+    wb.set_cell(0, 0, 2, "=SUM(Sales[Amount])".to_string());
+    wb.evaluate().unwrap();
+    let total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    assert_eq!(total.to_string(), "30");
+
+    // Rename a column and the table itself. Renames don't cascade to
+    // existing formula text (matching sheet/chart renames elsewhere in this
+    // codebase, which don't either), so the table metadata reflects the new
+    // names immediately but the formula above now refers to a table name
+    // that no longer exists until it's rewritten to match.
+    wb.rename_table_column("Sales", 1, "Total").unwrap();
+    assert_eq!(
+        wb.find_table("Sales").unwrap().1.columns,
+        vec!["Name", "Total"]
+    );
+    wb.rename_table("Sales", "Revenue").unwrap();
+    assert!(wb.find_table("Sales").is_none());
+    assert!(wb.find_table("Revenue").is_some());
+
+    wb.set_cell(0, 0, 2, "=SUM(Revenue[Total])".to_string());
+    wb.evaluate().unwrap();
+    let total_after_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    assert_eq!(total_after_rename.to_string(), "30");
+
+    // Save and reload: the table definition and the structured-reference
+    // formula must both survive the xlsx round trip.
+    wb.save_file(file_str).unwrap();
+    let mut reloaded = WorkbookManager::load_file(file_str).unwrap();
+    assert_eq!(reloaded.list_tables().len(), 1);
+    let (sheet, table) = reloaded.find_table("Revenue").unwrap();
+    assert_eq!(sheet.name, "Sheet1");
+    assert_eq!(table.columns, vec!["Name", "Total"]);
+
+    reloaded.evaluate().unwrap();
+    let total_after_reload = reloaded.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    assert_eq!(total_after_reload.to_string(), "30");
+
+    reloaded.delete_table("Revenue").unwrap();
+    assert!(reloaded.list_tables().is_empty());
+
+    let _ = table_id;
+    let _ = fs::remove_file(file_path);
+}
 
 #[test]
 fn test_coordinate_parsing() {

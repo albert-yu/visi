@@ -1,5 +1,6 @@
 use crate::utils::col_idx_to_letters;
 use libvisi::core::{
+    ExcelTable,
     chart::{Chart, ChartType},
     engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
 };
@@ -293,6 +294,7 @@ impl WorkbookManager {
             id: generate_unique_id(),
             name: name.to_string(),
             columns,
+            tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
@@ -362,5 +364,102 @@ impl WorkbookManager {
         } else {
             Err(format!("Chart with ID {} not found", id))
         }
+    }
+
+    /// Find the sheet that owns the table with the given name, and the
+    /// table itself. Table names are unique across the whole workbook.
+    pub fn find_table(&self, name: &str) -> Option<(&Sheet, &ExcelTable)> {
+        self.sheets
+            .iter()
+            .find_map(|s| s.find_table(name).map(|t| (s, t)))
+    }
+
+    /// List every table in the workbook, alongside the name of the sheet it
+    /// lives on.
+    pub fn list_tables(&self) -> Vec<(&str, &ExcelTable)> {
+        self.sheets
+            .iter()
+            .flat_map(|s| s.tables.iter().map(move |t| (s.name.as_str(), t)))
+            .collect()
+    }
+
+    fn find_table_sheet_index(&self, name: &str) -> Result<usize, String> {
+        self.sheets
+            .iter()
+            .position(|s| s.find_table(name).is_some())
+            .ok_or_else(|| format!("Table '{}' not found", name))
+    }
+
+    fn table_name_taken(&self, name: &str) -> bool {
+        self.sheets
+            .iter()
+            .any(|s| s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name)))
+    }
+
+    /// Define a new Excel Table over an existing cell range on a sheet.
+    /// Table names are unique across the entire workbook (not just the
+    /// sheet), matching how Excel itself scopes structured-reference names.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_table(
+        &mut self,
+        sheet_name: Option<&str>,
+        name: &str,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+        has_header_row: bool,
+        has_totals_row: bool,
+    ) -> Result<u64, String> {
+        if self.table_name_taken(name) {
+            return Err(format!("Table '{}' already exists", name));
+        }
+        let idx = self.find_sheet_index(sheet_name)?;
+        self.sheets[idx].add_table(
+            name.to_string(),
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+            has_header_row,
+            has_totals_row,
+        )
+    }
+
+    /// Delete a table by name (leaves the underlying cell contents alone).
+    pub fn delete_table(&mut self, name: &str) -> Result<(), String> {
+        let idx = self.find_table_sheet_index(name)?;
+        self.sheets[idx].delete_table_by_name(name)
+    }
+
+    /// Rename a table.
+    pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
+        if !old_name.eq_ignore_ascii_case(new_name) && self.table_name_taken(new_name) {
+            return Err(format!("Table name '{}' is already taken", new_name));
+        }
+        let idx = self.find_table_sheet_index(old_name)?;
+        self.sheets[idx].rename_table(old_name, new_name)
+    }
+
+    /// Resize a table by moving its bottom-right corner.
+    pub fn resize_table(
+        &mut self,
+        name: &str,
+        new_end_row: usize,
+        new_end_col: usize,
+    ) -> Result<(), String> {
+        let idx = self.find_table_sheet_index(name)?;
+        self.sheets[idx].resize_table(name, new_end_row, new_end_col)
+    }
+
+    /// Rename one column (0-based, relative to the table) of a table.
+    pub fn rename_table_column(
+        &mut self,
+        table_name: &str,
+        col_index: usize,
+        new_name: &str,
+    ) -> Result<(), String> {
+        let idx = self.find_table_sheet_index(table_name)?;
+        self.sheets[idx].rename_table_column(table_name, col_index, new_name)
     }
 }

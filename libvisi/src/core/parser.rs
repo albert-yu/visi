@@ -751,42 +751,65 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                     is_this_row,
                     section,
                 } => {
-                    let sheet_id = if let Some(ref name) = sheet {
-                        if let Some(t) = sheets.iter().find(|t| t.name == *name) {
-                            t.id
+                    // A structured reference whose leading name matches a real
+                    // ExcelTable is left as plain, uncompiled text: its column
+                    // lookup is scoped to that table's own row/column range and
+                    // resolved dynamically by name at eval time (see
+                    // Sheet::evaluate_ast), not by a per-column id the way the
+                    // legacy whole-sheet-as-table StructuredReference below is.
+                    // `sheets[0]` is always the sheet this formula belongs to
+                    // (see get_all_tables_for_compilation), matching the
+                    // fallback convention used for unqualified refs elsewhere
+                    // in this function.
+                    let default_sheet_name = sheets.first().map(|s| s.name.clone());
+                    let ref_name = sheet.clone().or(default_sheet_name);
+                    let matches_real_table = ref_name.is_some_and(|name| {
+                        sheets
+                            .iter()
+                            .any(|s| s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(&name)))
+                    });
+
+                    if matches_real_table {
+                        let text: String = chars[i..next_i].iter().collect();
+                        parts.push(FormulaPart::Text(text));
+                    } else {
+                        let sheet_id = if let Some(ref name) = sheet {
+                            if let Some(t) = sheets.iter().find(|t| t.name == *name) {
+                                t.id
+                            } else if !sheets.is_empty() {
+                                sheets[0].id
+                            } else {
+                                0
+                            }
                         } else if !sheets.is_empty() {
                             sheets[0].id
                         } else {
                             0
-                        }
-                    } else if !sheets.is_empty() {
-                        sheets[0].id
-                    } else {
-                        0
-                    };
+                        };
 
-                    let col_id = if let Some(ref col_name) = column {
-                        if let Some(table_obj) = sheets.iter().find(|t| t.id == sheet_id) {
-                            if let Some(col) =
-                                table_obj.columns.iter().find(|c| c.name == *col_name)
-                            {
-                                Some(col.id)
+                        let col_id = if let Some(ref col_name) = column {
+                            if let Some(table_obj) = sheets.iter().find(|t| t.id == sheet_id) {
+                                if let Some(col) =
+                                    table_obj.columns.iter().find(|c| c.name == *col_name)
+                                {
+                                    Some(col.id)
+                                } else {
+                                    Some(generate_unique_id())
+                                }
                             } else {
                                 Some(generate_unique_id())
                             }
                         } else {
-                            Some(generate_unique_id())
-                        }
-                    } else {
-                        None
-                    };
+                            None
+                        };
 
-                    parts.push(FormulaPart::StructuredReference {
-                        sheet_id,
-                        col_id,
-                        is_this_row,
-                        section,
-                    });
+                        parts.push(FormulaPart::StructuredReference {
+                            sheet_id,
+                            col_id,
+                            is_this_row,
+                            section,
+                        });
+                    }
                 }
             }
 
@@ -1007,8 +1030,7 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                             if col_name.is_empty() {
                                 result.push_str(&format!("{}[#Headers]", prefix));
                             } else {
-                                result
-                                    .push_str(&format!("{}[[#Headers], [{}]]", prefix, col_name));
+                                result.push_str(&format!("{}[[#Headers], [{}]]", prefix, col_name));
                             }
                         }
                         SheetSection::Totals => {
@@ -2136,7 +2158,9 @@ mod tests {
         let ast = parse_excel_formula("[@]").unwrap();
         match ast {
             Expr::StructuredRef {
-                column, is_this_row, ..
+                column,
+                is_this_row,
+                ..
             } => {
                 assert_eq!(column, None);
                 assert!(is_this_row);
@@ -2175,7 +2199,10 @@ mod tests {
                     assert!(!is_this_row, "input: {input}");
                     assert_eq!(*section, expected_section, "input: {input}");
                 }
-                _ => panic!("Expected StructuredReference for {input}, got {:?}", f.parts[1]),
+                _ => panic!(
+                    "Expected StructuredReference for {input}, got {:?}",
+                    f.parts[1]
+                ),
             }
             // Round-trips back to the same whole-section syntax.
             assert_eq!(serialize_formula(&f, &sheets), input);

@@ -5,6 +5,7 @@ pub mod engine;
 pub mod formula;
 pub mod parser;
 pub mod shared_vec;
+pub mod table;
 pub mod xlsx;
 
 pub use actions::SheetAction;
@@ -14,3 +15,4 @@ pub use engine::{
 };
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
 pub use shared_vec::SharedVec;
+pub use table::ExcelTable;

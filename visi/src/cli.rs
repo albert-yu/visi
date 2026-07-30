@@ -50,6 +50,9 @@ pub enum Commands {
     /// Manage embedded charts (list, add, delete)
     Chart(ChartArgs),
 
+    /// Manage Excel Tables (list, add, delete, rename, resize, rename-column)
+    Table(TableArgs),
+
     /// Export a worksheet to CSV, TSV, or JSON format
     Export(ExportArgs),
 }
@@ -385,6 +388,138 @@ pub struct ChartDeleteArgs {
     /// Chart ID to delete
     #[arg(long)]
     pub id: u64,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableArgs {
+    #[command(subcommand)]
+    pub command: TableSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TableSubcommands {
+    /// List all Excel Tables in the workbook
+    List(TableListArgs),
+    /// Define a new Excel Table over an existing cell range
+    Add(TableAddArgs),
+    /// Delete an Excel Table (leaves its cell contents untouched)
+    Delete(TableDeleteArgs),
+    /// Rename an Excel Table
+    Rename(TableRenameArgs),
+    /// Resize an Excel Table by moving its bottom-right corner
+    Resize(TableResizeArgs),
+    /// Rename one column of an Excel Table
+    RenameColumn(TableRenameColumnArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TableListArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Output summary as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableAddArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Target worksheet name (defaults to first sheet, or the range's own
+    /// sheet prefix if given, e.g. Sheet1!A1:D10)
+    #[arg(short, long)]
+    pub sheet: Option<String>,
+    /// Name for the new table
+    #[arg(short, long)]
+    pub name: String,
+    /// Cell range the table should occupy (e.g. A1:D10)
+    #[arg(short, long)]
+    pub range: String,
+    /// Treat the range's first row as plain data, not column headers
+    #[arg(long)]
+    pub no_header_row: bool,
+    /// Reserve the range's last row as a totals row
+    #[arg(long)]
+    pub totals_row: bool,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableDeleteArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the table to delete
+    #[arg(short, long)]
+    pub name: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableRenameArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Current table name
+    #[arg(long)]
+    pub old: String,
+    /// New table name
+    #[arg(long)]
+    pub new: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableResizeArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the table to resize
+    #[arg(short, long)]
+    pub name: String,
+    /// New cell range for the table; its top-left corner must match the
+    /// table's current top-left corner (e.g. A1:E12)
+    #[arg(short, long)]
+    pub range: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableRenameColumnArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the table containing the column
+    #[arg(short, long)]
+    pub name: String,
+    /// Existing column name or 1-based column index within the table
+    #[arg(short, long)]
+    pub column: String,
+    /// New column name
+    #[arg(long)]
+    pub new_name: String,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,

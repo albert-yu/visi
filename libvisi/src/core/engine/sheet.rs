@@ -42,6 +42,8 @@ pub struct Sheet {
     pub id: u64,
     pub name: String,
     pub columns: Vec<DataColumn>,
+    #[serde(default)]
+    pub tables: Vec<crate::core::table::ExcelTable>,
     #[serde(skip, default)]
     pub dependencies: HashMap<Dependency, HashSet<CellRef>>,
     #[serde(skip, default)]
@@ -102,6 +104,7 @@ impl Sheet {
             id: sheet_id,
             name: sheet_name,
             columns,
+            tables: Vec::new(),
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),
             uncommitted_actions,
@@ -403,113 +406,248 @@ impl Sheet {
                 is_this_row,
                 section,
             } => {
-                let sheet_name = match sheet {
+                let ref_name = match sheet {
                     Some(name) => name.clone(),
                     None => self.name.clone(),
                 };
-                let is_self = sheet_name == self.name;
 
-                let target_table = if is_self {
-                    self
-                } else if let Some(ctx) = context {
-                    if let Some(t) = ctx.sheets.get(&sheet_name) {
-                        t
-                    } else {
-                        return Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                            "Sheet not found: {}",
-                            sheet_name
-                        ))));
+                // The leading name of a structured reference is first looked up as
+                // a real Excel Table (an `ExcelTable` may live on any sheet in
+                // scope, and is scoped to its own row/column range). If no such
+                // table exists, fall back to the legacy behavior of treating the
+                // name as a sheet name and the whole sheet as an implicit table --
+                // this keeps existing formulas working for sheets that don't
+                // define any explicit table.
+                let mut found: Option<(&Sheet, &crate::core::table::ExcelTable)> =
+                    self.find_table(&ref_name).map(|t| (self, t));
+                if found.is_none() {
+                    if let Some(ctx) = context {
+                        for s in ctx.sheets.values() {
+                            if let Some(t) = s.find_table(&ref_name) {
+                                found = Some((s, t));
+                                break;
+                            }
+                        }
                     }
-                } else {
-                    return Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                        "No context to resolve sheet reference: {}",
-                        sheet_name
-                    ))));
-                };
+                }
 
-                // `column: None` means the reference spans every column in the table
-                // (e.g. `Table1[#Data]` or `[@]`), rather than a single named column.
-                let col_indices: Vec<usize> = if let Some(col_name) = column {
-                    let pos = target_table
-                        .columns
-                        .iter()
-                        .position(|c| c.name == *col_name)
-                        .ok_or_else(|| {
+                if let Some((table_sheet, excel_table)) = found {
+                    let is_self = table_sheet.name == self.name;
+                    let sheet_name = table_sheet.name.clone();
+
+                    // (local index within the table, absolute sheet column index)
+                    let col_indices: Vec<(usize, usize)> = if let Some(col_name) = column {
+                        let local = excel_table.local_column_index(col_name).ok_or_else(|| {
                             EngineError::EvalError(EvalError::UnknownFunction(format!(
                                 "Column not found: {}",
                                 col_name
                             )))
                         })?;
-                    vec![pos]
-                } else {
-                    (0..target_table.columns.len()).collect()
-                };
-                let is_whole_table = column.is_none();
+                        vec![(local, excel_table.start_col + local)]
+                    } else {
+                        (0..excel_table.columns.len())
+                            .map(|local| (local, excel_table.start_col + local))
+                            .collect()
+                    };
+                    let is_whole_table = column.is_none();
 
-                match section {
-                    SheetSection::Headers => {
-                        let names: Vec<ResultData> = col_indices
-                            .iter()
-                            .map(|&idx| {
-                                ResultData::String(
-                                    target_table
-                                        .columns
-                                        .get(idx)
-                                        .map(|c| c.name.clone())
-                                        .unwrap_or_default(),
-                                )
-                            })
-                            .collect();
-                        if is_whole_table {
-                            Ok(ResultData::List(names))
-                        } else {
-                            Ok(names.into_iter().next().unwrap_or(ResultData::None))
+                    match section {
+                        SheetSection::Headers => {
+                            let names: Vec<ResultData> = col_indices
+                                .iter()
+                                .map(|&(local, _)| {
+                                    ResultData::String(
+                                        excel_table.columns.get(local).cloned().unwrap_or_default(),
+                                    )
+                                })
+                                .collect();
+                            if is_whole_table {
+                                Ok(ResultData::List(names))
+                            } else {
+                                Ok(names.into_iter().next().unwrap_or(ResultData::None))
+                            }
+                        }
+                        SheetSection::Totals => {
+                            if let Some(totals_row) = excel_table.totals_row() {
+                                let mut results = Vec::new();
+                                for &(_, col_idx) in &col_indices {
+                                    let cell_ref = CellRef::new(totals_row, col_idx);
+                                    if is_self {
+                                        deps.push(Dependency::Local(cell_ref));
+                                    } else {
+                                        deps.push(Dependency::Remote {
+                                            sheet: sheet_name.clone(),
+                                            cell: cell_ref,
+                                        });
+                                    }
+                                    results.push(table_sheet.get_result_data(&cell_ref));
+                                }
+                                if is_whole_table {
+                                    Ok(ResultData::List(results))
+                                } else {
+                                    Ok(results.into_iter().next().unwrap_or(ResultData::None))
+                                }
+                            } else {
+                                Ok(ResultData::None)
+                            }
+                        }
+                        SheetSection::Data | SheetSection::All => {
+                            if *is_this_row {
+                                let r = row.ok_or_else(|| {
+                                    EngineError::EvalError(EvalError::UnknownFunction(
+                                        "This row reference cannot be evaluated without row context"
+                                            .to_string(),
+                                    ))
+                                })?;
+                                let mut results = Vec::new();
+                                for &(_, col_idx) in &col_indices {
+                                    let cell_ref = CellRef::new(r, col_idx);
+                                    if is_self {
+                                        deps.push(Dependency::Local(cell_ref));
+                                    } else {
+                                        deps.push(Dependency::Remote {
+                                            sheet: sheet_name.clone(),
+                                            cell: cell_ref,
+                                        });
+                                    }
+                                    results.push(table_sheet.get_result_data(&cell_ref));
+                                }
+                                if is_whole_table {
+                                    Ok(ResultData::List(results))
+                                } else {
+                                    Ok(results.into_iter().next().unwrap_or(ResultData::None))
+                                }
+                            } else {
+                                let mut results = Vec::new();
+                                for &(_, col_idx) in &col_indices {
+                                    if is_self {
+                                        deps.push(Dependency::LocalColumn(col_idx));
+                                    } else {
+                                        deps.push(Dependency::RemoteColumn {
+                                            sheet: sheet_name.clone(),
+                                            col: col_idx,
+                                        });
+                                    }
+                                    for r in
+                                        excel_table.data_start_row()..=excel_table.data_end_row()
+                                    {
+                                        let cell_ref = CellRef::new(r, col_idx);
+                                        results.push(table_sheet.get_result_data(&cell_ref));
+                                    }
+                                }
+                                Ok(ResultData::List(results))
+                            }
                         }
                     }
-                    SheetSection::Totals => Ok(ResultData::None),
-                    SheetSection::Data | SheetSection::All => {
-                        if *is_this_row {
-                            let r = row.ok_or_else(|| {
-                                EngineError::EvalError(EvalError::UnknownFunction(
-                                    "This row reference cannot be evaluated without row context"
-                                        .to_string(),
-                                ))
-                            })?;
-                            let mut results = Vec::new();
-                            for &col_idx in &col_indices {
-                                let cell_ref = CellRef::new(r, col_idx);
-                                if is_self {
-                                    deps.push(Dependency::Local(cell_ref));
-                                } else {
-                                    deps.push(Dependency::Remote {
-                                        sheet: sheet_name.clone(),
-                                        cell: cell_ref,
-                                    });
-                                }
-                                results.push(target_table.get_result_data(&cell_ref));
-                            }
-                            if is_whole_table {
-                                Ok(ResultData::List(results))
-                            } else {
-                                Ok(results.into_iter().next().unwrap_or(ResultData::None))
-                            }
+                } else {
+                    // Legacy fallback: no explicit ExcelTable found by that name --
+                    // resolve `ref_name` as a sheet name and treat the whole sheet
+                    // as an implicit table.
+                    let sheet_name = ref_name;
+                    let is_self = sheet_name == self.name;
+
+                    let target_table = if is_self {
+                        self
+                    } else if let Some(ctx) = context {
+                        if let Some(t) = ctx.sheets.get(&sheet_name) {
+                            t
                         } else {
-                            let mut results = Vec::new();
-                            for &col_idx in &col_indices {
-                                if is_self {
-                                    deps.push(Dependency::LocalColumn(col_idx));
-                                } else {
-                                    deps.push(Dependency::RemoteColumn {
-                                        sheet: sheet_name.clone(),
-                                        col: col_idx,
-                                    });
-                                }
-                                for r in 0..target_table.row_count() {
+                            return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                                format!("Sheet not found: {}", sheet_name),
+                            )));
+                        }
+                    } else {
+                        return Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
+                            "No context to resolve sheet reference: {}",
+                            sheet_name
+                        ))));
+                    };
+
+                    // `column: None` means the reference spans every column in the
+                    // table (e.g. `Table1[#Data]` or `[@]`), rather than a single
+                    // named column.
+                    let col_indices: Vec<usize> = if let Some(col_name) = column {
+                        let pos = target_table
+                            .columns
+                            .iter()
+                            .position(|c| c.name == *col_name)
+                            .ok_or_else(|| {
+                                EngineError::EvalError(EvalError::UnknownFunction(format!(
+                                    "Column not found: {}",
+                                    col_name
+                                )))
+                            })?;
+                        vec![pos]
+                    } else {
+                        (0..target_table.columns.len()).collect()
+                    };
+                    let is_whole_table = column.is_none();
+
+                    match section {
+                        SheetSection::Headers => {
+                            let names: Vec<ResultData> = col_indices
+                                .iter()
+                                .map(|&idx| {
+                                    ResultData::String(
+                                        target_table
+                                            .columns
+                                            .get(idx)
+                                            .map(|c| c.name.clone())
+                                            .unwrap_or_default(),
+                                    )
+                                })
+                                .collect();
+                            if is_whole_table {
+                                Ok(ResultData::List(names))
+                            } else {
+                                Ok(names.into_iter().next().unwrap_or(ResultData::None))
+                            }
+                        }
+                        SheetSection::Totals => Ok(ResultData::None),
+                        SheetSection::Data | SheetSection::All => {
+                            if *is_this_row {
+                                let r = row.ok_or_else(|| {
+                                    EngineError::EvalError(EvalError::UnknownFunction(
+                                        "This row reference cannot be evaluated without row context"
+                                            .to_string(),
+                                    ))
+                                })?;
+                                let mut results = Vec::new();
+                                for &col_idx in &col_indices {
                                     let cell_ref = CellRef::new(r, col_idx);
+                                    if is_self {
+                                        deps.push(Dependency::Local(cell_ref));
+                                    } else {
+                                        deps.push(Dependency::Remote {
+                                            sheet: sheet_name.clone(),
+                                            cell: cell_ref,
+                                        });
+                                    }
                                     results.push(target_table.get_result_data(&cell_ref));
                                 }
+                                if is_whole_table {
+                                    Ok(ResultData::List(results))
+                                } else {
+                                    Ok(results.into_iter().next().unwrap_or(ResultData::None))
+                                }
+                            } else {
+                                let mut results = Vec::new();
+                                for &col_idx in &col_indices {
+                                    if is_self {
+                                        deps.push(Dependency::LocalColumn(col_idx));
+                                    } else {
+                                        deps.push(Dependency::RemoteColumn {
+                                            sheet: sheet_name.clone(),
+                                            col: col_idx,
+                                        });
+                                    }
+                                    for r in 0..target_table.row_count() {
+                                        let cell_ref = CellRef::new(r, col_idx);
+                                        results.push(target_table.get_result_data(&cell_ref));
+                                    }
+                                }
+                                Ok(ResultData::List(results))
                             }
-                            Ok(ResultData::List(results))
                         }
                     }
                 }
@@ -713,11 +851,11 @@ impl Sheet {
                                     if rf.fract() != 0.0 || rf.abs() > 1e6 {
                                         return Ok(ResultData::Error("#NUM!".to_string()));
                                     }
-                                     let res = lf.powi(rf as i32);
-                                     if res.is_nan() || res.is_infinite() {
-                                         return Ok(ResultData::Error("#NUM!".to_string()));
-                                     }
-                                     return Ok(ResultData::Float(res));
+                                    let res = lf.powi(rf as i32);
+                                    if res.is_nan() || res.is_infinite() {
+                                        return Ok(ResultData::Error("#NUM!".to_string()));
+                                    }
+                                    return Ok(ResultData::Float(res));
                                 }
                                 let res = lf.powf(rf);
                                 if res.is_nan() || res.is_infinite() {
