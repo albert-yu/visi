@@ -44,6 +44,13 @@ class ExcelFuzzGenerator:
     def __init__(self, seed=None):
         if seed is not None:
             random.seed(seed)
+        # Populated by create_fuzz_workbook() once it defines an Excel Table
+        # over the value grid; used by generate_formula() to emit structured
+        # references. Left unset (no structured refs generated) if a caller
+        # invokes generate_formula() without going through
+        # create_fuzz_workbook() first.
+        self._table_name = None
+        self._table_cols = []
 
     def _col_name(self, col_idx):
         """Converts 1-based column index to A1 column letter (1 -> A, 2 -> B, 27 -> AA)."""
@@ -52,6 +59,35 @@ class ExcelFuzzGenerator:
             col_idx, remainder = divmod(col_idx - 1, 26)
             result = chr(65 + remainder) + result
         return result
+
+    def _has_table(self):
+        return bool(self._table_name and self._table_cols)
+
+    def _random_structured_col_ref(self):
+        """A structured reference to one table column's whole data body,
+        e.g. `Sheet1[A]`. Evaluates to an array, exactly like a range
+        reference (A1:A10), so it's only ever used where a range reference
+        would also be valid (as a whole argument to an aggregate function).
+
+        visi treats a structured column reference as spanning the *entire*
+        column of the sheet, not just a table's declared row range -- so if
+        table columns could also hold formulas, this could create a
+        dependency cycle (directly, or transitively through another
+        formula). create_fuzz_workbook keeps the table's columns disjoint
+        from the columns formulas are written into and never puts a
+        formula in a table column, which rules that out entirely rather
+        than just making it unlikely.
+        """
+        col_name = random.choice(self._table_cols)
+        return f"{self._table_name}[{col_name}]"
+
+    def _random_structured_header_ref(self):
+        """A structured reference to a single column's header text, e.g.
+        `Sheet1[[#Headers],[A]]`. Evaluates to a plain scalar string, so
+        (unlike a bare column reference) it's safe to use anywhere a cell
+        reference or constant would be used."""
+        col_name = random.choice(self._table_cols)
+        return f"{self._table_name}[[#Headers],[{col_name}]]"
 
     def generate_random_value(self):
         """Generates a random cell input value (number, string, boolean, date, edge case)."""
@@ -78,24 +114,31 @@ class ExcelFuzzGenerator:
             # Small integers for range indexes
             return random.randint(1, 10)
 
-    def generate_formula(self, current_row, current_col, max_row, max_col):
+    def generate_formula(self, current_row, current_col, max_row, max_col, min_col=1):
         """Generates a random formula string referencing existing cells or constants."""
         def random_cell_ref():
             r = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
-            c = random.randint(1, max_col)
+            c = random.randint(min_col, max_col)
             return f"{self._col_name(c)}{r}"
 
         def random_range_ref():
             r1 = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
             r2 = random.randint(r1, max(1, current_row - 1)) if current_row > 1 else 1
-            c1 = random.randint(1, max_col)
+            c1 = random.randint(min_col, max_col)
             c2 = random.randint(c1, max_col)
             return f"{self._col_name(c1)}{r1}:{self._col_name(c2)}{r2}"
 
         def gen_expr(depth=0):
             if depth >= 2 or random.random() < 0.4:
-                # Leaf node: cell ref or scalar constant
-                if random.random() < 0.7:
+                # Leaf node: cell ref, scalar constant, or (if a table is
+                # present) a structured reference to a column's header text.
+                # The header ref evaluates to a plain scalar string, just
+                # like a cell ref would, so it can drop in anywhere.
+                roll = random.random()
+                if self._has_table() and roll < 0.15:
+                    return self._random_structured_header_ref()
+                remaining = (roll - 0.15) / 0.85 if self._has_table() else roll
+                if remaining < 0.7:
                     return random_cell_ref()
                 else:
                     return str(random.randint(-50, 50))
@@ -110,7 +153,11 @@ class ExcelFuzzGenerator:
 
             elif fn_type == "multi_num":
                 fn = random.choice(self.FUNCTIONS_MULTI_NUM)
-                if random.random() < 0.6:
+                roll = random.random()
+                if self._has_table() and roll < 0.3:
+                    # Single-column structured reference, e.g. SUM(Sheet1[A]).
+                    arg = self._random_structured_col_ref()
+                elif roll < 0.70:
                     arg = random_range_ref()
                 else:
                     arg = f"{gen_expr(depth + 1)}, {gen_expr(depth + 1)}"
@@ -148,9 +195,24 @@ class ExcelFuzzGenerator:
         return "=" + gen_expr(0)
 
     def create_fuzz_workbook(self, file_path, num_rows=10, num_cols=5):
-        """Creates a workbook with a mixture of raw values and formulas."""
+        """Creates a workbook with a mixture of raw values and formulas, plus
+        a real Excel Table for structured references to resolve against.
+
+        The sheet is laid out as two disjoint blocks of `num_cols` columns
+        side by side: a "table" block (pure random values, every row) and a
+        "formula" block (values on top, generated formulas below, exactly
+        like the original single-block layout). They're kept disjoint
+        because visi treats a structured reference to a table column as
+        spanning that column's *entire* height, not just the table's
+        declared row range -- if a table column could also hold a formula,
+        a structured reference into it could create a dependency cycle
+        (directly, or transitively through another formula). Since the
+        table block never contains a formula, that's impossible by
+        construction rather than merely unlikely.
+        """
         try:
             import openpyxl
+            from openpyxl.worksheet.table import Table, TableStyleInfo
         except ImportError:
             print("Error: 'openpyxl' is required for generating .xlsx test files.")
             print("Please run: pip install openpyxl")
@@ -160,19 +222,51 @@ class ExcelFuzzGenerator:
         ws = wb.active
         ws.title = "Sheet1"
 
-        # Populate top rows with raw values
-        value_rows = max(2, num_rows // 2)
-        for r in range(1, value_rows + 1):
+        # --- Table block: columns 1..num_cols. Row 1 holds deterministic
+        # column headers ("A", "B", ...); visi has no concept of an Excel
+        # Table distinct from the worksheet itself, and on import always
+        # names each column by its plain spreadsheet letter
+        # (col_idx_to_letters) -- using that same scheme as the real header
+        # text means `Sheet1[A]` resolves to the same column in both visi
+        # (worksheet/column-name lookup) and Excel (Table lookup). Every
+        # other row is a plain random value -- never a formula.
+        header_names = [self._col_name(c) for c in range(1, num_cols + 1)]
+        for c, name in enumerate(header_names, start=1):
+            ws.cell(row=1, column=c, value=name)
+        for r in range(2, num_rows + 1):
             for c in range(1, num_cols + 1):
                 val = self.generate_random_value()
                 if val is not None:
                     ws.cell(row=r, column=c, value=val)
 
-        # Populate bottom rows with formulas referencing earlier rows
+        table_name = ws.title
+        self._table_name = table_name
+        self._table_cols = header_names
+        table_ref = f"A1:{self._col_name(num_cols)}{num_rows}"
+        table = Table(displayName=table_name, ref=table_ref)
+        table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
+        ws.add_table(table)
+
+        # --- Formula block: a second block of num_cols columns immediately
+        # to the right of the table. Top rows hold raw random values (for
+        # plain cell/range refs to point at); the rest hold generated
+        # formulas referencing earlier rows in this same block, optionally
+        # including structured references into the table block (see
+        # generate_formula / _random_structured_col_ref /
+        # _random_structured_header_ref).
+        value_rows = max(2, num_rows // 2)
+        min_col = num_cols + 1
+        max_col = num_cols * 2
+        for r in range(1, value_rows + 1):
+            for c in range(min_col, max_col + 1):
+                val = self.generate_random_value()
+                if val is not None:
+                    ws.cell(row=r, column=c, value=val)
+
         for r in range(value_rows + 1, num_rows + 1):
-            for c in range(1, num_cols + 1):
+            for c in range(min_col, max_col + 1):
                 if random.random() < 0.85:
-                    formula = self.generate_formula(r, c, num_rows, num_cols)
+                    formula = self.generate_formula(r, c, num_rows, max_col, min_col=min_col)
                     ws.cell(row=r, column=c, value=formula)
                 else:
                     val = self.generate_random_value()
