@@ -622,6 +622,21 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                                 DateFormat::Md { sep },
                             ));
                         }
+
+                        // Option C: Month-Year with a 2-digit year that isn't a
+                        // valid day (e.g. "1-34" -> Jan 1934), matching Excel's
+                        // fallback when the second part can't be a day.
+                        if month >= 1 && month <= 12 && len1 == 2 {
+                            let year = if val1 < 30 { 2000 + val1 } else { 1900 + val1 };
+                            return Some((
+                                SimpleDate {
+                                    year,
+                                    month,
+                                    day: 1,
+                                },
+                                DateFormat::My { sep, year_len: 2 },
+                            ));
+                        }
                     }
                 }
             }

@@ -563,3 +563,32 @@ fn test_fuzz_zero_base_positive_exponent_evaluation() {
         other => panic!("Expected Float(0.0), got {:?}", other),
     }
 }
+
+#[test]
+fn test_fuzz_int_concatenate_month_two_digit_year_as_date() {
+    let sheet_src = [
+        ["24.0319", "\"B\"", "106.3654", "376", "38"],
+        ["-276", "394", "FALSE", "-277.8755", ""],
+        ["FALSE", "TRUE", "5", "1", "9"],
+        ["", "-34", "29", "8", "0"],
+        ["47", "210.486", "68", "", "-3"],
+        ["=C1", "=INT(CONCATENATE(D3, B4))", "=A2", "\"H\"", "=IF((B5 > C1), B1, PRODUCT(B4:E4))"],
+        ["=D2", "=AVERAGE(E1:E6)", "=AND(SUM(C1:E4) > 0, IF((A6 > D4), D3, A3) < 100)", "=ROUNDDOWN(C6, 2)", "=IF(((12 - 50) > LEFT(D1, 2)), (B1 - A5), A6)"],
+        ["=E4", "=LOWER(B2)", "", "=A4", "=AND(C3 > 0, ROUNDUP(-1, 0) < 100)"],
+        ["=-25", "=(C8 - E7)", "=PRODUCT((B5 ^ C4), IF((C3 > B7), 4, A5))", "=LEFT(C8, 3)", "=A7"],
+        ["=C2", "=C3", "=B4", "=LOWER((E2 - D3))", "=-40"],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+    let target = sheet.get_result_data(&CellRef::new(5, 1));
+    println!("Seed 87588 target B6: {:?}", target);
+    match target {
+        ResultData::Float(f) => assert!(
+            (f - 12420.0).abs() < 1e-6,
+            "Expected 12420 for B6 (CONCATENATE(D3, B4) = \"1-34\", which Excel parses as the date Jan 1934), got {:?}",
+            target
+        ),
+        ResultData::Integer(i) => assert_eq!(i, 12420),
+        other => panic!("Expected 12420 for B6, got {:?}", other),
+    }
+}
