@@ -3,11 +3,13 @@
 
 use clap::Parser;
 use libvisi::core::chart::ChartType;
+use libvisi::core::{PivotAggregation, PivotArea};
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
-    ExportArgs, ExportFormat, InfoArgs, OutputFormat, ReadArgs, RowArgs, RowSubcommands, SetArgs,
-    SheetArgs, SheetSubcommands, TableArgs, TableSubcommands,
+    ExportArgs, ExportFormat, InfoArgs, OutputFormat, PivotAggArg, PivotAreaArg, PivotArgs,
+    PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs, SheetSubcommands,
+    TableArgs, TableSubcommands,
 };
 use visi::engine::WorkbookManager;
 use visi::format::{get_cell_display_val, render_grid};
@@ -30,6 +32,7 @@ fn main() {
         Commands::Col(args) => handle_col(args, quiet),
         Commands::Chart(args) => handle_chart(args, quiet),
         Commands::Table(args) => handle_table(args, quiet),
+        Commands::Pivot(args) => handle_pivot(args, quiet),
         Commands::Export(args) => handle_export(args),
     }
 }
@@ -867,6 +870,315 @@ fn handle_table(args: TableArgs, quiet: bool) {
                 eprintln!(
                     "Renamed column '{}' -> '{}' in table '{}' and saved to '{}'.",
                     rc_args.column, rc_args.new_name, rc_args.name, save_path
+                );
+            }
+        }
+    }
+}
+
+fn pivot_area_arg_to_area(area: PivotAreaArg) -> PivotArea {
+    match area {
+        PivotAreaArg::Row => PivotArea::Row,
+        PivotAreaArg::Column => PivotArea::Column,
+        PivotAreaArg::Value => PivotArea::Value,
+        PivotAreaArg::Filter => PivotArea::Filter,
+    }
+}
+
+fn pivot_agg_arg_to_aggregation(agg: PivotAggArg) -> PivotAggregation {
+    match agg {
+        PivotAggArg::Sum => PivotAggregation::Sum,
+        PivotAggArg::Count => PivotAggregation::Count,
+        PivotAggArg::CountNumbers => PivotAggregation::CountNumbers,
+        PivotAggArg::Average => PivotAggregation::Average,
+        PivotAggArg::Max => PivotAggregation::Max,
+        PivotAggArg::Min => PivotAggregation::Min,
+    }
+}
+
+fn handle_pivot(args: PivotArgs, quiet: bool) {
+    match args.command {
+        PivotSubcommands::List(list_args) => {
+            let wb = WorkbookManager::load_file(&list_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            let pivots = wb.list_pivot_tables();
+
+            if list_args.json {
+                let json_pivots = json!(
+                    pivots
+                        .iter()
+                        .map(|p| json!({
+                            "id": p.id,
+                            "name": p.name,
+                            "row_fields": p.row_fields.iter().map(|f| &f.column).collect::<Vec<_>>(),
+                            "col_fields": p.col_fields.iter().map(|f| &f.column).collect::<Vec<_>>(),
+                            "value_fields": p.value_fields.iter().map(|f| f.label()).collect::<Vec<_>>(),
+                            "filter_fields": p.filter_fields.iter().map(|f| &f.column).collect::<Vec<_>>(),
+                        }))
+                        .collect::<Vec<_>>()
+                );
+                println!("{}", serde_json::to_string_pretty(&json_pivots).unwrap());
+            } else {
+                if pivots.is_empty() {
+                    println!("No pivot tables found in workbook.");
+                    return;
+                }
+                println!(
+                    "{:<15} {:<20} {:<20} {:<20} {}",
+                    "Name", "Rows", "Columns", "Values", "Filters"
+                );
+                println!("{}", "-".repeat(90));
+                for p in pivots {
+                    println!(
+                        "{:<15} {:<20} {:<20} {:<20} {}",
+                        p.name,
+                        p.row_fields
+                            .iter()
+                            .map(|f| f.column.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        p.col_fields
+                            .iter()
+                            .map(|f| f.column.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        p.value_fields
+                            .iter()
+                            .map(|f| f.label())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        p.filter_fields
+                            .iter()
+                            .map(|f| f.column.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+            }
+        }
+        PivotSubcommands::Create(add_args) => {
+            let mut wb = WorkbookManager::load_file(&add_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let (dest_sheet_from_cell, dest_row, dest_col) = parse_cell_ref(&add_args.dest)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+            let dest_sheet = add_args.dest_sheet.clone().or(dest_sheet_from_cell);
+
+            let pivot_id = match (&add_args.source_table, &add_args.source_range) {
+                (Some(table_name), None) => wb
+                    .add_pivot_table_from_table(
+                        &add_args.name,
+                        table_name,
+                        dest_sheet.as_deref(),
+                        dest_row,
+                        dest_col,
+                    )
+                    .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR)),
+                (None, Some(range)) => {
+                    let (range_sheet, start_row, start_col, end_row, end_col) =
+                        parse_range_ref(range)
+                            .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+                    let source_sheet = add_args.source_sheet.clone().or(range_sheet);
+                    wb.add_pivot_table_from_range(
+                        &add_args.name,
+                        source_sheet.as_deref(),
+                        start_row,
+                        start_col,
+                        end_row,
+                        end_col,
+                        dest_sheet.as_deref(),
+                        dest_row,
+                        dest_col,
+                    )
+                    .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR))
+                }
+                (Some(_), Some(_)) => exit_with_error(
+                    "Specify only one of --source-table or --source-range, not both",
+                    EXIT_USAGE_ERROR,
+                ),
+                (None, None) => exit_with_error(
+                    "Must specify a source using --source-table <NAME> or --source-range <RANGE>",
+                    EXIT_USAGE_ERROR,
+                ),
+            };
+
+            let save_path = resolve_output_path(add_args.output, add_args.in_place, &add_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Created pivot table '{}' (ID {}) and saved to '{}'.",
+                    add_args.name, pivot_id, save_path
+                );
+            }
+        }
+        PivotSubcommands::Delete(del_args) => {
+            let mut wb = WorkbookManager::load_file(&del_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            wb.delete_pivot_table(&del_args.name).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_USAGE_ERROR);
+            });
+            let save_path = resolve_output_path(del_args.output, del_args.in_place, &del_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Deleted pivot table '{}' and saved to '{}'.",
+                    del_args.name, save_path
+                );
+            }
+        }
+        PivotSubcommands::Rename(ren_args) => {
+            let mut wb = WorkbookManager::load_file(&ren_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            wb.rename_pivot_table(&ren_args.old, &ren_args.new)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+            let save_path = resolve_output_path(ren_args.output, ren_args.in_place, &ren_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Renamed pivot table '{}' -> '{}' and saved to '{}'.",
+                    ren_args.old, ren_args.new, save_path
+                );
+            }
+        }
+        PivotSubcommands::Refresh(refresh_args) => {
+            let mut wb = WorkbookManager::load_file(&refresh_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let names: Vec<String> = if refresh_args.all {
+                wb.list_pivot_tables()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect()
+            } else if let Some(name) = &refresh_args.name {
+                vec![name.clone()]
+            } else {
+                exit_with_error("Must specify --name <NAME> or --all", EXIT_USAGE_ERROR)
+            };
+
+            for name in &names {
+                wb.refresh_pivot_table(name).unwrap_or_else(|e| {
+                    exit_with_error(e, EXIT_ENGINE_ERROR);
+                });
+            }
+
+            let save_path = resolve_output_path(
+                refresh_args.output,
+                refresh_args.in_place,
+                &refresh_args.file,
+            );
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Refreshed {} pivot table(s) and saved to '{}'.",
+                    names.len(),
+                    save_path
+                );
+            }
+        }
+        PivotSubcommands::AddField(field_args) => {
+            let mut wb = WorkbookManager::load_file(&field_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let area = pivot_area_arg_to_area(field_args.area);
+            let agg = field_args.agg.map(pivot_agg_arg_to_aggregation);
+            wb.add_pivot_field(&field_args.name, area, &field_args.column, agg)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            if let (Some(label), Some(pivot)) = (
+                field_args.label.clone(),
+                wb.pivot_tables
+                    .iter()
+                    .position(|p| p.name.eq_ignore_ascii_case(&field_args.name)),
+            ) {
+                if let Some(vf) = wb.pivot_tables[pivot]
+                    .value_fields
+                    .iter_mut()
+                    .rev()
+                    .find(|f| f.column.eq_ignore_ascii_case(&field_args.column))
+                {
+                    vf.custom_name = Some(label);
+                }
+                wb.refresh_pivot_table(&field_args.name)
+                    .unwrap_or_else(|e| {
+                        exit_with_error(e, EXIT_ENGINE_ERROR);
+                    });
+            }
+
+            let save_path =
+                resolve_output_path(field_args.output, field_args.in_place, &field_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Added field '{}' to pivot table '{}' and saved to '{}'.",
+                    field_args.column, field_args.name, save_path
+                );
+            }
+        }
+        PivotSubcommands::RemoveField(field_args) => {
+            let mut wb = WorkbookManager::load_file(&field_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let area = pivot_area_arg_to_area(field_args.area);
+            wb.remove_pivot_field(&field_args.name, area, &field_args.column)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path =
+                resolve_output_path(field_args.output, field_args.in_place, &field_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Removed field '{}' from pivot table '{}' and saved to '{}'.",
+                    field_args.column, field_args.name, save_path
+                );
+            }
+        }
+        PivotSubcommands::Filter(filter_args) => {
+            let mut wb = WorkbookManager::load_file(&filter_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let values = if filter_args.clear {
+                None
+            } else if filter_args.values.is_empty() {
+                exit_with_error(
+                    "Must specify --values <V1,V2,...> or --clear",
+                    EXIT_USAGE_ERROR,
+                )
+            } else {
+                Some(filter_args.values.clone())
+            };
+
+            wb.set_pivot_filter(&filter_args.name, &filter_args.column, values)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path =
+                resolve_output_path(filter_args.output, filter_args.in_place, &filter_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Updated filter '{}' on pivot table '{}' and saved to '{}'.",
+                    filter_args.column, filter_args.name, save_path
                 );
             }
         }

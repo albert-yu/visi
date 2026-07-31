@@ -53,6 +53,9 @@ pub enum Commands {
     /// Manage Excel Tables (list, add, delete, rename, resize, rename-column)
     Table(TableArgs),
 
+    /// Manage pivot tables (create, list, delete, refresh, field CRUD, filters)
+    Pivot(PivotArgs),
+
     /// Export a worksheet to CSV, TSV, or JSON format
     Export(ExportArgs),
 }
@@ -87,6 +90,24 @@ pub enum ChartTypeArg {
     Pie,
     Scatter,
     Area,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PivotAreaArg {
+    Row,
+    Column,
+    Value,
+    Filter,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PivotAggArg {
+    Sum,
+    Count,
+    CountNumbers,
+    Average,
+    Max,
+    Min,
 }
 
 #[derive(Args, Debug)]
@@ -520,6 +541,202 @@ pub struct TableRenameColumnArgs {
     /// New column name
     #[arg(long)]
     pub new_name: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotArgs {
+    #[command(subcommand)]
+    pub command: PivotSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PivotSubcommands {
+    /// List all pivot tables in the workbook
+    List(PivotListArgs),
+    /// Create a new pivot table from an Excel Table or a plain cell range
+    Create(PivotCreateArgs),
+    /// Delete a pivot table (leaves its source data untouched)
+    Delete(PivotDeleteArgs),
+    /// Rename a pivot table
+    Rename(PivotRenameArgs),
+    /// Recompute a pivot table's output from its current source data
+    Refresh(PivotRefreshArgs),
+    /// Add a field to a pivot table's Row/Column/Value/Filter area
+    AddField(PivotAddFieldArgs),
+    /// Remove a field from a pivot table's Row/Column/Value/Filter area
+    RemoveField(PivotRemoveFieldArgs),
+    /// Restrict or clear a filter field's allowed values
+    Filter(PivotFilterArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PivotListArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Output summary as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotCreateArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name for the new pivot table
+    #[arg(short, long)]
+    pub name: String,
+    /// Name of an existing Excel Table to use as the source (mutually
+    /// exclusive with --source-range)
+    #[arg(long)]
+    pub source_table: Option<String>,
+    /// Cell range to use as the source, first row treated as headers (e.g.
+    /// A1:D100; mutually exclusive with --source-table)
+    #[arg(long)]
+    pub source_range: Option<String>,
+    /// Worksheet the source range lives on (defaults to first sheet, or the
+    /// range's own sheet prefix, e.g. Sheet1!A1:D10)
+    #[arg(long)]
+    pub source_sheet: Option<String>,
+    /// Top-left cell of the pivot table's output (e.g. A1)
+    #[arg(long, default_value = "A1")]
+    pub dest: String,
+    /// Worksheet the pivot table's output is written to (defaults to first
+    /// sheet)
+    #[arg(long)]
+    pub dest_sheet: Option<String>,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotDeleteArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the pivot table to delete
+    #[arg(short, long)]
+    pub name: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotRenameArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Current pivot table name
+    #[arg(long)]
+    pub old: String,
+    /// New pivot table name
+    #[arg(long)]
+    pub new: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotRefreshArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the pivot table to refresh (omit with --all to refresh every
+    /// pivot table in the workbook)
+    #[arg(short, long)]
+    pub name: Option<String>,
+    /// Refresh every pivot table in the workbook
+    #[arg(long)]
+    pub all: bool,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotAddFieldArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the pivot table to modify
+    #[arg(short, long)]
+    pub name: String,
+    /// Area to add the field to [row, column, value, filter]
+    #[arg(short, long, value_enum)]
+    pub area: PivotAreaArg,
+    /// Source column name
+    #[arg(short, long)]
+    pub column: String,
+    /// Aggregation function, only used when --area value [sum, count,
+    /// count-numbers, average, max, min] (defaults to sum)
+    #[arg(long, value_enum)]
+    pub agg: Option<PivotAggArg>,
+    /// Custom display label for a value field (defaults to e.g. "Sum of
+    /// Amount")
+    #[arg(long)]
+    pub label: Option<String>,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotRemoveFieldArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the pivot table to modify
+    #[arg(short, long)]
+    pub name: String,
+    /// Area to remove the field from [row, column, value, filter]
+    #[arg(short, long, value_enum)]
+    pub area: PivotAreaArg,
+    /// Source column name
+    #[arg(short, long)]
+    pub column: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PivotFilterArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the pivot table to modify
+    #[arg(short, long)]
+    pub name: String,
+    /// Filter field's source column name
+    #[arg(short, long)]
+    pub column: String,
+    /// Comma-separated list of the only values to include (e.g.
+    /// "East,West")
+    #[arg(long, value_delimiter = ',')]
+    pub values: Vec<String>,
+    /// Remove the filter, allowing every value again
+    #[arg(long)]
+    pub clear: bool,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,

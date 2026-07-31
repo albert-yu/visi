@@ -20,7 +20,7 @@ fn test_workbook_create_and_formula_evaluation() {
     initial_sheet.set_cell_src(0, 1, "=A1 + A2".to_string());
     initial_sheet.set_cell_src(1, 1, "=SUM(A1:A2)".to_string());
 
-    let bytes = libvisi::export_xlsx_data(&[initial_sheet], &[]).unwrap();
+    let bytes = libvisi::export_xlsx_data(&[initial_sheet], &[], &[]).unwrap();
     fs::write(&file_path, bytes).unwrap();
 
     // Load with WorkbookManager and evaluate
@@ -90,7 +90,9 @@ fn test_workbook_table_crud_and_evaluation() {
         wb.find_table("Sales").unwrap().1.columns,
         vec!["Name", "Total"]
     );
-    let src_after_col_rename = wb.sheets[0].get_src(&libvisi::core::CellRef::new(0, 2)).cloned();
+    let src_after_col_rename = wb.sheets[0]
+        .get_src(&libvisi::core::CellRef::new(0, 2))
+        .cloned();
     assert_eq!(src_after_col_rename.as_deref(), Some("=SUM(Sales[Total])"));
     let total_after_col_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
     assert_eq!(total_after_col_rename.to_string(), "30");
@@ -99,7 +101,9 @@ fn test_workbook_table_crud_and_evaluation() {
     assert!(wb.find_table("Sales").is_none());
     assert!(wb.find_table("Revenue").is_some());
 
-    let src_after_rename = wb.sheets[0].get_src(&libvisi::core::CellRef::new(0, 2)).cloned();
+    let src_after_rename = wb.sheets[0]
+        .get_src(&libvisi::core::CellRef::new(0, 2))
+        .cloned();
     assert_eq!(src_after_rename.as_deref(), Some("=SUM(Revenue[Total])"));
     let total_after_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
     assert_eq!(total_after_rename.to_string(), "30");
@@ -121,6 +125,86 @@ fn test_workbook_table_crud_and_evaluation() {
     assert!(reloaded.list_tables().is_empty());
 
     let _ = table_id;
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
+fn test_workbook_pivot_crud_and_computation() {
+    use libvisi::core::{PivotAggregation, PivotArea};
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_pivot_crud.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    let data = [
+        ["Region", "Product", "Amount"],
+        ["East", "Widget", "10"],
+        ["East", "Gadget", "5"],
+        ["West", "Widget", "30"],
+        ["West", "Gadget", "40"],
+    ];
+    for (r, row) in data.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            wb.set_cell(0, r, c, v.to_string());
+        }
+    }
+    wb.evaluate().unwrap();
+    wb.add_table(None, "Sales", 0, 0, 4, 2, true, false)
+        .unwrap();
+
+    let pivot_id = wb
+        .add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4)
+        .unwrap();
+    assert!(wb.find_pivot_table("SalesPivot").is_some());
+
+    wb.add_pivot_field("SalesPivot", PivotArea::Row, "Region", None)
+        .unwrap();
+    wb.add_pivot_field(
+        "SalesPivot",
+        PivotArea::Value,
+        "Amount",
+        Some(PivotAggregation::Sum),
+    )
+    .unwrap();
+
+    // East = 10+5 = 15, West = 30+40 = 70, Grand Total = 85, materialized
+    // as plain values at the pivot's destination (column E, 0-based col 4).
+    let east = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(1, 5));
+    let west = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(2, 5));
+    let grand_total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(3, 5));
+    assert_eq!(east.to_string(), "15");
+    assert_eq!(west.to_string(), "70");
+    assert_eq!(grand_total.to_string(), "85");
+
+    // Save and reload: like a table, a pivot table's definition (source,
+    // destination, row/value fields) must survive the xlsx round trip so a
+    // later CLI invocation can keep editing it.
+    wb.save_file(file_str).unwrap();
+    let mut reloaded = WorkbookManager::load_file(file_str).unwrap();
+    let reloaded_pivot = reloaded.find_pivot_table("SalesPivot").unwrap().clone();
+    assert_eq!(reloaded_pivot.row_fields.len(), 1);
+    assert_eq!(reloaded_pivot.row_fields[0].column, "Region");
+    assert_eq!(reloaded_pivot.value_fields.len(), 1);
+    assert_eq!(reloaded_pivot.value_fields[0].column, "Amount");
+
+    // Adding a second value field after reload should still refresh
+    // correctly against the (re-resolved) source table.
+    reloaded
+        .add_pivot_field(
+            "SalesPivot",
+            PivotArea::Value,
+            "Amount",
+            Some(PivotAggregation::Count),
+        )
+        .unwrap();
+    let east_count = reloaded.sheets[0].get_result_data(&libvisi::core::CellRef::new(2, 6));
+    assert_eq!(east_count.to_string(), "2");
+
+    reloaded.delete_pivot_table("SalesPivot").unwrap();
+    assert!(reloaded.find_pivot_table("SalesPivot").is_none());
+
+    let _ = pivot_id;
     let _ = fs::remove_file(file_path);
 }
 
