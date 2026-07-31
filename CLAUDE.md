@@ -35,6 +35,7 @@ Cargo workspace, edition 2024:
 
 - **`libvisi`** — the engine. Built as `rlib` **and `cdylib`**, so it is meant to stay embeddable (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm.
 - **`visi`** — clap-based CLI. `cli.rs` is the arg surface, `main.rs` holds one `handle_*` fn per subcommand, `engine.rs` wraps everything in `WorkbookManager`.
+  - be sure to follow [Command Line Interface Guidelines](https://clig.dev) when making changes to the CLI
 
 ### Data model (`libvisi/src/core/engine/`)
 
