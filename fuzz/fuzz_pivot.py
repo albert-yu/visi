@@ -17,12 +17,50 @@ This reuses (imports, does not duplicate) `XLSXEvaluatedReader` and
 pivot output as plain literal cell values, so the existing generic cell
 reader/comparator works unchanged.
 
-IMPORTANT -- AppleScript driver is unverified: building a live PivotTable via
-Excel's AppleScript dictionary (as opposed to just recalculating existing
-formulas, which `fuzz_excel.py`'s driver already does successfully) has not
-been piloted against real Excel in this environment (see fuzz/README.md).
-Before trusting results beyond a single-iteration pilot run, dump one
-generated case and inspect `visi_out.xlsx` vs `excel_out.xlsx` by hand.
+IMPORTANT -- the AppleScript path does NOT build the pivot table via Excel's
+native AppleScript pivot dictionary. `make new pivot cache at wb` is declared
+in Excel.sdef but fails with a generic "Parameter error (-50)" for every
+variant tried against real Excel (bare, with properties, range object vs.
+text source data, different containers) -- confirmed to be a real
+functional gap in Mac Excel's AppleScript support, not a syntax mistake.
+Instead, the AppleScript driver opens a copy of `fuzz/BuildFuzzPivot.bas`'s
+one-time, human-created macro-enabled workbook (`fuzz/pivot_macro_template.xlsm`,
+NOT checked in -- see "Setup" below) and invokes its `BuildFuzzPivot` macro
+via the `run VB macro` command, which *is* a working, standard AppleScript
+command -- the macro itself does the real work through VBA's PivotCaches.Create
+/ CreatePivotTable, the same well-documented object model win32com already
+uses directly.
+
+Setup (one-time, macOS only -- skip if you only use win32com on Windows):
+    1. Open Excel, create a new blank workbook.
+    2. Alt+F11 (or Tools > Macro > Visual Basic Editor) to open the VBA editor.
+    3. Insert > Module, paste the contents of fuzz/BuildFuzzPivot.bas.
+    4. Save As... fuzz/pivot_macro_template.xlsm (Excel Macro-Enabled Workbook).
+    5. Ensure macros are allowed to run for this file (Excel Preferences >
+       Security, or Trust Center on Windows) -- this only needs to permit
+       *running* an already-embedded macro, not any VBA-project scripting
+       permission.
+
+STATUS -- piloted against real Excel, works end-to-end, but surfaced a real
+gap in visi itself plus two unexplained issues (see fuzz/README.md's "Known
+caveats" section for full detail, this is just the summary):
+  - visi's pivot output never renders filter/page fields as header rows the
+    way Excel does (Excel always shows "FieldName | (All)" + a blank spacer
+    row above the grid when a filter field exists; visi's `compute_pivot`/
+    `PivotGrid` only ever uses `filter_fields` to filter records, never to
+    add display rows) -- confirmed via libvisi/src/core/pivot.rs. This means
+    *any* pivot with a filter field is completely cell-misaligned between
+    the two engines right now; it is a genuine visi-side rendering gap, not
+    a fuzz-harness bug, and is out of scope for this harness to fix.
+  - A handful of configs show much larger, unexplained mismatches (the grid
+    spans out to very different widths between the two engines) -- not yet
+    root-caused; could be a visi bug, a bug in BuildFuzzPivot.bas, or the
+    comparator picking up incidental differences outside the pivot's actual
+    destination rectangle (it currently diffs the whole sheet).
+  - One tiny-edge-case config (a column used as both a col field and a
+    filter field, with the filter selecting zero values, over a 1-row
+    source) made the VBA macro itself throw an outright Excel "Parameter
+    error (-50)" -- also not yet root-caused.
 
 Usage:
     python3 fuzz/fuzz_pivot.py --driver mock --iterations 5
@@ -229,17 +267,24 @@ class PivotFuzzGenerator:
 
 PIVOT_NAME = "FuzzPivot"
 DEST_CELL = "H1"  # two columns clear of the source block (A:F)
+# One-time, human-created macro-enabled workbook containing BuildFuzzPivot.bas
+# -- see fuzz_pivot.py's module docstring for setup steps. Not checked in
+# (it's a compiled-macro binary asset a human authors once, not generated).
+MACRO_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pivot_macro_template.xlsm")
 
-# visi's `Count` aggregation counts any non-blank value (matches Excel's
-# "Count" summary function when the field is text, which Excel exposes as
-# COUNTA under the hood); visi's `CountNumbers` counts only numeric values
-# (matches Excel's numeric-only "Count"). This mapping is exactly the kind
-# of thing that needs the manual pilot verification called out in the module
-# docstring before it's trusted.
-AGG_TO_EXCEL_FUNCTION = {
+# visi's `Count` aggregation counts any non-blank value -- matches Excel's
+# `xlCount` (the *default* summary function Excel picks for a text field,
+# labeled plain "Count" in the value-field-settings UI); visi's
+# `CountNumbers` counts only numeric values -- matches Excel's `xlCountNums`.
+# There is no separate "CountA" member in Excel's `XlConsolidationFunction`
+# enum (confirmed via Excel.sdef) -- an earlier draft of this mapping
+# assumed one existed and was wrong. `BuildFuzzPivot.bas` (invoked by the
+# AppleScript path) matches these same keys directly in its `Select Case`,
+# so only the win32com path needs its own VBA constant-name mapping.
+AGG_TO_WIN32COM_FUNCTION = {
     "sum": "xlSum",
-    "count": "xlCountA",
-    "count-numbers": "xlCount",
+    "count": "xlCount",
+    "count-numbers": "xlCountNums",
     "average": "xlAverage",
     "max": "xlMax",
     "min": "xlMin",
@@ -330,13 +375,31 @@ class ExcelPivotDriver:
     (which only needs `calculate` over cells visi already computed), Excel
     must *construct* a live PivotTable here -- there's no XML shortcut.
 
-    AppleScript path is unverified (see module docstring): Excel for Mac's
-    AppleScript dictionary largely mirrors the VBA object model 1:1
-    (PascalCase VBA names become lowercase space-separated AppleScript
-    terms, e.g. `RefreshTable` -> `refresh table`), which is the convention
-    used below, but it has not been checked against a live dictionary in
-    this environment. The win32com path uses the standard, well-documented
-    VBA object model directly and should be far more reliable.
+    The win32com path (Windows) uses the standard, well-documented VBA
+    object model directly and is straightforward.
+
+    The AppleScript path (macOS) cannot do the same directly: `make new
+    pivot cache at wb` is declared in Excel.sdef (extracted straight from
+    `Microsoft Excel.app/Contents/Resources/Excel.sdef`, since the `sdef`
+    CLI tool needs a full Xcode install this environment doesn't have) but
+    fails with a generic "Parameter error (-50)" for every variant tried
+    against real Excel -- bare, with properties, range object vs. text
+    source data, different containers. That's a real functional gap in Mac
+    Excel's AppleScript support (the dictionary documents a capability the
+    implementation doesn't back), not a syntax mistake -- other pivot
+    field/property names below (`pivot field orientation`, `orient as row
+    field`, `layout form`, `layout subtotal location`, `set subtotals`,
+    `range object` of a list object) were all verified against the same
+    .sdef and do work once a PivotTable already exists.
+
+    So instead, the AppleScript path builds the pivot through a one-time,
+    human-authored macro (`fuzz/BuildFuzzPivot.bas`, pasted into
+    `fuzz/pivot_macro_template.xlsm` -- see this module's docstring for
+    setup) invoked via `run VB macro`, which *is* a working AppleScript
+    command. The macro itself uses the same PivotCaches.Create /
+    CreatePivotTable / PivotFields object model as the win32com path below,
+    just reached through VBA instead of AppleScript's broken pivot-cache
+    creation.
     """
 
     def __init__(self, excel_path=None, driver_type="auto"):
@@ -351,16 +414,22 @@ class ExcelPivotDriver:
                 self.driver_type = "mock"
 
     def run(self, source_file, config, output_file):
-        shutil.copyfile(source_file, output_file)
-        abs_output = os.path.abspath(output_file)
-
         if self.driver_type == "mock":
+            shutil.copyfile(source_file, output_file)
             print("[ExcelPivotDriver Warning] Running in mock mode (Excel not invoked).")
             return
         elif self.driver_type == "applescript":
-            self._run_applescript(abs_output, config)
+            # Excel needs a macro-enabled (.xlsm) copy to run BuildFuzzPivot
+            # from; build one alongside the requested output path, then
+            # copy its bytes back so callers don't need to know about the
+            # extension difference.
+            macro_file = os.path.splitext(output_file)[0] + ".xlsm"
+            self._prepare_macro_workbook(source_file, config, macro_file)
+            self._run_applescript_macro(os.path.abspath(macro_file), config)
+            shutil.copyfile(macro_file, output_file)
         elif self.driver_type == "win32com":
-            self._run_win32com(abs_output, config)
+            shutil.copyfile(source_file, output_file)
+            self._run_win32com(os.path.abspath(output_file), config)
         else:
             raise RuntimeError(f"Unsupported pivot driver type: {self.driver_type}")
 
@@ -370,93 +439,96 @@ class ExcelPivotDriver:
         escaped = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
 
-    def _applescript_subtotals(self, enabled):
-        # 12-slot boolean array: [Automatic, Sum, Count, Average, Max, Min,
-        # Product, CountNums, StdDev, StdDevp, Var, Varp]. A single generic
-        # subtotal line (visi's per-field on/off toggle) maps to enabling
-        # only "Automatic"; disabling means all twelve false.
-        first = "true" if enabled else "false"
-        rest = ", ".join(["false"] * 11)
-        return "{" + first + ", " + rest + "}"
+    def _prepare_macro_workbook(self, source_file, config, macro_file):
+        if not os.path.exists(MACRO_TEMPLATE_PATH):
+            raise RuntimeError(
+                f"Missing {MACRO_TEMPLATE_PATH} -- see fuzz_pivot.py's module "
+                "docstring for the one-time setup steps to create it (paste "
+                "fuzz/BuildFuzzPivot.bas into a macro-enabled workbook saved "
+                "at that path)."
+            )
+        import openpyxl
+        from openpyxl.worksheet.table import Table, TableStyleInfo
 
-    def _build_applescript(self, output_file, config):
+        src_wb = openpyxl.load_workbook(source_file)
+        src_ws = src_wb["Sheet1"]
+
+        macro_wb = openpyxl.load_workbook(MACRO_TEMPLATE_PATH, keep_vba=True)
+        macro_ws = macro_wb.active
+        macro_ws.title = "Sheet1"
+        for row in src_ws.iter_rows():
+            for cell in row:
+                if cell.value is not None:
+                    macro_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+
+        if config["table_name"]:
+            table = Table(displayName=config["table_name"], ref=config["source_range"])
+            table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
+            macro_ws.add_table(table)
+
+        macro_wb.save(macro_file)
+
+    def _build_applescript_macro_call(self, output_file, config):
         app_name = self.excel_path if self.excel_path else "Microsoft Excel"
         if app_name.endswith(".app"):
             app_name = os.path.splitext(os.path.basename(app_name))[0]
 
-        lines = []
-        lines.append(f'tell application "{app_name}"')
-        lines.append("    set display alerts to false")
-        lines.append("    try")
-        lines.append("        close workbooks saving no")
-        lines.append("    end try")
-        lines.append("    try")
-        lines.append(f'        set targetFile to POSIX file "{output_file}"')
-        lines.append("        open targetFile")
-        lines.append("        set wb to active workbook")
-        lines.append('        set srcSheet to sheet "Sheet1" of wb')
-        if config["table_name"]:
-            lines.append(f'        set srcRange to range of list object "{config["table_name"]}" of srcSheet')
-        else:
-            lines.append(f'        set srcRange to range "{config["source_range"]}" of srcSheet')
-        lines.append(
-            "        set pc to (make new pivot cache at wb with properties "
-            "{source type:database source, source data:srcRange})"
+        row_fields_csv = ";".join(
+            f'{f["column"]}:{"1" if f["subtotal"] else "0"}' for f in config["row_fields"]
         )
-        lines.append(f'        set destCell to range "{DEST_CELL}" of srcSheet')
-        lines.append(
-            f'        set pt to (create pivot table pc pivot table destination destCell '
-            f'table name "{PIVOT_NAME}")'
+        col_fields_csv = ";".join(
+            f'{f["column"]}:{"1" if f["subtotal"] else "0"}' for f in config["col_fields"]
         )
-
-        for f in config["row_fields"]:
-            lines.append(f'        set pf to pivot field "{f["column"]}" of pt')
-            lines.append("        set orientation of pf to row field")
-            lines.append(f"        set subtotals of pf to {self._applescript_subtotals(f['subtotal'])}")
-        for f in config["col_fields"]:
-            lines.append(f'        set pf to pivot field "{f["column"]}" of pt')
-            lines.append("        set orientation of pf to column field")
-            lines.append(f"        set subtotals of pf to {self._applescript_subtotals(f['subtotal'])}")
-        for f in config["value_fields"]:
-            excel_fn = AGG_TO_EXCEL_FUNCTION[f["agg"]]
-            lines.append(f'        set pf to pivot field "{f["column"]}" of pt')
-            lines.append("        set orientation of pf to data field")
-            lines.append(f"        set function of pf to {excel_fn}")
+        value_fields_csv = ";".join(f'{f["column"]}:{f["agg"]}' for f in config["value_fields"])
         if config["filter_field"]:
-            col = config["filter_field"]["column"]
-            values = set(config["filter_field"]["values"])
-            values_list = ", ".join(self._applescript_str(v) for v in values) if values else ""
-            lines.append(f'        set pf to pivot field "{col}" of pt')
-            lines.append("        set orientation of pf to page field")
-            lines.append(f"        set allowedValues to {{{values_list}}}")
-            lines.append("        repeat with pi in pivot items of pf")
-            lines.append("            set visible of pi to ((name of pi) as string) is in allowedValues")
-            lines.append("        end repeat")
+            filter_spec = config["filter_field"]["column"] + "|" + ",".join(config["filter_field"]["values"])
+        else:
+            filter_spec = ""
+        source_is_table = "1" if config["table_name"] else "0"
+        source_ref = config["table_name"] if config["table_name"] else config["source_range"]
 
-        # Align Excel's default Compact-Form layout with visi's flat
-        # one-column-per-field tabular grid -- without this the two grids
-        # aren't cell-for-cell comparable at all. Unverified (see module
-        # docstring): needs a pilot run to confirm these are the right
-        # AppleScript terms/enum values.
-        lines.append("        set row axis layout of pt to tabular row")
-        lines.append("        set subtotal location of pt to at bottom")
-        lines.append("        set has auto format of pt to false")
-        lines.append(f"        set column grand of pt to {str(config['grand_totals_col']).lower()}")
-        lines.append(f"        set row grand of pt to {str(config['grand_totals_row']).lower()}")
-        lines.append("        refresh table pt")
-        lines.append("        save wb")
-        lines.append("        close wb saving no")
-        lines.append("    on error errText number errNum")
-        lines.append("        try")
-        lines.append("            close workbooks saving no")
-        lines.append("        end try")
-        lines.append("        error errText number errNum")
-        lines.append("    end try")
-        lines.append("end tell")
+        # Labeled command parameters in this dictionary use space-separated
+        # syntax (`label value`), not `label:value` colons -- confirmed via
+        # the same real-Excel trial-and-error that found `create pivot
+        # table`'s working form (see class docstring); colons here produce
+        # a plain syntax error, not a runtime one.
+        run_macro_line = (
+            f'        run VB macro "BuildFuzzPivot" '
+            f'arg1 {self._applescript_str(row_fields_csv)} '
+            f'arg2 {self._applescript_str(col_fields_csv)} '
+            f'arg3 {self._applescript_str(value_fields_csv)} '
+            f'arg4 {self._applescript_str(filter_spec)} '
+            f'arg5 {self._applescript_str(DEST_CELL)} '
+            f'arg6 {self._applescript_str("1" if config["grand_totals_row"] else "0")} '
+            f'arg7 {self._applescript_str("1" if config["grand_totals_col"] else "0")} '
+            f'arg8 {self._applescript_str(source_is_table)} '
+            f'arg9 {self._applescript_str(source_ref)}'
+        )
+
+        lines = [
+            f'tell application "{app_name}"',
+            "    set display alerts to false",
+            "    try",
+            "        close workbooks saving no",
+            "    end try",
+            "    try",
+            f'        set targetFile to POSIX file "{output_file}"',
+            "        open targetFile",
+            "        set wb to active workbook",
+            run_macro_line,
+            "        close wb saving no",
+            "    on error errText number errNum",
+            "        try",
+            "            close workbooks saving no",
+            "        end try",
+            "        error errText number errNum",
+            "    end try",
+            "end tell",
+        ]
         return "\n".join(lines)
 
-    def _run_applescript(self, abs_output, config):
-        script = self._build_applescript(abs_output, config)
+    def _run_applescript_macro(self, abs_output, config):
+        script = self._build_applescript_macro_call(abs_output, config)
         res = None
         for attempt in range(5):
             time.sleep(0.5)
@@ -511,7 +583,7 @@ class ExcelPivotDriver:
             for f in config["value_fields"]:
                 pf = pt.PivotFields(f["column"])
                 pf.Orientation = c.xlDataField
-                pf.Function = getattr(c, AGG_TO_EXCEL_FUNCTION[f["agg"]])
+                pf.Function = getattr(c, AGG_TO_WIN32COM_FUNCTION[f["agg"]])
             if config["filter_field"]:
                 col = config["filter_field"]["column"]
                 values = set(config["filter_field"]["values"])

@@ -18,3 +18,8 @@ Thumbs.db
 venv
 fuzz_results/
 __pycache__
+
+# One-time, human-created macro-enabled workbook for fuzz_pivot.py's
+# AppleScript driver (paste fuzz/BuildFuzzPivot.bas into it) -- a compiled
+# binary asset each developer authors locally, not a generated build output.
+fuzz/pivot_macro_template.xlsm
