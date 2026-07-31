@@ -41,22 +41,23 @@ Setup (one-time, macOS only -- skip if you only use win32com on Windows):
        *running* an already-embedded macro, not any VBA-project scripting
        permission.
 
-STATUS -- piloted against real Excel, works end-to-end, but surfaced a real
-gap in visi itself plus two unexplained issues (see fuzz/README.md's "Known
-caveats" section for full detail, this is just the summary):
-  - visi's pivot output never renders filter/page fields as header rows the
-    way Excel does (Excel always shows "FieldName | (All)" + a blank spacer
-    row above the grid when a filter field exists; visi's `compute_pivot`/
-    `PivotGrid` only ever uses `filter_fields` to filter records, never to
-    add display rows) -- confirmed via libvisi/src/core/pivot.rs. This means
-    *any* pivot with a filter field is completely cell-misaligned between
-    the two engines right now; it is a genuine visi-side rendering gap, not
-    a fuzz-harness bug, and is out of scope for this harness to fix.
-  - A handful of configs show much larger, unexplained mismatches (the grid
-    spans out to very different widths between the two engines) -- not yet
-    root-caused; could be a visi bug, a bug in BuildFuzzPivot.bas, or the
-    comparator picking up incidental differences outside the pivot's actual
-    destination rectangle (it currently diffs the whole sheet).
+STATUS -- piloted against real Excel, works end-to-end (see fuzz/README.md's
+"Known caveats" section for full detail, this is just the summary):
+  - FIXED: visi's pivot output used to never render filter/page fields as
+    header rows the way Excel does. `libvisi/src/core/pivot.rs`'s
+    `compute_pivot`/`PivotGrid` now builds a `filter_rows` block (one
+    "FieldName | (All)"/"(Multiple Items)" row per filter field plus a
+    blank spacer, matching Excel's own convention empirically verified
+    against real Excel) that `visi/src/engine.rs` materializes above the
+    grid and `pivot_xlsx.rs`'s native XML accounts for via `rowPageCount`.
+  - Still open: a *separate* layout gap surfaced while verifying the fix
+    above -- whenever row/col fields are present, Excel's header caption is
+    literally "Row Labels"/"Column Labels", not the field name, unlike
+    visi's grid. `BuildFuzzPivot.bas` already sets `LayoutForm = xlTabular`
+    per field, which should prevent this, so either that isn't taking
+    effect via this VBA/AppleScript path or something resets it afterward.
+    Not yet root-caused -- this, not an unrelated bug, is what was behind
+    most of the previously-reported "wide-grid"/large-mismatch iterations.
   - One tiny-edge-case config (a column used as both a col field and a
     filter field, with the filter selecting zero values, over a 1-row
     source) made the VBA macro itself throw an outright Excel "Parameter

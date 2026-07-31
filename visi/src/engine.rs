@@ -820,6 +820,14 @@ impl WorkbookManager {
             );
 
             let mut r = pivot.dest_row;
+            for (name, state) in &grid.filter_rows {
+                self.set_cell(dest_idx, r, pivot.dest_col, pivot_label_literal(name));
+                self.set_cell(dest_idx, r, pivot.dest_col + 1, pivot_label_literal(state));
+                r += 1;
+            }
+            if !grid.filter_rows.is_empty() {
+                r += 1; // blank spacer row before the grid, matching Excel
+            }
             for header in &grid.header_rows {
                 for (c, text) in header.iter().enumerate() {
                     self.set_cell(dest_idx, r, pivot.dest_col + c, pivot_label_literal(text));

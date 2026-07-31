@@ -465,12 +465,18 @@ fn build_pivot_xml_unit(
         )
     } else {
         let grid = compute_pivot(sheets, pivot)?;
-        let height = grid.height();
+        // Excel's own `<location>` spans only the row/col header + data
+        // grid, not the filter/page-field rows above it (those are
+        // documented separately via `rowPageCount`/`colPageCount` below,
+        // matching real Excel's convention, verified against an
+        // Excel-produced pivotTable1.xml).
+        let height = grid.header_rows.len() + grid.body_rows.len();
         let width = grid.width.max(1);
+        let grid_start_row = pivot.dest_row + grid.grid_row_offset();
         let loc = a1_range(
-            pivot.dest_row,
+            grid_start_row,
             pivot.dest_col,
-            pivot.dest_row + height.saturating_sub(1),
+            grid_start_row + height.saturating_sub(1),
             pivot.dest_col + width.saturating_sub(1),
         );
         let row_label_width = pivot.row_fields.len().max(1);
@@ -492,6 +498,18 @@ fn build_pivot_xml_unit(
     let row_items_count = row_items_xml.matches("<i").count();
     let col_items_count = col_items_xml.matches("<i").count();
 
+    // Matches real Excel: `rowPageCount`/`colPageCount` on `<location>`
+    // document how many rows/columns above/left of `ref` are reserved for
+    // filter/page fields, only present at all when there are any.
+    let page_count_attrs = if pivot.filter_fields.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " rowPageCount=\"{}\" colPageCount=\"1\"",
+            pivot.filter_fields.len()
+        )
+    };
+
     #[allow(clippy::format_in_format_args)]
     let pivot_table_xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
@@ -500,7 +518,7 @@ applyBorderFormats=\"0\" applyFontFormats=\"0\" applyPatternFormats=\"0\" applyA
 applyWidthHeightFormats=\"1\" dataCaption=\"Values\" updatedVersion=\"6\" minRefreshableVersion=\"3\" \
 useAutoFormatting=\"1\" itemPrintTitles=\"1\" createdVersion=\"6\" indent=\"0\" outline=\"1\" \
 outlineData=\"1\" multipleFieldFilters=\"0\" rowGrandTotals=\"{row_grand}\" colGrandTotals=\"{col_grand}\">\
-<location ref=\"{location_ref}\" firstHeaderRow=\"{first_header_row}\" firstDataRow=\"{first_data_row}\" firstDataCol=\"{first_data_col}\"/>\
+<location ref=\"{location_ref}\" firstHeaderRow=\"{first_header_row}\" firstDataRow=\"{first_data_row}\" firstDataCol=\"{first_data_col}\"{page_count_attrs}/>\
 <pivotFields count=\"{n_fields}\">{pivot_fields_xml}</pivotFields>\
 {row_fields}{row_items}{col_fields}{col_items}{page_fields}{data_fields}\
 <pivotTableStyleInfo name=\"PivotStyleLight16\" showRowHeaders=\"1\" showColHeaders=\"1\" showLastColumn=\"1\"/>\
@@ -514,6 +532,7 @@ outlineData=\"1\" multipleFieldFilters=\"0\" rowGrandTotals=\"{row_grand}\" colG
         first_header_row = first_header_row,
         first_data_row = first_data_row,
         first_data_col = first_data_col,
+        page_count_attrs = page_count_attrs,
         n_fields = col_names.len(),
         pivot_fields_xml = pivot_fields_xml,
         row_fields = if row_fields_xml.is_empty() {
@@ -1171,9 +1190,21 @@ pub fn import_pivot_tables(
             })
             .collect();
 
+        // `<location>` spans only the row/col header + data grid, not the
+        // filter/page-field rows reserved above it on export (see
+        // `build_pivot_xml_unit`), so `dest_row` -- the anchor of the whole
+        // visual block, filter rows included -- needs that offset added
+        // back in.
+        let filter_row_offset = if filter_fields.is_empty() {
+            0
+        } else {
+            filter_fields.len() + 1
+        };
         let (dest_row, dest_col, last_end_row, last_end_col) = match &parsed.location_ref {
             Some(loc) => match parse_a1_range(loc) {
-                Some((r0, c0, r1, c1)) => (r0, c0, Some(r1), Some(c1)),
+                Some((r0, c0, r1, c1)) => {
+                    (r0.saturating_sub(filter_row_offset), c0, Some(r1), Some(c1))
+                }
                 None => (0, 0, None, None),
             },
             None => (0, 0, None, None),

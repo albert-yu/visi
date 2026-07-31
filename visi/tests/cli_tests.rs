@@ -209,6 +209,116 @@ fn test_workbook_pivot_crud_and_computation() {
 }
 
 #[test]
+fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
+    use libvisi::core::{CellRef, PivotAggregation, PivotArea};
+
+    // Verified against real Excel: a filter/page field always renders as
+    // its own row above the row/col header grid ("FieldName" | "(All)" or
+    // "(Multiple Items)"), followed by one blank spacer row -- visi's
+    // pivot output previously never rendered these at all, leaving every
+    // pivot with a filter field completely cell-misaligned vs. Excel.
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_pivot_filter_header_row.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    let data = [
+        ["Region", "Product", "Amount"],
+        ["East", "Widget", "10"],
+        ["East", "Gadget", "5"],
+        ["West", "Widget", "30"],
+        ["West", "Gadget", "40"],
+    ];
+    for (r, row) in data.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            wb.set_cell(0, r, c, v.to_string());
+        }
+    }
+    wb.evaluate().unwrap();
+    wb.add_table(None, "Sales", 0, 0, 4, 2, true, false)
+        .unwrap();
+
+    // Destination anchored at (row 0, col 4) = E1.
+    wb.add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4)
+        .unwrap();
+    wb.add_pivot_field("SalesPivot", PivotArea::Row, "Region", None)
+        .unwrap();
+    wb.add_pivot_field(
+        "SalesPivot",
+        PivotArea::Value,
+        "Amount",
+        Some(PivotAggregation::Sum),
+    )
+    .unwrap();
+    wb.add_pivot_field("SalesPivot", PivotArea::Filter, "Product", None)
+        .unwrap();
+
+    // Row 0 (E1:F1): filter field name + "(All)" (no selection applied yet).
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(0, 4))
+            .to_string(),
+        "Product"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(0, 5))
+            .to_string(),
+        "(All)"
+    );
+    // Row 1 is the blank spacer row.
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(1, 4))
+            .to_string(),
+        ""
+    );
+    // The row/col header grid now starts at row 2, not row 0.
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(2, 4))
+            .to_string(),
+        "Region"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(3, 4))
+            .to_string(),
+        "East"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(3, 5))
+            .to_string(),
+        "15"
+    );
+
+    // Selecting a strict subset switches the state to "(Multiple Items)"
+    // (matches real Excel: even a single selected value shows this, never
+    // the value's own name).
+    wb.set_pivot_filter("SalesPivot", "Product", Some(vec!["Widget".to_string()]))
+        .unwrap();
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&CellRef::new(0, 5))
+            .to_string(),
+        "(Multiple Items)"
+    );
+
+    // The pivot definition's `dest_row`/`dest_col` must still be the
+    // anchor of the whole visual block (E1), not shifted down to where the
+    // grid itself begins -- otherwise every refresh after a reload would
+    // drift further down.
+    wb.save_file(file_str).unwrap();
+    let reloaded = WorkbookManager::load_file(file_str).unwrap();
+    let reloaded_pivot = reloaded.find_pivot_table("SalesPivot").unwrap();
+    assert_eq!(reloaded_pivot.dest_row, 0);
+    assert_eq!(reloaded_pivot.dest_col, 4);
+
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
 fn test_coordinate_parsing() {
     let (sheet, row, col) = parse_cell_ref("Sheet2!D10").unwrap();
     assert_eq!(sheet, Some("Sheet2".to_string()));

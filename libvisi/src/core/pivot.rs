@@ -154,13 +154,23 @@ pub struct PivotTable {
 }
 
 /// A fully computed pivot result, ready to be materialized into a sheet:
-/// `header_rows` come first, then one entry of `body_rows` per output row.
+/// `filter_rows` (if any) come first, then a blank spacer row, then
+/// `header_rows`, then one entry of `body_rows` per output row -- mirroring
+/// Excel's own report-filter placement (verified against real Excel: it
+/// always reserves one row per filter field plus a blank spacer above the
+/// row/column header grid, and captions each with a "(All)"/"(Multiple
+/// Items)" state -- never a specific value's name, since that's specific to
+/// the classic single-select page-field mode Excel no longer defaults to).
 #[derive(Debug, Clone)]
 pub struct PivotGrid {
+    /// One `(field name, "(All)" | "(Multiple Items)")` pair per filter
+    /// field, in the order they were added.
+    pub filter_rows: Vec<(String, String)>,
     pub header_rows: Vec<Vec<String>>,
     pub body_rows: Vec<PivotBodyRow>,
     /// Total width in columns (row-label columns + data columns), used by
-    /// the caller to know how large a range to clear/allocate.
+    /// the caller to know how large a range to clear/allocate. Always >= 2,
+    /// so `filter_rows`' two columns (name, state) always fit within it.
     pub width: usize,
     /// The flattened row/column axis groups underlying `body_rows`/the data
     /// columns, exposed (independent of display formatting) so an xlsx
@@ -191,8 +201,19 @@ pub struct PivotAxisItem {
 }
 
 impl PivotGrid {
+    /// Row offset from the pivot's `dest_row` anchor to where the row/col
+    /// header + data grid actually begins: 0 with no filter fields, else
+    /// one row per filter field plus a blank spacer row.
+    pub fn grid_row_offset(&self) -> usize {
+        if self.filter_rows.is_empty() {
+            0
+        } else {
+            self.filter_rows.len() + 1
+        }
+    }
+
     pub fn height(&self) -> usize {
-        self.header_rows.len() + self.body_rows.len()
+        self.grid_row_offset() + self.header_rows.len() + self.body_rows.len()
     }
 }
 
@@ -496,14 +517,43 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
         return Err("Pivot table has no value fields".to_string());
     }
 
-    // Read every source record (one row per data row, one ResultData per
-    // source column), applying filter fields as we go.
-    let mut records: Vec<Vec<ResultData>> = Vec::new();
-    'row: for &r in &data_rows {
+    // Read every source record unfiltered first -- the filter-row captions
+    // below need every distinct value that actually exists in the source,
+    // not just the ones that survive filtering, to tell "(All)" apart from
+    // "(Multiple Items)".
+    let mut all_rows: Vec<Vec<ResultData>> = Vec::with_capacity(data_rows.len());
+    for &r in &data_rows {
         let mut row_vals = Vec::with_capacity(sheet_cols.len());
         for &c in &sheet_cols {
             row_vals.push(sheet.get_result_data(&CellRef::new(r, c)));
         }
+        all_rows.push(row_vals);
+    }
+
+    let mut filter_rows: Vec<(String, String)> = Vec::new();
+    for ff in &pivot.filter_fields {
+        let idx = column_index(&col_names, &ff.column)?;
+        let distinct: std::collections::HashSet<String> =
+            all_rows.iter().map(|row| group_key(&row[idx])).collect();
+        let state = match &ff.selected_values {
+            None => "(All)".to_string(),
+            Some(selected) => {
+                let selected_set: std::collections::HashSet<&String> = selected.iter().collect();
+                let is_all = selected_set.len() == distinct.len()
+                    && distinct.iter().all(|v| selected_set.contains(v));
+                if is_all {
+                    "(All)".to_string()
+                } else {
+                    "(Multiple Items)".to_string()
+                }
+            }
+        };
+        filter_rows.push((ff.column.clone(), state));
+    }
+
+    // Apply filter fields to build the working record set.
+    let mut records: Vec<Vec<ResultData>> = Vec::new();
+    'row: for row_vals in &all_rows {
         for ff in &pivot.filter_fields {
             if let Some(selected) = &ff.selected_values {
                 let idx = column_index(&col_names, &ff.column)?;
@@ -513,7 +563,7 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
                 }
             }
         }
-        records.push(row_vals);
+        records.push(row_vals.clone());
     }
 
     let record_indices: Vec<usize> = (0..records.len()).collect();
@@ -722,6 +772,7 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
             .collect()
     };
     Ok(PivotGrid {
+        filter_rows,
         header_rows,
         body_rows,
         width,
@@ -907,6 +958,49 @@ mod tests {
         assert_eq!(grid.body_rows.len(), 2);
         assert_eq!(value_at(&grid.body_rows[0], 0), 30.0);
         assert_eq!(value_at(&grid.body_rows[1], 0), 55.0);
+    }
+
+    #[test]
+    fn test_no_filter_fields_means_no_reserved_rows() {
+        let sheet = source_sheet();
+        let pivot = base_pivot();
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert!(grid.filter_rows.is_empty());
+        assert_eq!(grid.grid_row_offset(), 0);
+        assert_eq!(grid.height(), grid.header_rows.len() + grid.body_rows.len());
+    }
+
+    #[test]
+    fn test_filter_field_state_label_all_vs_multiple_items() {
+        // Product has exactly two distinct values in `source_sheet`: Widget, Gadget.
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.filter_fields = vec![PivotFilterField {
+            column: "Product".to_string(),
+            selected_values: None,
+        }];
+
+        // No selection at all -> "(All)".
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(
+            grid.filter_rows,
+            vec![("Product".to_string(), "(All)".to_string())]
+        );
+        assert_eq!(grid.grid_row_offset(), 2); // 1 filter row + 1 blank spacer
+
+        // Explicitly selecting every existing distinct value is equivalent to "(All)".
+        pivot.filter_fields[0].selected_values =
+            Some(vec!["Widget".to_string(), "Gadget".to_string()]);
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.filter_rows[0].1, "(All)");
+
+        // A strict subset -> "(Multiple Items)". Verified against real
+        // Excel: even a single selected value out of several shows this,
+        // never the value's own name -- that's specific to the classic
+        // single-select page-field mode Excel no longer defaults to.
+        pivot.filter_fields[0].selected_values = Some(vec!["Widget".to_string()]);
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.filter_rows[0].1, "(Multiple Items)");
     }
 
     #[test]
