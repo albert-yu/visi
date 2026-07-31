@@ -72,6 +72,32 @@ python3 fuzz/fuzz_excel.py --driver mock --iterations 5
 
 ---
 
+## Pivot Table Fuzzing (`fuzz_pivot.py`)
+
+Pivot tables get their own script rather than a mode inside `fuzz_excel.py`, because the generation/execution pipeline is fundamentally different: Excel must *actively construct* a live PivotTable via its object model (there's no XML shortcut the way `calculate` recalculates existing formulas), and `openpyxl` cannot write pivot tables at all -- its `TableDefinition` is an 87-parameter raw XML mirror with no builder API, so authoring one by hand would mean re-implementing most of `pivot_xlsx.rs` in Python. `fuzz_pivot.py` instead:
+
+1. Uses `openpyxl` (which handles plain data + Excel Tables fine) to generate a random source workbook with columns chosen to exercise grouping -- low-cardinality categories (with occasional blanks and same-value-different-case duplicates), a numeric-looking-text column, and numeric columns for aggregation.
+2. Picks a random pivot configuration (row/col/value/filter fields, subtotal toggles, grand totals) as a plain dict.
+3. Builds a matching pivot table in `visi` via the `visi pivot` CLI (`create` + repeated `add-field`/`filter`) and in Excel by driving its native PivotTable object model (AppleScript on macOS, COM on Windows) -- `ExcelPivotDriver` in `fuzz_pivot.py`.
+4. Reuses `XLSXEvaluatedReader`/`DifferentialComparator` from `fuzz_excel.py` unchanged to compare the two engines' materialized output cells, since both write plain literal values into the destination range.
+
+```bash
+python3 fuzz/fuzz_pivot.py --driver mock --iterations 5                      # smoke-test the pipeline, no Excel needed
+python3 fuzz/fuzz_pivot.py --excel-path "/Applications/Microsoft Excel.app" --iterations 1 --seed 1
+```
+
+### Known caveats specific to this harness
+
+- **AppleScript pivot construction is unverified.** Building a live PivotTable via AppleScript (as opposed to `fuzz_excel.py`'s driver, which only needs `calculate` over cells `visi` already computed) has not been piloted against real Excel in this environment -- see the note below on why. `ExcelPivotDriver`'s AppleScript path uses Excel's standard VBA-name-mirroring convention (`RefreshTable` -> `refresh table`, etc.), which is the right convention but unconfirmed against a live dictionary. **Before trusting results beyond a single-iteration pilot run**, inspect one generated case's `visi_out.xlsx` vs `excel_out.xlsx` by hand (e.g. via `openpyxl`) to confirm cell layout actually lines up -- see "Layout alignment" below. The `win32com` path uses the standard, well-documented VBA object model directly and should be far more reliable.
+- **Layout alignment.** Excel's default new-pivot-table layout ("Compact Form", which merges row-field labels into a single indented column) does not structurally match `visi`'s flat one-column-per-field tabular grid (`PivotGrid.body_rows[i].row_labels`). The driver explicitly sets Tabular Form, subtotals-at-bottom, and disables label repetition to align the two -- if a real pilot run shows structural mismatches unrelated to actual values, check these settings first.
+- **Aggregation function mapping.** `visi`'s `Count` (counts any non-blank value) maps to Excel's `xlCountA`; `visi`'s `CountNumbers` (numeric-only) maps to Excel's `xlCount`. Get this backwards and every count-based comparison will show a spurious, systematic mismatch.
+- **A pre-existing, non-pivot-specific `openpyxl`/`calamine` interop gap**: `openpyxl` writes worksheet-to-table relationship `Target` attributes as absolute package paths (`/xl/tables/table1.xml`), which is valid per the OPC spec but which `calamine` (the crate `visi`'s xlsx importer uses) doesn't resolve -- it only special-cases `../`-relative targets, so an `openpyxl`-authored Excel Table silently imports as zero tables (confirmed independent of pivot tables: plain `visi table list` on an untouched `openpyxl` file reports none). `fuzz_pivot.py`'s generator works around this itself (`_fix_openpyxl_table_rels`, rewriting the relationship XML to a relative path after `openpyxl` saves) so `--source-mode table` iterations aren't silently broken, but the underlying gap is real and out of this harness's scope to fix in `visi` itself.
+- **A pre-existing calamine crash on zero-data-row tables**: exporting an Excel Table with a header row but zero data rows and reimporting it panics inside `calamine::Xlsx::table_by_name` ("invalid range bounds"). This was found via `libvisi/src/core/pivot.rs`'s Rust-side invariant fuzzer (`test_fuzz_pivot_random_invariants`), which works around it by keeping Table-sourced fuzz configs at >=1 data row (Range-sourced configs still cover the zero-row case directly against `compute_pivot`). Also out of scope to fix here.
+
+Failure artifacts land under `fuzz_results/failures/pivot_fail_iter_<N>_seed_<SEED>/` (same shape as the formula fuzzer's, see below, with a `pivot_` prefix so the two don't collide).
+
+---
+
 ## Key Considerations for Excel Parity
 
 When building full feature parity between `visi` and Microsoft Excel for formula evaluation and file import/export, several critical edge cases and subtle behaviors must be addressed:
