@@ -1275,6 +1275,9 @@ fn handle_macro(args: MacroArgs, quiet: bool) {
                         .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
                     Some(wb.sheets[idx].id)
                 }
+                // ThisWorkbook isn't tied to a specific sheet (mirroring
+                // real Excel), so --sheet is optional for it alone.
+                (VbaModuleKind::Document, None) if add_args.name == "ThisWorkbook" => None,
                 (VbaModuleKind::Document, None) => {
                     exit_with_error("--kind document requires --sheet", EXIT_USAGE_ERROR)
                 }

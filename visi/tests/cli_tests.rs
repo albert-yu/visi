@@ -250,6 +250,62 @@ fn test_workbook_vba_crud_and_roundtrip() {
 }
 
 #[test]
+fn test_workbook_vba_this_workbook_module_needs_no_sheet_binding() {
+    use libvisi::core::VbaModuleKind;
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_vba_this_workbook.xlsm");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+
+    // A ThisWorkbook document module -- like real Excel's own always-present
+    // one -- isn't tied to any particular sheet, so bound_sheet_id: None
+    // must be accepted rather than rejected as "Document modules require a
+    // bound sheet".
+    wb.add_vba_module(
+        "ThisWorkbook".to_string(),
+        VbaModuleKind::Document,
+        "Attribute VB_Name = \"ThisWorkbook\"\r\n".to_string(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        wb.vba_project
+            .as_ref()
+            .unwrap()
+            .find_module("ThisWorkbook")
+            .unwrap()
+            .bound_sheet_id,
+        None
+    );
+
+    // Regression test: adding ThisWorkbook used to force a caller to pass
+    // some --sheet, which got stored as ThisWorkbook's bound_sheet_id and
+    // then made that sheet's *real* code-behind module add fail with "That
+    // sheet already has a bound document module".
+    let sheet1_id = wb.sheets[0].id;
+    wb.add_vba_module(
+        "Sheet1".to_string(),
+        VbaModuleKind::Document,
+        "Attribute VB_Name = \"Sheet1\"\r\n".to_string(),
+        Some(sheet1_id),
+    )
+    .unwrap();
+    assert_eq!(
+        wb.vba_project
+            .as_ref()
+            .unwrap()
+            .find_module("Sheet1")
+            .unwrap()
+            .bound_sheet_id,
+        Some(sheet1_id)
+    );
+
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
 fn test_workbook_pivot_crud_and_computation() {
     use libvisi::core::{PivotAggregation, PivotArea};
 

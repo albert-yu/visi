@@ -147,9 +147,9 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn compress_chunk(input: &[u8]) -> Vec<u8> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     let mut body = Vec::new();
-    let mut hash_index: HashMap<[u8; 3], Vec<usize>> = HashMap::new();
+    let mut hash_index: HashMap<[u8; 3], VecDeque<usize>> = HashMap::new();
     let mut i = 0;
     while i < input.len() {
         let mut flag_byte = 0u8;
@@ -179,9 +179,9 @@ fn compress_chunk(input: &[u8]) -> Vec<u8> {
                     if k + 3 <= input.len() {
                         let key = [input[k], input[k + 1], input[k + 2]];
                         let entries = hash_index.entry(key).or_default();
-                        entries.push(k);
+                        entries.push_back(k);
                         if entries.len() > 64 {
-                            entries.remove(0);
+                            entries.pop_front();
                         }
                     }
                 }
@@ -191,9 +191,9 @@ fn compress_chunk(input: &[u8]) -> Vec<u8> {
                 if i + 3 <= input.len() {
                     let key = [input[i], input[i + 1], input[i + 2]];
                     let entries = hash_index.entry(key).or_default();
-                    entries.push(i);
+                    entries.push_back(i);
                     if entries.len() > 64 {
-                        entries.remove(0);
+                        entries.pop_front();
                     }
                 }
                 i += 1;
@@ -210,7 +210,7 @@ fn find_best_match(
     i: usize,
     max_offset: usize,
     max_length: usize,
-    hash_index: &std::collections::HashMap<[u8; 3], Vec<usize>>,
+    hash_index: &std::collections::HashMap<[u8; 3], std::collections::VecDeque<usize>>,
 ) -> Option<(usize, usize)> {
     let key = [input[i], input[i + 1], input[i + 2]];
     let candidates = hash_index.get(&key)?;

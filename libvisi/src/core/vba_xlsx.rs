@@ -21,7 +21,6 @@
 //! reflect add/remove/rename/edit operations. See the module-level docs on
 //! `crate::core::vba` for the full picture.
 
-use crate::core::engine::Sheet;
 use crate::core::ovba;
 use crate::core::vba::{VbaModule, VbaModuleKind, VbaProject};
 use crate::core::xlsx::{escape_xml, get_attr, get_zip_file_content, parse_workbook_rels};
@@ -102,7 +101,8 @@ pub fn parse_vba_project_from_cfb_bytes(
         let raw = read_stream_bytes(&mut cfb_file, &format!("/VBA/{}", spec.name))?;
         let text_offset = spec.text_offset.min(raw.len());
         let prefix_bytes = raw[..text_offset].to_vec();
-        let source_bytes = ovba::decompress(&raw[text_offset..])?;
+        let cached_compressed_source = raw[text_offset..].to_vec();
+        let source_bytes = ovba::decompress(&cached_compressed_source)?;
         let source = String::from_utf8_lossy(&source_bytes).into_owned();
 
         let kind = if spec.name == "ThisWorkbook" || document_module_names.contains(&spec.name) {
@@ -131,6 +131,7 @@ pub fn parse_vba_project_from_cfb_bytes(
             bound_sheet_id,
             prefix_bytes,
             module_cookie: spec.module_cookie,
+            cached_compressed_source: Some(cached_compressed_source),
         });
     }
 
@@ -364,8 +365,8 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
 /// needed), or returns `xlsx_bytes` unchanged if `vba` is `None`.
 pub fn export_vba_project(
     xlsx_bytes: Vec<u8>,
-    sheets: &[Sheet],
     vba: Option<&VbaProject>,
+    sheet_id_to_worksheet_name: &HashMap<u64, String>,
 ) -> Result<Vec<u8>, String> {
     let project = match vba {
         Some(p) if !p.modules.is_empty() => p,
@@ -422,7 +423,8 @@ pub fn export_vba_project(
         1,
     );
 
-    let new_workbook_xml = patch_workbook_code_names(&workbook_xml, project, sheets);
+    let new_workbook_xml =
+        patch_workbook_code_names(&workbook_xml, project, sheet_id_to_worksheet_name);
 
     rewrite_zip_with_vba_part(
         &xlsx_bytes,
@@ -435,7 +437,18 @@ pub fn export_vba_project(
 
 /// Adds `codeName="ThisWorkbook"` to `<workbookPr>` and a matching
 /// `codeName="..."` to each `<sheet>` element bound to a Document module.
-fn patch_workbook_code_names(workbook_xml: &str, project: &VbaProject, sheets: &[Sheet]) -> String {
+/// `sheet_id_to_worksheet_name` must map each sheet id to the name it was
+/// *actually* written under in `workbook_xml` -- `xlsx::export_xlsx_data`
+/// truncates names over 31 chars and de-duplicates collisions, so matching
+/// against a module's bound `Sheet::name` directly (as this used to) could
+/// silently fail to find the element for a long or colliding sheet name,
+/// leaving that Document module's codeName -- and so its sheet binding --
+/// unattached in the saved file.
+fn patch_workbook_code_names(
+    workbook_xml: &str,
+    project: &VbaProject,
+    sheet_id_to_worksheet_name: &HashMap<u64, String>,
+) -> String {
     let mut xml = if workbook_xml.contains("<workbookPr/>") {
         workbook_xml.replacen(
             "<workbookPr/>",
@@ -460,10 +473,10 @@ fn patch_workbook_code_names(workbook_xml: &str, project: &VbaProject, sheets: &
         let Some(sheet_id) = module.bound_sheet_id else {
             continue;
         };
-        let Some(sheet) = sheets.iter().find(|s| s.id == sheet_id) else {
+        let Some(worksheet_name) = sheet_id_to_worksheet_name.get(&sheet_id) else {
             continue;
         };
-        let needle = format!("name=\"{}\"", escape_xml(&sheet.name));
+        let needle = format!("name=\"{}\"", escape_xml(worksheet_name));
         if let Some(pos) = xml.find(&needle) {
             let insert_at = pos + needle.len();
             xml = format!(
@@ -589,7 +602,14 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         .and_then(|mut s| s.write_all(&new_dir_compressed))
         .map_err(|e| format!("Failed to write dir stream: {}", e))?;
     for module in &project.modules {
-        let compressed_source = ovba::compress(module.source.as_bytes())?;
+        // Reuse the compressed bytes read back on import when this module's
+        // source hasn't changed since (see `VbaModule::cached_compressed_source`)
+        // instead of paying LZ77 compression again for every module on
+        // every save, most of which a given CRUD operation never touches.
+        let compressed_source = match &module.cached_compressed_source {
+            Some(cached) => cached.clone(),
+            None => ovba::compress(module.source.as_bytes())?,
+        };
         cf.create_stream(format!("VBA/{}", module.name))
             .and_then(|mut s| {
                 s.write_all(&module.prefix_bytes)?;
@@ -673,4 +693,77 @@ fn build_projectwm_stream(project: &VbaProject) -> Vec<u8> {
     }
     out.extend_from_slice(&[0x00, 0x00]);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::vba::{VbaModuleKind, VbaProject};
+
+    /// Deliberately sets `source` and `cached_compressed_source` to
+    /// non-matching content so the test can tell, from the exported bytes
+    /// alone, which one `build_vba_project_bin` actually used -- a stale
+    /// cache being reused verbatim (correct behavior when `source` hasn't
+    /// changed, which is what `set_vba_module_source` enforces by clearing
+    /// the cache) vs. `source` being recompressed fresh (correct only when
+    /// there's no cache at all, i.e. `None`).
+    #[test]
+    fn build_vba_project_bin_reuses_cached_compressed_source() {
+        let mut project = VbaProject::new_empty();
+        let cached =
+            ovba::compress(b"Attribute VB_Name = \"M\"\r\nSub Cached()\r\nEnd Sub\r\n").unwrap();
+        project.modules.push(VbaModule {
+            name: "M".to_string(),
+            kind: VbaModuleKind::Standard,
+            source: "Attribute VB_Name = \"M\"\r\nSub Fresh()\r\nEnd Sub\r\n".to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: project.seed_prefix_bytes.clone(),
+            module_cookie: project.seed_module_cookie,
+            cached_compressed_source: Some(cached),
+        });
+
+        let bin = build_vba_project_bin(&project).unwrap();
+        let mut cfb_file = cfb::CompoundFile::open(std::io::Cursor::new(bin)).unwrap();
+        let mut raw = Vec::new();
+        cfb_file
+            .open_stream("/VBA/M")
+            .unwrap()
+            .read_to_end(&mut raw)
+            .unwrap();
+        let text_offset = project.modules[0].prefix_bytes.len();
+        let source_bytes = ovba::decompress(&raw[text_offset..]).unwrap();
+        let source = String::from_utf8(source_bytes).unwrap();
+        assert!(
+            source.contains("Cached"),
+            "expected the cached compressed bytes to be reused verbatim instead of \
+             recompressing `source` fresh, got: {source}"
+        );
+    }
+
+    #[test]
+    fn build_vba_project_bin_compresses_fresh_when_no_cache() {
+        let mut project = VbaProject::new_empty();
+        project.modules.push(VbaModule {
+            name: "M".to_string(),
+            kind: VbaModuleKind::Standard,
+            source: "Attribute VB_Name = \"M\"\r\nSub Fresh()\r\nEnd Sub\r\n".to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: project.seed_prefix_bytes.clone(),
+            module_cookie: project.seed_module_cookie,
+            cached_compressed_source: None,
+        });
+
+        let bin = build_vba_project_bin(&project).unwrap();
+        let mut cfb_file = cfb::CompoundFile::open(std::io::Cursor::new(bin)).unwrap();
+        let mut raw = Vec::new();
+        cfb_file
+            .open_stream("/VBA/M")
+            .unwrap()
+            .read_to_end(&mut raw)
+            .unwrap();
+        let text_offset = project.modules[0].prefix_bytes.len();
+        let source_bytes = ovba::decompress(&raw[text_offset..]).unwrap();
+        let source = String::from_utf8(source_bytes).unwrap();
+        assert!(source.contains("Fresh"));
+    }
 }

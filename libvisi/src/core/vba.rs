@@ -78,6 +78,14 @@ pub struct VbaModule {
     /// value survives re-export.
     #[serde(default = "default_module_cookie")]
     pub module_cookie: u16,
+    /// This module stream's already-compressed source, as read back
+    /// verbatim from an imported file -- `None` for a module created fresh
+    /// in this session (nothing to cache yet). `set_vba_module_source`
+    /// clears this whenever `source` is replaced. Export reuses the cached
+    /// bytes instead of recompressing `source` from scratch for every
+    /// module untouched by the CRUD operation that triggered the save.
+    #[serde(default)]
+    pub cached_compressed_source: Option<Vec<u8>>,
 }
 
 fn default_module_cookie() -> u16 {
@@ -221,6 +229,7 @@ mod tests {
                     bound_sheet_id: None,
                     prefix_bytes: vec![0xAA; 16],
                     module_cookie: 0xFFFF,
+                    cached_compressed_source: None,
                 },
                 VbaModule {
                     name: "Module1".to_string(),
@@ -230,6 +239,7 @@ mod tests {
                     bound_sheet_id: None,
                     prefix_bytes: vec![0xBB; 16],
                     module_cookie: 0xFFFF,
+                    cached_compressed_source: None,
                 },
             ],
             raw_donor: Vec::new(),

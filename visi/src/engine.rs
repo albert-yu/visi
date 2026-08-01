@@ -432,8 +432,11 @@ impl WorkbookManager {
 
     /// Adds a new module to the workbook's VBA project (creating the
     /// project from the bundled template first, if needed). `bound_sheet_id`
-    /// is required for `VbaModuleKind::Document` (and ignored otherwise) --
-    /// note this does NOT rename the sheet, or vice versa; Excel allows a
+    /// is required for `VbaModuleKind::Document` (except when `name` is
+    /// `"ThisWorkbook"`, which -- like real Excel's own always-present
+    /// ThisWorkbook module -- isn't tied to a specific sheet; any
+    /// `bound_sheet_id` passed alongside it is ignored rather than stored)
+    /// -- note this does NOT rename the sheet, or vice versa; Excel allows a
     /// document module's own name and its sheet's display name to diverge,
     /// and this codebase deliberately doesn't cascade one into the other.
     pub fn add_vba_module(
@@ -444,7 +447,8 @@ impl WorkbookManager {
         bound_sheet_id: Option<u64>,
     ) -> Result<(), String> {
         validate_vba_module_name(&name)?;
-        if kind == VbaModuleKind::Document {
+        let is_this_workbook = kind == VbaModuleKind::Document && name == "ThisWorkbook";
+        if kind == VbaModuleKind::Document && !is_this_workbook {
             let sheet_id = bound_sheet_id
                 .ok_or_else(|| "Document modules require a bound sheet".to_string())?;
             if !self.sheets.iter().any(|s| s.id == sheet_id) {
@@ -457,6 +461,7 @@ impl WorkbookManager {
             return Err(format!("Module '{}' already exists", name));
         }
         if kind == VbaModuleKind::Document
+            && bound_sheet_id.is_some()
             && project
                 .modules
                 .iter()
@@ -481,17 +486,20 @@ impl WorkbookManager {
             .first()
             .map(|m| m.module_cookie)
             .unwrap_or(project.seed_module_cookie);
+        let stored_bound_sheet_id = if kind == VbaModuleKind::Document && !is_this_workbook {
+            bound_sheet_id
+        } else {
+            None
+        };
         project.modules.push(VbaModule {
             name,
             kind,
             source,
-            bound_sheet_id: if kind == VbaModuleKind::Document {
-                bound_sheet_id
-            } else {
-                None
-            },
+            bound_sheet_id: stored_bound_sheet_id,
             prefix_bytes,
             module_cookie,
+            // A brand-new module has no already-compressed form to reuse.
+            cached_compressed_source: None,
         });
         Ok(())
     }
@@ -536,6 +544,10 @@ impl WorkbookManager {
             .find_module_mut(name)
             .ok_or_else(|| format!("Module '{}' not found", name))?;
         module.source = source;
+        // Invalidate the cached compressed form -- see
+        // VbaModule::cached_compressed_source -- since it no longer matches
+        // the new `source`.
+        module.cached_compressed_source = None;
         Ok(())
     }
 
