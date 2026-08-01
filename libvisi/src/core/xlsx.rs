@@ -280,17 +280,31 @@ pub fn import_xlsx_data(
             else {
                 continue;
             };
-            let (Some((data_start_row, data_start_col)), Some((data_end_row, data_end_col))) =
-                (table.data().start(), table.data().end())
-            else {
-                continue;
-            };
-            let (has_header_row, has_totals_row) = read_table_row_flags(buffer, &table_name);
+            let (has_header_row, has_totals_row, table_ref) =
+                read_table_metadata_from_zip(buffer, &table_name);
 
-            let start_row = (data_start_row as usize).saturating_sub(usize::from(has_header_row));
-            let end_row = data_end_row as usize + usize::from(has_totals_row);
-            let start_col = data_start_col as usize;
-            let end_col = data_end_col as usize;
+            // Prefer the table's own declared `ref` (the whole table's
+            // bounds, header/totals rows included) over reconstructing
+            // position from calamine's `Table::data()` range, which has no
+            // `start()`/`end()` at all for a table with zero data rows
+            // (`Range::empty()`) -- falling back to the old data-range
+            // computation only if the XML `ref` somehow isn't parseable.
+            let (start_row, start_col, end_row, end_col) = if let Some(bounds) = table_ref {
+                bounds
+            } else {
+                let Some((data_start_row, data_start_col)) = table.data().start() else {
+                    continue;
+                };
+                let Some((data_end_row, data_end_col)) = table.data().end() else {
+                    continue;
+                };
+                (
+                    (data_start_row as usize).saturating_sub(usize::from(has_header_row)),
+                    data_start_col as usize,
+                    data_end_row as usize + usize::from(has_totals_row),
+                    data_end_col as usize,
+                )
+            };
 
             // Guard against ranges that don't fit the imported sheet (e.g. a
             // table whose sheet fell back to the default empty-sheet size).
@@ -1177,9 +1191,19 @@ pub(crate) fn get_zip_file_content(
 /// to `(true, false)` -- a header row and no totals row -- if the table's
 /// XML can't be found or parsed, matching how most real-world tables are
 /// configured.
-fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
+/// Reads a table's header/totals row flags (calamine doesn't expose these)
+/// directly from its own `xl/tables/table*.xml`, along with its declared
+/// `ref` range parsed to 0-based `(start_row, start_col, end_row, end_col)`
+/// -- the whole table's bounds, header/totals rows included. The `ref` is
+/// the authoritative source of truth for a table's position: prefer it over
+/// reconstructing bounds from calamine's `Table::data()` range, which is
+/// empty (no `start()`/`end()`) for a table with zero data rows.
+fn read_table_metadata_from_zip(
+    buffer: &[u8],
+    table_name: &str,
+) -> (bool, bool, Option<(usize, usize, usize, usize)>) {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(buffer)) else {
-        return (true, false);
+        return (true, false, None);
     };
     let table_files: Vec<String> = archive
         .file_names()
@@ -1207,7 +1231,9 @@ fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
                         let totals_row_count = get_attr(e, b"totalsRowCount")
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
-                        return (header_row_count != 0, totals_row_count != 0);
+                        let table_ref = get_attr(e, b"ref")
+                            .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
+                        return (header_row_count != 0, totals_row_count != 0, table_ref);
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) | Err(_) => break,
@@ -1216,7 +1242,7 @@ fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
             buf.clear();
         }
     }
-    (true, false)
+    (true, false, None)
 }
 
 fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String> {
@@ -1382,6 +1408,42 @@ mod tests {
             },
             Some(30.0)
         );
+    }
+
+    #[test]
+    fn test_xlsx_zero_data_row_table_import_export_cycle() {
+        // Regression test for a real crash found via libvisi's pivot-table
+        // fuzz testing (see vendor/calamine/PATCHES.md): exporting an Excel
+        // Table with a header row but zero data rows, then reimporting it,
+        // used to panic inside calamine's `Xlsx::table_by_name` ("invalid
+        // range bounds") -- unrelated to pivot tables specifically, a plain
+        // header-only table triggers it on its own.
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Name".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Empty".to_string(), 0, 0, 0, 1, true, false)
+            .unwrap();
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_tables.len(), 1);
+
+        let imported_sheet = &imported_tables[0].sheet;
+        assert_eq!(imported_sheet.tables.len(), 1);
+        let table = &imported_sheet.tables[0];
+        assert_eq!(table.name, "Empty");
+        assert_eq!(table.columns, vec!["Name", "Amount"]);
+        assert!(table.has_header_row);
+        assert!(!table.has_totals_row);
+        // Zero data rows: the data range is empty (start past end).
+        assert!(table.data_start_row() > table.data_end_row());
     }
 
     #[test]

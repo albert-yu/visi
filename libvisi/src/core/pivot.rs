@@ -1432,21 +1432,13 @@ mod tests {
         for seed in 0u64..300 {
             let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
             let use_table = seed % 2 == 0;
-            // A zero-data-row (header-only) Excel Table is a separate,
-            // pre-existing crash: exporting one and reimporting it panics
-            // inside calamine's `Xlsx::table_by_name` ("invalid range
-            // bounds", calamine 0.26.1 `Range::new`) regardless of pivot
-            // tables being involved at all -- this fuzz loop found it via
-            // the round-trip step below, but fixing calamine's/our general
-            // table export path is out of scope here, so the Table-sourced
-            // arm avoids the zero-row case and leans on the Range-sourced
-            // arm (and `test_zero_data_rows_produces_empty_grid_without_panicking`
-            // above) to keep exercising empty-source pivot behavior itself.
-            let num_rows = if use_table {
-                rng.gen_range(1..=40usize)
-            } else {
-                rng.gen_range(0..=40usize)
-            };
+            // A zero-data-row (header-only) Excel Table used to panic on
+            // export+reimport ("invalid range bounds" inside calamine's
+            // `Range::range`, reachable via `Xlsx::table_by_name`) --
+            // this fuzz loop is what originally found that bug. Fixed by
+            // vendoring a patched calamine (see vendor/calamine/PATCHES.md),
+            // so the Table-sourced arm no longer needs to avoid num_rows=0.
+            let num_rows = rng.gen_range(0..=40usize);
             let (mut sheet, col_names) = fuzz_source_sheet(&mut rng, num_rows);
             if use_table {
                 sheet

@@ -1029,7 +1029,7 @@ fn parse_a1_cell(s: &str) -> Option<(usize, usize)> {
 
 /// Parses an A1 range (e.g. "A1:C4", or a single cell "A1") into 0-based
 /// `(start_row, start_col, end_row, end_col)`.
-fn parse_a1_range(s: &str) -> Option<(usize, usize, usize, usize)> {
+pub(crate) fn parse_a1_range(s: &str) -> Option<(usize, usize, usize, usize)> {
     if let Some((start, end)) = s.split_once(':') {
         let (r0, c0) = parse_a1_cell(start)?;
         let (r1, c1) = parse_a1_cell(end)?;
