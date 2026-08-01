@@ -53,11 +53,18 @@ STATUS -- piloted against real Excel, works end-to-end (see fuzz/README.md's
   - Still open: a *separate* layout gap surfaced while verifying the fix
     above -- whenever row/col fields are present, Excel's header caption is
     literally "Row Labels"/"Column Labels", not the field name, unlike
-    visi's grid. `BuildFuzzPivot.bas` already sets `LayoutForm = xlTabular`
-    per field, which should prevent this, so either that isn't taking
-    effect via this VBA/AppleScript path or something resets it afterward.
-    Not yet root-caused -- this, not an unrelated bug, is what was behind
-    most of the previously-reported "wide-grid"/large-mismatch iterations.
+    visi's grid. Confirmed the per-field `PivotField.LayoutForm = xlTabular`
+    `BuildFuzzPivot.bas` sets has no effect (the exported XML's `compact`
+    attribute stays at its default). The standard fix -- `PivotTable`'s
+    table-wide `RowAxisLayout`/`ColumnAxisLayout`/`SubtotalLocation`
+    methods, already used directly by the win32com driver -- **hangs Mac
+    Excel outright** when called from this VBA/AppleScript path (not a
+    catchable error), so `BuildFuzzPivot.bas` deliberately keeps the
+    per-field calls despite knowing they don't work. This, not an unrelated
+    bug, is what was behind most of the previously-reported "wide-grid"/
+    large-mismatch iterations. Next step for whoever picks this up: find a
+    Mac-VBA-safe way to trigger Tabular Form, or try the win32com path on
+    Windows instead (untested so far).
   - One tiny-edge-case config (a column used as both a col field and a
     filter field, with the filter selecting zero values, over a 1-row
     source) made the VBA macro itself throw an outright Excel "Parameter

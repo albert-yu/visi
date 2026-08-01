@@ -63,6 +63,15 @@ Private Sub ApplyAxisFields(pt As PivotTable, fieldsCSV As String, orientation A
         Dim pf As PivotField
         Set pf = pt.PivotFields(nv(0))
         pf.Orientation = orientation
+        ' Per-field, not the table-wide PivotTable.RowAxisLayout /
+        ' ColumnAxisLayout / SubtotalLocation methods: those hang Mac Excel
+        ' outright (not a catchable VBA error -- confirmed by wrapping each
+        ' one in its own On Error Resume Next block and still hanging) when
+        ' invoked this way, so don't reach for them here even though this
+        ' per-field LayoutForm setting is known NOT to actually change the
+        ' exported <pivotField>'s `compact` attribute (Excel still shows
+        ' "Row Labels"/"Column Labels" captions instead of the field name --
+        ' a real, still-open gap, see fuzz/README.md).
         pf.LayoutForm = xlTabular
         pf.LayoutSubtotalLocation = xlAtBottom
         pf.RepeatLabels = False
