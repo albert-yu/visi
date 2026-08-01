@@ -65,6 +65,23 @@ pub struct VbaModule {
     /// zero-procedure cache -- see that module's doc comment.
     #[serde(default)]
     pub prefix_bytes: Vec<u8>,
+    /// The module stream's MODULECOOKIE record (`0x002C`) value. MS-OVBA
+    /// documents this as implementation-specific and ignorable on read, but
+    /// this codebase used to blindly overwrite every module's (including
+    /// untouched, imported ones') cookie with a hardcoded `0xFFFF` on every
+    /// export -- discovered while investigating why every workbook this
+    /// codebase produces failed `has vb project` in real Excel, by diffing
+    /// a re-exported real donor project's `dir` stream against the
+    /// original's record-by-record and finding this was the one place real
+    /// data was being discarded and replaced rather than round-tripped
+    /// verbatim. Preserved here instead so an imported module's original
+    /// value survives re-export.
+    #[serde(default = "default_module_cookie")]
+    pub module_cookie: u16,
+}
+
+fn default_module_cookie() -> u16 {
+    0xFFFF
 }
 
 impl VbaModule {
@@ -78,11 +95,11 @@ impl VbaModule {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VbaProject {
     /// Project ID GUID, e.g. `"{7B4E3A2C-1F5D-4A6B-9C8E-2D3F4A5B6C7D}"`.
-    /// Must stay internally consistent with `raw_donor`'s `PROJECT` stream
-    /// -- if `CMG`/`DPB`/`GC` protection-state lines are ever reintroduced,
-    /// they must correspond to this exact ID or Excel reports the whole
-    /// project "unviewable" (a real finding from the POC, not a
-    /// hypothetical).
+    /// Must stay internally consistent with `protection_lines` -- never
+    /// mutated after import/creation, so it always is. If `CMG`/`DPB`/`GC`
+    /// protection-state lines are ever made independently settable, they
+    /// must correspond to this exact ID or Excel reports the whole project
+    /// "unviewable" (a real finding from the POC, not a hypothetical).
     pub project_id: String,
     pub modules: Vec<VbaModule>,
     /// The full original `vbaProject.bin` bytes this project was imported
@@ -99,6 +116,18 @@ pub struct VbaProject {
     /// one, and this field goes unused.
     #[serde(default)]
     pub seed_prefix_bytes: Vec<u8>,
+    /// `VbaModule::module_cookie` to donate to the first module ever added
+    /// to a project that started with none -- same donation scheme as
+    /// `seed_prefix_bytes`, see there for why.
+    #[serde(default = "default_module_cookie")]
+    pub seed_module_cookie: u16,
+    /// The donor's original `PROJECT` stream `CMG=`/`DPB=`/`GC=` lines
+    /// (joined with `\r\n`), reproduced verbatim on export -- `None` for a
+    /// project created fresh in this session, which never had any. See
+    /// `vba_xlsx::build_project_stream` for why these must be preserved
+    /// rather than dropped.
+    #[serde(default)]
+    pub protection_lines: Option<String>,
 }
 
 impl VbaProject {
@@ -112,6 +141,8 @@ impl VbaProject {
             modules: Vec::new(),
             raw_donor: crate::core::vba_synth::synthetic_raw_donor(),
             seed_prefix_bytes: crate::core::vba_synth::synthetic_module_prefix(),
+            seed_module_cookie: default_module_cookie(),
+            protection_lines: None,
         }
     }
 
@@ -189,6 +220,7 @@ mod tests {
                     source: "Attribute VB_Name = \"ThisWorkbook\"\r\n".to_string(),
                     bound_sheet_id: None,
                     prefix_bytes: vec![0xAA; 16],
+                    module_cookie: 0xFFFF,
                 },
                 VbaModule {
                     name: "Module1".to_string(),
@@ -197,10 +229,13 @@ mod tests {
                         .to_string(),
                     bound_sheet_id: None,
                     prefix_bytes: vec![0xBB; 16],
+                    module_cookie: 0xFFFF,
                 },
             ],
             raw_donor: Vec::new(),
             seed_prefix_bytes: Vec::new(),
+            seed_module_cookie: 0xFFFF,
+            protection_lines: None,
         }
     }
 

@@ -464,18 +464,23 @@ impl WorkbookManager {
         {
             return Err("That sheet already has a bound document module".to_string());
         }
-        // Donate real p-code prefix bytes from any existing module in this
-        // same project -- proven (via a scratchpad proof-of-concept against
-        // real Excel) that the prefix's content doesn't need to correspond
-        // to the module it precedes, only its presence as genuine
-        // Excel-authored bytes matters. Every project has at least one
-        // module by this point (ensure_vba_project seeds the template's own
-        // placeholder module).
+        // Donate p-code prefix bytes and a module cookie from any existing
+        // module in this same project -- proven (via a scratchpad
+        // proof-of-concept against real Excel) that the prefix's content
+        // doesn't need to correspond to the module it precedes, only its
+        // shape matters. If this project has no modules yet (the common
+        // case for one freshly created by `ensure_vba_project`), fall back
+        // to the synthetic seed values instead.
         let prefix_bytes = project
             .modules
             .first()
             .map(|m| m.prefix_bytes.clone())
             .unwrap_or_else(|| project.seed_prefix_bytes.clone());
+        let module_cookie = project
+            .modules
+            .first()
+            .map(|m| m.module_cookie)
+            .unwrap_or(project.seed_module_cookie);
         project.modules.push(VbaModule {
             name,
             kind,
@@ -486,6 +491,7 @@ impl WorkbookManager {
                 None
             },
             prefix_bytes,
+            module_cookie,
         });
         Ok(())
     }

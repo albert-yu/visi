@@ -27,8 +27,19 @@ use crate::core::xlsx::{get_attr, get_zip_file_content, parse_workbook_rels};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
-const REL_VBA_PROJECT: &str =
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vbaProject";
+/// The real root cause behind why real Excel never recognized any workbook
+/// this codebase exported as having a VBA project at all (`has vb project`
+/// false, `run VB macro` silently no-op) despite the `vbaProject.bin` CFB
+/// container itself being byte-correct: this was pointing at
+/// `schemas.openxmlformats.org`, a standard ECMA-376 namespace that has no
+/// `vbaProject` relationship type. `vbaProject` is a Microsoft-specific
+/// OOXML extension (not part of ECMA-376/ISO 29500) whose real relationship
+/// type lives under `schemas.microsoft.com` -- confirmed by diffing this
+/// exact relationship element against a real, Excel-authored macro-enabled
+/// workbook's `workbook.xml.rels`. With the wrong namespace, Excel opens
+/// the file fine (it's still valid OOXML) but never associates the
+/// `vbaProject.bin` part with the workbook as its VBA project.
+const REL_VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
 // ---------------------------------------------------------------------------
 // Import
@@ -79,6 +90,7 @@ pub fn parse_vba_project_from_cfb_bytes(
     let project_id = parse_project_id(&project_text)
         .unwrap_or_else(|| "{00000000-0000-0000-0000-000000000000}".to_string());
     let document_module_names = parse_document_module_names(&project_text);
+    let protection_lines = parse_protection_lines(&project_text);
 
     let dir_raw = read_stream_bytes(&mut cfb_file, "/VBA/dir")?;
     let dir = ovba::decompress(&dir_raw);
@@ -117,6 +129,7 @@ pub fn parse_vba_project_from_cfb_bytes(
             source,
             bound_sheet_id,
             prefix_bytes,
+            module_cookie: spec.module_cookie,
         });
     }
 
@@ -125,6 +138,8 @@ pub fn parse_vba_project_from_cfb_bytes(
         modules,
         raw_donor: vba_bin,
         seed_prefix_bytes: Vec::new(),
+        seed_module_cookie: 0xFFFF,
+        protection_lines,
     })
 }
 
@@ -180,6 +195,23 @@ fn parse_document_module_names(project_text: &str) -> HashSet<String> {
         .collect()
 }
 
+/// The `PROJECT` stream's `CMG=`/`DPB=`/`GC=` lines verbatim, in their
+/// original order, if present. See `VbaProject::protection_lines` for why
+/// these are captured and preserved rather than dropped.
+fn parse_protection_lines(project_text: &str) -> Option<String> {
+    let lines: Vec<&str> = project_text
+        .lines()
+        .filter(|line| {
+            line.starts_with("CMG=") || line.starts_with("DPB=") || line.starts_with("GC=")
+        })
+        .collect();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\r\n"))
+    }
+}
+
 /// Maps each `<sheet>` element's `name` to its `codeName` attribute, for
 /// sheets that have one.
 fn parse_sheet_code_names(workbook_xml: &str) -> HashMap<String, String> {
@@ -212,6 +244,9 @@ struct ModuleSpec {
     /// True if MODULETYPE was 0x0022 (document/class per spec), false if
     /// 0x0021 (procedural/standard).
     is_document_shaped: bool,
+    /// MODULECOOKIE (0x002C) record value -- see `VbaModule::module_cookie`
+    /// for why this is captured and preserved rather than discarded.
+    module_cookie: u16,
 }
 
 /// Generic Id(u16)+Size(u32)+Data record reader, with the one documented
@@ -281,6 +316,7 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
     let mut cur_name: Option<String> = None;
     let mut cur_offset: Option<usize> = None;
     let mut cur_document_shaped: Option<bool> = None;
+    let mut cur_cookie: Option<u16> = None;
     while pos + 6 <= dir.len() {
         let (id, data, next) = read_dir_record(dir, pos)?;
         match id {
@@ -294,6 +330,11 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
             }
             0x0021 => cur_document_shaped = Some(false),
             0x0022 => cur_document_shaped = Some(true),
+            0x002C => {
+                if data.len() >= 2 {
+                    cur_cookie = Some(u16::from_le_bytes([data[0], data[1]]));
+                }
+            }
             0x002B => {
                 // MODULETERMINATOR: flush the accumulated module.
                 let name = cur_name
@@ -303,6 +344,7 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
                     name,
                     text_offset: cur_offset.take().unwrap_or(0),
                     is_document_shaped: cur_document_shaped.take().unwrap_or(false),
+                    module_cookie: cur_cookie.take().unwrap_or(0xFFFF),
                 });
             }
             _ => {}
@@ -538,7 +580,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
             &(module.prefix_bytes.len() as u32).to_le_bytes(),
         );
         write_record(&mut new_dir, 0x001E, &0u32.to_le_bytes());
-        write_record(&mut new_dir, 0x002C, &0xFFFFu16.to_le_bytes()); // MODULECOOKIE
+        write_record(&mut new_dir, 0x002C, &module.module_cookie.to_le_bytes()); // MODULECOOKIE
         let module_type_id = match module.kind {
             VbaModuleKind::Standard => 0x0021,
             VbaModuleKind::Document | VbaModuleKind::Class => 0x0022,
@@ -592,11 +634,17 @@ fn utf16le(s: &str) -> Vec<u8> {
     s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
 }
 
-/// `CMG`/`DPB`/`GC` protection-state lines are deliberately omitted:
-/// verified against real Excel that pairing a donor's real values with a
-/// different (or regenerated) project ID makes the whole project report as
-/// "unviewable". Since this codebase doesn't support setting a VBA project
-/// password, an unprotected project (no such lines) is always correct here.
+/// `project.protection_lines` (the donor's original `CMG`/`DPB`/`GC` lines,
+/// if any) is reproduced verbatim right after `VersionCompatible32=`,
+/// matching real Excel's own line order -- discovered missing while
+/// investigating why every workbook this codebase exports failed real
+/// Excel's `has vb project` check, by diffing a re-exported real donor
+/// project's `/PROJECT` stream against the original and finding these three
+/// lines silently dropped. Safe to reproduce unconditionally because
+/// `project_id` never changes after import/creation (see its own doc
+/// comment): a fresh, synthetic project never had any such lines to carry
+/// forward, and an imported one keeps the exact ID they were captured
+/// alongside.
 fn build_project_stream(project: &VbaProject) -> String {
     let mut s = String::new();
     s.push_str(&format!("ID=\"{}\"\r\n", project.project_id));
@@ -613,6 +661,10 @@ fn build_project_stream(project: &VbaProject) -> String {
     s.push_str("Name=\"VBAProject\"\r\n");
     s.push_str("HelpContextID=\"0\"\r\n");
     s.push_str("VersionCompatible32=\"393222000\"\r\n");
+    if let Some(protection_lines) = &project.protection_lines {
+        s.push_str(protection_lines);
+        s.push_str("\r\n");
+    }
     s.push_str("\r\n[Host Extender Info]\r\n");
     s.push_str("&H00000001={3832D640-CF90-11CF-8E43-00A0C911005A};VBE;&H00000000\r\n");
     s.push_str("\r\n[Workspace]\r\n");
