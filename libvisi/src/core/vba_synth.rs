@@ -21,13 +21,8 @@
 //! sequence valid for every module, independent of its actual source text.
 
 use crate::core::ovba;
+use crate::core::vba_xlsx::write_record;
 use std::io::Write;
-
-fn write_record(out: &mut Vec<u8>, id: u16, data: &[u8]) {
-    out.extend_from_slice(&id.to_le_bytes());
-    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    out.extend_from_slice(data);
-}
 
 /// [MS-OVBA] 2.3.4.1 PROJECTVERSION: a fixed 12-byte record regardless of
 /// its nominal size field (`vba_xlsx::read_dir_record` special-cases it).

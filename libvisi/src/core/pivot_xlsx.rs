@@ -25,7 +25,7 @@ use crate::core::pivot::{
     PivotValueField, compute_pivot, sorted_distinct_strings,
 };
 use crate::core::xlsx::{
-    get_attr, get_zip_file_content, parse_workbook_rels, parse_workbook_sheets,
+    escape_xml, get_attr, get_zip_file_content, parse_workbook_rels, parse_workbook_sheets,
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -38,14 +38,6 @@ const REL_PIVOT_CACHE_RECORDS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords";
 const REL_PIVOT_TABLE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable";
-
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 
 fn a1_cell(row: usize, col: usize) -> String {
     format!("{}{}", col_idx_to_letters(col), row + 1)

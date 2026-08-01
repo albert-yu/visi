@@ -840,6 +840,17 @@ pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option
     None
 }
 
+/// Escapes text for use inside an XML attribute value. Shared by
+/// `pivot_xlsx.rs` and `vba_xlsx.rs`, which used to each carry their own
+/// (already-drifted: only this version escaped `'`) copy.
+pub(crate) fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 pub(crate) fn parse_workbook_sheets(xml: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let mut reader = quick_xml::reader::Reader::from_str(xml);

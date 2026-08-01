@@ -2,8 +2,9 @@
 //!
 //! Mirrors `pivot_xlsx.rs`'s two-entry-point shape (`import_*`/`inject_*`
 //! called from `xlsx.rs`'s `import_xlsx_data`/`export_xlsx_data`) and reuses
-//! its zip/OOXML plumbing (`get_zip_file_content`, `parse_workbook_sheets`,
-//! `get_attr`), but the payload itself is a binary CFB container, not XML.
+//! its zip/OOXML plumbing (`get_zip_file_content`, `get_attr`,
+//! `parse_workbook_rels`, `escape_xml`), but the payload itself is a binary
+//! CFB container, not XML.
 //!
 //! Design (validated against real Excel via a scratchpad proof-of-concept,
 //! not just the MS-OVBA spec): on export, the `dir` stream's
@@ -23,7 +24,7 @@
 use crate::core::engine::Sheet;
 use crate::core::ovba;
 use crate::core::vba::{VbaModule, VbaModuleKind, VbaProject};
-use crate::core::xlsx::{get_attr, get_zip_file_content, parse_workbook_rels};
+use crate::core::xlsx::{escape_xml, get_attr, get_zip_file_content, parse_workbook_rels};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
@@ -373,10 +374,15 @@ pub fn export_vba_project(
 
     let new_vba_bin = build_vba_project_bin(project)?;
 
+    // `xlsx_bytes` is always a buffer `xlsx::export_xlsx_data` just built
+    // fresh via rust_xlsxwriter (optionally patched by
+    // `pivot_xlsx::inject_pivot_tables`) -- neither of those knows anything
+    // about VBA, so it can never already contain `xl/vbaProject.bin`, a
+    // `<workbookPr codeName>`, or a vbaProject content-type/relationship
+    // entry. Every part added below is therefore unconditional, not a
+    // donor-vs-fresh distinction.
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&xlsx_bytes[..]))
         .map_err(|e| format!("Failed to open generated xlsx zip for VBA export: {}", e))?;
-    let already_had_vba = archive.by_name("xl/vbaProject.bin").is_ok();
-
     let workbook_xml =
         get_zip_file_content(&mut archive, "xl/workbook.xml").ok_or("Missing xl/workbook.xml")?;
     let workbook_rels_xml = get_zip_file_content(&mut archive, "xl/_rels/workbook.xml.rels")
@@ -385,49 +391,38 @@ pub fn export_vba_project(
         .ok_or("Missing [Content_Types].xml")?;
     drop(archive);
 
-    let mut new_content_types = content_types.replacen(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
-        "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
-        1,
-    );
-    if !already_had_vba {
-        new_content_types = new_content_types.replacen(
+    let new_content_types = content_types
+        .replacen(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+            "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+            1,
+        )
+        .replacen(
             "</Types>",
             "<Default Extension=\"bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/></Types>",
             1,
         );
-    }
 
-    let mut new_workbook_rels_xml = workbook_rels_xml;
-    if !already_had_vba {
-        let rid_to_target = parse_workbook_rels(&new_workbook_rels_xml);
-        let mut max_rid = rid_to_target
-            .keys()
-            .filter_map(|rid| {
-                rid.strip_prefix("rId")
-                    .and_then(|n| n.parse::<usize>().ok())
-            })
-            .max()
-            .unwrap_or(0);
-        max_rid += 1;
-        new_workbook_rels_xml = new_workbook_rels_xml.replacen(
-            "</Relationships>",
-            &format!(
-                "<Relationship Id=\"rId{}\" Type=\"{}\" Target=\"vbaProject.bin\"/></Relationships>",
-                max_rid, REL_VBA_PROJECT
-            ),
-            1,
-        );
-    }
+    let rid_to_target = parse_workbook_rels(&workbook_rels_xml);
+    let max_rid = rid_to_target
+        .keys()
+        .filter_map(|rid| {
+            rid.strip_prefix("rId")
+                .and_then(|n| n.parse::<usize>().ok())
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let new_workbook_rels_xml = workbook_rels_xml.replacen(
+        "</Relationships>",
+        &format!(
+            "<Relationship Id=\"rId{}\" Type=\"{}\" Target=\"vbaProject.bin\"/></Relationships>",
+            max_rid, REL_VBA_PROJECT
+        ),
+        1,
+    );
 
-    let new_workbook_xml = if already_had_vba {
-        // A real macro-enabled donor's own workbook.xml already carries the
-        // codeName wiring (it came from a real Excel-authored file); don't
-        // touch it.
-        workbook_xml
-    } else {
-        patch_workbook_code_names(&workbook_xml, project, sheets)
-    };
+    let new_workbook_xml = patch_workbook_code_names(&workbook_xml, project, sheets);
 
     rewrite_zip_with_vba_part(
         &xlsx_bytes,
@@ -482,13 +477,6 @@ fn patch_workbook_code_names(workbook_xml: &str, project: &VbaProject, sheets: &
     xml
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 fn rewrite_zip_with_vba_part(
     original: &[u8],
     content_types: String,
@@ -500,8 +488,11 @@ fn rewrite_zip_with_vba_part(
         .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
-    let mut wrote_vba = false;
 
+    // `original` is the same fresh, VBA-agnostic buffer `export_vba_project`
+    // read the three XML parts out of -- it never contains
+    // `xl/vbaProject.bin` (see the comment there), so that part is always
+    // appended below rather than found and overwritten during this loop.
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = file.name().to_string();
@@ -524,20 +515,15 @@ fn rewrite_zip_with_vba_part(
             writer
                 .write_all(workbook_rels_xml.as_bytes())
                 .map_err(|e| e.to_string())?;
-        } else if name == "xl/vbaProject.bin" {
-            writer.write_all(&vba_bin).map_err(|e| e.to_string())?;
-            wrote_vba = true;
         } else {
             writer.write_all(&buf).map_err(|e| e.to_string())?;
         }
     }
 
-    if !wrote_vba {
-        writer
-            .start_file("xl/vbaProject.bin", options)
-            .map_err(|e| e.to_string())?;
-        writer.write_all(&vba_bin).map_err(|e| e.to_string())?;
-    }
+    writer
+        .start_file("xl/vbaProject.bin", options)
+        .map_err(|e| e.to_string())?;
+    writer.write_all(&vba_bin).map_err(|e| e.to_string())?;
 
     let cursor = writer.finish().map_err(|e| e.to_string())?;
     Ok(cursor.into_inner())
@@ -624,7 +610,10 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
     Ok(cf.into_inner().into_inner())
 }
 
-fn write_record(out: &mut Vec<u8>, id: u16, data: &[u8]) {
+/// Writes a `dir`-stream Id(u16)+Size(u32)+Data record. Shared with
+/// `vba_synth.rs`, which builds a from-scratch `dir` stream using the same
+/// record shape.
+pub(crate) fn write_record(out: &mut Vec<u8>, id: u16, data: &[u8]) {
     out.extend_from_slice(&id.to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out.extend_from_slice(data);
