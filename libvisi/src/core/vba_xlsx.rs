@@ -94,7 +94,7 @@ pub fn parse_vba_project_from_cfb_bytes(
     let protection_lines = parse_protection_lines(&project_text);
 
     let dir_raw = read_stream_bytes(&mut cfb_file, "/VBA/dir")?;
-    let dir = ovba::decompress(&dir_raw);
+    let dir = ovba::decompress(&dir_raw)?;
     let module_specs = parse_module_specs(&dir)?;
 
     let mut modules = Vec::with_capacity(module_specs.len());
@@ -102,7 +102,7 @@ pub fn parse_vba_project_from_cfb_bytes(
         let raw = read_stream_bytes(&mut cfb_file, &format!("/VBA/{}", spec.name))?;
         let text_offset = spec.text_offset.min(raw.len());
         let prefix_bytes = raw[..text_offset].to_vec();
-        let source_bytes = ovba::decompress(&raw[text_offset..]);
+        let source_bytes = ovba::decompress(&raw[text_offset..])?;
         let source = String::from_utf8_lossy(&source_bytes).into_owned();
 
         let kind = if spec.name == "ThisWorkbook" || document_module_names.contains(&spec.name) {
@@ -539,7 +539,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Failed to open donor vbaProject.bin: {}", e))?;
 
     let donor_dir_raw = read_stream_bytes(&mut donor, "/VBA/dir")?;
-    let donor_dir = ovba::decompress(&donor_dir_raw);
+    let donor_dir = ovba::decompress(&donor_dir_raw)?;
     let modules_start = find_projectmodules_start(&donor_dir)?;
     let dir_prefix = &donor_dir[..modules_start];
 
@@ -575,7 +575,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         write_record(&mut new_dir, 0x002B, &[]);
     }
     write_record(&mut new_dir, 0x0010, &[]); // PROJECTTERMINATOR
-    let new_dir_compressed = ovba::compress(&new_dir);
+    let new_dir_compressed = ovba::compress(&new_dir)?;
 
     let new_project_text = build_project_stream(project);
     let new_wm = build_projectwm_stream(project);
@@ -589,7 +589,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         .and_then(|mut s| s.write_all(&new_dir_compressed))
         .map_err(|e| format!("Failed to write dir stream: {}", e))?;
     for module in &project.modules {
-        let compressed_source = ovba::compress(module.source.as_bytes());
+        let compressed_source = ovba::compress(module.source.as_bytes())?;
         cf.create_stream(format!("VBA/{}", module.name))
             .and_then(|mut s| {
                 s.write_all(&module.prefix_bytes)?;

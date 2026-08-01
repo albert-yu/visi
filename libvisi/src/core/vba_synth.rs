@@ -81,7 +81,11 @@ fn build_skeleton_vba_project_cache() -> Vec<u8> {
 /// needs to exist for `vba_xlsx::build_vba_project_bin` to patch, without
 /// any of it being copied from a real file.
 pub fn synthetic_raw_donor() -> Vec<u8> {
-    let dir_compressed = ovba::compress(&build_skeleton_dir());
+    // This skeleton is a few hundred fixed, highly-repetitive bytes (mostly
+    // empty records), nowhere near the 4096-byte single-chunk ceiling
+    // `ovba::compress` can fail to encode -- always compresses.
+    let dir_compressed =
+        ovba::compress(&build_skeleton_dir()).expect("tiny synthetic dir stream always compresses");
     let vba_project_cache = build_skeleton_vba_project_cache();
 
     let mut cf =
