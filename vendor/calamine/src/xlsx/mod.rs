@@ -789,7 +789,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
     }
 
     /// Get the table by name (ref)
-    pub fn table_by_name_ref(&mut self, table_name: &str) -> Result<Table<DataRef>, XlsxError> {
+    pub fn table_by_name_ref(&mut self, table_name: &str) -> Result<Table<DataRef<'_>>, XlsxError> {
         let TableMetadata {
             name,
             sheet_name,

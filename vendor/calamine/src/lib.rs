@@ -321,7 +321,7 @@ where
     ///
     /// This is implemented only for [`calamine::Xlsb`] and [`calamine::Xlsx`], as Xls and Ods formats
     /// do not support lazy iteration.
-    fn worksheet_range_at_ref(&mut self, n: usize) -> Option<Result<Range<DataRef>, Self::Error>> {
+    fn worksheet_range_at_ref(&mut self, n: usize) -> Option<Result<Range<DataRef<'_>>, Self::Error>> {
         let name = self.sheet_names().get(n)?.to_string();
         Some(self.worksheet_range_ref(&name))
     }
