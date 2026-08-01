@@ -33,14 +33,6 @@ pub struct WorkbookManager {
     pub vba_project: Option<VbaProject>,
 }
 
-/// Bundled donor `vbaProject.bin`, used to seed a brand-new VBA project's
-/// first module with real p-code prefix bytes -- verified (via a scratchpad
-/// proof-of-concept against real Excel) that zero-filled/synthetic
-/// placeholder bytes of the same length don't work, but real prefix bytes
-/// donated from elsewhere are fine even paired with completely different
-/// module content.
-static VBA_TEMPLATE_BIN: &[u8] = include_bytes!("../../libvisi/assets/vba_template.bin");
-
 /// Quotes a materialized pivot label that would otherwise be re-parsed as a
 /// number, boolean, or formula by `Sheet::commit`'s literal-cell parsing
 /// (mirrors `xlsx::text_cell_src`'s treatment of imported text cells).
@@ -427,31 +419,14 @@ impl WorkbookManager {
             .unwrap_or_default()
     }
 
-    /// Creates an empty VBA project (seeded from the bundled template, so
-    /// the first real module added has genuine p-code prefix bytes to
-    /// donate to it) if this workbook doesn't already have one. Idempotent.
+    /// Creates an empty, entirely synthetic VBA project (see
+    /// `VbaProject::new_empty`) if this workbook doesn't already have one.
+    /// Idempotent.
     pub fn ensure_vba_project(&mut self) -> Result<(), String> {
         if self.vba_project.is_some() {
             return Ok(());
         }
-        let mut project = libvisi::core::vba_xlsx::parse_vba_project_from_cfb_bytes(
-            VBA_TEMPLATE_BIN.to_vec(),
-            &std::collections::HashMap::new(),
-        )?;
-        // The template's own module exists purely to carry real p-code
-        // prefix bytes to donate to the first module a caller actually
-        // adds -- discard it here (rather than shipping the template with
-        // zero modules, which would leave nothing to extract a prefix
-        // from) so it never appears in list_vba_modules() or gets exported
-        // as a phantom module.
-        let seed_prefix_bytes = project
-            .modules
-            .first()
-            .map(|m| m.prefix_bytes.clone())
-            .unwrap_or_default();
-        project.modules.clear();
-        project.seed_prefix_bytes = seed_prefix_bytes;
-        self.vba_project = Some(project);
+        self.vba_project = Some(VbaProject::new_empty());
         Ok(())
     }
 

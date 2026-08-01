@@ -7,12 +7,17 @@
 //!
 //! Unlike tables/pivots, round-tripping this through xlsx doesn't mean
 //! re-deriving every byte from these fields on export: `raw_donor` holds the
-//! original (or, for a brand-new project, bundled-template) `vbaProject.bin`
-//! bytes, and export (`vba_xlsx.rs`) patches only what changed rather than
-//! synthesizing a full CFB container from scratch every time. See
-//! `vba_xlsx.rs` for why, and the design notes in this crate's VBA feature
-//! plan for the full rationale (proven via a scratchpad proof-of-concept
-//! against real Excel).
+//! `vbaProject.bin` bytes export (`vba_xlsx.rs`) patches only what changed
+//! into, rather than synthesizing a full CFB container from scratch every
+//! time. For a project imported from a real file, that's the file's own
+//! original bytes (preserving whatever PROJECTREFERENCES it already had --
+//! e.g. MSForms, Office -- which this codebase doesn't yet synthesize). For
+//! a brand-new project, `VbaProject::new_empty` builds `raw_donor` (and the
+//! per-module `prefix_bytes` new modules borrow) entirely synthetically via
+//! `vba_synth.rs`, with no real Excel-authored file involved. See
+//! `vba_xlsx.rs` and `vba_synth.rs` for why that used to require one, and
+//! the design notes in this crate's VBA feature plan for the full rationale
+//! (proven via a scratchpad proof-of-concept against real Excel).
 
 use serde::{Deserialize, Serialize};
 
@@ -48,12 +53,16 @@ pub struct VbaModule {
     /// other direction (renaming this module does not rename the sheet, and
     /// vice versa; Excel allows the two names to diverge).
     pub bound_sheet_id: Option<u64>,
-    /// Opaque bytes copied verbatim from a donor module's stream (the
-    /// pre-TextOffset "p-code prefix"). Never reparsed or validated --
+    /// Opaque bytes forming the pre-TextOffset "p-code prefix" of this
+    /// module's stream. Never reparsed or validated by this codebase --
     /// proven (via the POC) that its *content* doesn't need to correspond
-    /// to this module's actual source, only its presence and length matter.
-    /// Zero-filled/synthetic placeholder bytes of the same length do NOT
-    /// work; this must be copied from a real, Excel-authored module stream.
+    /// to this module's actual source, only its presence matters, as long
+    /// as it's shaped the way real Excel's module loader expects (a
+    /// naively zero-filled placeholder of the same length is NOT enough).
+    /// For an imported module these are the real bytes read back from the
+    /// original file; for a module created in this codebase they're
+    /// `vba_synth::synthetic_module_prefix()`'s from-scratch, self-consistent
+    /// zero-procedure cache -- see that module's doc comment.
     #[serde(default)]
     pub prefix_bytes: Vec<u8>,
 }
@@ -77,14 +86,14 @@ pub struct VbaProject {
     pub project_id: String,
     pub modules: Vec<VbaModule>,
     /// The full original `vbaProject.bin` bytes this project was imported
-    /// from (or the bundled template's bytes, for a project created fresh
-    /// in this session) -- export's patch base. See `vba_xlsx.rs`.
+    /// from, or (for a project created fresh in this session)
+    /// `vba_synth::synthetic_raw_donor()`'s from-scratch bytes -- export's
+    /// patch base. See `vba_xlsx.rs`.
     #[serde(default)]
     pub raw_donor: Vec<u8>,
-    /// Real p-code prefix bytes to donate to the first module ever added to
-    /// a project that started with none (i.e. one freshly seeded from the
-    /// bundled template) -- kept separate from `modules` rather than as a
-    /// phantom placeholder module, so it never shows up in
+    /// P-code prefix bytes to donate to the first module ever added to a
+    /// project that started with none -- kept separate from `modules`
+    /// rather than as a phantom placeholder module, so it never shows up in
     /// `list_vba_modules`/export. Once a project has at least one real
     /// module, new modules instead borrow prefix bytes from an existing
     /// one, and this field goes unused.
@@ -93,6 +102,19 @@ pub struct VbaProject {
 }
 
 impl VbaProject {
+    /// A brand-new, empty VBA project with no real Excel-authored file
+    /// behind it anywhere -- `raw_donor` and `seed_prefix_bytes` are built
+    /// by `vba_synth` entirely from scratch. See `vba_synth`'s doc comment
+    /// for why that's now possible.
+    pub fn new_empty() -> Self {
+        VbaProject {
+            project_id: new_project_guid(),
+            modules: Vec::new(),
+            raw_donor: crate::core::vba_synth::synthetic_raw_donor(),
+            seed_prefix_bytes: crate::core::vba_synth::synthetic_module_prefix(),
+        }
+    }
+
     pub fn find_module(&self, name: &str) -> Option<&VbaModule> {
         self.modules.iter().find(|m| m.name.eq_ignore_ascii_case(name))
     }
@@ -106,6 +128,22 @@ impl VbaProject {
     pub fn module_name_taken(&self, name: &str) -> bool {
         self.find_module(name).is_some()
     }
+}
+
+/// A GUID-shaped project id (`{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`) for
+/// a brand-new project, built from two `generate_unique_id()` draws rather
+/// than duplicating its getrandom/fallback logic.
+fn new_project_guid() -> String {
+    let hi = crate::core::engine::generate_unique_id();
+    let lo = crate::core::engine::generate_unique_id();
+    format!(
+        "{{{:08X}-{:04X}-{:04X}-{:04X}-{:012X}}}",
+        (hi >> 32) as u32,
+        (hi >> 16) as u16,
+        hi as u16,
+        (lo >> 48) as u16,
+        lo & 0xFFFF_FFFF_FFFF,
+    )
 }
 
 /// VBA identifiers: must start with a letter, contain only letters/digits/

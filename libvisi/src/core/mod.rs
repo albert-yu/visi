@@ -10,6 +10,7 @@ pub mod pivot_xlsx;
 pub mod shared_vec;
 pub mod table;
 pub mod vba;
+pub mod vba_synth;
 pub mod vba_xlsx;
 pub mod xlsx;
 
