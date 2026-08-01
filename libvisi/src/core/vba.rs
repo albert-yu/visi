@@ -116,7 +116,9 @@ impl VbaProject {
     }
 
     pub fn find_module(&self, name: &str) -> Option<&VbaModule> {
-        self.modules.iter().find(|m| m.name.eq_ignore_ascii_case(name))
+        self.modules
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
     }
 
     pub fn find_module_mut(&mut self, name: &str) -> Option<&mut VbaModule> {
@@ -162,10 +164,7 @@ pub fn validate_vba_module_name(name: &str) -> Result<(), String> {
     }
     let first = trimmed.chars().next().unwrap();
     if !first.is_alphabetic() {
-        return Err(format!(
-            "Module name '{}' must start with a letter",
-            name
-        ));
+        return Err(format!("Module name '{}' must start with a letter", name));
     }
     if !trimmed.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return Err(format!(
@@ -236,7 +235,11 @@ mod tests {
     fn set_source_leaves_prefix_bytes_untouched() {
         let mut project = sample_project();
         let original_prefix = project.find_module("Module1").unwrap().prefix_bytes.clone();
-        project.find_module_mut("Module1").unwrap().source = "Attribute VB_Name = \"Module1\"\r\nSub Bar()\r\nEnd Sub\r\n".to_string();
-        assert_eq!(project.find_module("Module1").unwrap().prefix_bytes, original_prefix);
+        project.find_module_mut("Module1").unwrap().source =
+            "Attribute VB_Name = \"Module1\"\r\nSub Bar()\r\nEnd Sub\r\n".to_string();
+        assert_eq!(
+            project.find_module("Module1").unwrap().prefix_bytes,
+            original_prefix
+        );
     }
 }

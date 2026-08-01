@@ -1019,7 +1019,10 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 };
 
                 result.push_str(&render_structured_ref_text(
-                    &prefix, &col_name, *is_this_row, *section,
+                    &prefix,
+                    &col_name,
+                    *is_this_row,
+                    *section,
                 ));
             }
         }

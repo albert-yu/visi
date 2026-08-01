@@ -172,8 +172,20 @@ fn test_workbook_vba_crud_and_roundtrip() {
     assert_eq!(wb.list_vba_modules().len(), 2);
 
     wb.rename_vba_module("Module1", "Helpers").unwrap();
-    assert!(wb.vba_project.as_ref().unwrap().find_module("Module1").is_none());
-    assert!(wb.vba_project.as_ref().unwrap().find_module("Helpers").is_some());
+    assert!(
+        wb.vba_project
+            .as_ref()
+            .unwrap()
+            .find_module("Module1")
+            .is_none()
+    );
+    assert!(
+        wb.vba_project
+            .as_ref()
+            .unwrap()
+            .find_module("Helpers")
+            .is_some()
+    );
 
     wb.set_vba_module_source(
         "Helpers",
@@ -181,7 +193,12 @@ fn test_workbook_vba_crud_and_roundtrip() {
     )
     .unwrap();
     assert_eq!(
-        wb.vba_project.as_ref().unwrap().find_module("Helpers").unwrap().source,
+        wb.vba_project
+            .as_ref()
+            .unwrap()
+            .find_module("Helpers")
+            .unwrap()
+            .source,
         "Attribute VB_Name = \"Helpers\"\r\nSub Bar()\r\nEnd Sub\r\n"
     );
 
@@ -189,14 +206,24 @@ fn test_workbook_vba_crud_and_roundtrip() {
     // module's sheet binding must all survive the xlsx round trip.
     wb.save_file(file_str).unwrap();
     let reloaded = WorkbookManager::load_file(file_str).unwrap();
-    let project = reloaded.vba_project.as_ref().expect("vba project should survive reload");
+    let project = reloaded
+        .vba_project
+        .as_ref()
+        .expect("vba project should survive reload");
     assert_eq!(project.modules.len(), 2);
 
-    let helpers = project.find_module("Helpers").expect("Helpers module should survive reload");
+    let helpers = project
+        .find_module("Helpers")
+        .expect("Helpers module should survive reload");
     assert_eq!(helpers.kind, VbaModuleKind::Standard);
-    assert_eq!(helpers.source, "Attribute VB_Name = \"Helpers\"\r\nSub Bar()\r\nEnd Sub\r\n");
+    assert_eq!(
+        helpers.source,
+        "Attribute VB_Name = \"Helpers\"\r\nSub Bar()\r\nEnd Sub\r\n"
+    );
 
-    let sheet1_module = project.find_module("Sheet1").expect("Sheet1 document module should survive reload");
+    let sheet1_module = project
+        .find_module("Sheet1")
+        .expect("Sheet1 document module should survive reload");
     assert_eq!(sheet1_module.kind, VbaModuleKind::Document);
     let reloaded_sheet1_id = reloaded.sheets[0].id;
     assert_eq!(sheet1_module.bound_sheet_id, Some(reloaded_sheet1_id));
@@ -206,7 +233,14 @@ fn test_workbook_vba_crud_and_roundtrip() {
     let mut reloaded = reloaded;
     reloaded.remove_vba_module("Helpers").unwrap();
     assert_eq!(reloaded.list_vba_modules().len(), 1);
-    assert!(reloaded.vba_project.as_ref().unwrap().find_module("Sheet1").is_some());
+    assert!(
+        reloaded
+            .vba_project
+            .as_ref()
+            .unwrap()
+            .find_module("Sheet1")
+            .is_some()
+    );
 
     reloaded.save_file(file_str).unwrap();
     let final_reload = WorkbookManager::load_file(file_str).unwrap();

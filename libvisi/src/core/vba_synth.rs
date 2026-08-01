@@ -89,11 +89,9 @@ pub fn synthetic_raw_donor() -> Vec<u8> {
     let dir_compressed = ovba::compress(&build_skeleton_dir());
     let vba_project_cache = build_skeleton_vba_project_cache();
 
-    let mut cf = cfb::CompoundFile::create_with_version(
-        cfb::Version::V3,
-        std::io::Cursor::new(Vec::new()),
-    )
-    .expect("in-memory CFB container creation cannot fail");
+    let mut cf =
+        cfb::CompoundFile::create_with_version(cfb::Version::V3, std::io::Cursor::new(Vec::new()))
+            .expect("in-memory CFB container creation cannot fail");
     cf.create_storage("VBA")
         .expect("fresh CFB storage creation cannot fail");
     cf.create_stream("VBA/dir")
@@ -137,7 +135,8 @@ pub fn synthetic_module_prefix() -> Vec<u8> {
     // its length dword at the fixed OBJECT_TABLE_LEN_OFFSET; written
     // explicitly so the relationship is visible next to its two siblings
     // below rather than left implicit.
-    buf[OBJECT_TABLE_BASE_OFFSET..OBJECT_TABLE_BASE_OFFSET + 4].copy_from_slice(&0u32.to_le_bytes());
+    buf[OBJECT_TABLE_BASE_OFFSET..OBJECT_TABLE_BASE_OFFSET + 4]
+        .copy_from_slice(&0u32.to_le_bytes());
 
     let indirect_table_base = (INDIRECT_TABLE_LEN_OFFSET - 10) as u32;
     buf[INDIRECT_TABLE_BASE_OFFSET..INDIRECT_TABLE_BASE_OFFSET + 4]
@@ -179,17 +178,29 @@ mod tests {
 
         let indirect_base = read_u32(&buf, INDIRECT_TABLE_BASE_OFFSET) as usize;
         let indirect_len_offset = indirect_base + 10;
-        assert_eq!(read_u32(&buf, indirect_len_offset), 0, "indirect table must be empty");
+        assert_eq!(
+            read_u32(&buf, indirect_len_offset),
+            0,
+            "indirect table must be empty"
+        );
 
         let object_base = read_u32(&buf, OBJECT_TABLE_BASE_OFFSET) as usize;
         let object_len_offset = object_base + 0x8A;
-        assert_eq!(read_u32(&buf, object_len_offset), 0, "object table must be empty");
+        assert_eq!(
+            read_u32(&buf, object_len_offset),
+            0,
+            "object table must be empty"
+        );
 
         let line_table_base = read_u32(&buf, LINE_TABLE_BASE_OFFSET) as usize;
         let magic_offset = line_table_base + 0x3C;
         assert_eq!(read_u16(&buf, magic_offset), CAFE_MAGIC);
         let line_count_offset = magic_offset + 2 + 2;
-        assert_eq!(read_u16(&buf, line_count_offset), 0, "line count must be zero");
+        assert_eq!(
+            read_u16(&buf, line_count_offset),
+            0,
+            "line count must be zero"
+        );
 
         // Every field read above must fall within the buffer we actually
         // produced -- guards against a future offset change quietly

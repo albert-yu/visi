@@ -228,7 +228,8 @@ fn read_dir_record(dir: &[u8], pos: usize) -> Result<(u16, &[u8], usize), String
         }
         return Ok((id, &dir[pos + 6..pos + 6], pos + 12));
     }
-    let size = u32::from_le_bytes([dir[pos + 2], dir[pos + 3], dir[pos + 4], dir[pos + 5]]) as usize;
+    let size =
+        u32::from_le_bytes([dir[pos + 2], dir[pos + 3], dir[pos + 4], dir[pos + 5]]) as usize;
     let data_start = pos + 6;
     let data_end = data_start + size;
     if data_end > dir.len() {
@@ -287,9 +288,8 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
             0x0019 => cur_name = Some(String::from_utf8_lossy(data).into_owned()),
             0x0031 => {
                 if data.len() >= 4 {
-                    cur_offset = Some(
-                        u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize,
-                    );
+                    cur_offset =
+                        Some(u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize);
                 }
             }
             0x0021 => cur_document_shaped = Some(false),
@@ -361,7 +361,10 @@ pub fn export_vba_project(
         let rid_to_target = parse_workbook_rels(&new_workbook_rels_xml);
         let mut max_rid = rid_to_target
             .keys()
-            .filter_map(|rid| rid.strip_prefix("rId").and_then(|n| n.parse::<usize>().ok()))
+            .filter_map(|rid| {
+                rid.strip_prefix("rId")
+                    .and_then(|n| n.parse::<usize>().ok())
+            })
             .max()
             .unwrap_or(0);
         max_rid += 1;
@@ -397,7 +400,11 @@ pub fn export_vba_project(
 /// `codeName="..."` to each `<sheet>` element bound to a Document module.
 fn patch_workbook_code_names(workbook_xml: &str, project: &VbaProject, sheets: &[Sheet]) -> String {
     let mut xml = if workbook_xml.contains("<workbookPr/>") {
-        workbook_xml.replacen("<workbookPr/>", "<workbookPr codeName=\"ThisWorkbook\"/>", 1)
+        workbook_xml.replacen(
+            "<workbookPr/>",
+            "<workbookPr codeName=\"ThisWorkbook\"/>",
+            1,
+        )
     } else if let Some(pos) = workbook_xml.find("<workbookPr ") {
         let insert_at = pos + "<workbookPr ".len();
         format!(
@@ -460,13 +467,21 @@ fn rewrite_zip_with_vba_part(
         file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
         drop(file);
 
-        writer.start_file(&name, options).map_err(|e| e.to_string())?;
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
         if name == "[Content_Types].xml" {
-            writer.write_all(content_types.as_bytes()).map_err(|e| e.to_string())?;
+            writer
+                .write_all(content_types.as_bytes())
+                .map_err(|e| e.to_string())?;
         } else if name == "xl/workbook.xml" {
-            writer.write_all(workbook_xml.as_bytes()).map_err(|e| e.to_string())?;
+            writer
+                .write_all(workbook_xml.as_bytes())
+                .map_err(|e| e.to_string())?;
         } else if name == "xl/_rels/workbook.xml.rels" {
-            writer.write_all(workbook_rels_xml.as_bytes()).map_err(|e| e.to_string())?;
+            writer
+                .write_all(workbook_rels_xml.as_bytes())
+                .map_err(|e| e.to_string())?;
         } else if name == "xl/vbaProject.bin" {
             writer.write_all(&vba_bin).map_err(|e| e.to_string())?;
             wrote_vba = true;
@@ -504,7 +519,11 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
 
     let mut new_dir = Vec::new();
     new_dir.extend_from_slice(dir_prefix);
-    write_record(&mut new_dir, 0x000F, &(project.modules.len() as u16).to_le_bytes());
+    write_record(
+        &mut new_dir,
+        0x000F,
+        &(project.modules.len() as u16).to_le_bytes(),
+    );
     write_record(&mut new_dir, 0x0013, &0xFFFFu16.to_le_bytes()); // PROJECTCOOKIE (value doesn't matter -- verified against real Excel)
     for module in &project.modules {
         write_record(&mut new_dir, 0x0019, module.name.as_bytes());
@@ -533,11 +552,9 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
     let new_project_text = build_project_stream(project);
     let new_wm = build_projectwm_stream(project);
 
-    let mut cf = cfb::CompoundFile::create_with_version(
-        cfb::Version::V3,
-        std::io::Cursor::new(Vec::new()),
-    )
-    .map_err(|e| format!("Failed to create CFB container: {}", e))?;
+    let mut cf =
+        cfb::CompoundFile::create_with_version(cfb::Version::V3, std::io::Cursor::new(Vec::new()))
+            .map_err(|e| format!("Failed to create CFB container: {}", e))?;
     cf.create_storage("VBA")
         .map_err(|e| format!("Failed to create VBA storage: {}", e))?;
     cf.create_stream("VBA/dir")

@@ -1198,7 +1198,9 @@ fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> 
             "Must specify module source with --source <TEXT> or --source-file <PATH>",
             EXIT_USAGE_ERROR,
         ),
-        (Some(_), Some(_)) => unreachable!("clap enforces --source/--source-file are mutually exclusive"),
+        (Some(_), Some(_)) => {
+            unreachable!("clap enforces --source/--source-file are mutually exclusive")
+        }
     }
 }
 

@@ -496,7 +496,9 @@ impl WorkbookManager {
             .as_mut()
             .ok_or("Workbook has no VBA project")?;
         let before = project.modules.len();
-        project.modules.retain(|m| !m.name.eq_ignore_ascii_case(name));
+        project
+            .modules
+            .retain(|m| !m.name.eq_ignore_ascii_case(name));
         if project.modules.len() == before {
             return Err(format!("Module '{}' not found", name));
         }

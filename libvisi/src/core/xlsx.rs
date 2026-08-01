@@ -387,7 +387,12 @@ pub fn import_xlsx_data(
 
     let imported_vba = crate::core::vba_xlsx::import_vba_project(buffer, &sheet_id_by_name)?;
 
-    Ok((imported_tables, imported_charts, imported_pivots, imported_vba))
+    Ok((
+        imported_tables,
+        imported_charts,
+        imported_pivots,
+        imported_vba,
+    ))
 }
 
 fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String {
