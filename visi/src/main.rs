@@ -3,13 +3,13 @@
 
 use clap::Parser;
 use libvisi::core::chart::ChartType;
-use libvisi::core::{PivotAggregation, PivotArea};
+use libvisi::core::{PivotAggregation, PivotArea, VbaModuleKind};
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
-    ExportArgs, ExportFormat, InfoArgs, OutputFormat, PivotAggArg, PivotAreaArg, PivotArgs,
-    PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs, SheetSubcommands,
-    TableArgs, TableSubcommands,
+    ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroSubcommands, OutputFormat, PivotAggArg,
+    PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs,
+    SheetArgs, SheetSubcommands, TableArgs, TableSubcommands, VbaModuleKindArg,
 };
 use visi::engine::WorkbookManager;
 use visi::format::{get_cell_display_val, render_grid};
@@ -33,6 +33,7 @@ fn main() {
         Commands::Chart(args) => handle_chart(args, quiet),
         Commands::Table(args) => handle_table(args, quiet),
         Commands::Pivot(args) => handle_pivot(args, quiet),
+        Commands::Macro(args) => handle_macro(args, quiet),
         Commands::Export(args) => handle_export(args),
     }
 }
@@ -1179,6 +1180,185 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
                 eprintln!(
                     "Updated filter '{}' on pivot table '{}' and saved to '{}'.",
                     filter_args.column, filter_args.name, save_path
+                );
+            }
+        }
+    }
+}
+
+/// Reads `--source`/`--source-file` (mutually exclusive, enforced by clap's
+/// `conflicts_with`), erroring if neither was given.
+fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> String {
+    match (source, source_file) {
+        (Some(s), None) => s,
+        (None, Some(path)) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            exit_with_error(format!("Failed to read '{}': {}", path, e), EXIT_IO_ERROR)
+        }),
+        (None, None) => exit_with_error(
+            "Must specify module source with --source <TEXT> or --source-file <PATH>",
+            EXIT_USAGE_ERROR,
+        ),
+        (Some(_), Some(_)) => unreachable!("clap enforces --source/--source-file are mutually exclusive"),
+    }
+}
+
+/// A macro-enabled workbook must be saved with a `.xlsm` extension --
+/// Excel's OOXML package validator keys macro support off the content-type
+/// override, but a mismatched extension is still surprising/non-portable
+/// enough to reject outright rather than silently rewrite the user's
+/// chosen path.
+fn require_xlsm_extension(path: &str) {
+    if !path.to_ascii_lowercase().ends_with(".xlsm") {
+        exit_with_error(
+            format!(
+                "Macro-enabled workbooks must be saved with a .xlsm extension (got '{}')",
+                path
+            ),
+            EXIT_USAGE_ERROR,
+        );
+    }
+}
+
+fn handle_macro(args: MacroArgs, quiet: bool) {
+    match args.command {
+        MacroSubcommands::List(list_args) => {
+            let wb = WorkbookManager::load_file(&list_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let modules = wb.list_vba_modules();
+            if list_args.json {
+                let json_modules = json!(
+                    modules
+                        .iter()
+                        .map(|m| json!({
+                            "name": m.name,
+                            "kind": format!("{:?}", m.kind),
+                            "source_lines": m.source.lines().count(),
+                        }))
+                        .collect::<Vec<_>>()
+                );
+                println!("{}", serde_json::to_string_pretty(&json_modules).unwrap());
+            } else {
+                if modules.is_empty() {
+                    println!("No VBA modules found in workbook.");
+                    return;
+                }
+                println!("{:<25} {:<12} {:<10}", "Name", "Kind", "Lines");
+                println!("{}", "-".repeat(47));
+                for m in &modules {
+                    println!(
+                        "{:<25} {:<12?} {:<10}",
+                        m.name,
+                        m.kind,
+                        m.source.lines().count()
+                    );
+                }
+            }
+        }
+        MacroSubcommands::Add(add_args) => {
+            let mut wb = WorkbookManager::load_file(&add_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let kind = match add_args.kind {
+                VbaModuleKindArg::Standard => VbaModuleKind::Standard,
+                VbaModuleKindArg::Class => VbaModuleKind::Class,
+                VbaModuleKindArg::Document => VbaModuleKind::Document,
+            };
+            let bound_sheet_id = match (&kind, &add_args.sheet) {
+                (VbaModuleKind::Document, Some(sheet_name)) => {
+                    let idx = wb
+                        .find_sheet_index(Some(sheet_name))
+                        .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+                    Some(wb.sheets[idx].id)
+                }
+                (VbaModuleKind::Document, None) => {
+                    exit_with_error("--kind document requires --sheet", EXIT_USAGE_ERROR)
+                }
+                _ => None,
+            };
+            let source = resolve_macro_source(add_args.source, add_args.source_file);
+
+            wb.add_vba_module(add_args.name.clone(), kind, source, bound_sheet_id)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path = resolve_output_path(add_args.output, add_args.in_place, &add_args.file);
+            require_xlsm_extension(&save_path);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Added module '{}' and saved to '{}'.",
+                    add_args.name, save_path
+                );
+            }
+        }
+        MacroSubcommands::Remove(remove_args) => {
+            let mut wb = WorkbookManager::load_file(&remove_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            wb.remove_vba_module(&remove_args.name)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path =
+                resolve_output_path(remove_args.output, remove_args.in_place, &remove_args.file);
+            require_xlsm_extension(&save_path);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Removed module '{}' and saved to '{}'.",
+                    remove_args.name, save_path
+                );
+            }
+        }
+        MacroSubcommands::Rename(rename_args) => {
+            let mut wb = WorkbookManager::load_file(&rename_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            wb.rename_vba_module(&rename_args.old, &rename_args.new)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path =
+                resolve_output_path(rename_args.output, rename_args.in_place, &rename_args.file);
+            require_xlsm_extension(&save_path);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Renamed module '{}' to '{}' and saved to '{}'.",
+                    rename_args.old, rename_args.new, save_path
+                );
+            }
+        }
+        MacroSubcommands::SetSource(set_source_args) => {
+            let mut wb = WorkbookManager::load_file(&set_source_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let source = resolve_macro_source(set_source_args.source, set_source_args.source_file);
+            wb.set_vba_module_source(&set_source_args.name, source)
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+            let save_path = resolve_output_path(
+                set_source_args.output,
+                set_source_args.in_place,
+                &set_source_args.file,
+            );
+            require_xlsm_extension(&save_path);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Updated source of module '{}' and saved to '{}'.",
+                    set_source_args.name, save_path
                 );
             }
         }

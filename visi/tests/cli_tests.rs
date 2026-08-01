@@ -20,7 +20,7 @@ fn test_workbook_create_and_formula_evaluation() {
     initial_sheet.set_cell_src(0, 1, "=A1 + A2".to_string());
     initial_sheet.set_cell_src(1, 1, "=SUM(A1:A2)".to_string());
 
-    let bytes = libvisi::export_xlsx_data(&[initial_sheet], &[], &[]).unwrap();
+    let bytes = libvisi::export_xlsx_data(&[initial_sheet], &[], &[], None).unwrap();
     fs::write(&file_path, bytes).unwrap();
 
     // Load with WorkbookManager and evaluate
@@ -125,6 +125,93 @@ fn test_workbook_table_crud_and_evaluation() {
     assert!(reloaded.list_tables().is_empty());
 
     let _ = table_id;
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
+fn test_workbook_vba_crud_and_roundtrip() {
+    use libvisi::core::VbaModuleKind;
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_vba_crud.xlsm");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    assert!(!wb.has_vba_project());
+    assert!(wb.list_vba_modules().is_empty());
+
+    wb.add_vba_module(
+        "Module1".to_string(),
+        VbaModuleKind::Standard,
+        "Attribute VB_Name = \"Module1\"\r\nSub Foo()\r\nEnd Sub\r\n".to_string(),
+        None,
+    )
+    .unwrap();
+    assert!(wb.has_vba_project());
+    assert_eq!(wb.list_vba_modules().len(), 1);
+
+    // Duplicate names are rejected, case-insensitively.
+    assert!(
+        wb.add_vba_module(
+            "module1".to_string(),
+            VbaModuleKind::Standard,
+            String::new(),
+            None,
+        )
+        .is_err()
+    );
+
+    let sheet1_id = wb.sheets[0].id;
+    wb.add_vba_module(
+        "Sheet1".to_string(),
+        VbaModuleKind::Document,
+        "Attribute VB_Name = \"Sheet1\"\r\n".to_string(),
+        Some(sheet1_id),
+    )
+    .unwrap();
+    assert_eq!(wb.list_vba_modules().len(), 2);
+
+    wb.rename_vba_module("Module1", "Helpers").unwrap();
+    assert!(wb.vba_project.as_ref().unwrap().find_module("Module1").is_none());
+    assert!(wb.vba_project.as_ref().unwrap().find_module("Helpers").is_some());
+
+    wb.set_vba_module_source(
+        "Helpers",
+        "Attribute VB_Name = \"Helpers\"\r\nSub Bar()\r\nEnd Sub\r\n".to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        wb.vba_project.as_ref().unwrap().find_module("Helpers").unwrap().source,
+        "Attribute VB_Name = \"Helpers\"\r\nSub Bar()\r\nEnd Sub\r\n"
+    );
+
+    // Save and reload: module list, kinds, sources, and the document
+    // module's sheet binding must all survive the xlsx round trip.
+    wb.save_file(file_str).unwrap();
+    let reloaded = WorkbookManager::load_file(file_str).unwrap();
+    let project = reloaded.vba_project.as_ref().expect("vba project should survive reload");
+    assert_eq!(project.modules.len(), 2);
+
+    let helpers = project.find_module("Helpers").expect("Helpers module should survive reload");
+    assert_eq!(helpers.kind, VbaModuleKind::Standard);
+    assert_eq!(helpers.source, "Attribute VB_Name = \"Helpers\"\r\nSub Bar()\r\nEnd Sub\r\n");
+
+    let sheet1_module = project.find_module("Sheet1").expect("Sheet1 document module should survive reload");
+    assert_eq!(sheet1_module.kind, VbaModuleKind::Document);
+    let reloaded_sheet1_id = reloaded.sheets[0].id;
+    assert_eq!(sheet1_module.bound_sheet_id, Some(reloaded_sheet1_id));
+
+    // Continue editing after reload, exactly like a later CLI invocation
+    // would: remove a module and confirm only it disappears.
+    let mut reloaded = reloaded;
+    reloaded.remove_vba_module("Helpers").unwrap();
+    assert_eq!(reloaded.list_vba_modules().len(), 1);
+    assert!(reloaded.vba_project.as_ref().unwrap().find_module("Sheet1").is_some());
+
+    reloaded.save_file(file_str).unwrap();
+    let final_reload = WorkbookManager::load_file(file_str).unwrap();
+    assert_eq!(final_reload.list_vba_modules().len(), 1);
+
     let _ = fs::remove_file(file_path);
 }
 

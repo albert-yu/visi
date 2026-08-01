@@ -35,6 +35,7 @@ pub fn import_xlsx_data(
         Vec<ImportedSheet>,
         Vec<crate::core::chart::Chart>,
         Vec<crate::core::pivot::PivotTable>,
+        Option<crate::core::vba::VbaProject>,
     ),
     String,
 > {
@@ -384,7 +385,9 @@ pub fn import_xlsx_data(
         },
     );
 
-    Ok((imported_tables, imported_charts, imported_pivots))
+    let imported_vba = crate::core::vba_xlsx::import_vba_project(buffer, &sheet_id_by_name)?;
+
+    Ok((imported_tables, imported_charts, imported_pivots, imported_vba))
 }
 
 fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String {
@@ -448,6 +451,7 @@ pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
     pivots: &[crate::core::pivot::PivotTable],
+    vba: Option<&crate::core::vba::VbaProject>,
 ) -> Result<Vec<u8>, String> {
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let mut used_names = std::collections::HashSet::new();
@@ -694,11 +698,13 @@ pub fn export_xlsx_data(
         .save_to_buffer()
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
-    if pivots.is_empty() {
-        Ok(buffer)
+    let buffer = if pivots.is_empty() {
+        buffer
     } else {
-        crate::core::pivot_xlsx::inject_pivot_tables(buffer, sheets, pivots)
-    }
+        crate::core::pivot_xlsx::inject_pivot_tables(buffer, sheets, pivots)?
+    };
+
+    crate::core::vba_xlsx::export_vba_project(buffer, sheets, vba)
 }
 
 #[allow(dead_code)]
@@ -1338,11 +1344,11 @@ mod tests {
         };
 
         // Export it
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, imported_charts, _) =
+        let (imported_tables, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_charts.len(), 0);
@@ -1378,8 +1384,8 @@ mod tests {
             .add_table("Sales".to_string(), 0, 0, 3, 1, true, true)
             .unwrap();
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_sheet = &imported_tables[0].sheet;
@@ -1431,8 +1437,8 @@ mod tests {
             .add_table("Empty".to_string(), 0, 0, 0, 1, true, false)
             .unwrap();
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_sheet = &imported_tables[0].sheet;
@@ -1467,11 +1473,11 @@ mod tests {
         };
 
         // Export it
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_table = &imported_tables[0].sheet;
@@ -1517,11 +1523,11 @@ mod tests {
         };
 
         // Export sheet + chart
-        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import back
-        let (imported_tables, imported_charts, _) =
+        let (imported_tables, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
         assert_eq!(imported_tables.len(), 1);
@@ -1562,7 +1568,7 @@ mod tests {
             uncommitted_actions: Vec::new(),
         };
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
         let cursor = std::io::Cursor::new(xlsx_data);
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
@@ -1594,7 +1600,7 @@ mod tests {
             uncommitted_actions: Vec::new(),
         };
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
         // The exported xlsx should contain the plain text "1", not a literal
         // quote-wrapped string.
@@ -1605,7 +1611,7 @@ mod tests {
         std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
         assert!(!xml_content.contains("&quot;1&quot;"));
 
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         let mut imported_sheet = imported_tables.into_iter().next().unwrap().sheet;
         imported_sheet.columns[0].mark_dirty(0);
         imported_sheet.commit(None).unwrap();
@@ -1671,6 +1677,7 @@ mod tests {
             std::slice::from_ref(&sheet),
             &[],
             std::slice::from_ref(&pivot),
+            None,
         )
         .unwrap();
 
@@ -1684,7 +1691,7 @@ mod tests {
         );
         assert!(zip.by_name("xl/pivotCache/pivotCacheRecords1.xml").is_ok());
 
-        let (imported_tables, _, imported_pivots) =
+        let (imported_tables, _, imported_pivots, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_pivots.len(), 1);

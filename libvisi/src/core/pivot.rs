@@ -1470,9 +1470,10 @@ mod tests {
                 std::slice::from_ref(&sheet),
                 &[],
                 std::slice::from_ref(&pivot),
+                None,
             )
             .unwrap_or_else(|e| panic!("seed {seed}: export failed: {e}"));
-            let (imported_sheets, _, imported_pivots) =
+            let (imported_sheets, _, imported_pivots, _) =
                 crate::core::xlsx::import_xlsx_data(&xlsx, &[], |_, _, _| {})
                     .unwrap_or_else(|e| panic!("seed {seed}: import failed: {e}"));
             assert_eq!(

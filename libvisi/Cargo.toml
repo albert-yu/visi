@@ -9,6 +9,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 calamine = "0.26"
+cfb = "0.14"
 getrandom = "0.2"
 glam = "0.29"
 log = "0.4"
