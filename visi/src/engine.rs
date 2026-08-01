@@ -1,7 +1,9 @@
 use crate::utils::col_idx_to_letters;
 use libvisi::core::{
-    ExcelTable,
+    ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
+    PivotTable, PivotValueField,
     chart::{Chart, ChartType},
+    compute_pivot,
     engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
 };
 use libvisi::{export_xlsx_data, import_xlsx_data};
@@ -26,16 +28,54 @@ pub struct WorkbookSummary {
 pub struct WorkbookManager {
     pub sheets: Vec<Sheet>,
     pub charts: Vec<Chart>,
+    pub pivot_tables: Vec<PivotTable>,
+}
+
+/// Quotes a materialized pivot label that would otherwise be re-parsed as a
+/// number, boolean, or formula by `Sheet::commit`'s literal-cell parsing
+/// (mirrors `xlsx::text_cell_src`'s treatment of imported text cells).
+fn pivot_label_literal(text: &str) -> String {
+    if text.is_empty() {
+        String::new()
+    } else if text.starts_with('=')
+        || text.parse::<f64>().is_ok()
+        || text.eq_ignore_ascii_case("true")
+        || text.eq_ignore_ascii_case("false")
+    {
+        format!("\"{}\"", text)
+    } else {
+        text.to_string()
+    }
+}
+
+/// Renders one aggregated pivot value as literal cell text; errors (e.g.
+/// `AVERAGE` over zero numeric records) are written as their Excel error
+/// string rather than `ResultData`'s human-readable `"Error: ..."` form.
+fn pivot_value_literal(v: &ResultData) -> String {
+    match v {
+        ResultData::Error(e) => e.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
+    let before = fields.len();
+    fields.retain(|f| !f.column.eq_ignore_ascii_case(column));
+    before != fields.len()
 }
 
 impl WorkbookManager {
     /// Load Excel workbook from bytes buffer
     pub fn load_bytes(buffer: &[u8]) -> Result<Self, String> {
-        let (imported_tables, charts) =
+        let (imported_tables, charts, pivot_tables) =
             import_xlsx_data(buffer, &[], |_, _, _| {}).map_err(|e| e.to_string())?;
 
         let sheets = imported_tables.into_iter().map(|it| it.sheet).collect();
-        Ok(Self { sheets, charts })
+        Ok(Self {
+            sheets,
+            charts,
+            pivot_tables,
+        })
     }
 
     /// Load Excel workbook from file path or stdin ("-")
@@ -59,6 +99,7 @@ impl WorkbookManager {
             let mut wb = Self {
                 sheets: Vec::new(),
                 charts: Vec::new(),
+                pivot_tables: Vec::new(),
             };
             wb.add_sheet("Sheet1")?;
             Ok(wb)
@@ -69,7 +110,8 @@ impl WorkbookManager {
 
     /// Save Excel workbook to file path or stdout ("-")
     pub fn save_file(&self, path_str: &str) -> Result<(), String> {
-        let bytes = export_xlsx_data(&self.sheets, &self.charts).map_err(|e| e.to_string())?;
+        let bytes = export_xlsx_data(&self.sheets, &self.charts, &self.pivot_tables)
+            .map_err(|e| e.to_string())?;
 
         if path_str == "-" {
             io::stdout()
@@ -507,5 +549,341 @@ impl WorkbookManager {
         // rename instead of leaving them referencing the old column name.
         self.rewrite_table_references(table_name, None, Some((&old_col_name, new_name)));
         self.evaluate()
+    }
+
+    /// Find a pivot table by name (case-insensitive).
+    pub fn find_pivot_table(&self, name: &str) -> Option<&PivotTable> {
+        self.pivot_tables
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
+    fn find_pivot_table_index(&self, name: &str) -> Result<usize, String> {
+        self.pivot_tables
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| format!("Pivot table '{}' not found", name))
+    }
+
+    /// List every pivot table in the workbook.
+    pub fn list_pivot_tables(&self) -> &[PivotTable] {
+        &self.pivot_tables
+    }
+
+    fn pivot_table_name_taken(&self, name: &str) -> bool {
+        self.pivot_tables
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Defines a new pivot table sourced from an existing Excel Table, with
+    /// no fields assigned yet -- mirroring Excel inserting an empty
+    /// PivotTable shell that fills in as fields are added to it.
+    pub fn add_pivot_table_from_table(
+        &mut self,
+        name: &str,
+        source_table_name: &str,
+        dest_sheet_name: Option<&str>,
+        dest_row: usize,
+        dest_col: usize,
+    ) -> Result<u64, String> {
+        if self.pivot_table_name_taken(name) {
+            return Err(format!("Pivot table '{}' already exists", name));
+        }
+        self.find_table(source_table_name)
+            .ok_or_else(|| format!("Table '{}' not found", source_table_name))?;
+        let dest_idx = self.find_sheet_index(dest_sheet_name)?;
+        let id = generate_unique_id();
+        self.pivot_tables.push(PivotTable {
+            id,
+            name: name.to_string(),
+            source: PivotSource::Table {
+                name: source_table_name.to_string(),
+            },
+            dest_sheet_id: self.sheets[dest_idx].id,
+            dest_row,
+            dest_col,
+            row_fields: Vec::new(),
+            col_fields: Vec::new(),
+            value_fields: Vec::new(),
+            filter_fields: Vec::new(),
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        });
+        self.refresh_pivot_table(name)?;
+        Ok(id)
+    }
+
+    /// Defines a new pivot table sourced from a plain cell range (its first
+    /// row is treated as column headers), with no fields assigned yet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pivot_table_from_range(
+        &mut self,
+        name: &str,
+        source_sheet_name: Option<&str>,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+        dest_sheet_name: Option<&str>,
+        dest_row: usize,
+        dest_col: usize,
+    ) -> Result<u64, String> {
+        if self.pivot_table_name_taken(name) {
+            return Err(format!("Pivot table '{}' already exists", name));
+        }
+        let src_idx = self.find_sheet_index(source_sheet_name)?;
+        let dest_idx = self.find_sheet_index(dest_sheet_name)?;
+        let id = generate_unique_id();
+        self.pivot_tables.push(PivotTable {
+            id,
+            name: name.to_string(),
+            source: PivotSource::Range {
+                sheet_id: self.sheets[src_idx].id,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+            },
+            dest_sheet_id: self.sheets[dest_idx].id,
+            dest_row,
+            dest_col,
+            row_fields: Vec::new(),
+            col_fields: Vec::new(),
+            value_fields: Vec::new(),
+            filter_fields: Vec::new(),
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        });
+        self.refresh_pivot_table(name)?;
+        Ok(id)
+    }
+
+    /// Deletes a pivot table definition and clears its last rendered output
+    /// range (leaves the source data untouched).
+    pub fn delete_pivot_table(&mut self, name: &str) -> Result<(), String> {
+        let idx = self.find_pivot_table_index(name)?;
+        let pivot = self.pivot_tables.remove(idx);
+        if let (Some(end_row), Some(end_col)) =
+            (pivot.last_output_end_row, pivot.last_output_end_col)
+            && let Some(sheet_idx) = self.sheets.iter().position(|s| s.id == pivot.dest_sheet_id)
+        {
+            self.clear_range(sheet_idx, pivot.dest_row, pivot.dest_col, end_row, end_col);
+        }
+        Ok(())
+    }
+
+    /// Renames a pivot table (names are unique workbook-wide, like tables).
+    pub fn rename_pivot_table(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
+        if !old_name.eq_ignore_ascii_case(new_name) && self.pivot_table_name_taken(new_name) {
+            return Err(format!("Pivot table name '{}' is already taken", new_name));
+        }
+        let idx = self.find_pivot_table_index(old_name)?;
+        self.pivot_tables[idx].name = new_name.to_string();
+        Ok(())
+    }
+
+    /// Adds a field to one of a pivot table's four areas (Row/Column/
+    /// Value/Filter) and immediately refreshes its output, mirroring
+    /// Excel's live-updating field list.
+    pub fn add_pivot_field(
+        &mut self,
+        pivot_name: &str,
+        area: PivotArea,
+        column: &str,
+        aggregation: Option<PivotAggregation>,
+    ) -> Result<(), String> {
+        let idx = self.find_pivot_table_index(pivot_name)?;
+        match area {
+            PivotArea::Row => self.pivot_tables[idx]
+                .row_fields
+                .push(PivotField::new(column)),
+            PivotArea::Column => self.pivot_tables[idx]
+                .col_fields
+                .push(PivotField::new(column)),
+            PivotArea::Value => {
+                let agg = aggregation.unwrap_or(PivotAggregation::Sum);
+                self.pivot_tables[idx]
+                    .value_fields
+                    .push(PivotValueField::new(column, agg));
+            }
+            PivotArea::Filter => self.pivot_tables[idx]
+                .filter_fields
+                .push(PivotFilterField::new(column)),
+        }
+        self.refresh_pivot_table(pivot_name)
+    }
+
+    /// Removes a field from one of a pivot table's four areas and
+    /// refreshes its output.
+    pub fn remove_pivot_field(
+        &mut self,
+        pivot_name: &str,
+        area: PivotArea,
+        column: &str,
+    ) -> Result<(), String> {
+        let idx = self.find_pivot_table_index(pivot_name)?;
+        let removed = match area {
+            PivotArea::Row => remove_pivot_field(&mut self.pivot_tables[idx].row_fields, column),
+            PivotArea::Column => remove_pivot_field(&mut self.pivot_tables[idx].col_fields, column),
+            PivotArea::Value => {
+                let before = self.pivot_tables[idx].value_fields.len();
+                self.pivot_tables[idx]
+                    .value_fields
+                    .retain(|f| !f.column.eq_ignore_ascii_case(column));
+                before != self.pivot_tables[idx].value_fields.len()
+            }
+            PivotArea::Filter => {
+                let before = self.pivot_tables[idx].filter_fields.len();
+                self.pivot_tables[idx]
+                    .filter_fields
+                    .retain(|f| !f.column.eq_ignore_ascii_case(column));
+                before != self.pivot_tables[idx].filter_fields.len()
+            }
+        };
+        if !removed {
+            return Err(format!(
+                "Field '{}' not found in that area of pivot table '{}'",
+                column, pivot_name
+            ));
+        }
+        self.refresh_pivot_table(pivot_name)
+    }
+
+    /// Restricts (or clears, with `values: None`) a filter field's allowed
+    /// values and refreshes the pivot table's output.
+    pub fn set_pivot_filter(
+        &mut self,
+        pivot_name: &str,
+        column: &str,
+        values: Option<Vec<String>>,
+    ) -> Result<(), String> {
+        let idx = self.find_pivot_table_index(pivot_name)?;
+        let field = self.pivot_tables[idx]
+            .filter_fields
+            .iter_mut()
+            .find(|f| f.column.eq_ignore_ascii_case(column))
+            .ok_or_else(|| {
+                format!(
+                    "Filter field '{}' not found on pivot table '{}'",
+                    column, pivot_name
+                )
+            })?;
+        field.selected_values = values;
+        self.refresh_pivot_table(pivot_name)
+    }
+
+    /// Recomputes a pivot table's aggregation and re-materializes it as
+    /// plain values onto its destination sheet. Like Excel, a pivot table
+    /// only updates on an explicit refresh, never automatically as its
+    /// source data changes.
+    pub fn refresh_pivot_table(&mut self, pivot_name: &str) -> Result<(), String> {
+        let idx = self.find_pivot_table_index(pivot_name)?;
+        let pivot = self.pivot_tables[idx].clone();
+        let dest_idx = self
+            .sheets
+            .iter()
+            .position(|s| s.id == pivot.dest_sheet_id)
+            .ok_or_else(|| "Pivot table's destination sheet no longer exists".to_string())?;
+
+        let grid: Option<PivotGrid> = if pivot.value_fields.is_empty() {
+            None
+        } else {
+            Some(compute_pivot(&self.sheets, &pivot)?)
+        };
+
+        // Clear the previously rendered area first, since a refresh can
+        // shrink the grid (fewer groups, a narrower filter, etc).
+        if let (Some(old_end_row), Some(old_end_col)) =
+            (pivot.last_output_end_row, pivot.last_output_end_col)
+        {
+            self.clear_range(
+                dest_idx,
+                pivot.dest_row,
+                pivot.dest_col,
+                old_end_row,
+                old_end_col,
+            );
+        }
+
+        let new_bounds = grid.as_ref().map(|grid| {
+            let height = grid.height();
+            let width = grid.width.max(1);
+            self.ensure_capacity(
+                dest_idx,
+                pivot.dest_row + height.saturating_sub(1),
+                pivot.dest_col + width.saturating_sub(1),
+            );
+
+            let mut r = pivot.dest_row;
+            for (name, state) in &grid.filter_rows {
+                self.set_cell(dest_idx, r, pivot.dest_col, pivot_label_literal(name));
+                self.set_cell(dest_idx, r, pivot.dest_col + 1, pivot_label_literal(state));
+                r += 1;
+            }
+            if !grid.filter_rows.is_empty() {
+                r += 1; // blank spacer row before the grid, matching Excel
+            }
+            for header in &grid.header_rows {
+                for (c, text) in header.iter().enumerate() {
+                    self.set_cell(dest_idx, r, pivot.dest_col + c, pivot_label_literal(text));
+                }
+                r += 1;
+            }
+            for body in &grid.body_rows {
+                for (c, label) in body.row_labels.iter().enumerate() {
+                    self.set_cell(dest_idx, r, pivot.dest_col + c, pivot_label_literal(label));
+                }
+                for (c, val) in body.values.iter().enumerate() {
+                    self.set_cell(
+                        dest_idx,
+                        r,
+                        pivot.dest_col + body.row_labels.len() + c,
+                        pivot_value_literal(val),
+                    );
+                }
+                r += 1;
+            }
+            (
+                pivot.dest_row + height.saturating_sub(1),
+                pivot.dest_col + width.saturating_sub(1),
+            )
+        });
+
+        self.pivot_tables[idx].last_output_end_row = new_bounds.map(|(r, _)| r);
+        self.pivot_tables[idx].last_output_end_col = new_bounds.map(|(_, c)| c);
+        self.evaluate()
+    }
+
+    /// Blanks every cell in the given rectangular range (inclusive),
+    /// clipped to the sheet's current bounds. Used to wipe a pivot table's
+    /// previous output before re-rendering a possibly smaller grid.
+    fn clear_range(
+        &mut self,
+        sheet_idx: usize,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+    ) {
+        if sheet_idx >= self.sheets.len() {
+            return;
+        }
+        let (row_count, col_count) = {
+            let s = &self.sheets[sheet_idx];
+            (s.row_count(), s.col_count())
+        };
+        if row_count == 0 || col_count == 0 {
+            return;
+        }
+        for r in start_row..=end_row.min(row_count - 1) {
+            for c in start_col..=end_col.min(col_count - 1) {
+                self.sheets[sheet_idx].set_cell_src(r, c, String::new());
+            }
+        }
     }
 }

@@ -1,0 +1,1563 @@
+use serde::{Deserialize, Serialize};
+
+use crate::core::engine::{CellRef, ResultData, Sheet};
+
+/// Where a `PivotTable` reads its source records from: either an existing
+/// `ExcelTable` (looked up by name at compute time, so renames/resizes of
+/// the table are picked up automatically on refresh) or a plain cell range
+/// whose first row is treated as column headers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PivotSource {
+    Table {
+        name: String,
+    },
+    Range {
+        sheet_id: u64,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+    },
+}
+
+/// Matches the "Summarize value field by" choices Excel exposes for a data
+/// field; the five most commonly used ones plus the numeric-only count.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PivotAggregation {
+    Sum,
+    Count,
+    CountNumbers,
+    Average,
+    Max,
+    Min,
+}
+
+impl PivotAggregation {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PivotAggregation::Sum => "Sum",
+            PivotAggregation::Count => "Count",
+            PivotAggregation::CountNumbers => "Count Numbers",
+            PivotAggregation::Average => "Average",
+            PivotAggregation::Max => "Max",
+            PivotAggregation::Min => "Min",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().replace(['_', '-', ' '], "").as_str() {
+            "sum" => Some(Self::Sum),
+            "count" => Some(Self::Count),
+            "countnumbers" | "countnums" => Some(Self::CountNumbers),
+            "average" | "avg" => Some(Self::Average),
+            "max" | "maximum" => Some(Self::Max),
+            "min" | "minimum" => Some(Self::Min),
+            _ => None,
+        }
+    }
+}
+
+/// One field placed in the Row or Column area.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PivotField {
+    pub column: String,
+    /// Whether a subtotal line is emitted for this field when it isn't the
+    /// innermost field in its area (Excel's per-field "Subtotals" toggle).
+    pub subtotal: bool,
+}
+
+impl PivotField {
+    pub fn new(column: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            subtotal: true,
+        }
+    }
+}
+
+/// One field placed in the Values area.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PivotValueField {
+    pub column: String,
+    pub aggregation: PivotAggregation,
+    pub custom_name: Option<String>,
+}
+
+impl PivotValueField {
+    pub fn new(column: impl Into<String>, aggregation: PivotAggregation) -> Self {
+        Self {
+            column: column.into(),
+            aggregation,
+            custom_name: None,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        self.custom_name
+            .clone()
+            .unwrap_or_else(|| format!("{} of {}", self.aggregation.label(), self.column))
+    }
+}
+
+/// One field placed in the Filter (Page) area.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PivotFilterField {
+    pub column: String,
+    /// `None` means every value is allowed (no filtering applied yet).
+    pub selected_values: Option<Vec<String>>,
+}
+
+impl PivotFilterField {
+    pub fn new(column: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            selected_values: None,
+        }
+    }
+}
+
+/// The area of a pivot table a field can be assigned to, used by the
+/// add/remove-field CRUD operations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PivotArea {
+    Row,
+    Column,
+    Value,
+    Filter,
+}
+
+/// A pivot table definition: a summary of `source`, grouped by `row_fields`
+/// nested within `col_fields`, restricted by `filter_fields`, and
+/// aggregated per `value_fields`. This is a workbook-level object (like
+/// `Chart`) rather than sheet-scoped like `ExcelTable`, since its source and
+/// destination ranges may live on different sheets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PivotTable {
+    pub id: u64,
+    pub name: String,
+    pub source: PivotSource,
+    pub dest_sheet_id: u64,
+    pub dest_row: usize,
+    pub dest_col: usize,
+    pub row_fields: Vec<PivotField>,
+    pub col_fields: Vec<PivotField>,
+    pub value_fields: Vec<PivotValueField>,
+    pub filter_fields: Vec<PivotFilterField>,
+    pub grand_totals_row: bool,
+    pub grand_totals_col: bool,
+    /// Bottom-right corner of the last rendered output grid, so a refresh
+    /// that produces a smaller grid can clear the now-stale cells.
+    #[serde(default)]
+    pub last_output_end_row: Option<usize>,
+    #[serde(default)]
+    pub last_output_end_col: Option<usize>,
+}
+
+/// A fully computed pivot result, ready to be materialized into a sheet:
+/// `filter_rows` (if any) come first, then a blank spacer row, then
+/// `header_rows`, then one entry of `body_rows` per output row -- mirroring
+/// Excel's own report-filter placement (verified against real Excel: it
+/// always reserves one row per filter field plus a blank spacer above the
+/// row/column header grid, and captions each with a "(All)"/"(Multiple
+/// Items)" state -- never a specific value's name, since that's specific to
+/// the classic single-select page-field mode Excel no longer defaults to).
+#[derive(Debug, Clone)]
+pub struct PivotGrid {
+    /// One `(field name, "(All)" | "(Multiple Items)")` pair per filter
+    /// field, in the order they were added.
+    pub filter_rows: Vec<(String, String)>,
+    pub header_rows: Vec<Vec<String>>,
+    pub body_rows: Vec<PivotBodyRow>,
+    /// Total width in columns (row-label columns + data columns), used by
+    /// the caller to know how large a range to clear/allocate. Always >= 2,
+    /// so `filter_rows`' two columns (name, state) always fit within it.
+    pub width: usize,
+    /// The flattened row/column axis groups underlying `body_rows`/the data
+    /// columns, exposed (independent of display formatting) so an xlsx
+    /// exporter can reconstruct a native `pivotTableDefinition`'s
+    /// `rowItems`/`colItems` without re-deriving the grouping itself.
+    pub row_axis: Vec<PivotAxisItem>,
+    pub col_axis: Vec<PivotAxisItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PivotBodyRow {
+    /// One entry per row field (or a single "Grand Total" entry when there
+    /// are no row fields); blank entries mean "same as the row above".
+    pub row_labels: Vec<String>,
+    pub is_grand_total: bool,
+    /// One entry per data column, aligned with the last `header_rows` row.
+    pub values: Vec<ResultData>,
+}
+
+/// One flattened group along a row or column axis: a label per axis field
+/// (`None` past its own depth), plus whether it's a subtotal or grand-total
+/// pseudo-group rather than a real leaf group.
+#[derive(Debug, Clone)]
+pub struct PivotAxisItem {
+    pub labels: Vec<Option<String>>,
+    pub is_subtotal: bool,
+    pub is_grand_total: bool,
+}
+
+impl PivotGrid {
+    /// Row offset from the pivot's `dest_row` anchor to where the row/col
+    /// header + data grid actually begins: 0 with no filter fields, else
+    /// one row per filter field plus a blank spacer row.
+    pub fn grid_row_offset(&self) -> usize {
+        if self.filter_rows.is_empty() {
+            0
+        } else {
+            self.filter_rows.len() + 1
+        }
+    }
+
+    pub fn height(&self) -> usize {
+        self.grid_row_offset() + self.header_rows.len() + self.body_rows.len()
+    }
+}
+
+/// A flattened, labeled group of source records along one axis (row or
+/// column), produced by recursively grouping by each field in that axis in
+/// turn. `record_indices` is the union of every record folded into this
+/// group -- for a leaf group that's just its own bucket, for a subtotal or
+/// grand-total pseudo-group it's every record under it.
+struct FlatGroup {
+    /// One label per field in this axis; `None` past the group's own depth
+    /// (e.g. a subtotal group has no label for deeper fields).
+    labels: Vec<Option<String>>,
+    record_indices: Vec<usize>,
+    is_subtotal: bool,
+    is_grand_total: bool,
+}
+
+struct GroupNode {
+    label: String,
+    record_indices: Vec<usize>,
+    children: Vec<GroupNode>,
+}
+
+pub(crate) fn group_key(result: &ResultData) -> String {
+    match result {
+        ResultData::None => "(blank)".to_string(),
+        ResultData::String(s) if s.is_empty() => "(blank)".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn sort_group_entries(pairs: &mut [(String, Vec<usize>)]) {
+    let all_numeric = pairs
+        .iter()
+        .all(|(k, _)| k != "(blank)" && k.trim().parse::<f64>().is_ok());
+    if all_numeric {
+        pairs.sort_by(|a, b| {
+            let fa: f64 = a.0.trim().parse().unwrap_or(0.0);
+            let fb: f64 = b.0.trim().parse().unwrap_or(0.0);
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else {
+        pairs.sort_by_key(|(k, _)| k.to_lowercase());
+    }
+}
+
+fn build_group_tree(
+    indices: &[usize],
+    keys: &[Vec<String>],
+    depth: usize,
+    num_fields: usize,
+) -> Vec<GroupNode> {
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for &idx in indices {
+        let key = &keys[idx][depth];
+        if let Some(entry) = groups.iter_mut().find(|(k, _)| k == key) {
+            entry.1.push(idx);
+        } else {
+            groups.push((key.clone(), vec![idx]));
+        }
+    }
+    sort_group_entries(&mut groups);
+    groups
+        .into_iter()
+        .map(|(label, idxs)| {
+            let children = if depth + 1 < num_fields {
+                build_group_tree(&idxs, keys, depth + 1, num_fields)
+            } else {
+                Vec::new()
+            };
+            GroupNode {
+                label,
+                record_indices: idxs,
+                children,
+            }
+        })
+        .collect()
+}
+
+/// Recursively flattens a group tree into a list of `FlatGroup`s: every leaf
+/// group, plus (when enabled for that field) a subtotal pseudo-group after
+/// each non-innermost group's children.
+fn flatten_groups(
+    nodes: &[GroupNode],
+    fields: &[PivotField],
+    depth: usize,
+    num_fields: usize,
+    prefix: &[Option<String>],
+    out: &mut Vec<FlatGroup>,
+) {
+    for node in nodes {
+        // `labels` holds exactly this node's own depth (depth+1 entries) so
+        // that a child's `push` lands at the right position; it's only
+        // padded out to `num_fields` at the point a `FlatGroup` is actually
+        // emitted (leaf or subtotal), never before recursing further.
+        let mut labels = prefix.to_vec();
+        labels.push(Some(node.label.clone()));
+
+        if node.children.is_empty() {
+            let mut leaf_labels = labels.clone();
+            leaf_labels.resize(num_fields, None);
+            out.push(FlatGroup {
+                labels: leaf_labels,
+                record_indices: node.record_indices.clone(),
+                is_subtotal: false,
+                is_grand_total: false,
+            });
+        } else {
+            flatten_groups(&node.children, fields, depth + 1, num_fields, &labels, out);
+            let is_innermost = depth + 1 >= num_fields;
+            if fields[depth].subtotal && !is_innermost {
+                let mut subtotal_labels = labels.clone();
+                subtotal_labels.resize(num_fields, None);
+                out.push(FlatGroup {
+                    labels: subtotal_labels,
+                    record_indices: node.record_indices.clone(),
+                    is_subtotal: true,
+                    is_grand_total: false,
+                });
+            }
+        }
+    }
+}
+
+/// Builds the flattened axis groups for `fields` over `record_indices`,
+/// optionally appending a grand-total pseudo-group. Returns a single
+/// implicit "all records" group when `fields` is empty.
+fn build_axis(
+    record_indices: &[usize],
+    keys: &[Vec<String>],
+    fields: &[PivotField],
+    grand_total: bool,
+) -> Vec<FlatGroup> {
+    if fields.is_empty() {
+        return vec![FlatGroup {
+            labels: Vec::new(),
+            record_indices: record_indices.to_vec(),
+            is_subtotal: false,
+            is_grand_total: false,
+        }];
+    }
+    let tree = build_group_tree(record_indices, keys, 0, fields.len());
+    let mut flat = Vec::new();
+    flatten_groups(&tree, fields, 0, fields.len(), &[], &mut flat);
+    if grand_total && flat.len() > 1 {
+        flat.push(FlatGroup {
+            labels: vec![None; fields.len()],
+            record_indices: record_indices.to_vec(),
+            is_subtotal: false,
+            is_grand_total: true,
+        });
+    }
+    flat
+}
+
+fn aggregate(sheet: &Sheet, values: &[ResultData], agg: PivotAggregation) -> ResultData {
+    match agg {
+        PivotAggregation::Count => ResultData::Integer(
+            values
+                .iter()
+                .filter(|v| !matches!(v, ResultData::None))
+                .count() as i64,
+        ),
+        PivotAggregation::CountNumbers => ResultData::Integer(
+            values
+                .iter()
+                .filter(|v| matches!(v, ResultData::Integer(_) | ResultData::Float(_)))
+                .count() as i64,
+        ),
+        _ => {
+            let nums: Vec<f64> = values
+                .iter()
+                .filter_map(|v| match v {
+                    ResultData::Integer(_) | ResultData::Float(_) => sheet.to_f64(v),
+                    _ => None,
+                })
+                .collect();
+            match agg {
+                PivotAggregation::Sum => {
+                    if nums.is_empty() {
+                        ResultData::Integer(0)
+                    } else {
+                        ResultData::Float(Sheet::clean_float(nums.iter().sum()))
+                    }
+                }
+                PivotAggregation::Average => {
+                    if nums.is_empty() {
+                        ResultData::Error("#DIV/0!".to_string())
+                    } else {
+                        let avg = nums.iter().sum::<f64>() / nums.len() as f64;
+                        ResultData::Float(Sheet::clean_float(avg))
+                    }
+                }
+                PivotAggregation::Max => nums
+                    .into_iter()
+                    .fold(None, |acc: Option<f64>, x| {
+                        Some(acc.map_or(x, |a| a.max(x)))
+                    })
+                    .map(ResultData::Float)
+                    .unwrap_or(ResultData::None),
+                PivotAggregation::Min => nums
+                    .into_iter()
+                    .fold(None, |acc: Option<f64>, x| {
+                        Some(acc.map_or(x, |a| a.min(x)))
+                    })
+                    .map(ResultData::Float)
+                    .unwrap_or(ResultData::None),
+                PivotAggregation::Count | PivotAggregation::CountNumbers => unreachable!(),
+            }
+        }
+    }
+}
+
+/// Resolves a `PivotSource` against the workbook's sheets, returning the
+/// owning sheet, the source's column names (in source-column order), the
+/// matching absolute sheet-column indices, and the absolute sheet-row
+/// indices holding data (i.e. excluding any header/totals row).
+/// (owning sheet, source column names, absolute sheet-column indices, absolute data-row indices).
+pub(crate) type ResolvedSource<'a> = (&'a Sheet, Vec<String>, Vec<usize>, Vec<usize>);
+
+pub(crate) fn resolve_source<'a>(
+    sheets: &'a [Sheet],
+    source: &PivotSource,
+) -> Result<ResolvedSource<'a>, String> {
+    match source {
+        PivotSource::Table { name } => {
+            let (sheet, table) = sheets
+                .iter()
+                .find_map(|s| s.find_table(name).map(|t| (s, t)))
+                .ok_or_else(|| format!("Table '{}' not found", name))?;
+            let cols: Vec<usize> = (table.start_col..=table.end_col).collect();
+            let rows: Vec<usize> = (table.data_start_row()..=table.data_end_row()).collect();
+            Ok((sheet, table.columns.clone(), cols, rows))
+        }
+        PivotSource::Range {
+            sheet_id,
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+        } => {
+            let sheet = sheets
+                .iter()
+                .find(|s| s.id == *sheet_id)
+                .ok_or_else(|| "Pivot source sheet no longer exists".to_string())?;
+            if *end_row < *start_row || *end_col < *start_col {
+                return Err("Pivot source range end must not precede its start".to_string());
+            }
+            let cols: Vec<usize> = (*start_col..=*end_col).collect();
+            let names: Vec<String> = cols
+                .iter()
+                .map(|&c| {
+                    let v = sheet.get_result_data(&CellRef::new(*start_row, c));
+                    let s = v.to_string();
+                    if s.is_empty() {
+                        crate::core::parser::col_idx_to_letters(c)
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            let rows: Vec<usize> = if *end_row > *start_row {
+                (*start_row + 1..=*end_row).collect()
+            } else {
+                Vec::new()
+            };
+            Ok((sheet, names, cols, rows))
+        }
+    }
+}
+
+pub(crate) fn column_index(names: &[String], target: &str) -> Result<usize, String> {
+    names
+        .iter()
+        .position(|c| c.eq_ignore_ascii_case(target))
+        .ok_or_else(|| {
+            format!(
+                "Source column '{}' not found (columns: {})",
+                target,
+                names.join(", ")
+            )
+        })
+}
+
+/// Computes a pivot table's result grid from the current state of `sheets`.
+/// Pure and read-only: callers materialize the returned `PivotGrid` into
+/// sheet cells themselves.
+pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, String> {
+    let (sheet, col_names, sheet_cols, data_rows) = resolve_source(sheets, &pivot.source)?;
+
+    for f in pivot.row_fields.iter().chain(pivot.col_fields.iter()) {
+        column_index(&col_names, &f.column)?;
+    }
+    for vf in &pivot.value_fields {
+        column_index(&col_names, &vf.column)?;
+    }
+    for ff in &pivot.filter_fields {
+        column_index(&col_names, &ff.column)?;
+    }
+    if pivot.value_fields.is_empty() {
+        return Err("Pivot table has no value fields".to_string());
+    }
+
+    // Read every source record unfiltered first -- the filter-row captions
+    // below need every distinct value that actually exists in the source,
+    // not just the ones that survive filtering, to tell "(All)" apart from
+    // "(Multiple Items)".
+    let mut all_rows: Vec<Vec<ResultData>> = Vec::with_capacity(data_rows.len());
+    for &r in &data_rows {
+        let mut row_vals = Vec::with_capacity(sheet_cols.len());
+        for &c in &sheet_cols {
+            row_vals.push(sheet.get_result_data(&CellRef::new(r, c)));
+        }
+        all_rows.push(row_vals);
+    }
+
+    let mut filter_rows: Vec<(String, String)> = Vec::new();
+    for ff in &pivot.filter_fields {
+        let idx = column_index(&col_names, &ff.column)?;
+        let distinct: std::collections::HashSet<String> =
+            all_rows.iter().map(|row| group_key(&row[idx])).collect();
+        let state = match &ff.selected_values {
+            None => "(All)".to_string(),
+            Some(selected) => {
+                let selected_set: std::collections::HashSet<&String> = selected.iter().collect();
+                let is_all = selected_set.len() == distinct.len()
+                    && distinct.iter().all(|v| selected_set.contains(v));
+                if is_all {
+                    "(All)".to_string()
+                } else {
+                    "(Multiple Items)".to_string()
+                }
+            }
+        };
+        filter_rows.push((ff.column.clone(), state));
+    }
+
+    // Apply filter fields to build the working record set.
+    let mut records: Vec<Vec<ResultData>> = Vec::new();
+    'row: for row_vals in &all_rows {
+        for ff in &pivot.filter_fields {
+            if let Some(selected) = &ff.selected_values {
+                let idx = column_index(&col_names, &ff.column)?;
+                let key = group_key(&row_vals[idx]);
+                if !selected.iter().any(|v| v == &key) {
+                    continue 'row;
+                }
+            }
+        }
+        records.push(row_vals.clone());
+    }
+
+    let record_indices: Vec<usize> = (0..records.len()).collect();
+
+    let row_keys: Vec<Vec<String>> = if pivot.row_fields.is_empty() {
+        Vec::new()
+    } else {
+        let idxs: Vec<usize> = pivot
+            .row_fields
+            .iter()
+            .map(|f| column_index(&col_names, &f.column))
+            .collect::<Result<_, _>>()?;
+        records
+            .iter()
+            .map(|rec| idxs.iter().map(|&i| group_key(&rec[i])).collect())
+            .collect()
+    };
+    let col_keys: Vec<Vec<String>> = if pivot.col_fields.is_empty() {
+        Vec::new()
+    } else {
+        let idxs: Vec<usize> = pivot
+            .col_fields
+            .iter()
+            .map(|f| column_index(&col_names, &f.column))
+            .collect::<Result<_, _>>()?;
+        records
+            .iter()
+            .map(|rec| idxs.iter().map(|&i| group_key(&rec[i])).collect())
+            .collect()
+    };
+
+    let row_groups = build_axis(
+        &record_indices,
+        &row_keys,
+        &pivot.row_fields,
+        pivot.grand_totals_row,
+    );
+    let col_groups = build_axis(
+        &record_indices,
+        &col_keys,
+        &pivot.col_fields,
+        pivot.grand_totals_col,
+    );
+
+    let value_multiplier = if pivot.value_fields.len() > 1 {
+        pivot.value_fields.len()
+    } else {
+        1
+    };
+    let value_idxs: Vec<usize> = pivot
+        .value_fields
+        .iter()
+        .map(|vf| column_index(&col_names, &vf.column))
+        .collect::<Result<_, _>>()?;
+
+    // --- Header rows ---
+    let n_col_header_rows = pivot.col_fields.len().max(1);
+    let n_header_rows = if value_multiplier > 1 {
+        n_col_header_rows + 1
+    } else {
+        n_col_header_rows
+    };
+    let row_label_width = pivot.row_fields.len().max(1);
+
+    let mut header_rows: Vec<Vec<String>> = Vec::new();
+    for r in 0..n_header_rows {
+        let mut row: Vec<String> = Vec::new();
+        for i in 0..row_label_width {
+            if r == 0 {
+                row.push(
+                    pivot
+                        .row_fields
+                        .get(i)
+                        .map(|f| f.column.clone())
+                        .unwrap_or_else(|| "Total".to_string()),
+                );
+            } else {
+                row.push(String::new());
+            }
+        }
+        for group in &col_groups {
+            for vf in 0..value_multiplier {
+                let label = if r < pivot.col_fields.len() {
+                    if group.is_grand_total {
+                        if r == 0 {
+                            "Grand Total".to_string()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        group
+                            .labels
+                            .get(r)
+                            .and_then(|l| l.clone())
+                            .unwrap_or_else(|| {
+                                if group.is_subtotal && r == pivot.col_fields.len() - 1 {
+                                    // shouldn't happen (subtotal never at innermost depth)
+                                    String::new()
+                                } else {
+                                    String::new()
+                                }
+                            })
+                    }
+                } else if value_multiplier > 1 {
+                    pivot.value_fields[vf].label()
+                } else {
+                    pivot
+                        .value_fields
+                        .first()
+                        .map(|v| v.label())
+                        .unwrap_or_default()
+                };
+                row.push(label);
+            }
+        }
+        header_rows.push(row);
+    }
+    // If there's exactly one column group with no column fields, put the
+    // single value field's label directly in the header row (mirrors the
+    // classic single-value-field pivot layout: "Row Labels | Sum of X").
+    if pivot.col_fields.is_empty()
+        && value_multiplier == 1
+        && let Some(last) = header_rows.last_mut()
+        && let Some(cell) = last.last_mut()
+        && let Some(vf) = pivot.value_fields.first()
+    {
+        *cell = vf.label();
+    }
+
+    // --- Body rows ---
+    let mut body_rows: Vec<PivotBodyRow> = Vec::new();
+    let mut prev_labels: Vec<Option<String>> = vec![None; row_label_width];
+    for rg in &row_groups {
+        let mut display_labels = vec![String::new(); row_label_width];
+        if rg.is_grand_total {
+            display_labels[0] = "Grand Total".to_string();
+            for l in prev_labels.iter_mut() {
+                *l = None;
+            }
+        } else {
+            let mut changed = false;
+            for d in 0..row_label_width {
+                let cur = if pivot.row_fields.is_empty() {
+                    None
+                } else {
+                    rg.labels.get(d).cloned().flatten()
+                };
+                let is_subtotal_marker =
+                    rg.is_subtotal && rg.labels.get(d).map(|l| l.is_some()).unwrap_or(false);
+                let show = changed || cur != prev_labels[d] || is_subtotal_marker;
+                if show {
+                    if let Some(ref v) = cur {
+                        display_labels[d] = if is_subtotal_marker {
+                            format!("{} Total", v)
+                        } else {
+                            v.clone()
+                        };
+                    }
+                    changed = true;
+                }
+                prev_labels[d] = cur;
+            }
+            if pivot.row_fields.is_empty() {
+                display_labels[0] = "Total".to_string();
+            }
+        }
+
+        let row_record_set: std::collections::HashSet<usize> =
+            rg.record_indices.iter().copied().collect();
+        let mut values: Vec<ResultData> = Vec::new();
+        for cg in &col_groups {
+            for (vf_pos, &vidx) in value_idxs.iter().enumerate() {
+                if vf_pos > 0 && value_multiplier == 1 {
+                    break;
+                }
+                let col_vals: Vec<ResultData> = cg
+                    .record_indices
+                    .iter()
+                    .filter(|i| row_record_set.contains(i))
+                    .map(|&i| records[i][vidx].clone())
+                    .collect();
+                values.push(aggregate(
+                    sheet,
+                    &col_vals,
+                    pivot.value_fields[vf_pos].aggregation,
+                ));
+            }
+        }
+
+        body_rows.push(PivotBodyRow {
+            row_labels: display_labels,
+            is_grand_total: rg.is_grand_total,
+            values,
+        });
+    }
+
+    let width = row_label_width + col_groups.len() * value_multiplier;
+    let to_axis_items = |groups: &[FlatGroup]| -> Vec<PivotAxisItem> {
+        groups
+            .iter()
+            .map(|g| PivotAxisItem {
+                labels: g.labels.clone(),
+                is_subtotal: g.is_subtotal,
+                is_grand_total: g.is_grand_total,
+            })
+            .collect()
+    };
+    Ok(PivotGrid {
+        filter_rows,
+        header_rows,
+        body_rows,
+        width,
+        row_axis: to_axis_items(&row_groups),
+        col_axis: to_axis_items(&col_groups),
+    })
+}
+
+/// Returns the distinct values of `values`, sorted the same way pivot
+/// groups are (ascending numeric if every value parses as a number,
+/// otherwise case-insensitive ascending text) -- used by the xlsx exporter
+/// to build a pivot field's flat `<items>` enumeration.
+pub(crate) fn sorted_distinct_strings(values: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for v in values {
+        if !seen.contains(v) {
+            seen.push(v.clone());
+        }
+    }
+    let mut pairs: Vec<(String, Vec<usize>)> = seen.into_iter().map(|s| (s, Vec::new())).collect();
+    sort_group_entries(&mut pairs);
+    pairs.into_iter().map(|(s, _)| s).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::engine::SheetInit;
+
+    fn source_sheet() -> Sheet {
+        let mut sheet = Sheet::new(SheetInit {
+            name: Some("Data".to_string()),
+            rows: 9,
+            cols: 4,
+            ..Default::default()
+        });
+        let header = ["Region", "Product", "Rep", "Amount"];
+        for (c, h) in header.iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        let rows: [[&str; 4]; 8] = [
+            ["East", "Widget", "Alice", "10"],
+            ["East", "Widget", "Bob", "20"],
+            ["East", "Gadget", "Alice", "5"],
+            ["West", "Widget", "Carol", "30"],
+            ["West", "Gadget", "Carol", "40"],
+            ["West", "Gadget", "Dave", "50"],
+            ["East", "Gadget", "Bob", "15"],
+            ["West", "Widget", "Dave", "25"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                sheet.set_cell_src(r + 1, c, v.to_string());
+            }
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 8, 3, true, false)
+            .unwrap();
+        sheet
+    }
+
+    fn base_pivot() -> PivotTable {
+        PivotTable {
+            id: 1,
+            name: "Pivot1".to_string(),
+            source: PivotSource::Table {
+                name: "Sales".to_string(),
+            },
+            dest_sheet_id: 0,
+            dest_row: 0,
+            dest_col: 0,
+            row_fields: vec![PivotField::new("Region")],
+            col_fields: vec![],
+            value_fields: vec![PivotValueField::new("Amount", PivotAggregation::Sum)],
+            filter_fields: vec![],
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        }
+    }
+
+    fn value_at(row: &PivotBodyRow, col: usize) -> f64 {
+        match &row.values[col] {
+            ResultData::Float(f) => *f,
+            ResultData::Integer(i) => *i as f64,
+            other => panic!("expected numeric, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_single_row_field_sum_with_grand_total() {
+        let sheet = source_sheet();
+        let pivot = base_pivot();
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+
+        // East: 10+20+5+15=50, West: 30+40+50+25=145, Grand Total: 195
+        assert_eq!(grid.body_rows.len(), 3);
+        assert_eq!(grid.body_rows[0].row_labels[0], "East");
+        assert_eq!(value_at(&grid.body_rows[0], 0), 50.0);
+        assert_eq!(grid.body_rows[1].row_labels[0], "West");
+        assert_eq!(value_at(&grid.body_rows[1], 0), 145.0);
+        assert!(grid.body_rows[2].is_grand_total);
+        assert_eq!(grid.body_rows[2].row_labels[0], "Grand Total");
+        assert_eq!(value_at(&grid.body_rows[2], 0), 195.0);
+    }
+
+    #[test]
+    fn test_row_and_col_fields_with_subtotals() {
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.row_fields = vec![PivotField::new("Region"), PivotField::new("Product")];
+        pivot.col_fields = vec![PivotField::new("Rep")];
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+
+        // Region subtotal rows should appear (2 regions x (2 products + 1 subtotal)) + grand total
+        let subtotal_rows: Vec<&PivotBodyRow> = grid
+            .body_rows
+            .iter()
+            .filter(|r| r.row_labels[0].ends_with("Total") && !r.is_grand_total)
+            .collect();
+        assert_eq!(subtotal_rows.len(), 2); // one per region
+        assert!(grid.body_rows.last().unwrap().is_grand_total);
+    }
+
+    #[test]
+    fn test_nested_row_field_second_level_labels_are_not_lost() {
+        // Regression test: the second (innermost) row field's own labels
+        // must survive being nested under the first field's groups, not be
+        // truncated away when the group tree is flattened.
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.row_fields = vec![PivotField::new("Region"), PivotField::new("Product")];
+        pivot.grand_totals_row = false;
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+
+        let leaf_rows: Vec<&PivotBodyRow> = grid
+            .body_rows
+            .iter()
+            .filter(|r| !r.row_labels[0].ends_with("Total") && !r.is_grand_total)
+            .collect();
+        // East has Widget+Gadget, West has Widget+Gadget: 4 leaf rows.
+        assert_eq!(leaf_rows.len(), 4);
+        // Every leaf row must show a real (non-blank) Product label, not "".
+        for row in &leaf_rows {
+            assert!(
+                !row.row_labels[1].is_empty(),
+                "expected a Product label on leaf row {:?}, got blank",
+                row.row_labels
+            );
+        }
+        let products: Vec<&str> = leaf_rows.iter().map(|r| r.row_labels[1].as_str()).collect();
+        assert!(products.contains(&"Widget"));
+        assert!(products.contains(&"Gadget"));
+    }
+
+    #[test]
+    fn test_count_aggregation() {
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.value_fields = vec![PivotValueField::new("Rep", PivotAggregation::Count)];
+        pivot.grand_totals_row = false;
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.body_rows.len(), 2);
+        // East has 4 records, West has 4 records
+        for row in &grid.body_rows {
+            assert_eq!(value_at(row, 0), 4.0);
+        }
+    }
+
+    #[test]
+    fn test_filter_field_restricts_records() {
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.filter_fields = vec![PivotFilterField {
+            column: "Product".to_string(),
+            selected_values: Some(vec!["Widget".to_string()]),
+        }];
+        pivot.grand_totals_row = false;
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        // East widgets: 10+20=30, West widgets: 30+25=55
+        assert_eq!(grid.body_rows.len(), 2);
+        assert_eq!(value_at(&grid.body_rows[0], 0), 30.0);
+        assert_eq!(value_at(&grid.body_rows[1], 0), 55.0);
+    }
+
+    #[test]
+    fn test_no_filter_fields_means_no_reserved_rows() {
+        let sheet = source_sheet();
+        let pivot = base_pivot();
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert!(grid.filter_rows.is_empty());
+        assert_eq!(grid.grid_row_offset(), 0);
+        assert_eq!(grid.height(), grid.header_rows.len() + grid.body_rows.len());
+    }
+
+    #[test]
+    fn test_filter_field_state_label_all_vs_multiple_items() {
+        // Product has exactly two distinct values in `source_sheet`: Widget, Gadget.
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.filter_fields = vec![PivotFilterField {
+            column: "Product".to_string(),
+            selected_values: None,
+        }];
+
+        // No selection at all -> "(All)".
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(
+            grid.filter_rows,
+            vec![("Product".to_string(), "(All)".to_string())]
+        );
+        assert_eq!(grid.grid_row_offset(), 2); // 1 filter row + 1 blank spacer
+
+        // Explicitly selecting every existing distinct value is equivalent to "(All)".
+        pivot.filter_fields[0].selected_values =
+            Some(vec!["Widget".to_string(), "Gadget".to_string()]);
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.filter_rows[0].1, "(All)");
+
+        // A strict subset -> "(Multiple Items)". Verified against real
+        // Excel: even a single selected value out of several shows this,
+        // never the value's own name -- that's specific to the classic
+        // single-select page-field mode Excel no longer defaults to.
+        pivot.filter_fields[0].selected_values = Some(vec!["Widget".to_string()]);
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.filter_rows[0].1, "(Multiple Items)");
+    }
+
+    #[test]
+    fn test_multiple_value_fields_become_column_labels() {
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.value_fields = vec![
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+            PivotValueField::new("Amount", PivotAggregation::Count),
+        ];
+        pivot.grand_totals_row = false;
+        pivot.grand_totals_col = false;
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.header_rows.last().unwrap()[1], "Sum of Amount");
+        assert_eq!(grid.header_rows.last().unwrap()[2], "Count of Amount");
+        assert_eq!(grid.body_rows[0].values.len(), 2);
+        assert_eq!(value_at(&grid.body_rows[0], 0), 50.0); // Sum for East
+        assert_eq!(value_at(&grid.body_rows[0], 1), 4.0); // Count for East
+    }
+
+    #[test]
+    fn test_missing_column_errors() {
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.row_fields = vec![PivotField::new("Nope")];
+        let err = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_range_source_matches_table_source() {
+        // A pivot sourced from a raw range covering exactly a table's
+        // declared bounds must produce the same grid as one sourced from
+        // the table itself.
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.source = PivotSource::Range {
+            sheet_id: sheet.id,
+            start_row: 0,
+            start_col: 0,
+            end_row: 8,
+            end_col: 3,
+        };
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        assert_eq!(grid.body_rows.len(), 3);
+        assert_eq!(value_at(&grid.body_rows[0], 0), 50.0);
+        assert_eq!(value_at(&grid.body_rows[1], 0), 145.0);
+        assert_eq!(value_at(&grid.body_rows[2], 0), 195.0);
+    }
+
+    #[test]
+    fn test_zero_data_rows_produces_empty_grid_without_panicking() {
+        let mut sheet = Sheet::new(SheetInit {
+            name: Some("Empty".to_string()),
+            rows: 1,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Region".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Empty".to_string(), 0, 0, 0, 1, true, false)
+            .unwrap();
+
+        let pivot = PivotTable {
+            id: 1,
+            name: "EmptyPivot".to_string(),
+            source: PivotSource::Table {
+                name: "Empty".to_string(),
+            },
+            dest_sheet_id: sheet.id,
+            dest_row: 0,
+            dest_col: 0,
+            row_fields: vec![PivotField::new("Region")],
+            col_fields: vec![],
+            value_fields: vec![PivotValueField::new("Amount", PivotAggregation::Sum)],
+            filter_fields: vec![],
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        };
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        // No records at all -> no groups, and (per `build_axis`) a grand
+        // total is only appended when there's more than one group, so none
+        // is emitted here either.
+        assert!(grid.body_rows.is_empty());
+        assert!(grid.row_axis.is_empty());
+    }
+
+    // ---- Randomized invariant fuzzing --------------------------------
+    //
+    // Builds many random source sheets + pivot configurations and checks
+    // internal self-consistency (never panics; every output cell, whether
+    // leaf/subtotal/grand-total, equals an independently-derived aggregate
+    // over the same filtered records; xlsx export/import round-trips
+    // field assignments faithfully). This is a self-consistency fuzzer,
+    // not a check against real Excel -- that's `fuzz/fuzz_pivot.py`'s job
+    // -- but it's cheap to run in `cargo test` and catches crashes/logic
+    // regressions in the group-tree flattening/subtotal/grand-total code
+    // (see `test_nested_row_field_second_level_labels_are_not_lost` for a
+    // bug this style of check would have caught immediately).
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    const FUZZ_COLS: [&str; 6] = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"];
+    const FUZZ_CATEGORIES: [&str; 5] = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
+    const FUZZ_CASE_VARIANTS: [&str; 5] = ["East", "east", "WEST", "west", "North"];
+
+    /// Builds a random source sheet with columns chosen to exercise
+    /// grouping edge cases: a low-cardinality category column with
+    /// occasional blanks, a case-variant category column (case-insensitive
+    /// grouping parity), a quoted numeric-looking-string column (the
+    /// numeric-vs-text sort ambiguity `sort_group_entries` has to resolve),
+    /// two numeric columns (ints and floats, including negative/zero), and
+    /// a boolean column (ignored by Sum/Average/Max/Min).
+    fn fuzz_source_sheet(rng: &mut StdRng, num_rows: usize) -> (Sheet, Vec<String>) {
+        let mut sheet = Sheet::new(SheetInit {
+            name: Some("FuzzData".to_string()),
+            rows: num_rows + 1,
+            cols: FUZZ_COLS.len(),
+            ..Default::default()
+        });
+        for (c, h) in FUZZ_COLS.iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        for r in 0..num_rows {
+            let cat = if rng.gen_bool(0.1) {
+                String::new()
+            } else {
+                FUZZ_CATEGORIES[rng.gen_range(0..FUZZ_CATEGORIES.len())].to_string()
+            };
+            sheet.set_cell_src(r + 1, 0, cat);
+
+            let mixed = FUZZ_CASE_VARIANTS[rng.gen_range(0..FUZZ_CASE_VARIANTS.len())].to_string();
+            sheet.set_cell_src(r + 1, 1, mixed);
+
+            let numstr = match rng.gen_range(0u8..4u8) {
+                0 => String::new(),
+                1 => format!("\"0{}\"", rng.gen_range(0u32..10u32)),
+                2 => format!("\".0{}\"", rng.gen_range(0u32..1000u32)),
+                _ => format!("\"{}\"", rng.gen_range(-50i64..50i64)),
+            };
+            sheet.set_cell_src(r + 1, 2, numstr);
+
+            sheet.set_cell_src(r + 1, 3, rng.gen_range(-100i64..=100i64).to_string());
+
+            let rate =
+                (rng.gen_range(-500i64..=500i64) as f64) / (rng.gen_range(1i64..=100i64) as f64);
+            sheet.set_cell_src(r + 1, 4, format!("{:.4}", rate));
+
+            sheet.set_cell_src(r + 1, 5, rng.gen_bool(0.5).to_string());
+        }
+        sheet.commit(None).unwrap();
+        (sheet, FUZZ_COLS.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn random_aggregation(rng: &mut StdRng) -> PivotAggregation {
+        match rng.gen_range(0u8..6u8) {
+            0 => PivotAggregation::Sum,
+            1 => PivotAggregation::Count,
+            2 => PivotAggregation::CountNumbers,
+            3 => PivotAggregation::Average,
+            4 => PivotAggregation::Max,
+            _ => PivotAggregation::Min,
+        }
+    }
+
+    /// Builds a random, always-valid `PivotTable` config over `sheet`:
+    /// 0-2 row fields and 0-2 col fields (drawn without replacement from
+    /// the categorical columns), 1-2 value fields (from the numeric
+    /// columns), an optional filter field with a random subset of its
+    /// actual distinct values selected (including the all-excluded case),
+    /// and random per-field subtotal / grand-total toggles.
+    fn fuzz_pivot_config(
+        rng: &mut StdRng,
+        sheet: &Sheet,
+        col_names: &[String],
+        num_rows: usize,
+        use_table: bool,
+    ) -> PivotTable {
+        let mut pool: Vec<usize> = vec![0, 1, 2]; // Cat, Mixed, NumStr
+        let numeric: [usize; 2] = [3, 4]; // Amount, Rate
+
+        let n_row = rng.gen_range(0..=pool.len().min(2));
+        let row_cols: Vec<usize> = (0..n_row)
+            .map(|_| pool.remove(rng.gen_range(0..pool.len())))
+            .collect();
+        let n_col = rng.gen_range(0..=pool.len().min(2));
+        let col_cols: Vec<usize> = (0..n_col)
+            .map(|_| pool.remove(rng.gen_range(0..pool.len())))
+            .collect();
+
+        let row_fields: Vec<PivotField> = row_cols
+            .iter()
+            .map(|&i| PivotField {
+                column: col_names[i].clone(),
+                subtotal: rng.gen_bool(0.7),
+            })
+            .collect();
+        let col_fields: Vec<PivotField> = col_cols
+            .iter()
+            .map(|&i| PivotField {
+                column: col_names[i].clone(),
+                subtotal: rng.gen_bool(0.7),
+            })
+            .collect();
+
+        let n_value = rng.gen_range(1..=2);
+        let value_fields: Vec<PivotValueField> = (0..n_value)
+            .map(|_| {
+                let col = numeric[rng.gen_range(0..numeric.len())];
+                PivotValueField::new(col_names[col].clone(), random_aggregation(rng))
+            })
+            .collect();
+
+        let mut filter_fields = Vec::new();
+        if rng.gen_bool(0.5) {
+            let candidates = [0usize, 1, 2, 5];
+            let fcol = candidates[rng.gen_range(0..candidates.len())];
+            let mut distinct: Vec<String> = (1..=num_rows)
+                .map(|r| group_key(&sheet.get_result_data(&CellRef::new(r, fcol))))
+                .collect();
+            distinct.sort();
+            distinct.dedup();
+            let selected = if distinct.is_empty() || rng.gen_bool(0.2) {
+                None
+            } else {
+                // May legitimately come out empty -> filters out every record.
+                Some(distinct.into_iter().filter(|_| rng.gen_bool(0.5)).collect())
+            };
+            filter_fields.push(PivotFilterField {
+                column: col_names[fcol].clone(),
+                selected_values: selected,
+            });
+        }
+
+        let source = if use_table {
+            PivotSource::Table {
+                name: "FuzzTable".to_string(),
+            }
+        } else {
+            PivotSource::Range {
+                sheet_id: sheet.id,
+                start_row: 0,
+                start_col: 0,
+                end_row: num_rows,
+                end_col: col_names.len() - 1,
+            }
+        };
+
+        PivotTable {
+            id: 1,
+            name: "FuzzPivot".to_string(),
+            source,
+            dest_sheet_id: sheet.id,
+            dest_row: num_rows + 20,
+            dest_col: 0,
+            row_fields,
+            col_fields,
+            value_fields,
+            filter_fields,
+            grand_totals_row: rng.gen_bool(0.7),
+            grand_totals_col: rng.gen_bool(0.7),
+            last_output_end_row: None,
+            last_output_end_col: None,
+        }
+    }
+
+    fn results_close(a: &ResultData, b: &ResultData) -> bool {
+        match (a, b) {
+            (ResultData::Integer(x), ResultData::Integer(y)) => x == y,
+            (ResultData::Float(x), ResultData::Float(y)) => (x - y).abs() < 1e-6,
+            (ResultData::Integer(x), ResultData::Float(y))
+            | (ResultData::Float(y), ResultData::Integer(x)) => (*x as f64 - y).abs() < 1e-6,
+            (ResultData::None, ResultData::None) => true,
+            (ResultData::Error(x), ResultData::Error(y)) => x == y,
+            (ResultData::String(x), ResultData::String(y)) => x == y,
+            (ResultData::Boolean(x), ResultData::Boolean(y)) => x == y,
+            _ => false,
+        }
+    }
+
+    /// A row/col axis label vector (`Some` per own depth, `None` past it --
+    /// see `FlatGroup`) is a *partial key*: `None` positions are wildcards.
+    /// This is exactly what a subtotal or grand-total group represents, so
+    /// the same matcher works uniformly for leaf, subtotal, and grand-total
+    /// groups.
+    fn matches_partial(key: &[String], labels: &[Option<String>]) -> bool {
+        key.iter()
+            .zip(labels)
+            .all(|(k, want)| want.as_ref().is_none_or(|w| w == k))
+    }
+
+    /// Cross-checks every cell of `grid` against an aggregate computed by a
+    /// structurally independent path: instead of `compute_pivot`'s
+    /// recursive group-tree + flatten, this filters the same record set by
+    /// simple partial-key matching against each axis item's labels. Catches
+    /// bugs in the tree-based grouping/flattening/subtotal-insertion logic
+    /// specifically, since the aggregation math itself (`aggregate`) is
+    /// shared and already covered by the fixed-data tests above.
+    fn verify_grid_matches_records(sheet: &Sheet, pivot: &PivotTable, grid: &PivotGrid) {
+        let (_, col_names, sheet_cols, data_rows) =
+            resolve_source(std::slice::from_ref(sheet), &pivot.source).unwrap();
+        let row_idxs: Vec<usize> = pivot
+            .row_fields
+            .iter()
+            .map(|f| column_index(&col_names, &f.column).unwrap())
+            .collect();
+        let col_idxs: Vec<usize> = pivot
+            .col_fields
+            .iter()
+            .map(|f| column_index(&col_names, &f.column).unwrap())
+            .collect();
+
+        let mut records: Vec<(Vec<String>, Vec<String>, Vec<ResultData>)> = Vec::new();
+        'row: for &r in &data_rows {
+            let row_vals: Vec<ResultData> = sheet_cols
+                .iter()
+                .map(|&c| sheet.get_result_data(&CellRef::new(r, c)))
+                .collect();
+            for ff in &pivot.filter_fields {
+                if let Some(selected) = &ff.selected_values {
+                    let idx = column_index(&col_names, &ff.column).unwrap();
+                    let key = group_key(&row_vals[idx]);
+                    if !selected.iter().any(|v| v == &key) {
+                        continue 'row;
+                    }
+                }
+            }
+            let row_key: Vec<String> = row_idxs.iter().map(|&i| group_key(&row_vals[i])).collect();
+            let col_key: Vec<String> = col_idxs.iter().map(|&i| group_key(&row_vals[i])).collect();
+            records.push((row_key, col_key, row_vals));
+        }
+
+        let value_idxs: Vec<usize> = pivot
+            .value_fields
+            .iter()
+            .map(|vf| column_index(&col_names, &vf.column).unwrap())
+            .collect();
+        let value_multiplier = if pivot.value_fields.len() > 1 {
+            pivot.value_fields.len()
+        } else {
+            1
+        };
+        let row_label_width = pivot.row_fields.len().max(1);
+
+        assert_eq!(grid.body_rows.len(), grid.row_axis.len());
+        assert_eq!(
+            grid.width,
+            row_label_width + grid.col_axis.len() * value_multiplier
+        );
+        for hrow in &grid.header_rows {
+            assert_eq!(hrow.len(), grid.width);
+        }
+
+        for (i, (body_row, row_axis)) in grid.body_rows.iter().zip(grid.row_axis.iter()).enumerate()
+        {
+            assert_eq!(
+                body_row.is_grand_total, row_axis.is_grand_total,
+                "row {i} grand-total flag mismatch"
+            );
+            assert_eq!(
+                body_row.row_labels.len(),
+                row_label_width,
+                "row {i} label width"
+            );
+            assert_eq!(
+                body_row.values.len(),
+                grid.col_axis.len() * value_multiplier,
+                "row {i} value count"
+            );
+
+            for (j, col_axis) in grid.col_axis.iter().enumerate() {
+                let matching: Vec<&Vec<ResultData>> = records
+                    .iter()
+                    .filter(|(rk, ck, _)| {
+                        matches_partial(rk, &row_axis.labels)
+                            && matches_partial(ck, &col_axis.labels)
+                    })
+                    .map(|(_, _, row)| row)
+                    .collect();
+
+                for (vf_pos, &vidx) in value_idxs.iter().enumerate() {
+                    if vf_pos > 0 && value_multiplier == 1 {
+                        break;
+                    }
+                    let col_vals: Vec<ResultData> =
+                        matching.iter().map(|row| row[vidx].clone()).collect();
+                    let expected =
+                        aggregate(sheet, &col_vals, pivot.value_fields[vf_pos].aggregation);
+                    let actual = &body_row.values[j * value_multiplier + vf_pos];
+                    assert!(
+                        results_close(&expected, actual),
+                        "row {i} col {j} value-field {vf_pos}: expected {expected:?}, got {actual:?} \
+                         (row_labels={:?}, col_labels={:?})",
+                        row_axis.labels,
+                        col_axis.labels,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A grand-total pseudo-group is only ever appended when there's more
+    /// than one non-grand group along that axis (`build_axis`); this checks
+    /// that placement rule holds for both the row and column axis.
+    fn verify_grand_total_placement(
+        axis: &[PivotAxisItem],
+        grand_total_requested: bool,
+        label: &str,
+    ) {
+        let grand_count = axis.iter().filter(|a| a.is_grand_total).count();
+        let non_grand_count = axis.len() - grand_count;
+        assert!(grand_count <= 1, "{label}: more than one grand-total group");
+        if grand_total_requested && non_grand_count > 1 {
+            assert_eq!(
+                grand_count, 1,
+                "{label}: expected a grand total to be appended"
+            );
+        } else {
+            assert_eq!(grand_count, 0, "{label}: did not expect a grand total");
+        }
+    }
+
+    #[test]
+    fn test_fuzz_pivot_random_invariants() {
+        for seed in 0u64..300 {
+            let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
+            let use_table = seed % 2 == 0;
+            // A zero-data-row (header-only) Excel Table used to panic on
+            // export+reimport ("invalid range bounds" inside calamine's
+            // `Range::range`, reachable via `Xlsx::table_by_name`) --
+            // this fuzz loop is what originally found that bug. Fixed by
+            // vendoring a patched calamine (see vendor/calamine/PATCHES.md),
+            // so the Table-sourced arm no longer needs to avoid num_rows=0.
+            let num_rows = rng.gen_range(0..=40usize);
+            let (mut sheet, col_names) = fuzz_source_sheet(&mut rng, num_rows);
+            if use_table {
+                sheet
+                    .add_table(
+                        "FuzzTable".to_string(),
+                        0,
+                        0,
+                        num_rows,
+                        col_names.len() - 1,
+                        true,
+                        false,
+                    )
+                    .unwrap();
+            }
+            let pivot = fuzz_pivot_config(&mut rng, &sheet, &col_names, num_rows, use_table);
+
+            let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot)
+                .unwrap_or_else(|e| panic!("seed {seed}: compute_pivot failed: {e}"));
+
+            verify_grid_matches_records(&sheet, &pivot, &grid);
+            verify_grand_total_placement(&grid.row_axis, pivot.grand_totals_row, "row axis");
+            verify_grand_total_placement(&grid.col_axis, pivot.grand_totals_col, "col axis");
+
+            // Round-trip through xlsx export/import: field/aggregation
+            // assignments and grand-total flags must survive; subtotal
+            // toggles and filter selections are documented (pivot_xlsx.rs)
+            // as resetting to their defaults rather than surviving.
+            let xlsx = crate::core::xlsx::export_xlsx_data(
+                std::slice::from_ref(&sheet),
+                &[],
+                std::slice::from_ref(&pivot),
+            )
+            .unwrap_or_else(|e| panic!("seed {seed}: export failed: {e}"));
+            let (imported_sheets, _, imported_pivots) =
+                crate::core::xlsx::import_xlsx_data(&xlsx, &[], |_, _, _| {})
+                    .unwrap_or_else(|e| panic!("seed {seed}: import failed: {e}"));
+            assert_eq!(
+                imported_pivots.len(),
+                1,
+                "seed {seed}: pivot lost on round-trip"
+            );
+            let reimported = &imported_pivots[0];
+
+            assert_eq!(
+                reimported
+                    .row_fields
+                    .iter()
+                    .map(|f| &f.column)
+                    .collect::<Vec<_>>(),
+                pivot
+                    .row_fields
+                    .iter()
+                    .map(|f| &f.column)
+                    .collect::<Vec<_>>(),
+                "seed {seed}: row field columns changed on round-trip"
+            );
+            assert_eq!(
+                reimported
+                    .col_fields
+                    .iter()
+                    .map(|f| &f.column)
+                    .collect::<Vec<_>>(),
+                pivot
+                    .col_fields
+                    .iter()
+                    .map(|f| &f.column)
+                    .collect::<Vec<_>>(),
+                "seed {seed}: col field columns changed on round-trip"
+            );
+            assert_eq!(
+                reimported
+                    .value_fields
+                    .iter()
+                    .map(|f| (&f.column, f.aggregation))
+                    .collect::<Vec<_>>(),
+                pivot
+                    .value_fields
+                    .iter()
+                    .map(|f| (&f.column, f.aggregation))
+                    .collect::<Vec<_>>(),
+                "seed {seed}: value fields changed on round-trip"
+            );
+            assert_eq!(reimported.grand_totals_row, pivot.grand_totals_row);
+            assert_eq!(reimported.grand_totals_col, pivot.grand_totals_col);
+            assert!(
+                reimported.row_fields.iter().all(|f| f.subtotal)
+                    && reimported.col_fields.iter().all(|f| f.subtotal),
+                "seed {seed}: subtotal toggle should reset to true on import"
+            );
+            assert!(
+                reimported
+                    .filter_fields
+                    .iter()
+                    .all(|f| f.selected_values.is_none()),
+                "seed {seed}: filter selection should reset to None on import"
+            );
+
+            // If nothing lossy was actually in play, the reimported grid
+            // must be structurally identical -- this is where a genuine
+            // round-trip bug (e.g. losing a value field's aggregation)
+            // would show up as a shape mismatch rather than a field-list
+            // diff the assertions above already caught.
+            let nothing_lossy = pivot.row_fields.iter().all(|f| f.subtotal)
+                && pivot.col_fields.iter().all(|f| f.subtotal)
+                && pivot
+                    .filter_fields
+                    .iter()
+                    .all(|f| f.selected_values.is_none());
+            let reimported_sheets: Vec<Sheet> =
+                imported_sheets.into_iter().map(|s| s.sheet).collect();
+            let reimported_grid = compute_pivot(&reimported_sheets, reimported)
+                .unwrap_or_else(|e| panic!("seed {seed}: reimported compute_pivot failed: {e}"));
+            if nothing_lossy {
+                assert_eq!(
+                    reimported_grid.body_rows.len(),
+                    grid.body_rows.len(),
+                    "seed {seed}: grid shape changed on lossless round-trip"
+                );
+            }
+        }
+    }
+}

@@ -30,7 +30,14 @@ pub fn import_xlsx_data(
     buffer: &[u8],
     existing_sheets: &[Sheet],
     mut progress_callback: impl FnMut(usize, usize, &str),
-) -> Result<(Vec<ImportedSheet>, Vec<crate::core::chart::Chart>), String> {
+) -> Result<
+    (
+        Vec<ImportedSheet>,
+        Vec<crate::core::chart::Chart>,
+        Vec<crate::core::pivot::PivotTable>,
+    ),
+    String,
+> {
     let start_total = Instant::now();
 
     let cursor = std::io::Cursor::new(buffer);
@@ -273,17 +280,31 @@ pub fn import_xlsx_data(
             else {
                 continue;
             };
-            let (Some((data_start_row, data_start_col)), Some((data_end_row, data_end_col))) =
-                (table.data().start(), table.data().end())
-            else {
-                continue;
-            };
-            let (has_header_row, has_totals_row) = read_table_row_flags(buffer, &table_name);
+            let (has_header_row, has_totals_row, table_ref) =
+                read_table_metadata_from_zip(buffer, &table_name);
 
-            let start_row = (data_start_row as usize).saturating_sub(usize::from(has_header_row));
-            let end_row = data_end_row as usize + usize::from(has_totals_row);
-            let start_col = data_start_col as usize;
-            let end_col = data_end_col as usize;
+            // Prefer the table's own declared `ref` (the whole table's
+            // bounds, header/totals rows included) over reconstructing
+            // position from calamine's `Table::data()` range, which has no
+            // `start()`/`end()` at all for a table with zero data rows
+            // (`Range::empty()`) -- falling back to the old data-range
+            // computation only if the XML `ref` somehow isn't parseable.
+            let (start_row, start_col, end_row, end_col) = if let Some(bounds) = table_ref {
+                bounds
+            } else {
+                let Some((data_start_row, data_start_col)) = table.data().start() else {
+                    continue;
+                };
+                let Some((data_end_row, data_end_col)) = table.data().end() else {
+                    continue;
+                };
+                (
+                    (data_start_row as usize).saturating_sub(usize::from(has_header_row)),
+                    data_start_col as usize,
+                    data_end_row as usize + usize::from(has_totals_row),
+                    data_end_col as usize,
+                )
+            };
 
             // Guard against ranges that don't fit the imported sheet (e.g. a
             // table whose sheet fell back to the default empty-sheet size).
@@ -339,7 +360,31 @@ pub fn import_xlsx_data(
         }
     }
 
-    Ok((imported_tables, imported_charts))
+    let sheet_id_by_name: std::collections::HashMap<String, u64> = imported_tables
+        .iter()
+        .map(|t| (t.sheet.name.clone(), t.sheet.id))
+        .collect();
+    let imported_pivots = crate::core::pivot_xlsx::import_pivot_tables(
+        buffer,
+        &sheet_id_by_name,
+        |sheet_name, r0, c0, r1, c1| {
+            imported_tables
+                .iter()
+                .find(|t| t.sheet.name == sheet_name)
+                .and_then(|t| {
+                    t.sheet
+                        .tables
+                        .iter()
+                        .find(|tbl| {
+                            (tbl.start_row, tbl.start_col, tbl.end_row, tbl.end_col)
+                                == (r0, c0, r1, c1)
+                        })
+                        .map(|tbl| tbl.name.clone())
+                })
+        },
+    );
+
+    Ok((imported_tables, imported_charts, imported_pivots))
 }
 
 fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String {
@@ -402,6 +447,7 @@ fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String 
 pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
+    pivots: &[crate::core::pivot::PivotTable],
 ) -> Result<Vec<u8>, String> {
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let mut used_names = std::collections::HashSet::new();
@@ -644,9 +690,15 @@ pub fn export_xlsx_data(
         }
     }
 
-    workbook
+    let buffer = workbook
         .save_to_buffer()
-        .map_err(|e| format!("Failed to write XLSX buffer: {}", e))
+        .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
+
+    if pivots.is_empty() {
+        Ok(buffer)
+    } else {
+        crate::core::pivot_xlsx::inject_pivot_tables(buffer, sheets, pivots)
+    }
 }
 
 #[allow(dead_code)]
@@ -760,7 +812,7 @@ fn combine_ranges(cat_f: &str, val_f: &str) -> String {
     clean_excel_formula(val_f)
 }
 
-fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option<String> {
+pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option<String> {
     for attr_res in e.attributes() {
         if let Ok(attr) = attr_res {
             let key = attr.key.as_ref();
@@ -777,7 +829,7 @@ fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option<String> {
     None
 }
 
-fn parse_workbook_sheets(xml: &str) -> std::collections::HashMap<String, String> {
+pub(crate) fn parse_workbook_sheets(xml: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let mut reader = quick_xml::reader::Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -799,7 +851,7 @@ fn parse_workbook_sheets(xml: &str) -> std::collections::HashMap<String, String>
     map
 }
 
-fn parse_workbook_rels(xml: &str) -> std::collections::HashMap<String, String> {
+pub(crate) fn parse_workbook_rels(xml: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let mut reader = quick_xml::reader::Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -1122,7 +1174,7 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
     })
 }
 
-fn get_zip_file_content(
+pub(crate) fn get_zip_file_content(
     archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
     name: &str,
 ) -> Option<String> {
@@ -1139,9 +1191,19 @@ fn get_zip_file_content(
 /// to `(true, false)` -- a header row and no totals row -- if the table's
 /// XML can't be found or parsed, matching how most real-world tables are
 /// configured.
-fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
+/// Reads a table's header/totals row flags (calamine doesn't expose these)
+/// directly from its own `xl/tables/table*.xml`, along with its declared
+/// `ref` range parsed to 0-based `(start_row, start_col, end_row, end_col)`
+/// -- the whole table's bounds, header/totals rows included. The `ref` is
+/// the authoritative source of truth for a table's position: prefer it over
+/// reconstructing bounds from calamine's `Table::data()` range, which is
+/// empty (no `start()`/`end()`) for a table with zero data rows.
+fn read_table_metadata_from_zip(
+    buffer: &[u8],
+    table_name: &str,
+) -> (bool, bool, Option<(usize, usize, usize, usize)>) {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(buffer)) else {
-        return (true, false);
+        return (true, false, None);
     };
     let table_files: Vec<String> = archive
         .file_names()
@@ -1169,7 +1231,9 @@ fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
                         let totals_row_count = get_attr(e, b"totalsRowCount")
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
-                        return (header_row_count != 0, totals_row_count != 0);
+                        let table_ref = get_attr(e, b"ref")
+                            .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
+                        return (header_row_count != 0, totals_row_count != 0, table_ref);
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) | Err(_) => break,
@@ -1178,7 +1242,7 @@ fn read_table_row_flags(buffer: &[u8], table_name: &str) -> (bool, bool) {
             buf.clear();
         }
     }
-    (true, false)
+    (true, false, None)
 }
 
 fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String> {
@@ -1274,11 +1338,11 @@ mod tests {
         };
 
         // Export it
-        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, imported_charts) =
+        let (imported_tables, imported_charts, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_charts.len(), 0);
@@ -1314,8 +1378,8 @@ mod tests {
             .add_table("Sales".to_string(), 0, 0, 3, 1, true, true)
             .unwrap();
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
-        let (imported_tables, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_sheet = &imported_tables[0].sheet;
@@ -1347,6 +1411,42 @@ mod tests {
     }
 
     #[test]
+    fn test_xlsx_zero_data_row_table_import_export_cycle() {
+        // Regression test for a real crash found via libvisi's pivot-table
+        // fuzz testing (see vendor/calamine/PATCHES.md): exporting an Excel
+        // Table with a header row but zero data rows, then reimporting it,
+        // used to panic inside calamine's `Xlsx::table_by_name` ("invalid
+        // range bounds") -- unrelated to pivot tables specifically, a plain
+        // header-only table triggers it on its own.
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Name".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Empty".to_string(), 0, 0, 0, 1, true, false)
+            .unwrap();
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_tables.len(), 1);
+
+        let imported_sheet = &imported_tables[0].sheet;
+        assert_eq!(imported_sheet.tables.len(), 1);
+        let table = &imported_sheet.tables[0];
+        assert_eq!(table.name, "Empty");
+        assert_eq!(table.columns, vec!["Name", "Amount"]);
+        assert!(table.has_header_row);
+        assert!(!table.has_totals_row);
+        // Zero data rows: the data range is empty (start past end).
+        assert!(table.data_start_row() > table.data_end_row());
+    }
+
+    #[test]
     fn test_xlsx_empty_table_preservation() {
         // Create an empty sheet (e.g., 5 columns, 10 rows, all empty strings)
         let mut columns = Vec::new();
@@ -1367,11 +1467,11 @@ mod tests {
         };
 
         // Export it
-        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_table = &imported_tables[0].sheet;
@@ -1417,11 +1517,11 @@ mod tests {
         };
 
         // Export sheet + chart
-        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()], &[]).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import back
-        let (imported_tables, imported_charts) =
+        let (imported_tables, imported_charts, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
         assert_eq!(imported_tables.len(), 1);
@@ -1462,7 +1562,7 @@ mod tests {
             uncommitted_actions: Vec::new(),
         };
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
 
         let cursor = std::io::Cursor::new(xlsx_data);
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
@@ -1494,7 +1594,7 @@ mod tests {
             uncommitted_actions: Vec::new(),
         };
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
 
         // The exported xlsx should contain the plain text "1", not a literal
         // quote-wrapped string.
@@ -1505,7 +1605,7 @@ mod tests {
         std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
         assert!(!xml_content.contains("&quot;1&quot;"));
 
-        let (imported_tables, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         let mut imported_sheet = imported_tables.into_iter().next().unwrap().sheet;
         imported_sheet.columns[0].mark_dirty(0);
         imported_sheet.commit(None).unwrap();
@@ -1514,5 +1614,102 @@ mod tests {
             Some(crate::core::engine::ResultData::String(s)) => assert_eq!(s, "1"),
             other => panic!("Expected ResultData::String(\"1\"), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_xlsx_pivot_table_round_trip() {
+        use crate::core::pivot::{
+            PivotAggregation, PivotField, PivotSource, PivotTable, PivotValueField,
+        };
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Data".to_string()),
+            rows: 5,
+            cols: 3,
+            ..Default::default()
+        });
+        let header = ["Region", "Product", "Amount"];
+        for (c, h) in header.iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        let rows = [
+            ["East", "Widget", "10"],
+            ["East", "Gadget", "5"],
+            ["West", "Widget", "30"],
+            ["West", "Gadget", "40"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                sheet.set_cell_src(r + 1, c, v.to_string());
+            }
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 4, 2, true, false)
+            .unwrap();
+
+        let pivot = PivotTable {
+            id: 42,
+            name: "Pivot1".to_string(),
+            source: PivotSource::Table {
+                name: "Sales".to_string(),
+            },
+            dest_sheet_id: sheet.id,
+            dest_row: 0,
+            dest_col: 4,
+            row_fields: vec![PivotField::new("Region")],
+            col_fields: vec![],
+            value_fields: vec![PivotValueField::new("Amount", PivotAggregation::Sum)],
+            filter_fields: vec![],
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        };
+
+        let xlsx_data = export_xlsx_data(
+            std::slice::from_ref(&sheet),
+            &[],
+            std::slice::from_ref(&pivot),
+        )
+        .unwrap();
+
+        // The exported file must contain real pivot table XML parts.
+        let cursor = std::io::Cursor::new(xlsx_data.clone());
+        let mut zip = zip::ZipArchive::new(cursor).unwrap();
+        assert!(zip.by_name("xl/pivotTables/pivotTable1.xml").is_ok());
+        assert!(
+            zip.by_name("xl/pivotCache/pivotCacheDefinition1.xml")
+                .is_ok()
+        );
+        assert!(zip.by_name("xl/pivotCache/pivotCacheRecords1.xml").is_ok());
+
+        let (imported_tables, _, imported_pivots) =
+            import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_tables.len(), 1);
+        assert_eq!(imported_pivots.len(), 1);
+
+        let reimported = &imported_pivots[0];
+        assert_eq!(reimported.name, "Pivot1");
+        assert_eq!(reimported.row_fields.len(), 1);
+        assert_eq!(reimported.row_fields[0].column, "Region");
+        assert_eq!(reimported.value_fields.len(), 1);
+        assert_eq!(reimported.value_fields[0].column, "Amount");
+        assert_eq!(
+            reimported.value_fields[0].aggregation,
+            PivotAggregation::Sum
+        );
+        match &reimported.source {
+            PivotSource::Table { name } => assert_eq!(name, "Sales"),
+            other => panic!("Expected PivotSource::Table, got {:?}", other),
+        }
+
+        // Recomputing from the reimported definition should reproduce the
+        // same aggregation (East=15, West=70, Grand Total=85).
+        let reimported_sheet = &imported_tables[0].sheet;
+        let grid =
+            crate::core::pivot::compute_pivot(std::slice::from_ref(reimported_sheet), reimported)
+                .unwrap();
+        assert_eq!(grid.body_rows.len(), 3);
     }
 }
