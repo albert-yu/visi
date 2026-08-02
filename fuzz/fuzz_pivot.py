@@ -478,6 +478,32 @@ class ExcelPivotDriver:
         ]
         return "\n".join(lines)
 
+    def _restart_excel(self):
+        """Force-quits and relaunches Excel entirely (not just `killall` +
+        hope) -- see GitHub issue #15. `run VB macro` calls degrade into a
+        session-wide, config-independent "Parameter error (-50)" after
+        enough consecutive AppleScript invocations against one long-lived
+        Excel process (confirmed via ~20-30 back-to-back repro calls: the
+        exact same pivot config that fails deterministically for the
+        remainder of that session succeeds immediately, every time, right
+        after Excel is fully restarted) -- it is Excel's automation bridge
+        wearing out, unrelated to any particular pivot shape (same-column
+        col/filter field, zero-selection filter, single-row source, or
+        otherwise). `killall` alone was observed to sometimes leave the
+        process listed as still running (the app may intercept SIGTERM to
+        run its own quit handshake), so this escalates to SIGKILL by PID
+        before relaunching.
+        """
+        subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.0)
+        pgrep = subprocess.run(["pgrep", "-x", "Microsoft Excel"], stdout=subprocess.PIPE, text=True)
+        for pid in pgrep.stdout.split():
+            subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if pgrep.stdout.strip():
+            time.sleep(1.0)
+        subprocess.run(["open", "-a", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(4.0)  # give the app time to finish launching before the next AppleScript call
+
     def _run_applescript_macro(self, abs_output, config):
         script = self._build_applescript_macro_call(abs_output, config)
         res = None
@@ -490,9 +516,13 @@ class ExcelPivotDriver:
                 )
                 if res.returncode == 0:
                     break
+                # A non-timeout AppleScript failure this late in a session is
+                # session degradation, not a config problem (issue #15) --
+                # a plain retry against the same stuck process just fails
+                # again, so restart Excel outright before the next attempt.
+                self._restart_excel()
             except subprocess.TimeoutExpired:
-                subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                time.sleep(1.0)
+                self._restart_excel()
         if res is not None and res.returncode != 0:
             raise RuntimeError(f"Excel pivot AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}")
 
