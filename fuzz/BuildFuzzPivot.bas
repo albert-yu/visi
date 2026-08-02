@@ -140,16 +140,24 @@ Private Sub ApplyFilterField(pt As PivotTable, filterSpec As String)
     Set pf = pt.PivotFields(colName)
     pf.Orientation = xlPageField
 
+    ' An empty valuesPart means the config wants "select nothing" -- but
+    ' Excel refuses to let the last visible PivotItem in a field be hidden
+    ' (runtime error 1004, "Method 'Visible' of object 'PivotItem' failed"),
+    ' so hiding every item here would crash. visi's CLI has the identical
+    ' gap (no verb for an empty selection -- see VisiPivotDriver.run's
+    ' comment in fuzz_pivot.py) and handles it the same way: leave the
+    ' field unfiltered ("(All)") rather than attempting an unrepresentable
+    ' all-hidden state.
+    If Len(valuesPart) = 0 Then Exit Sub
+
     Dim pi As PivotItem
     For Each pi In pf.PivotItems
         Dim found As Boolean
         found = False
         Dim k As Integer
-        If Len(valuesPart) > 0 Then
-            For k = 0 To UBound(values)
-                If pi.Name = values(k) Then found = True
-            Next k
-        End If
+        For k = 0 To UBound(values)
+            If pi.Name = values(k) Then found = True
+        Next k
         pi.Visible = found
     Next pi
 End Sub

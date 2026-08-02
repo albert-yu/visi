@@ -37,8 +37,12 @@ impl PivotAggregation {
     pub fn label(&self) -> &'static str {
         match self {
             PivotAggregation::Sum => "Sum",
-            PivotAggregation::Count => "Count",
-            PivotAggregation::CountNumbers => "Count Numbers",
+            // Excel's default value-field caption for "Count Numbers" is
+            // "Count of <field>" -- identical to plain "Count" -- not
+            // "Count Numbers of <field>"; there's no separate caption text
+            // for it in Excel's own UI (confirmed via fuzz/fuzz_pivot.py
+            // against real Excel).
+            PivotAggregation::Count | PivotAggregation::CountNumbers => "Count",
             PivotAggregation::Average => "Average",
             PivotAggregation::Max => "Max",
             PivotAggregation::Min => "Min",
@@ -100,31 +104,74 @@ impl PivotValueField {
     }
 }
 
-/// Default display labels for a pivot's whole value-field list, exactly
-/// matching Excel's own disambiguation: the first value field built from a
-/// given source column keeps the plain "{Agg} of {Column}" label, but each
-/// later value field reusing that *same* column gets the column name
-/// itself suffixed with its occurrence count (e.g. a second "Amount" value
-/// field becomes "Min of Amount2", not "Min of Amount"). Verified against
-/// real Excel via fuzz/fuzz_pivot.py: adding the same field to the Values
-/// area twice duplicates the underlying `PivotField` internally, and Excel
-/// names that duplicate "<Column>2", which is what its own default caption
-/// then derives from. An explicit `custom_name` is never touched by this.
+/// Default display labels for a pivot's whole value-field list, matching
+/// Excel's own (surprisingly convoluted) disambiguation for repeated
+/// source columns -- derived empirically against real Excel via
+/// fuzz/fuzz_pivot.py plus direct probing (see the probe script referenced
+/// in the PR that added this comment), since none of it is documented.
+///
+/// Two independent mechanisms are in play, both scoped per source column:
+///
+/// 1. **The "Sum" clone.** The *first* value field for a column that uses
+///    the `Sum` aggregation causes Excel to silently clone that column
+///    into a new pseudo-field ("Amount" -> "Amount2") for every value
+///    field *after* it in the list (not before) -- regardless of their own
+///    aggregation. A *second* `Sum` on the same column clones again
+///    ("Amount2" -> "Amount3"), but non-`Sum` aggregations never trigger a
+///    further clone; they just ride whatever clone slot is already active.
+///    E.g. `[Sum, Max, Count]` on "Amount" -> `["Sum of Amount", "Max of
+///    Amount2", "Count of Amount2"]` (both non-Sum fields share slot 2);
+///    `[Sum, Sum, Count]` -> `["Sum of Amount", "Sum of Amount2", "Count
+///    of Amount3"]` (the second Sum clones again). A column with *no* Sum
+///    value field anywhere is never cloned at all.
+/// 2. **Literal caption collision.** Independent of the above, if two
+///    value fields end up wanting the exact same caption text, Excel still
+///    has to disambiguate. If neither is in a Sum-cloned slot, it appends
+///    a plain digit straight onto the column name (`"Count of Amount"`,
+///    `"Count of Amount2"`, `"Count of Amount3"`, ...) -- this is also how
+///    `CountNumbers` colliding with `Count` gets suffixed, since both
+///    share the caption label "Count" (see `PivotAggregation::label`). If
+///    the collision instead happens *inside* an already Sum-cloned slot
+///    (two non-Sum fields sharing one clone with the same aggregation),
+///    Excel instead appends an underscored counter to the *whole* already-
+///    suffixed caption (`"Max of Amount2"`, `"Max of Amount2_2"`) rather
+///    than incrementing the clone number again.
+///
+/// An explicit `custom_name` bypasses both mechanisms entirely -- it's
+/// used as-is and doesn't consume a collision slot or trigger a clone.
 pub fn value_field_labels(value_fields: &[PivotValueField]) -> Vec<String> {
-    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let mut clone_suffix: HashMap<&str, usize> = HashMap::new();
+    let mut next_clone: HashMap<&str, usize> = HashMap::new();
+    let mut label_counts: HashMap<String, usize> = HashMap::new();
+
     value_fields
         .iter()
         .map(|vf| {
             if let Some(name) = &vf.custom_name {
                 return name.clone();
             }
-            let count = seen.entry(&vf.column).or_insert(0);
+            let agg_label = vf.aggregation.label();
+            let in_clone_slot = clone_suffix.contains_key(vf.column.as_str());
+            let base_column = match clone_suffix.get(vf.column.as_str()) {
+                Some(n) => format!("{}{}", vf.column, n),
+                None => vf.column.clone(),
+            };
+            let base_label = format!("{} of {}", agg_label, base_column);
+            let count = label_counts.entry(base_label.clone()).or_insert(0);
             *count += 1;
-            if *count == 1 {
-                format!("{} of {}", vf.aggregation.label(), vf.column)
+            let label = if *count == 1 {
+                base_label
+            } else if in_clone_slot {
+                format!("{}_{}", base_label, count)
             } else {
-                format!("{} of {}{}", vf.aggregation.label(), vf.column, count)
+                format!("{} of {}{}", agg_label, vf.column, count)
+            };
+            if vf.aggregation == PivotAggregation::Sum {
+                let assigned = *next_clone.entry(vf.column.as_str()).or_insert(2);
+                next_clone.insert(vf.column.as_str(), assigned + 1);
+                clone_suffix.insert(vf.column.as_str(), assigned);
             }
+            label
         })
         .collect()
 }
@@ -641,15 +688,27 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
         all_rows.push(row_vals);
     }
 
+    // A filter field's selectable items are Excel pivot-cache items, which
+    // (like row/col group labels) merge case-different text into one item
+    // -- so both the "(All)"/"(Multiple Items)" state and the actual
+    // row-inclusion test below must compare case-insensitively, not by
+    // exact string equality. Verified against real Excel via
+    // fuzz/fuzz_pivot.py (iteration 8, seed 599783): a source column with
+    // both "East" and "east" rows, filtered to a selection containing
+    // "east", must include every row of either casing -- Excel's pivot
+    // cache only ever offers one merged "East"/"east" checkbox, not two.
     let mut filter_rows: Vec<(String, String)> = Vec::new();
     for ff in &pivot.filter_fields {
         let idx = column_index(&col_names, &ff.column)?;
-        let distinct: std::collections::HashSet<String> =
-            all_rows.iter().map(|row| group_key(&row[idx])).collect();
+        let distinct: std::collections::HashSet<String> = all_rows
+            .iter()
+            .map(|row| group_key(&row[idx]).to_ascii_lowercase())
+            .collect();
         let state = match &ff.selected_values {
             None => "(All)".to_string(),
             Some(selected) => {
-                let selected_set: std::collections::HashSet<&String> = selected.iter().collect();
+                let selected_set: std::collections::HashSet<String> =
+                    selected.iter().map(|v| v.to_ascii_lowercase()).collect();
                 let is_all = selected_set.len() == distinct.len()
                     && distinct.iter().all(|v| selected_set.contains(v));
                 if is_all {
@@ -669,7 +728,7 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
             if let Some(selected) = &ff.selected_values {
                 let idx = column_index(&col_names, &ff.column)?;
                 let key = group_key(&row_vals[idx]);
-                if !selected.iter().any(|v| v == &key) {
+                if !selected.iter().any(|v| v.eq_ignore_ascii_case(&key)) {
                     continue 'row;
                 }
             }
@@ -1255,6 +1314,56 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_field_selection_matches_case_insensitively() {
+        // Regression test (fuzz/fuzz_pivot.py iteration 8, seed 599783): a
+        // filter field's selectable items are Excel pivot-cache items,
+        // which merge case-different text into a single item exactly like
+        // row/col group labels do (see
+        // test_case_variant_values_merge_using_globally_first_seen_casing)
+        // -- so selecting "east" must match *every* row spelled "East" or
+        // "east", not just rows with that exact casing. An earlier version
+        // of `compute_pivot`'s filter step compared the raw row value
+        // against `selected_values` with plain string equality, which
+        // under-counted case variants; real Excel (driven via
+        // fuzz_pivot.py's AppleScript/VBA macro path) matched them all.
+        let mut sheet = Sheet::new(SheetInit {
+            name: Some("Data".to_string()),
+            rows: 4,
+            cols: 2,
+            ..Default::default()
+        });
+        for (c, h) in ["Mixed", "Amount"].iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        let rows: [[&str; 2]; 3] = [["East", "10"], ["east", "20"], ["West", "30"]];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                sheet.set_cell_src(r + 1, c, v.to_string());
+            }
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 3, 1, true, false)
+            .unwrap();
+
+        let mut pivot = base_pivot();
+        pivot.source = PivotSource::Table {
+            name: "Sales".to_string(),
+        };
+        pivot.row_fields = vec![];
+        pivot.value_fields = vec![PivotValueField::new("Amount", PivotAggregation::Sum)];
+        pivot.filter_fields = vec![PivotFilterField {
+            column: "Mixed".to_string(),
+            selected_values: Some(vec!["east".to_string()]),
+        }];
+        pivot.grand_totals_row = false;
+        pivot.grand_totals_col = false;
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+        // Both "East" (10) and "east" (20) rows must be included: 30, not 20.
+        assert_eq!(value_at(&grid.body_rows[0], 0), 30.0);
+    }
+
+    #[test]
     fn test_no_filter_fields_means_no_reserved_rows() {
         let sheet = source_sheet();
         let pivot = base_pivot();
@@ -1351,13 +1460,14 @@ mod tests {
         // header_rows[0] is "Column Labels", [1] is Region (outer, with the
         // subtotal), [2] is Product (deepest), [3] is the value-label row.
         let region_row = &grid.header_rows[1];
-        // The second value field reuses "Amount" as its source column too,
-        // so (like test_multiple_value_fields_become_column_labels) its
-        // default label disambiguates as "Amount2".
+        // Min and Sum are different aggregations, so their default
+        // captions are distinct on their own and Excel leaves the reused
+        // "Amount" source column unsuffixed (see
+        // test_value_field_labels_leaves_distinct_aggregations_on_same_column_unsuffixed).
         assert!(region_row.contains(&"East Min of Amount".to_string()));
-        assert!(region_row.contains(&"East Sum of Amount2".to_string()));
+        assert!(region_row.contains(&"East Sum of Amount".to_string()));
         assert!(region_row.contains(&"West Min of Amount".to_string()));
-        assert!(region_row.contains(&"West Sum of Amount2".to_string()));
+        assert!(region_row.contains(&"West Sum of Amount".to_string()));
         assert!(
             !region_row
                 .iter()
@@ -1369,7 +1479,7 @@ mod tests {
         // showing the value labels under the non-subtotal leaf columns.
         let value_label_row = grid.header_rows.last().unwrap();
         assert!(value_label_row.contains(&"Min of Amount".to_string()));
-        assert!(value_label_row.contains(&"Sum of Amount2".to_string()));
+        assert!(value_label_row.contains(&"Sum of Amount".to_string()));
         let east_subtotal_idx = region_row
             .iter()
             .position(|c| c == "East Min of Amount")
@@ -1445,12 +1555,10 @@ mod tests {
         pivot.grand_totals_col = false;
         let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
         assert_eq!(grid.header_rows.last().unwrap()[1], "Sum of Amount");
-        // The second value field reuses "Amount" as its source column, so
-        // its default label disambiguates the column name itself, matching
-        // real Excel (verified via fuzz/fuzz_pivot.py: reusing a column
-        // across two value fields duplicates the underlying source field,
-        // and Excel's own default caption for the duplicate is built from
-        // its renamed "Amount2", not "Amount").
+        // The first value field on "Amount" uses Sum, which clones the
+        // column for every value field after it (see `value_field_labels`'s
+        // doc comment) -- so the second value field's default label
+        // disambiguates as "Amount2", matching real Excel.
         assert_eq!(grid.header_rows.last().unwrap()[2], "Count of Amount2");
         assert_eq!(grid.body_rows[0].values.len(), 2);
         assert_eq!(value_at(&grid.body_rows[0], 0), 50.0); // Sum for East
@@ -1502,7 +1610,10 @@ mod tests {
 
         // The grand-total column's caption lands on the column-field row
         // (not repeated per value field as plain "Grand Total"), combining
-        // "Total " with each value field's own (disambiguated) label.
+        // "Total " with each value field's own label. Sum is first on
+        // "Amount", so it clones the column for the following value field
+        // (see `value_field_labels`'s doc comment), giving Min the
+        // disambiguated "Amount2".
         let col_values_row = &grid.header_rows[1];
         assert!(col_values_row.contains(&"Total Sum of Amount".to_string()));
         assert!(col_values_row.contains(&"Total Min of Amount2".to_string()));
@@ -1741,7 +1852,41 @@ mod tests {
     }
 
     #[test]
-    fn test_value_field_labels_disambiguates_repeated_source_column() {
+    fn test_value_field_labels_distinct_aggregations_without_sum_stay_unsuffixed() {
+        // Regression test (fuzz/fuzz_pivot.py iteration 4, seed 883294):
+        // reusing a source column across multiple value fields with
+        // *different*, non-Sum aggregations produces distinct default
+        // captions on its own ("Max of Amount", "Count of Amount"), so
+        // real Excel leaves them alone -- no "Amount2" suffix. An earlier
+        // version of `value_field_labels` suffixed on any repeated column
+        // regardless of aggregation, which real Excel (driven via
+        // fuzz_pivot.py's AppleScript/VBA macro path) did not do here: the
+        // dataFields XML it wrote out named these plainly as "Count of
+        // Amount" and "Max of Amount". (Reusing a column that *does* have
+        // a Sum value field is a different story -- see
+        // test_value_field_labels_sum_clones_column_for_later_fields.)
+        let fields = vec![
+            PivotValueField::new("Amount", PivotAggregation::Count),
+            PivotValueField::new("Amount", PivotAggregation::Max),
+        ];
+        assert_eq!(
+            value_field_labels(&fields),
+            vec!["Count of Amount".to_string(), "Max of Amount".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_value_field_labels_sum_clones_column_for_later_fields() {
+        // Regression test (fuzz/fuzz_pivot.py iteration 3, seed 406509,
+        // found in a follow-up fuzz batch after the fix above): unlike
+        // other aggregations, the *first* value field on a column that
+        // uses `Sum` silently clones that column ("Amount" -> "Amount2")
+        // for every value field *after* it in the list, regardless of
+        // their own aggregation -- confirmed by direct probing against
+        // real Excel (build a pivot with N value fields on one column via
+        // the same VBA `AddDataField` macro fuzz_pivot.py uses, across
+        // every ordering of {sum, count, average, max, min}). "Rate" here
+        // has no Sum field at all, so it's unaffected and stays plain.
         let fields = vec![
             PivotValueField::new("Amount", PivotAggregation::Sum),
             PivotValueField::new("Rate", PivotAggregation::Average),
@@ -1754,8 +1899,90 @@ mod tests {
                 "Sum of Amount".to_string(),
                 "Average of Rate".to_string(),
                 "Min of Amount2".to_string(),
-                "Max of Amount3".to_string(),
+                "Max of Amount2".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn test_value_field_labels_second_sum_clones_again() {
+        // A second `Sum` value field on the same column clones *again*
+        // ("Amount2" -> "Amount3"), rather than reusing the first clone --
+        // verified by direct real-Excel probing (see the test above).
+        let fields = vec![
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+            PivotValueField::new("Amount", PivotAggregation::Count),
+        ];
+        assert_eq!(
+            value_field_labels(&fields),
+            vec![
+                "Sum of Amount".to_string(),
+                "Sum of Amount2".to_string(),
+                "Count of Amount3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_value_field_labels_disambiguates_identical_aggregation_and_column() {
+        // Two value fields on the same column with the *same* aggregation
+        // do produce an identical default caption ("Sum of Amount" twice),
+        // so this is the one shape where real Excel's plain digit-suffix
+        // disambiguation kicks in even without any preceding clone.
+        let fields = vec![
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+        ];
+        assert_eq!(
+            value_field_labels(&fields),
+            vec![
+                "Sum of Amount".to_string(),
+                "Sum of Amount2".to_string(),
+                "Sum of Amount3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_value_field_labels_collision_within_sum_clone_uses_underscore_suffix() {
+        // When a caption collision happens *inside* an already Sum-cloned
+        // slot (two non-Sum fields on the same clone sharing an
+        // aggregation), real Excel disambiguates by appending an
+        // underscored counter to the whole already-suffixed caption
+        // instead of incrementing the clone number again -- verified by
+        // direct real-Excel probing.
+        let fields = vec![
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+            PivotValueField::new("Amount", PivotAggregation::Max),
+            PivotValueField::new("Amount", PivotAggregation::Max),
+        ];
+        assert_eq!(
+            value_field_labels(&fields),
+            vec![
+                "Sum of Amount".to_string(),
+                "Max of Amount2".to_string(),
+                "Max of Amount2_2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_value_field_labels_count_numbers_shares_plain_count_caption() {
+        // Regression test (fuzz/fuzz_pivot.py iteration 1, seed 837909):
+        // Excel's default caption for the "Count Numbers" summary function
+        // is "Count of <field>" -- identical to plain "Count" -- not
+        // "Count Numbers of <field>". Since both aggregations now generate
+        // the same caption text, using both on the same column is exactly
+        // the collide-and-suffix case above.
+        let fields = vec![
+            PivotValueField::new("Rate", PivotAggregation::CountNumbers),
+            PivotValueField::new("Rate", PivotAggregation::Count),
+        ];
+        assert_eq!(
+            value_field_labels(&fields),
+            vec!["Count of Rate".to_string(), "Count of Rate2".to_string()]
         );
     }
 
@@ -1850,6 +2077,8 @@ mod tests {
         let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
 
         assert_eq!(grid.header_rows.len(), 1);
+        // Sum is first on "Amount", so it clones the column for the
+        // following value field (see `value_field_labels`'s doc comment).
         assert_eq!(
             grid.header_rows[0],
             vec![
@@ -2169,7 +2398,10 @@ mod tests {
                 if let Some(selected) = &ff.selected_values {
                     let idx = column_index(&col_names, &ff.column).unwrap();
                     let key = group_key(&row_vals[idx]);
-                    if !selected.iter().any(|v| v == &key) {
+                    // Case-insensitive, matching `compute_pivot`'s own filter
+                    // step (a filter field's items are merged case-different
+                    // text, same as row/col group labels).
+                    if !selected.iter().any(|v| v.eq_ignore_ascii_case(&key)) {
                         continue 'row;
                     }
                 }
