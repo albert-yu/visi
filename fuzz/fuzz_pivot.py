@@ -42,44 +42,11 @@ Setup (one-time, macOS only -- skip if you only use win32com on Windows):
        permission.
 
 STATUS -- piloted against real Excel, works end-to-end (see fuzz/README.md's
-"Known caveats" section for full detail, this is just the summary):
-  - FIXED: visi's pivot output used to never render filter/page fields as
-    header rows the way Excel does. `libvisi/src/core/pivot.rs`'s
-    `compute_pivot`/`PivotGrid` now builds a `filter_rows` block (one
-    "FieldName | (All)"/"(Multiple Items)" row per filter field plus a
-    blank spacer, matching Excel's own convention empirically verified
-    against real Excel) that `visi/src/engine.rs` materializes above the
-    grid and `pivot_xlsx.rs`'s native XML accounts for via `rowPageCount`.
-  - FIXED: whenever row/col fields were present, Excel's header caption is
-    literally "Row Labels"/"Column Labels", not the field name, unlike
-    visi's grid used to be. Since Excel itself can't be made to use its
-    alternate "tabular form" here (the per-field `PivotField.LayoutForm =
-    xlTabular` `BuildFuzzPivot.bas` sets is confirmed to have no effect on
-    Mac Excel, and the table-wide `RowAxisLayout`/`ColumnAxisLayout`
-    methods that do work **hang Mac Excel outright** when driven via this
-    VBA/AppleScript path), `compute_pivot`'s header-row construction was
-    reworked to match Excel's compact-form display directly -- see the
-    doc comments on `libvisi/src/core/pivot.rs`'s `row_label_width` and
-    the header-row-building block inside `compute_pivot` for the exact
-    rules (all derived from real Excel output). This was the single
-    biggest driver of the "wide-grid"/large-mismatch iterations previously
-    reported here.
-  - FIXED: a column used as both a col/row field and a filter field --
-    real Excel only allows a field to occupy one area at a time (setting
-    `PivotField.Orientation` a second time relocates the field rather than
-    duplicating it), but `WorkbookManager::add_pivot_field` used to just
-    push onto the target area without evicting the field from any other
-    area it was already in. Now mirrors Excel: adding a field to
-    Row/Column/Filter evicts it from the other two first (Value is the one
-    exception -- Excel allows the same source column to appear as multiple
-    value fields at once).
-  - FIXED: per-field subtotal toggles (`visi pivot add-field --no-subtotal`)
-    and the pivot-wide grand-total row/column toggles
-    (`visi pivot create --no-grand-totals-row/--no-grand-totals-col`) are
-    now both round-tripped correctly across the CLI's per-invocation xlsx
-    export/import cycle, and a case-insensitive text field (e.g. mixed
-    "East"/"east" casing) now groups into one Excel-matching bucket instead
-    of one per literal casing.
+"Known caveats" section for full detail, this is just the summary; the
+earlier round of FIXED findings from this pilot -- filter/page field header
+rows, "Row Labels"/"Column Labels" captions, field-area eviction, subtotal/
+grand-total toggle round-tripping, and case-insensitive grouping -- are
+tracked as closed issues, not repeated here):
   - Still open, and *not* root-causable from visi's side: when the same
     source column is used by two value fields (e.g. both "Sum of Amount"
     and "Min of Amount"), `BuildFuzzPivot.bas`'s `ApplyValueFields` reuses
