@@ -46,8 +46,24 @@ Sub BuildFuzzPivot(rowFieldsCSV As String, colFieldsCSV As String, valueFieldsCS
 
     pt.MergeLabels = False
     pt.HasAutoFormat = False
-    pt.ColumnGrand = (grandColStr = "1")
-    pt.RowGrand = (grandRowStr = "1")
+
+    ' GitHub issue #14 -- this assignment is intentionally swapped relative
+    ' to the argument names. Root-caused via a throwaway diagnostic build
+    ' that logged the live `pt.RowGrand`/`pt.ColumnGrand` values (read back
+    ' immediately after assignment and again after RefreshTable) into a
+    ' worksheet, since AppleScript's `run VB macro` doesn't surface the
+    ' Immediate window for `Debug.Print`: on Mac Excel, `pt.RowGrand = True`
+    ' reads back as True right up through RefreshTable, yet the saved
+    ' .xlsx's rendered grid and `rowGrandTotals`/`colGrandTotals` XML
+    ' attributes come out as if `RowGrand`/`ColumnGrand` had been assigned
+    ' to each other -- reproduced 100% of the time (6/6 manual configs,
+    ' including a from-scratch Excel session with no prior pivot table, and
+    ' independent of which property is assigned first), so it's Mac
+    ' Excel's *save* path that swaps them, not a flaky read/write race. Not
+    ' confirmed on Windows -- `_run_win32com` in fuzz_pivot.py is untouched
+    ' since it goes through COM directly rather than this VBA macro.
+    pt.ColumnGrand = (grandRowStr = "1")
+    pt.RowGrand = (grandColStr = "1")
     pt.RefreshTable
 
     ThisWorkbook.Save
