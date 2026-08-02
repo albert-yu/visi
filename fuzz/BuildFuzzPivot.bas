@@ -90,15 +90,22 @@ Private Sub ApplyValueFields(pt As PivotTable, fieldsCSV As String)
         nv = Split(parts(i), ":")
         Dim pf As PivotField
         Set pf = pt.PivotFields(nv(0))
-        pf.Orientation = xlDataField
+        Dim fn As XlConsolidationFunction
         Select Case nv(1)
-            Case "sum": pf.Function = xlSum
-            Case "count": pf.Function = xlCount
-            Case "count-numbers": pf.Function = xlCountNums
-            Case "average": pf.Function = xlAverage
-            Case "max": pf.Function = xlMax
-            Case "min": pf.Function = xlMin
+            Case "sum": fn = xlSum
+            Case "count": fn = xlCount
+            Case "count-numbers": fn = xlCountNums
+            Case "average": fn = xlAverage
+            Case "max": fn = xlMax
+            Case "min": fn = xlMin
         End Select
+        ' AddDataField, not `.Orientation = xlDataField` in a loop, is the
+        ' API Excel documents for adding a field to Values more than once --
+        ' the Orientation-loop pattern is non-deterministic in real Excel
+        ' when the same source column backs two value fields (see GitHub
+        ' issue #13). Omitting the Caption arg lets Excel derive its own
+        ' default caption, same as it would from the Orientation path.
+        pt.AddDataField pf, , fn
     Next i
 End Sub
 
