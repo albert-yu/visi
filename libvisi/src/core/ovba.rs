@@ -243,6 +243,27 @@ fn find_best_match(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // `compress` can legitimately reject high-entropy input (see the
+        // module doc comment), so this only checks the roundtrip property
+        // when compression succeeds -- `decompress_never_panics_or_ooms`
+        // below covers arbitrary bytes on the decode side, which is the
+        // side that actually receives untrusted input from imported files.
+        #[test]
+        fn roundtrip_when_compressible(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            if let Ok(compressed) = compress(&data) {
+                let decompressed = decompress(&compressed).unwrap();
+                prop_assert_eq!(decompressed, data);
+            }
+        }
+
+        #[test]
+        fn decompress_never_panics_or_ooms(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            let _ = decompress(&data);
+        }
+    }
 
     #[test]
     fn roundtrip_multichunk_boundaries() {

@@ -29,6 +29,17 @@ python3 fuzz/fuzz_excel.py --seed 48291 --iterations 1     # reproduce a specifi
 
 Failures land in `fuzz_results/failures/fail_iter_<N>_seed_<SEED>/` as `source.xlsx` / `visi_out.xlsx` / `excel_out.xlsx`. See `fuzz/README.md` for the Excel-parity edge cases the harness is built around (cached `<v>` values, 1900 leap-year bug, `_xlfn.` prefixes, float tolerance).
 
+Crash/panic fuzzing of the VBA import path (Rust, `libvisi/fuzz/`, separate from the Python differential harness above):
+
+```bash
+cargo install cargo-fuzz                                          # needs a nightly toolchain
+cd libvisi && cargo +nightly fuzz run ovba_decompress
+mkdir -p fuzz/corpus/vba_import
+cargo +nightly fuzz run vba_import fuzz/corpus/vba_import fuzz/seeds/vba_import   # seed corpus gets past the CFB-magic-bytes gate
+```
+
+See `libvisi/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties are also covered by `proptest` cases in `cargo test -p libvisi`, no nightly needed.
+
 ## Architecture
 
 Cargo workspace, edition 2024:
