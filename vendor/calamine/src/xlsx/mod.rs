@@ -520,6 +520,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         format!("{}{}", &base_folder[..new_index], &target[2..]);
                                     table_locations.push(full_path);
                                 } else if target.is_empty() { // do nothing
+                                } else if let Some(package_path) = target.strip_prefix('/') {
+                                    // Absolute package path (OPC-spec-valid; e.g. openpyxl
+                                    // emits "/xl/tables/table1.xml"). Zip entry names never
+                                    // have a leading slash, so strip it to match.
+                                    table_locations.push(package_path.to_string());
                                 } else {
                                     table_locations.push(target);
                                 }
