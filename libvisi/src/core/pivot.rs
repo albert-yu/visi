@@ -856,9 +856,16 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
             // A subtotal group's labels hold exactly one real value, at
             // whichever depth it was inserted -- e.g. `[Some("-3"), None]`
             // for an outer-field subtotal over a 2-level axis. That's the
-            // one row its caption becomes "<value> Total"; every other
-            // column-field row either inherits an ancestor's label (already
-            // handled below) or stays blank.
+            // one row its caption becomes "<value> Total" (or, with 2+
+            // value fields, "<value> <value field label>" per sub-column,
+            // mirroring the grand-total column's "Total <value label>"
+            // treatment below -- confirmed against real Excel via
+            // fuzz/fuzz_pivot.py: with 2 value fields it repeats the value
+            // field's own name under a subtotal group instead of the
+            // literal word "Total", and doesn't emit a separate
+            // value-label row beneath it the way non-subtotal groups do);
+            // every other column-field row either inherits an ancestor's
+            // label (already handled below) or stays blank.
             let subtotal_depth = group
                 .is_subtotal
                 .then(|| group.labels.iter().rposition(|l| l.is_some()))
@@ -884,7 +891,12 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
                             String::new()
                         }
                     } else if subtotal_depth == Some(r) {
-                        format!("{} Total", group.labels[r].clone().unwrap())
+                        let value = group.labels[r].clone().unwrap();
+                        if value_multiplier > 1 {
+                            format!("{} {}", value, value_labels[vf])
+                        } else {
+                            format!("{} Total", value)
+                        }
                     } else {
                         let is_repeat = if vf > 0 {
                             true
@@ -903,9 +915,11 @@ pub fn compute_pivot(sheets: &[Sheet], pivot: &PivotTable) -> Result<PivotGrid, 
                                 .unwrap_or_default()
                         }
                     }
-                } else if group.is_grand_total {
-                    // Already captioned "Total <value label>" on the
-                    // column-field row above.
+                } else if group.is_grand_total || group.is_subtotal {
+                    // Already captioned "Total <value label>" (grand total)
+                    // or "<value> <value label>" (subtotal) on the
+                    // column-field row above -- no separate value-label row
+                    // for these groups.
                     String::new()
                 } else {
                     value_labels.get(vf).cloned().unwrap_or_default()
@@ -1311,6 +1325,57 @@ mod tests {
         assert!(region_row.contains(&"Grand Total".to_string()));
         let product_row = &grid.header_rows[2];
         assert_eq!(product_row.last().unwrap(), "");
+    }
+
+    #[test]
+    fn test_col_axis_subtotal_caption_uses_value_field_label_with_multiple_value_fields() {
+        // Regression test for issue #17: with 2+ value fields, a col-field
+        // subtotal group used to repeat the literal text "<n> Total" under
+        // every value-field sub-column, plus an extra value-field-label row
+        // beneath it. Real Excel instead repeats the value field's own name
+        // directly on the subtotal's caption row ("<n> Min of Amount",
+        // "<n> Sum of Amount") and emits no separate label row underneath
+        // for those sub-columns -- confirmed against real Excel via
+        // fuzz/fuzz_pivot.py (--seed 100 --iterations 8, iteration 6/seed
+        // 106).
+        let sheet = source_sheet();
+        let mut pivot = base_pivot();
+        pivot.row_fields = vec![];
+        pivot.col_fields = vec![PivotField::new("Region"), PivotField::new("Product")];
+        pivot.value_fields = vec![
+            PivotValueField::new("Amount", PivotAggregation::Min),
+            PivotValueField::new("Amount", PivotAggregation::Sum),
+        ];
+        let grid = compute_pivot(std::slice::from_ref(&sheet), &pivot).unwrap();
+
+        // header_rows[0] is "Column Labels", [1] is Region (outer, with the
+        // subtotal), [2] is Product (deepest), [3] is the value-label row.
+        let region_row = &grid.header_rows[1];
+        // The second value field reuses "Amount" as its source column too,
+        // so (like test_multiple_value_fields_become_column_labels) its
+        // default label disambiguates as "Amount2".
+        assert!(region_row.contains(&"East Min of Amount".to_string()));
+        assert!(region_row.contains(&"East Sum of Amount2".to_string()));
+        assert!(region_row.contains(&"West Min of Amount".to_string()));
+        assert!(region_row.contains(&"West Sum of Amount2".to_string()));
+        assert!(
+            !region_row
+                .iter()
+                .any(|c| c == "East Total" || c == "West Total")
+        );
+
+        // The value-label row must stay blank under the subtotal's
+        // sub-columns (no redundant second label row for them), while still
+        // showing the value labels under the non-subtotal leaf columns.
+        let value_label_row = grid.header_rows.last().unwrap();
+        assert!(value_label_row.contains(&"Min of Amount".to_string()));
+        assert!(value_label_row.contains(&"Sum of Amount2".to_string()));
+        let east_subtotal_idx = region_row
+            .iter()
+            .position(|c| c == "East Min of Amount")
+            .unwrap();
+        assert_eq!(value_label_row[east_subtotal_idx], "");
+        assert_eq!(value_label_row[east_subtotal_idx + 1], "");
     }
 
     #[test]
