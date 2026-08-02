@@ -1477,6 +1477,76 @@ mod tests {
     }
 
     #[test]
+    fn test_xlsx_table_import_with_absolute_relationship_target() {
+        // Regression test for GitHub issue #16: openpyxl (and other OPC-
+        // compliant writers) may emit worksheet->table relationship
+        // `Target` attributes as absolute package paths
+        // ("/xl/tables/table1.xml") rather than the "../tables/table1.xml"
+        // relative form Excel and rust_xlsxwriter always use. Unpatched
+        // calamine only special-cases the relative form, so an absolute
+        // target silently resolved to zero tables (see
+        // vendor/calamine/PATCHES.md). Simulate an openpyxl-authored file
+        // by rewriting a normally-exported file's sheet rels to use an
+        // absolute target, then confirm the table still imports.
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 3,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Name".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet.set_cell_src(1, 0, "Widget".to_string());
+        sheet.set_cell_src(1, 1, "10".to_string());
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 1, 1, true, false)
+            .unwrap();
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+
+        // Rewrite every worksheet rels part's relative table target
+        // ("../tables/table1.xml") to the absolute package-path form
+        // openpyxl uses ("/xl/tables/table1.xml"), leaving everything else
+        // byte-for-byte identical.
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&xlsx_data[..])).unwrap();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        let mut rewrote_a_target = false;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().to_string();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut buf).unwrap();
+            drop(file);
+
+            if name.starts_with("xl/worksheets/_rels/") && name.ends_with(".rels") {
+                let text = String::from_utf8(buf.clone()).unwrap();
+                let new_text = text.replace(r#"Target="../tables/"#, r#"Target="/xl/tables/"#);
+                if new_text != text {
+                    rewrote_a_target = true;
+                }
+                buf = new_text.into_bytes();
+            }
+
+            writer.start_file(&name, options).unwrap();
+            std::io::Write::write_all(&mut writer, &buf).unwrap();
+        }
+        assert!(
+            rewrote_a_target,
+            "expected to find a relative table relationship target to rewrite"
+        );
+        let rewritten = writer.finish().unwrap().into_inner();
+
+        let (imported_tables, _, _, _) = import_xlsx_data(&rewritten, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_tables.len(), 1);
+        let imported_sheet = &imported_tables[0].sheet;
+        assert_eq!(imported_sheet.tables.len(), 1);
+        assert_eq!(imported_sheet.tables[0].name, "Sales");
+        assert_eq!(imported_sheet.tables[0].columns, vec!["Name", "Amount"]);
+    }
+
+    #[test]
     fn test_xlsx_empty_table_preservation() {
         // Create an empty sheet (e.g., 5 columns, 10 rows, all empty strings)
         let mut columns = Vec::new();

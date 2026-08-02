@@ -54,51 +54,14 @@ Usage:
 import argparse
 import os
 import random
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
-import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fuzz_excel import XLSXEvaluatedReader, DifferentialComparator  # noqa: E402
-
-
-def _fix_openpyxl_table_rels(xlsx_path):
-    """openpyxl writes worksheet->table relationship `Target` attributes as
-    absolute package paths (e.g. "/xl/tables/table1.xml"), which is valid
-    per the OPC spec and something real Excel and rust_xlsxwriter-authored
-    files never do -- they use "../tables/table1.xml"-style relative paths.
-    calamine's relationship resolver (used by `visi`'s xlsx importer) only
-    special-cases the "../" relative form; an absolute leading-"/" target
-    silently resolves to no zip entry, so `workbook.load_tables()` succeeds
-    but finds zero tables. This is a real interop gap between openpyxl and
-    calamine (confirmed independent of pivot tables entirely -- plain `visi
-    table list` on an untouched openpyxl-authored table also reports none),
-    not something in scope to fix in visi's core import path here, so this
-    rewrites the relationship XML in place after openpyxl saves the file.
-    """
-    with zipfile.ZipFile(xlsx_path, "r") as zin:
-        names = zin.namelist()
-        contents = {n: zin.read(n) for n in names}
-
-    changed = False
-    for name in names:
-        if not (name.startswith("xl/worksheets/_rels/") and name.endswith(".rels")):
-            continue
-        text = contents[name].decode("utf-8")
-        new_text = re.sub(r'Target="/xl/', 'Target="../', text)
-        if new_text != text:
-            contents[name] = new_text.encode("utf-8")
-            changed = True
-    if not changed:
-        return
-
-    with zipfile.ZipFile(xlsx_path, "w", zipfile.ZIP_DEFLATED) as zout:
-        for name in names:
-            zout.writestr(name, contents[name])
 
 
 # -----------------------------------------------------------------------------
@@ -199,8 +162,6 @@ class PivotFuzzGenerator:
             ws.add_table(table)
 
         wb.save(source_path)
-        if use_table:
-            _fix_openpyxl_table_rels(source_path)
 
         pool = self.CATEGORICAL_COLS[:]
         random.shuffle(pool)

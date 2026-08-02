@@ -8,11 +8,11 @@ this copy transparently.
 
 ## Why vendor instead of just upgrading
 
-Confirmed the bug below is still present unpatched in calamine's latest
+Confirmed the bugs below are still present unpatched in calamine's latest
 release (0.36.1 at the time of writing) -- upgrading the version pin
-wouldn't fix it, and jumping ten minor versions carries its own (unrelated)
-API-compatibility risk. Vendoring a one-function patch is the smaller,
-more targeted change.
+wouldn't fix them, and jumping ten minor versions carries its own
+(unrelated) API-compatibility risk. Vendoring small, targeted patches is
+the smaller change.
 
 ## Patch: `Range::range` panics on a table with zero data rows
 
@@ -41,9 +41,34 @@ bounds) without touching call sites, and matches `range()`'s own
 rather than panicking; the panic happens before that check is ever
 reached).
 
+## Patch: worksheet-to-table relationships with absolute package-path targets resolve to nothing
+
+**File:** `src/xlsx/mod.rs`, `Xlsx::read_table_metadata`.
+
+**Symptom:** an Excel Table written by `openpyxl` (or any other writer that
+emits absolute-path relationship targets) silently imports as zero tables
+-- `workbook.load_tables()` succeeds but finds none, with no error. Found
+via `libvisi`'s xlsx import path on an untouched `openpyxl`-authored
+`.xlsx` file (`visi table list` reported none); see GitHub issue #16.
+
+**Root cause:** `read_table_metadata` reads each worksheet's
+`_rels/sheetN.xml.rels` and resolves the `Target` of each `Relationship`
+whose `Type` is the table relationship type. It special-cases `../`-relative
+targets (the form real Excel and `rust_xlsxwriter` always emit) by
+resolving them against the worksheet's parent folder, and skips empty
+targets, but otherwise pushes the `Target` string through unchanged. OPC
+also permits absolute package-path targets like `/xl/tables/table1.xml`
+(what `openpyxl` writes), and those fall into that unchanged-passthrough
+branch. Zip entry names never have a leading `/`, so `xml_reader` can't
+find a matching entry for `/xl/tables/table1.xml`, returns `None`, and the
+table location is silently dropped (`continue`) instead of erroring.
+
+**Fix:** in that branch, strip a leading `/` before pushing the path, so
+`/xl/tables/table1.xml` resolves the same as `xl/tables/table1.xml` would.
+
 ## Upstream
 
-Worth filing as a PR against `tafia/calamine` -- it's a minimal, clearly
-scoped fix with an obvious regression test. If merged, this vendor
-directory can be dropped once `libvisi` upgrades past whatever release
-includes it. Not filed yet.
+Worth filing as a PR against `tafia/calamine` -- both patches above are
+minimal, clearly scoped fixes with obvious regression tests. If merged,
+this vendor directory can be dropped once `libvisi` upgrades past whatever
+release includes them. Not filed yet.
