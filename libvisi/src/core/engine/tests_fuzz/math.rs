@@ -547,13 +547,7 @@ fn test_fuzz_zero_base_positive_exponent_evaluation() {
         ["=A2", "=B2", "=C2", "=D2", "=E2"],
         ["=A3", "=B3", "=C3", "=D3", "=E3"],
         ["=A4", "=B4", "=C4", "=D4", "=E4"],
-        [
-            "=A1",
-            "=B1",
-            "=C1",
-            "=D1",
-            "=(E3 * (A1 ^ B1))",
-        ],
+        ["=A1", "=B1", "=C1", "=D1", "=(E3 * (A1 ^ B1))"],
     ];
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
@@ -572,10 +566,34 @@ fn test_fuzz_int_concatenate_month_two_digit_year_as_date() {
         ["FALSE", "TRUE", "5", "1", "9"],
         ["", "-34", "29", "8", "0"],
         ["47", "210.486", "68", "", "-3"],
-        ["=C1", "=INT(CONCATENATE(D3, B4))", "=A2", "\"H\"", "=IF((B5 > C1), B1, PRODUCT(B4:E4))"],
-        ["=D2", "=AVERAGE(E1:E6)", "=AND(SUM(C1:E4) > 0, IF((A6 > D4), D3, A3) < 100)", "=ROUNDDOWN(C6, 2)", "=IF(((12 - 50) > LEFT(D1, 2)), (B1 - A5), A6)"],
-        ["=E4", "=LOWER(B2)", "", "=A4", "=AND(C3 > 0, ROUNDUP(-1, 0) < 100)"],
-        ["=-25", "=(C8 - E7)", "=PRODUCT((B5 ^ C4), IF((C3 > B7), 4, A5))", "=LEFT(C8, 3)", "=A7"],
+        [
+            "=C1",
+            "=INT(CONCATENATE(D3, B4))",
+            "=A2",
+            "\"H\"",
+            "=IF((B5 > C1), B1, PRODUCT(B4:E4))",
+        ],
+        [
+            "=D2",
+            "=AVERAGE(E1:E6)",
+            "=AND(SUM(C1:E4) > 0, IF((A6 > D4), D3, A3) < 100)",
+            "=ROUNDDOWN(C6, 2)",
+            "=IF(((12 - 50) > LEFT(D1, 2)), (B1 - A5), A6)",
+        ],
+        [
+            "=E4",
+            "=LOWER(B2)",
+            "",
+            "=A4",
+            "=AND(C3 > 0, ROUNDUP(-1, 0) < 100)",
+        ],
+        [
+            "=-25",
+            "=(C8 - E7)",
+            "=PRODUCT((B5 ^ C4), IF((C3 > B7), 4, A5))",
+            "=LEFT(C8, 3)",
+            "=A7",
+        ],
         ["=C2", "=C3", "=B4", "=LOWER((E2 - D3))", "=-40"],
     ];
     let mut sheet = create_sheet(&sheet_src);

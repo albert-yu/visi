@@ -3,11 +3,15 @@ pub mod chart;
 pub mod date;
 pub mod engine;
 pub mod formula;
+pub mod ovba;
 pub mod parser;
 pub mod pivot;
 pub mod pivot_xlsx;
 pub mod shared_vec;
 pub mod table;
+pub mod vba;
+pub mod vba_synth;
+pub mod vba_xlsx;
 pub mod xlsx;
 
 pub use actions::SheetAction;
@@ -22,3 +26,4 @@ pub use pivot::{
 };
 pub use shared_vec::SharedVec;
 pub use table::ExcelTable;
+pub use vba::{VbaModule, VbaModuleKind, VbaProject, validate_vba_module_name};

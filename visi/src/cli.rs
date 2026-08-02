@@ -56,6 +56,9 @@ pub enum Commands {
     /// Manage pivot tables (create, list, delete, refresh, field CRUD, filters)
     Pivot(PivotArgs),
 
+    /// Manage VBA macro modules (list, add, remove, rename, set-source)
+    Macro(MacroArgs),
+
     /// Export a worksheet to CSV, TSV, or JSON format
     Export(ExportArgs),
 }
@@ -737,6 +740,128 @@ pub struct PivotFilterArgs {
     /// Remove the filter, allowing every value again
     #[arg(long)]
     pub clear: bool,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MacroArgs {
+    #[command(subcommand)]
+    pub command: MacroSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MacroSubcommands {
+    /// List all VBA modules in the workbook
+    List(MacroListArgs),
+    /// Add a new VBA module
+    Add(MacroAddArgs),
+    /// Remove a VBA module
+    Remove(MacroRemoveArgs),
+    /// Rename a VBA module
+    Rename(MacroRenameArgs),
+    /// Replace a VBA module's source code
+    SetSource(MacroSetSourceArgs),
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VbaModuleKindArg {
+    /// A plain module with no host object binding
+    Standard,
+    /// A class module (not fully validated against real Excel -- see the
+    /// VBA feature's known limitations)
+    Class,
+    /// A document module (e.g. a worksheet's code-behind); requires
+    /// --sheet
+    Document,
+}
+
+#[derive(Args, Debug)]
+pub struct MacroListArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Output summary as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MacroAddArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name for the new module
+    #[arg(short, long)]
+    pub name: String,
+    /// Module kind
+    #[arg(short, long, value_enum, default_value_t = VbaModuleKindArg::Standard)]
+    pub kind: VbaModuleKindArg,
+    /// Sheet this document module belongs to (required for --kind document)
+    #[arg(short, long)]
+    pub sheet: Option<String>,
+    /// Module source code, given inline
+    #[arg(long, conflicts_with = "source_file")]
+    pub source: Option<String>,
+    /// Module source code, read from a file
+    #[arg(long)]
+    pub source_file: Option<String>,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MacroRemoveArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the module to remove
+    #[arg(short, long)]
+    pub name: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MacroRenameArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Current module name
+    #[arg(long)]
+    pub old: String,
+    /// New module name
+    #[arg(long)]
+    pub new: String,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MacroSetSourceArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Name of the module to update
+    #[arg(short, long)]
+    pub name: String,
+    /// New module source code, given inline
+    #[arg(long, conflicts_with = "source_file")]
+    pub source: Option<String>,
+    /// New module source code, read from a file
+    #[arg(long)]
+    pub source_file: Option<String>,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,

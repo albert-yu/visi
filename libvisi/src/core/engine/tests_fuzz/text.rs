@@ -2023,10 +2023,7 @@ fn test_fuzz_if_concatenate_scientific_string() {
 
 #[test]
 fn test_fuzz_lower_empty_cell_addition_value_error() {
-    let sheet_src = [
-        ["", "", "", "", ""],
-        ["", "=LOWER(E1) + 42", "", "", ""],
-    ];
+    let sheet_src = [["", "", "", "", ""], ["", "=LOWER(E1) + 42", "", "", ""]];
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(1, 1));
@@ -2053,10 +2050,7 @@ fn test_fuzz_round_non_numeric_string_value_error() {
 
 #[test]
 fn test_fuzz_left_empty_cell_result() {
-    let sheet_src = [
-        ["", "", "", "", ""],
-        ["", "=LEFT(A1, 3)", "", "", ""],
-    ];
+    let sheet_src = [["", "", "", "", ""], ["", "=LEFT(A1, 3)", "", "", ""]];
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(1, 1));
@@ -2119,13 +2113,7 @@ fn test_fuzz_addition_left_text_sqrt_error_precedence() {
             "=OR(LOWER(C2) > 0, OR(A1 > 0, E3 < 100) < 100)",
             "=LEN(B1)",
         ],
-        [
-            "=9",
-            "=AVERAGE(B2:D2)",
-            "=38",
-            "FALSE",
-            "=D6",
-        ],
+        ["=9", "=AVERAGE(B2:D2)", "=38", "FALSE", "=D6"],
         [
             "=AVERAGE(B1:C4)",
             "=INT(MAX(C6, -48))",
@@ -2161,5 +2149,3 @@ fn test_fuzz_addition_left_text_sqrt_error_precedence() {
         other => panic!("Expected Error(#VALUE!) for E10, got {:?}", other),
     }
 }
-
-

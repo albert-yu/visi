@@ -1936,11 +1936,35 @@ fn test_fuzz_rounddown_unevaluated_formula_dependency() {
         ["-76", "", "-96", "-94", "127.986"],
         ["10", "-20", "86", "30", "-72"],
         ["76", "-37", "TRUE", "88", ""],
-        ["=B2", "75", "=C4", "=PRODUCT(MIN(E4, D4), IF((E1 > 44), D2, -18))", "=IF((A3 > A1), OR(-17 > 0, B5 < 100), IF((4 > C2), C5, D1))"],
+        [
+            "=B2",
+            "75",
+            "=C4",
+            "=PRODUCT(MIN(E4, D4), IF((E1 > 44), D2, -18))",
+            "=IF((A3 > A1), OR(-17 > 0, B5 < 100), IF((4 > C2), C5, D1))",
+        ],
         ["83", "=D4", "=E4", "-34", "=C2"],
-        ["=IF((SQRT(D4) > PRODUCT(C1, A4)), (E1 * E1), C7)", "=MAX(MAX(A7:D7), C2)", "=ROUNDUP(OR(A6 > 0, D7 < 100), 1)", "=MAX(C4:D7)", "33"],
-        ["=A3", "=ROUNDDOWN(D6, 0)", "=((B2 ^ C2) + (-44 - B1))", "=SUM(OR(31 > 0, B3 < 100), ROUNDUP(B3, 2))", "=((C8 * -38) ^ -45)"],
-        ["=C4", "=(ROUND(18, 0) * D5)", "=E7", "21", "=((B4 * 32) * (E7 / A3))"],
+        [
+            "=IF((SQRT(D4) > PRODUCT(C1, A4)), (E1 * E1), C7)",
+            "=MAX(MAX(A7:D7), C2)",
+            "=ROUNDUP(OR(A6 > 0, D7 < 100), 1)",
+            "=MAX(C4:D7)",
+            "33",
+        ],
+        [
+            "=A3",
+            "=ROUNDDOWN(D6, 0)",
+            "=((B2 ^ C2) + (-44 - B1))",
+            "=SUM(OR(31 > 0, B3 < 100), ROUNDUP(B3, 2))",
+            "=((C8 * -38) ^ -45)",
+        ],
+        [
+            "=C4",
+            "=(ROUND(18, 0) * D5)",
+            "=E7",
+            "21",
+            "=((B4 * 32) * (E7 / A3))",
+        ],
     ];
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();

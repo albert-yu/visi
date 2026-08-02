@@ -35,6 +35,7 @@ pub fn import_xlsx_data(
         Vec<ImportedSheet>,
         Vec<crate::core::chart::Chart>,
         Vec<crate::core::pivot::PivotTable>,
+        Option<crate::core::vba::VbaProject>,
     ),
     String,
 > {
@@ -384,7 +385,14 @@ pub fn import_xlsx_data(
         },
     );
 
-    Ok((imported_tables, imported_charts, imported_pivots))
+    let imported_vba = crate::core::vba_xlsx::import_vba_project(buffer, &sheet_id_by_name)?;
+
+    Ok((
+        imported_tables,
+        imported_charts,
+        imported_pivots,
+        imported_vba,
+    ))
 }
 
 fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String {
@@ -448,11 +456,19 @@ pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
     pivots: &[crate::core::pivot::PivotTable],
+    vba: Option<&crate::core::vba::VbaProject>,
 ) -> Result<Vec<u8>, String> {
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let mut used_names = std::collections::HashSet::new();
     let mut table_name_to_worksheet_name = std::collections::HashMap::new();
     let mut table_name_to_table = std::collections::HashMap::new();
+    // Sheet id -> the actually-assigned worksheet name (after the 31-char
+    // truncation and case-insensitive de-dup below), so
+    // `vba_xlsx::export_vba_project` can match a Document module's bound
+    // sheet against the same name this function writes into the sheet
+    // element, rather than the original (possibly longer/colliding)
+    // `sheet.name`.
+    let mut sheet_id_to_worksheet_name = std::collections::HashMap::new();
 
     for sheet in sheets {
         table_name_to_table.insert(sheet.name.clone(), sheet);
@@ -481,6 +497,7 @@ pub fn export_xlsx_data(
 
         used_names.insert(worksheet_name.to_lowercase());
         table_name_to_worksheet_name.insert(sheet.name.clone(), worksheet_name.clone());
+        sheet_id_to_worksheet_name.insert(sheet.id, worksheet_name.clone());
 
         {
             let worksheet = workbook.add_worksheet();
@@ -694,11 +711,13 @@ pub fn export_xlsx_data(
         .save_to_buffer()
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
-    if pivots.is_empty() {
-        Ok(buffer)
+    let buffer = if pivots.is_empty() {
+        buffer
     } else {
-        crate::core::pivot_xlsx::inject_pivot_tables(buffer, sheets, pivots)
-    }
+        crate::core::pivot_xlsx::inject_pivot_tables(buffer, sheets, pivots)?
+    };
+
+    crate::core::vba_xlsx::export_vba_project(buffer, vba, &sheet_id_to_worksheet_name)
 }
 
 #[allow(dead_code)]
@@ -827,6 +846,17 @@ pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option
         }
     }
     None
+}
+
+/// Escapes text for use inside an XML attribute value. Shared by
+/// `pivot_xlsx.rs` and `vba_xlsx.rs`, which used to each carry their own
+/// (already-drifted: only this version escaped `'`) copy.
+pub(crate) fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 pub(crate) fn parse_workbook_sheets(xml: &str) -> std::collections::HashMap<String, String> {
@@ -1338,11 +1368,11 @@ mod tests {
         };
 
         // Export it
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, imported_charts, _) =
+        let (imported_tables, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_charts.len(), 0);
@@ -1378,8 +1408,8 @@ mod tests {
             .add_table("Sales".to_string(), 0, 0, 3, 1, true, true)
             .unwrap();
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_sheet = &imported_tables[0].sheet;
@@ -1431,8 +1461,8 @@ mod tests {
             .add_table("Empty".to_string(), 0, 0, 0, 1, true, false)
             .unwrap();
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_sheet = &imported_tables[0].sheet;
@@ -1467,11 +1497,11 @@ mod tests {
         };
 
         // Export it
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import it back
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
         let imported_table = &imported_tables[0].sheet;
@@ -1517,11 +1547,11 @@ mod tests {
         };
 
         // Export sheet + chart
-        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
         // Import back
-        let (imported_tables, imported_charts, _) =
+        let (imported_tables, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
         assert_eq!(imported_tables.len(), 1);
@@ -1562,7 +1592,7 @@ mod tests {
             uncommitted_actions: Vec::new(),
         };
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
         let cursor = std::io::Cursor::new(xlsx_data);
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
@@ -1594,7 +1624,7 @@ mod tests {
             uncommitted_actions: Vec::new(),
         };
 
-        let xlsx_data = export_xlsx_data(&[sheet], &[], &[]).unwrap();
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
         // The exported xlsx should contain the plain text "1", not a literal
         // quote-wrapped string.
@@ -1605,7 +1635,7 @@ mod tests {
         std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
         assert!(!xml_content.contains("&quot;1&quot;"));
 
-        let (imported_tables, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         let mut imported_sheet = imported_tables.into_iter().next().unwrap().sheet;
         imported_sheet.columns[0].mark_dirty(0);
         imported_sheet.commit(None).unwrap();
@@ -1671,6 +1701,7 @@ mod tests {
             std::slice::from_ref(&sheet),
             &[],
             std::slice::from_ref(&pivot),
+            None,
         )
         .unwrap();
 
@@ -1684,7 +1715,7 @@ mod tests {
         );
         assert!(zip.by_name("xl/pivotCache/pivotCacheRecords1.xml").is_ok());
 
-        let (imported_tables, _, imported_pivots) =
+        let (imported_tables, _, imported_pivots, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
         assert_eq!(imported_pivots.len(), 1);
@@ -1711,5 +1742,53 @@ mod tests {
             crate::core::pivot::compute_pivot(std::slice::from_ref(reimported_sheet), reimported)
                 .unwrap();
         assert_eq!(grid.body_rows.len(), 3);
+    }
+
+    #[test]
+    fn test_xlsx_document_module_codename_survives_sheet_name_truncation() {
+        // Regression test: patch_workbook_code_names used to match a bound
+        // Document module's sheet by its original `Sheet::name`, but a
+        // worksheet name over 31 chars gets truncated on export -- so the
+        // needle it searched for never matched, and the codeName (and thus
+        // the module's sheet binding) was silently dropped from the saved
+        // file.
+        let long_name = "A".repeat(40);
+        let sheet = Sheet {
+            id: 1,
+            name: long_name.clone(),
+            columns: Vec::new(),
+            tables: Vec::new(),
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let mut project = crate::core::vba::VbaProject::new_empty();
+        let prefix_bytes = project.seed_prefix_bytes.clone();
+        let module_cookie = project.seed_module_cookie;
+        project.modules.push(crate::core::vba::VbaModule {
+            name: "SheetCode".to_string(),
+            kind: crate::core::vba::VbaModuleKind::Document,
+            source: "Attribute VB_Name = \"SheetCode\"\r\n".to_string(),
+            bound_sheet_id: Some(1),
+            prefix_bytes,
+            module_cookie,
+            cached_compressed_source: None,
+        });
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], Some(&project)).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&xlsx_data[..])).unwrap();
+        let workbook_xml = get_zip_file_content(&mut archive, "xl/workbook.xml").unwrap();
+
+        let truncated_name = &long_name[..31];
+        assert!(
+            !workbook_xml.contains(&format!("name=\"{long_name}\"")),
+            "test assumption broken: sheet name wasn't actually truncated"
+        );
+        let needle = format!("name=\"{truncated_name}\" codeName=\"SheetCode\"");
+        assert!(
+            workbook_xml.contains(&needle),
+            "expected codeName attached to the truncated sheet name in: {workbook_xml}"
+        );
     }
 }

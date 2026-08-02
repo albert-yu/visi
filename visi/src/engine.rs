@@ -1,10 +1,11 @@
 use crate::utils::col_idx_to_letters;
 use libvisi::core::{
     ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
-    PivotTable, PivotValueField,
+    PivotTable, PivotValueField, VbaModule, VbaModuleKind, VbaProject,
     chart::{Chart, ChartType},
     compute_pivot,
     engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
+    validate_vba_module_name,
 };
 use libvisi::{export_xlsx_data, import_xlsx_data};
 use std::fs;
@@ -29,6 +30,7 @@ pub struct WorkbookManager {
     pub sheets: Vec<Sheet>,
     pub charts: Vec<Chart>,
     pub pivot_tables: Vec<PivotTable>,
+    pub vba_project: Option<VbaProject>,
 }
 
 /// Quotes a materialized pivot label that would otherwise be re-parsed as a
@@ -67,7 +69,7 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 impl WorkbookManager {
     /// Load Excel workbook from bytes buffer
     pub fn load_bytes(buffer: &[u8]) -> Result<Self, String> {
-        let (imported_tables, charts, pivot_tables) =
+        let (imported_tables, charts, pivot_tables, vba_project) =
             import_xlsx_data(buffer, &[], |_, _, _| {}).map_err(|e| e.to_string())?;
 
         let sheets = imported_tables.into_iter().map(|it| it.sheet).collect();
@@ -75,6 +77,7 @@ impl WorkbookManager {
             sheets,
             charts,
             pivot_tables,
+            vba_project,
         })
     }
 
@@ -100,6 +103,7 @@ impl WorkbookManager {
                 sheets: Vec::new(),
                 charts: Vec::new(),
                 pivot_tables: Vec::new(),
+                vba_project: None,
             };
             wb.add_sheet("Sheet1")?;
             Ok(wb)
@@ -110,8 +114,13 @@ impl WorkbookManager {
 
     /// Save Excel workbook to file path or stdout ("-")
     pub fn save_file(&self, path_str: &str) -> Result<(), String> {
-        let bytes = export_xlsx_data(&self.sheets, &self.charts, &self.pivot_tables)
-            .map_err(|e| e.to_string())?;
+        let bytes = export_xlsx_data(
+            &self.sheets,
+            &self.charts,
+            &self.pivot_tables,
+            self.vba_project.as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
 
         if path_str == "-" {
             io::stdout()
@@ -396,6 +405,150 @@ impl WorkbookManager {
 
         self.charts.push(chart);
         Ok(id)
+    }
+
+    pub fn has_vba_project(&self) -> bool {
+        self.vba_project.is_some()
+    }
+
+    /// Lists every module in the workbook's VBA project, if it has one.
+    pub fn list_vba_modules(&self) -> Vec<&VbaModule> {
+        self.vba_project
+            .as_ref()
+            .map(|p| p.modules.iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// Creates an empty, entirely synthetic VBA project (see
+    /// `VbaProject::new_empty`) if this workbook doesn't already have one.
+    /// Idempotent.
+    pub fn ensure_vba_project(&mut self) -> Result<(), String> {
+        if self.vba_project.is_some() {
+            return Ok(());
+        }
+        self.vba_project = Some(VbaProject::new_empty());
+        Ok(())
+    }
+
+    /// Adds a new module to the workbook's VBA project (creating the
+    /// project from the bundled template first, if needed). `bound_sheet_id`
+    /// is required for `VbaModuleKind::Document` (except when `name` is
+    /// `"ThisWorkbook"`, which -- like real Excel's own always-present
+    /// ThisWorkbook module -- isn't tied to a specific sheet; any
+    /// `bound_sheet_id` passed alongside it is ignored rather than stored)
+    /// -- note this does NOT rename the sheet, or vice versa; Excel allows a
+    /// document module's own name and its sheet's display name to diverge,
+    /// and this codebase deliberately doesn't cascade one into the other.
+    pub fn add_vba_module(
+        &mut self,
+        name: String,
+        kind: VbaModuleKind,
+        source: String,
+        bound_sheet_id: Option<u64>,
+    ) -> Result<(), String> {
+        validate_vba_module_name(&name)?;
+        let is_this_workbook = kind == VbaModuleKind::Document && name == "ThisWorkbook";
+        if kind == VbaModuleKind::Document && !is_this_workbook {
+            let sheet_id = bound_sheet_id
+                .ok_or_else(|| "Document modules require a bound sheet".to_string())?;
+            if !self.sheets.iter().any(|s| s.id == sheet_id) {
+                return Err(format!("Sheet id {} not found", sheet_id));
+            }
+        }
+        self.ensure_vba_project()?;
+        let project = self.vba_project.as_mut().unwrap();
+        if project.module_name_taken(&name) {
+            return Err(format!("Module '{}' already exists", name));
+        }
+        if kind == VbaModuleKind::Document
+            && bound_sheet_id.is_some()
+            && project
+                .modules
+                .iter()
+                .any(|m| m.kind == VbaModuleKind::Document && m.bound_sheet_id == bound_sheet_id)
+        {
+            return Err("That sheet already has a bound document module".to_string());
+        }
+        // Donate p-code prefix bytes and a module cookie from any existing
+        // module in this same project -- proven (via a scratchpad
+        // proof-of-concept against real Excel) that the prefix's content
+        // doesn't need to correspond to the module it precedes, only its
+        // shape matters. If this project has no modules yet (the common
+        // case for one freshly created by `ensure_vba_project`), fall back
+        // to the synthetic seed values instead.
+        let prefix_bytes = project
+            .modules
+            .first()
+            .map(|m| m.prefix_bytes.clone())
+            .unwrap_or_else(|| project.seed_prefix_bytes.clone());
+        let module_cookie = project
+            .modules
+            .first()
+            .map(|m| m.module_cookie)
+            .unwrap_or(project.seed_module_cookie);
+        let stored_bound_sheet_id = if kind == VbaModuleKind::Document && !is_this_workbook {
+            bound_sheet_id
+        } else {
+            None
+        };
+        project.modules.push(VbaModule {
+            name,
+            kind,
+            source,
+            bound_sheet_id: stored_bound_sheet_id,
+            prefix_bytes,
+            module_cookie,
+            // A brand-new module has no already-compressed form to reuse.
+            cached_compressed_source: None,
+        });
+        Ok(())
+    }
+
+    pub fn remove_vba_module(&mut self, name: &str) -> Result<(), String> {
+        let project = self
+            .vba_project
+            .as_mut()
+            .ok_or("Workbook has no VBA project")?;
+        let before = project.modules.len();
+        project
+            .modules
+            .retain(|m| !m.name.eq_ignore_ascii_case(name));
+        if project.modules.len() == before {
+            return Err(format!("Module '{}' not found", name));
+        }
+        Ok(())
+    }
+
+    pub fn rename_vba_module(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
+        validate_vba_module_name(new_name)?;
+        let project = self
+            .vba_project
+            .as_mut()
+            .ok_or("Workbook has no VBA project")?;
+        if !old_name.eq_ignore_ascii_case(new_name) && project.module_name_taken(new_name) {
+            return Err(format!("Module '{}' already exists", new_name));
+        }
+        let module = project
+            .find_module_mut(old_name)
+            .ok_or_else(|| format!("Module '{}' not found", old_name))?;
+        module.name = new_name.to_string();
+        Ok(())
+    }
+
+    pub fn set_vba_module_source(&mut self, name: &str, source: String) -> Result<(), String> {
+        let project = self
+            .vba_project
+            .as_mut()
+            .ok_or("Workbook has no VBA project")?;
+        let module = project
+            .find_module_mut(name)
+            .ok_or_else(|| format!("Module '{}' not found", name))?;
+        module.source = source;
+        // Invalidate the cached compressed form -- see
+        // VbaModule::cached_compressed_source -- since it no longer matches
+        // the new `source`.
+        module.cached_compressed_source = None;
+        Ok(())
     }
 
     /// Delete chart by u64 ID
