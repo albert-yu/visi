@@ -585,6 +585,19 @@ class ExcelPivotDriver:
             pt.RowAxisLayout(c.xlTabularRow)
             pt.SubtotalLocation(c.xlAtBottom)
             pt.HasAutoFormat = False
+            # GitHub issue #14: on Mac Excel (BuildFuzzPivot.bas, the
+            # AppleScript-driven path), assigning RowGrand/ColumnGrand
+            # straight from grand_totals_row/grand_totals_col is wrong --
+            # the live properties read back correctly right up through
+            # RefreshTable, but the *saved* .xlsx's rendered grid and
+            # rowGrandTotals/colGrandTotals XML attributes come out as if
+            # the two properties were swapped, reproducibly (see
+            # BuildFuzzPivot.bas for the straight (unswapped) assignment
+            # and the diagnostic methodology). Not yet verified whether
+            # Windows Excel has the same bug via this separate win32com/COM
+            # path -- leaving this assignment unswapped until confirmed one
+            # way or the other; if a Windows run ever shows the same
+            # opposite-of-requested grand totals, apply the same swap here.
             pt.ColumnGrand = config["grand_totals_col"]
             pt.RowGrand = config["grand_totals_row"]
             pt.RefreshTable()
