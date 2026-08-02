@@ -54,15 +54,7 @@ struct PivotXmlUnit {
     dest_sheet_id: u64,
 }
 
-fn is_all_numeric(records: &[Vec<ResultData>], field_idx: usize) -> bool {
-    !records.is_empty()
-        && records.iter().all(|r| {
-            matches!(
-                r.get(field_idx),
-                Some(ResultData::Integer(_)) | Some(ResultData::Float(_)) | Some(ResultData::None)
-            )
-        })
-}
+use crate::core::pivot::field_is_numeric as is_all_numeric;
 
 /// Builds the `<items>` child element for a row/column pivotField: one
 /// `<item x="i"/>` per sorted distinct value, plus a trailing
@@ -362,7 +354,10 @@ fn build_pivot_xml_unit(
         .chain(page_field_idxs.iter())
         .map(|&idx| {
             let vals: Vec<String> = records.iter().map(|r| pivot::group_key(&r[idx])).collect();
-            (idx, sorted_distinct_strings(&vals))
+            (
+                idx,
+                sorted_distinct_strings(&vals, is_all_numeric(&records, idx)),
+            )
         })
         .collect();
 
@@ -380,12 +375,25 @@ fn build_pivot_xml_unit(
 
         if let Some(pos) = row_field_idxs.iter().position(|&x| x == i) {
             attrs.push_str(" axis=\"axisRow\"");
-            let subtotal_enabled = pivot.row_fields[pos].subtotal && pos + 1 < row_field_idxs.len();
+            // Write the field's own `subtotal` setting regardless of
+            // whether it's currently the innermost field of its axis (a
+            // subtotal never actually renders there either way --
+            // `flatten_groups` separately gates on `!is_innermost` at
+            // compute time). Suppressing the marker specifically for the
+            // innermost field here used to lose a `subtotal: false` the
+            // moment it round-tripped through xlsx while it *was* the sole
+            // field on its axis -- exactly what happens between every pair
+            // of `visi pivot add-field --area row` CLI calls, since each is
+            // a separate process that re-imports the file first: a field
+            // added with `--no-subtotal` before a second row field existed
+            // would already have forgotten that setting by the time the
+            // second field's `add-field` call read it back in.
+            let subtotal_enabled = pivot.row_fields[pos].subtotal;
             let n_items = field_items.get(&i).map(|v| v.len()).unwrap_or(0);
             items_xml = Some(build_items_xml(n_items, subtotal_enabled));
         } else if let Some(pos) = col_field_idxs.iter().position(|&x| x == i) {
             attrs.push_str(" axis=\"axisCol\"");
-            let subtotal_enabled = pivot.col_fields[pos].subtotal && pos + 1 < col_field_idxs.len();
+            let subtotal_enabled = pivot.col_fields[pos].subtotal;
             let n_items = field_items.get(&i).map(|v| v.len()).unwrap_or(0);
             items_xml = Some(build_items_xml(n_items, subtotal_enabled));
         } else if let Some(pos) = page_field_idxs.iter().position(|&x| x == i) {
@@ -423,11 +431,12 @@ fn build_pivot_xml_unit(
         page_fields_xml.push_str(&format!("<pageField fld=\"{}\" hier=\"-1\"/>", idx));
     }
 
+    let value_field_default_labels = pivot::value_field_labels(&pivot.value_fields);
     let mut data_fields_xml = String::new();
     for (i, vf) in pivot.value_fields.iter().enumerate() {
         data_fields_xml.push_str(&format!(
             "<dataField name=\"{}\" fld=\"{}\" subtotal=\"{}\" baseField=\"0\" baseItem=\"0\"/>",
-            escape_xml(&vf.label()),
+            escape_xml(&value_field_default_labels[i]),
             data_field_idxs[i],
             subtotal_token(vf.aggregation),
         ));
@@ -471,12 +480,15 @@ fn build_pivot_xml_unit(
             grid_start_row + height.saturating_sub(1),
             pivot.dest_col + width.saturating_sub(1),
         );
-        let row_label_width = pivot.row_fields.len().max(1);
+        let row_label_width = pivot::row_label_width(pivot);
         let n_header_rows = grid.header_rows.len();
         let row_items = build_axis_items_xml(&grid.row_axis, &row_field_idxs, &field_items);
-        let value_labels: Vec<String> = pivot.value_fields.iter().map(|v| v.label()).collect();
-        let col_items =
-            build_col_items_xml(&grid.col_axis, &col_field_idxs, &field_items, &value_labels);
+        let col_items = build_col_items_xml(
+            &grid.col_axis,
+            &col_field_idxs,
+            &field_items,
+            &value_field_default_labels,
+        );
         (
             loc,
             n_header_rows.saturating_sub(1),
@@ -839,6 +851,13 @@ struct ParsedPivotTable {
     page_field_fld: Vec<usize>,
     /// (source field index, aggregation, display name).
     data_fields: Vec<(usize, PivotAggregation, String)>,
+    /// Per-`<pivotFields>`-position (same indexing as `row_field_x`/
+    /// `col_field_x`), whether that field's `<items>` included the
+    /// `<item t="default"/>` subtotal placeholder `build_items_xml` writes
+    /// -- i.e. the field's `PivotField::subtotal` toggle. Absent entries
+    /// (fields with no `<items>` at all, e.g. plain non-axis columns)
+    /// default to `true` at the lookup site, same as `PivotField::new`.
+    field_has_subtotal_item: HashMap<usize, bool>,
 }
 
 fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
@@ -855,6 +874,16 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
     let mut data_fields = Vec::new();
     let mut section = PivotXmlSection::None;
 
+    // `<pivotFields>` has one `<pivotField>` per source column, in order --
+    // its position there is the same `x` index `<rowFields>`/`<colFields>`
+    // reference. Track that position and, while inside one, whether an
+    // `<item t="default"/>` subtotal placeholder shows up among its
+    // `<items>` (see `build_items_xml`).
+    let mut in_pivot_fields = false;
+    let mut pivot_field_idx: i64 = -1;
+    let mut current_field_has_default = false;
+    let mut field_has_subtotal_item: HashMap<usize, bool> = HashMap::new();
+
     loop {
         let event = match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Eof) => break,
@@ -863,6 +892,7 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
         };
         match event {
             quick_xml::events::Event::Start(ref e) | quick_xml::events::Event::Empty(ref e) => {
+                let is_empty = matches!(event, quick_xml::events::Event::Empty(_));
                 let local = e.name().local_name().into_inner().to_vec();
                 match local.as_slice() {
                     b"pivotTableDefinition" => {
@@ -907,6 +937,19 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
                             data_fields.push((fld, agg, dname));
                         }
                     }
+                    b"pivotFields" => in_pivot_fields = true,
+                    b"pivotField" if in_pivot_fields => {
+                        pivot_field_idx += 1;
+                        current_field_has_default = false;
+                        if is_empty {
+                            field_has_subtotal_item.insert(pivot_field_idx as usize, false);
+                        }
+                    }
+                    b"item" if in_pivot_fields => {
+                        if get_attr(e, b"t").as_deref() == Some("default") {
+                            current_field_has_default = true;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -914,6 +957,11 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
                 let local = e.name().local_name().into_inner();
                 if matches!(local, b"rowFields" | b"colFields") {
                     section = PivotXmlSection::None;
+                } else if local == b"pivotFields" {
+                    in_pivot_fields = false;
+                } else if local == b"pivotField" && in_pivot_fields {
+                    field_has_subtotal_item
+                        .insert(pivot_field_idx as usize, current_field_has_default);
                 }
             }
             _ => {}
@@ -934,6 +982,7 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
         col_field_x,
         page_field_fld,
         data_fields,
+        field_has_subtotal_item,
     })
 }
 
@@ -1148,39 +1197,60 @@ pub fn import_pivot_tables(
 
         let field_name = |idx: usize| cache_def.field_names.get(idx).cloned().unwrap_or_default();
 
+        let field_subtotal = |x: usize| {
+            parsed
+                .field_has_subtotal_item
+                .get(&x)
+                .copied()
+                .unwrap_or(true)
+        };
         let row_fields: Vec<PivotField> = parsed
             .row_field_x
             .iter()
-            .map(|&x| PivotField::new(field_name(x)))
+            .map(|&x| PivotField {
+                column: field_name(x),
+                subtotal: field_subtotal(x),
+            })
             .collect();
         let col_fields: Vec<PivotField> = parsed
             .col_field_x
             .iter()
-            .map(|&x| PivotField::new(field_name(x)))
+            .map(|&x| PivotField {
+                column: field_name(x),
+                subtotal: field_subtotal(x),
+            })
             .collect();
         let filter_fields: Vec<PivotFilterField> = parsed
             .page_field_fld
             .iter()
             .map(|&fld| PivotFilterField::new(field_name(fld)))
             .collect();
-        let value_fields: Vec<PivotValueField> = parsed
-            .data_fields
-            .iter()
-            .map(|(fld, agg, dname)| {
-                let column = field_name(*fld);
-                let default_label = PivotValueField::new(column.clone(), *agg).label();
-                let custom_name = if *dname == default_label {
-                    None
-                } else {
-                    Some(dname.clone())
-                };
-                PivotValueField {
-                    column,
-                    aggregation: *agg,
-                    custom_name,
-                }
-            })
-            .collect();
+        let value_fields: Vec<PivotValueField> = {
+            let raw: Vec<PivotValueField> = parsed
+                .data_fields
+                .iter()
+                .map(|(fld, agg, _)| PivotValueField::new(field_name(*fld), *agg))
+                .collect();
+            // Disambiguated collectively (a second value field reusing the
+            // same source column defaults to "<Agg> of <Column>2", not
+            // "<Agg> of <Column>" -- see `value_field_labels`), so a
+            // reimported field's stored `<dataField name="...">` only
+            // counts as a genuine user-set custom name if it differs from
+            // *that*, not from the plain single-field default.
+            let default_labels = pivot::value_field_labels(&raw);
+            raw.into_iter()
+                .zip(parsed.data_fields.iter().map(|(_, _, dname)| dname))
+                .zip(default_labels.iter())
+                .map(|((vf, dname), default_label)| PivotValueField {
+                    custom_name: if dname == default_label {
+                        None
+                    } else {
+                        Some(dname.clone())
+                    },
+                    ..vf
+                })
+                .collect()
+        };
 
         // `<location>` spans only the row/col header + data grid, not the
         // filter/page-field rows reserved above it on export (see

@@ -331,7 +331,7 @@ fn test_workbook_pivot_crud_and_computation() {
         .unwrap();
 
     let pivot_id = wb
-        .add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4)
+        .add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4, true, true)
         .unwrap();
     assert!(wb.find_pivot_table("SalesPivot").is_some());
 
@@ -386,6 +386,84 @@ fn test_workbook_pivot_crud_and_computation() {
 }
 
 #[test]
+fn test_pivot_field_area_reassignment_evicts_from_previous_area() {
+    use libvisi::core::{PivotAggregation, PivotArea};
+
+    // Matches real Excel's PivotField.Orientation semantics (verified via
+    // the win32com fuzz driver): a field can only live in one of
+    // Row/Column/Filter at a time, so re-adding it to a different area
+    // moves it rather than leaving it in both. Previously visi's
+    // `add_pivot_field` just pushed onto the target area's Vec, so a field
+    // used as e.g. both a column field and a filter field would stay
+    // grouped by in the column area *and* filtered -- a config real Excel
+    // can't represent, since assigning the page/filter orientation there
+    // relocates the field out of the column area. Discovered via
+    // fuzz/fuzz_pivot.py's differential fuzzer (iteration mismatched by 8
+    // cells because visi kept a two-level column grouping Excel had
+    // collapsed to one level).
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_pivot_field_area_reassignment.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    let data = [
+        ["Region", "Product", "Amount"],
+        ["East", "Widget", "10"],
+        ["East", "Gadget", "5"],
+        ["West", "Widget", "30"],
+        ["West", "Gadget", "40"],
+    ];
+    for (r, row) in data.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            wb.set_cell(0, r, c, v.to_string());
+        }
+    }
+    wb.evaluate().unwrap();
+    wb.add_table(None, "Sales", 0, 0, 4, 2, true, false)
+        .unwrap();
+    wb.add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4, true, true)
+        .unwrap();
+
+    wb.add_pivot_field("SalesPivot", PivotArea::Column, "Region", None)
+        .unwrap();
+    wb.add_pivot_field(
+        "SalesPivot",
+        PivotArea::Value,
+        "Amount",
+        Some(PivotAggregation::Sum),
+    )
+    .unwrap();
+    // Re-assign "Region" to the filter area: it should vanish from
+    // col_fields, not appear in both.
+    wb.add_pivot_field("SalesPivot", PivotArea::Filter, "Region", None)
+        .unwrap();
+
+    let pivot = wb.find_pivot_table("SalesPivot").unwrap();
+    assert!(pivot.col_fields.is_empty());
+    assert_eq!(pivot.filter_fields.len(), 1);
+    assert_eq!(pivot.filter_fields[0].column, "Region");
+
+    // Value fields are the exception: Excel allows the same source column
+    // to be summarized multiple ways at once, so adding "Amount" to Value
+    // again (a different aggregation) must not evict the existing one, and
+    // adding a Row/Column/Filter field must not evict any value field.
+    wb.add_pivot_field(
+        "SalesPivot",
+        PivotArea::Value,
+        "Amount",
+        Some(PivotAggregation::Average),
+    )
+    .unwrap();
+    wb.add_pivot_field("SalesPivot", PivotArea::Row, "Product", None)
+        .unwrap();
+    let pivot = wb.find_pivot_table("SalesPivot").unwrap();
+    assert_eq!(pivot.value_fields.len(), 2);
+    assert_eq!(pivot.row_fields.len(), 1);
+
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
 fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
     use libvisi::core::{CellRef, PivotAggregation, PivotArea};
 
@@ -416,7 +494,7 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
         .unwrap();
 
     // Destination anchored at (row 0, col 4) = E1.
-    wb.add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4)
+    wb.add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4, true, true)
         .unwrap();
     wb.add_pivot_field("SalesPivot", PivotArea::Row, "Region", None)
         .unwrap();
@@ -450,12 +528,14 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
             .to_string(),
         ""
     );
-    // The row/col header grid now starts at row 2, not row 0.
+    // The row/col header grid now starts at row 2, not row 0. The outermost
+    // (here, only) row field's caption is Excel's literal "Row Labels" text,
+    // not the field's own name (matches real Excel's compact-form display).
     assert_eq!(
         wb.sheets[0]
             .get_result_data(&CellRef::new(2, 4))
             .to_string(),
-        "Region"
+        "Row Labels"
     );
     assert_eq!(
         wb.sheets[0]

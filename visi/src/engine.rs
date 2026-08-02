@@ -732,6 +732,7 @@ impl WorkbookManager {
     /// Defines a new pivot table sourced from an existing Excel Table, with
     /// no fields assigned yet -- mirroring Excel inserting an empty
     /// PivotTable shell that fills in as fields are added to it.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_pivot_table_from_table(
         &mut self,
         name: &str,
@@ -739,6 +740,8 @@ impl WorkbookManager {
         dest_sheet_name: Option<&str>,
         dest_row: usize,
         dest_col: usize,
+        grand_totals_row: bool,
+        grand_totals_col: bool,
     ) -> Result<u64, String> {
         if self.pivot_table_name_taken(name) {
             return Err(format!("Pivot table '{}' already exists", name));
@@ -760,8 +763,8 @@ impl WorkbookManager {
             col_fields: Vec::new(),
             value_fields: Vec::new(),
             filter_fields: Vec::new(),
-            grand_totals_row: true,
-            grand_totals_col: true,
+            grand_totals_row,
+            grand_totals_col,
             last_output_end_row: None,
             last_output_end_col: None,
         });
@@ -783,6 +786,8 @@ impl WorkbookManager {
         dest_sheet_name: Option<&str>,
         dest_row: usize,
         dest_col: usize,
+        grand_totals_row: bool,
+        grand_totals_col: bool,
     ) -> Result<u64, String> {
         if self.pivot_table_name_taken(name) {
             return Err(format!("Pivot table '{}' already exists", name));
@@ -807,8 +812,8 @@ impl WorkbookManager {
             col_fields: Vec::new(),
             value_fields: Vec::new(),
             filter_fields: Vec::new(),
-            grand_totals_row: true,
-            grand_totals_col: true,
+            grand_totals_row,
+            grand_totals_col,
             last_output_end_row: None,
             last_output_end_col: None,
         });
@@ -843,6 +848,16 @@ impl WorkbookManager {
     /// Adds a field to one of a pivot table's four areas (Row/Column/
     /// Value/Filter) and immediately refreshes its output, mirroring
     /// Excel's live-updating field list.
+    ///
+    /// A field can only occupy one area at a time, exactly like dragging a
+    /// field to a new area in Excel's field list moves it rather than
+    /// duplicating it (confirmed via the win32com driver: setting
+    /// `PivotField.Orientation` a second time relocates the field). Value
+    /// fields are the one exception -- Excel allows the same source column
+    /// to appear as multiple value fields simultaneously (e.g. both "Sum of
+    /// Amount" and "Min of Amount"), so adding to `PivotArea::Value` does
+    /// not evict the column from Row/Column/Filter, and vice versa a
+    /// Row/Column/Filter add does not evict existing value fields.
     pub fn add_pivot_field(
         &mut self,
         pivot_name: &str,
@@ -851,6 +866,14 @@ impl WorkbookManager {
         aggregation: Option<PivotAggregation>,
     ) -> Result<(), String> {
         let idx = self.find_pivot_table_index(pivot_name)?;
+        if !matches!(area, PivotArea::Value) {
+            let pivot = &mut self.pivot_tables[idx];
+            remove_pivot_field(&mut pivot.row_fields, column);
+            remove_pivot_field(&mut pivot.col_fields, column);
+            pivot
+                .filter_fields
+                .retain(|f| !f.column.eq_ignore_ascii_case(column));
+        }
         match area {
             PivotArea::Row => self.pivot_tables[idx]
                 .row_fields

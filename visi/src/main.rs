@@ -3,7 +3,7 @@
 
 use clap::Parser;
 use libvisi::core::chart::ChartType;
-use libvisi::core::{PivotAggregation, PivotArea, VbaModuleKind};
+use libvisi::core::{PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
@@ -914,7 +914,7 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
                             "name": p.name,
                             "row_fields": p.row_fields.iter().map(|f| &f.column).collect::<Vec<_>>(),
                             "col_fields": p.col_fields.iter().map(|f| &f.column).collect::<Vec<_>>(),
-                            "value_fields": p.value_fields.iter().map(|f| f.label()).collect::<Vec<_>>(),
+                            "value_fields": value_field_labels(&p.value_fields),
                             "filter_fields": p.filter_fields.iter().map(|f| &f.column).collect::<Vec<_>>(),
                         }))
                         .collect::<Vec<_>>()
@@ -944,11 +944,7 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
                             .map(|f| f.column.as_str())
                             .collect::<Vec<_>>()
                             .join(", "),
-                        p.value_fields
-                            .iter()
-                            .map(|f| f.label())
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                        value_field_labels(&p.value_fields).join(", "),
                         p.filter_fields
                             .iter()
                             .map(|f| f.column.as_str())
@@ -975,6 +971,8 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
                         dest_sheet.as_deref(),
                         dest_row,
                         dest_col,
+                        !add_args.no_grand_totals_row,
+                        !add_args.no_grand_totals_col,
                     )
                     .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR)),
                 (None, Some(range)) => {
@@ -992,6 +990,8 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
                         dest_sheet.as_deref(),
                         dest_row,
                         dest_col,
+                        !add_args.no_grand_totals_row,
+                        !add_args.no_grand_totals_col,
                     )
                     .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR))
                 }
@@ -1099,20 +1099,37 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
             wb.add_pivot_field(&field_args.name, area, &field_args.column, agg)
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
 
-            if let (Some(label), Some(pivot)) = (
-                field_args.label.clone(),
-                wb.pivot_tables
-                    .iter()
-                    .position(|p| p.name.eq_ignore_ascii_case(&field_args.name)),
-            ) {
-                if let Some(vf) = wb.pivot_tables[pivot]
-                    .value_fields
-                    .iter_mut()
-                    .rev()
-                    .find(|f| f.column.eq_ignore_ascii_case(&field_args.column))
+            let pivot_idx = wb
+                .pivot_tables
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(&field_args.name));
+            let mut needs_refresh = false;
+            if let Some(pivot) = pivot_idx {
+                if field_args.no_subtotal {
+                    let pt = &mut wb.pivot_tables[pivot];
+                    if let Some(pf) = pt
+                        .row_fields
+                        .iter_mut()
+                        .chain(pt.col_fields.iter_mut())
+                        .rev()
+                        .find(|f| f.column.eq_ignore_ascii_case(&field_args.column))
+                    {
+                        pf.subtotal = false;
+                        needs_refresh = true;
+                    }
+                }
+                if let Some(label) = field_args.label.clone()
+                    && let Some(vf) = wb.pivot_tables[pivot]
+                        .value_fields
+                        .iter_mut()
+                        .rev()
+                        .find(|f| f.column.eq_ignore_ascii_case(&field_args.column))
                 {
                     vf.custom_name = Some(label);
+                    needs_refresh = true;
                 }
+            }
+            if needs_refresh {
                 wb.refresh_pivot_table(&field_args.name)
                     .unwrap_or_else(|e| {
                         exit_with_error(e, EXIT_ENGINE_ERROR);

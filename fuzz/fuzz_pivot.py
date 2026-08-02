@@ -41,34 +41,10 @@ Setup (one-time, macOS only -- skip if you only use win32com on Windows):
        *running* an already-embedded macro, not any VBA-project scripting
        permission.
 
-STATUS -- piloted against real Excel, works end-to-end (see fuzz/README.md's
-"Known caveats" section for full detail, this is just the summary):
-  - FIXED: visi's pivot output used to never render filter/page fields as
-    header rows the way Excel does. `libvisi/src/core/pivot.rs`'s
-    `compute_pivot`/`PivotGrid` now builds a `filter_rows` block (one
-    "FieldName | (All)"/"(Multiple Items)" row per filter field plus a
-    blank spacer, matching Excel's own convention empirically verified
-    against real Excel) that `visi/src/engine.rs` materializes above the
-    grid and `pivot_xlsx.rs`'s native XML accounts for via `rowPageCount`.
-  - Still open: a *separate* layout gap surfaced while verifying the fix
-    above -- whenever row/col fields are present, Excel's header caption is
-    literally "Row Labels"/"Column Labels", not the field name, unlike
-    visi's grid. Confirmed the per-field `PivotField.LayoutForm = xlTabular`
-    `BuildFuzzPivot.bas` sets has no effect (the exported XML's `compact`
-    attribute stays at its default). The standard fix -- `PivotTable`'s
-    table-wide `RowAxisLayout`/`ColumnAxisLayout`/`SubtotalLocation`
-    methods, already used directly by the win32com driver -- **hangs Mac
-    Excel outright** when called from this VBA/AppleScript path (not a
-    catchable error), so `BuildFuzzPivot.bas` deliberately keeps the
-    per-field calls despite knowing they don't work. This, not an unrelated
-    bug, is what was behind most of the previously-reported "wide-grid"/
-    large-mismatch iterations. Next step for whoever picks this up: find a
-    Mac-VBA-safe way to trigger Tabular Form, or try the win32com path on
-    Windows instead (untested so far).
-  - One tiny-edge-case config (a column used as both a col field and a
-    filter field, with the filter selecting zero values, over a 1-row
-    source) made the VBA macro itself throw an outright Excel "Parameter
-    error (-50)" -- also not yet root-caused.
+STATUS -- piloted against real Excel, works end-to-end. Every finding from
+that pilot (fixed and still-open alike) is tracked as a GitHub issue rather
+than duplicated here -- see fuzz/README.md's "Known caveats" section and the
+repo's issue tracker for detail.
 
 Usage:
     python3 fuzz/fuzz_pivot.py --driver mock --iterations 5
@@ -339,18 +315,24 @@ class VisiPivotDriver:
             create_args += ["--source-table", config["table_name"]]
         else:
             create_args += ["--source-range", config["source_range"]]
+        if not config["grand_totals_row"]:
+            create_args.append("--no-grand-totals-row")
+        if not config["grand_totals_col"]:
+            create_args.append("--no-grand-totals-col")
         self._run(create_args)
 
         for f in config["row_fields"]:
-            self._run(
-                ["add-field", output_file, "--name", PIVOT_NAME, "--area", "row",
-                 "--column", f["column"], "-i"]
-            )
+            args = ["add-field", output_file, "--name", PIVOT_NAME, "--area", "row",
+                    "--column", f["column"], "-i"]
+            if not f["subtotal"]:
+                args.append("--no-subtotal")
+            self._run(args)
         for f in config["col_fields"]:
-            self._run(
-                ["add-field", output_file, "--name", PIVOT_NAME, "--area", "column",
-                 "--column", f["column"], "-i"]
-            )
+            args = ["add-field", output_file, "--name", PIVOT_NAME, "--area", "column",
+                    "--column", f["column"], "-i"]
+            if not f["subtotal"]:
+                args.append("--no-subtotal")
+            self._run(args)
         for f in config["value_fields"]:
             self._run(
                 ["add-field", output_file, "--name", PIVOT_NAME, "--area", "value",
