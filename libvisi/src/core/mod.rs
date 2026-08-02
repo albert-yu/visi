@@ -22,7 +22,7 @@ pub use engine::{
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
 pub use pivot::{
     PivotAggregation, PivotArea, PivotBodyRow, PivotField, PivotFilterField, PivotGrid,
-    PivotSource, PivotTable, PivotValueField, compute_pivot,
+    PivotSource, PivotTable, PivotValueField, compute_pivot, value_field_labels,
 };
 pub use shared_vec::SharedVec;
 pub use table::ExcelTable;

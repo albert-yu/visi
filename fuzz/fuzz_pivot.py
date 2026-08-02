@@ -50,21 +50,54 @@ STATUS -- piloted against real Excel, works end-to-end (see fuzz/README.md's
     blank spacer, matching Excel's own convention empirically verified
     against real Excel) that `visi/src/engine.rs` materializes above the
     grid and `pivot_xlsx.rs`'s native XML accounts for via `rowPageCount`.
-  - Still open: a *separate* layout gap surfaced while verifying the fix
-    above -- whenever row/col fields are present, Excel's header caption is
+  - FIXED: whenever row/col fields were present, Excel's header caption is
     literally "Row Labels"/"Column Labels", not the field name, unlike
-    visi's grid. Confirmed the per-field `PivotField.LayoutForm = xlTabular`
-    `BuildFuzzPivot.bas` sets has no effect (the exported XML's `compact`
-    attribute stays at its default). The standard fix -- `PivotTable`'s
-    table-wide `RowAxisLayout`/`ColumnAxisLayout`/`SubtotalLocation`
-    methods, already used directly by the win32com driver -- **hangs Mac
-    Excel outright** when called from this VBA/AppleScript path (not a
-    catchable error), so `BuildFuzzPivot.bas` deliberately keeps the
-    per-field calls despite knowing they don't work. This, not an unrelated
-    bug, is what was behind most of the previously-reported "wide-grid"/
-    large-mismatch iterations. Next step for whoever picks this up: find a
-    Mac-VBA-safe way to trigger Tabular Form, or try the win32com path on
-    Windows instead (untested so far).
+    visi's grid used to be. Since Excel itself can't be made to use its
+    alternate "tabular form" here (the per-field `PivotField.LayoutForm =
+    xlTabular` `BuildFuzzPivot.bas` sets is confirmed to have no effect on
+    Mac Excel, and the table-wide `RowAxisLayout`/`ColumnAxisLayout`
+    methods that do work **hang Mac Excel outright** when driven via this
+    VBA/AppleScript path), `compute_pivot`'s header-row construction was
+    reworked to match Excel's compact-form display directly -- see the
+    doc comments on `libvisi/src/core/pivot.rs`'s `row_label_width` and
+    the header-row-building block inside `compute_pivot` for the exact
+    rules (all derived from real Excel output). This was the single
+    biggest driver of the "wide-grid"/large-mismatch iterations previously
+    reported here.
+  - FIXED: a column used as both a col/row field and a filter field --
+    real Excel only allows a field to occupy one area at a time (setting
+    `PivotField.Orientation` a second time relocates the field rather than
+    duplicating it), but `WorkbookManager::add_pivot_field` used to just
+    push onto the target area without evicting the field from any other
+    area it was already in. Now mirrors Excel: adding a field to
+    Row/Column/Filter evicts it from the other two first (Value is the one
+    exception -- Excel allows the same source column to appear as multiple
+    value fields at once).
+  - FIXED: per-field subtotal toggles (`visi pivot add-field --no-subtotal`)
+    and the pivot-wide grand-total row/column toggles
+    (`visi pivot create --no-grand-totals-row/--no-grand-totals-col`) are
+    now both round-tripped correctly across the CLI's per-invocation xlsx
+    export/import cycle, and a case-insensitive text field (e.g. mixed
+    "East"/"east" casing) now groups into one Excel-matching bucket instead
+    of one per literal casing.
+  - Still open, and *not* root-causable from visi's side: when the same
+    source column is used by two value fields (e.g. both "Sum of Amount"
+    and "Min of Amount"), `BuildFuzzPivot.bas`'s `ApplyValueFields` reuses
+    `pt.PivotFields(name)` + `.Orientation = xlDataField` in a loop rather
+    than the `AddDataField` API meant for this -- and that pattern is
+    genuinely non-deterministic in real Excel: sometimes it produces two
+    distinct data fields with the second one's underlying field renamed
+    "<Column>2" (which `libvisi/src/core/pivot.rs`'s `value_field_labels`
+    now matches when it happens), and sometimes the second call silently
+    overwrites the first's aggregation function instead of creating a
+    second field at all, or drops the requested aggregation for one it
+    didn't ask for. Confirmed by direct A/B testing: replaying the exact
+    same field/config sequence through `visi`'s own CLI is stable and
+    correct every time, so the non-determinism is upstream, in Excel's
+    handling of this specific macro pattern. Whoever picks this up next:
+    switch `ApplyValueFields` to `pt.AddDataField(pt.PivotFields(name),
+    label, function)`, which is the API Excel actually documents for
+    adding a field to Values more than once.
   - One tiny-edge-case config (a column used as both a col field and a
     filter field, with the filter selecting zero values, over a 1-row
     source) made the VBA macro itself throw an outright Excel "Parameter
@@ -339,18 +372,24 @@ class VisiPivotDriver:
             create_args += ["--source-table", config["table_name"]]
         else:
             create_args += ["--source-range", config["source_range"]]
+        if not config["grand_totals_row"]:
+            create_args.append("--no-grand-totals-row")
+        if not config["grand_totals_col"]:
+            create_args.append("--no-grand-totals-col")
         self._run(create_args)
 
         for f in config["row_fields"]:
-            self._run(
-                ["add-field", output_file, "--name", PIVOT_NAME, "--area", "row",
-                 "--column", f["column"], "-i"]
-            )
+            args = ["add-field", output_file, "--name", PIVOT_NAME, "--area", "row",
+                    "--column", f["column"], "-i"]
+            if not f["subtotal"]:
+                args.append("--no-subtotal")
+            self._run(args)
         for f in config["col_fields"]:
-            self._run(
-                ["add-field", output_file, "--name", PIVOT_NAME, "--area", "column",
-                 "--column", f["column"], "-i"]
-            )
+            args = ["add-field", output_file, "--name", PIVOT_NAME, "--area", "column",
+                    "--column", f["column"], "-i"]
+            if not f["subtotal"]:
+                args.append("--no-subtotal")
+            self._run(args)
         for f in config["value_fields"]:
             self._run(
                 ["add-field", output_file, "--name", PIVOT_NAME, "--area", "value",

@@ -613,6 +613,14 @@ pub struct PivotCreateArgs {
     /// sheet)
     #[arg(long)]
     pub dest_sheet: Option<String>,
+    /// Omit the grand-total row at the bottom of the output (shown by
+    /// default, matching Excel)
+    #[arg(long)]
+    pub no_grand_totals_row: bool,
+    /// Omit the grand-total column at the right of the output (shown by
+    /// default, matching Excel)
+    #[arg(long)]
+    pub no_grand_totals_col: bool,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,
@@ -694,6 +702,11 @@ pub struct PivotAddFieldArgs {
     /// Amount")
     #[arg(long)]
     pub label: Option<String>,
+    /// Disable the subtotal row Excel normally shows for this field when
+    /// it isn't the innermost field in its Row/Column area (only used when
+    /// --area row or --area column)
+    #[arg(long)]
+    pub no_subtotal: bool,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,

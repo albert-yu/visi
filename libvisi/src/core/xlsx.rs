@@ -1745,6 +1745,101 @@ mod tests {
     }
 
     #[test]
+    fn test_xlsx_pivot_outer_field_subtotal_off_survives_round_trip() {
+        // Regression test: `import_pivot_tables` used to always construct
+        // row/col `PivotField`s via `PivotField::new`, whose `subtotal`
+        // defaults to `true`, ignoring the `<item t="default"/>` marker (or
+        // lack thereof) `build_pivot_xml_unit` had already written into
+        // each `<pivotField>`'s `<items>`. Since every `visi pivot`
+        // CLI command round-trips the whole workbook through xlsx (a fresh
+        // process per invocation), a `subtotal: false` set at pivot-build
+        // time was silently discarded before the next command ran --
+        // discovered via fuzz/fuzz_pivot.py, whose Python driver renders
+        // Excel's *own* PivotTable via VBA (which does honor the toggle)
+        // while `visi` always showed the subtotal row regardless.
+        use crate::core::pivot::{
+            PivotAggregation, PivotField, PivotSource, PivotTable, PivotValueField,
+        };
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Data".to_string()),
+            rows: 5,
+            cols: 3,
+            ..Default::default()
+        });
+        let header = ["Region", "Product", "Amount"];
+        for (c, h) in header.iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        let rows = [
+            ["East", "Widget", "10"],
+            ["East", "Gadget", "5"],
+            ["West", "Widget", "30"],
+            ["West", "Gadget", "40"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                sheet.set_cell_src(r + 1, c, v.to_string());
+            }
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 4, 2, true, false)
+            .unwrap();
+
+        // A single row field ("Region") with its subtotal explicitly turned
+        // off -- i.e. it's currently the *innermost* (only) field of its
+        // axis. This is exactly the state a field is in right after `visi
+        // pivot add-field --area row --column Region --no-subtotal` and
+        // before any second row field is ever added: the earlier version of
+        // this fix suppressed the `<item t="default"/>` marker for
+        // whichever field is innermost *at export time*, on the theory that
+        // a subtotal has nothing to summarize there anyway -- but that
+        // meant a field's `false` was only ever durable once it stopped
+        // being innermost, which never survives the CLI's per-invocation
+        // xlsx round-trip: each `add-field` call re-imports the file before
+        // making its change, so a solo field's `false` was already lost by
+        // the time a second field's `add-field` call could read it back.
+        let pivot = PivotTable {
+            id: 42,
+            name: "Pivot1".to_string(),
+            source: PivotSource::Table {
+                name: "Sales".to_string(),
+            },
+            dest_sheet_id: sheet.id,
+            dest_row: 0,
+            dest_col: 4,
+            row_fields: vec![PivotField {
+                column: "Region".to_string(),
+                subtotal: false,
+            }],
+            col_fields: vec![],
+            value_fields: vec![PivotValueField::new("Amount", PivotAggregation::Sum)],
+            filter_fields: vec![],
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        };
+
+        let xlsx_data = export_xlsx_data(
+            std::slice::from_ref(&sheet),
+            &[],
+            std::slice::from_ref(&pivot),
+            None,
+        )
+        .unwrap();
+        let (_, _, imported_pivots, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let reimported = &imported_pivots[0];
+
+        assert_eq!(reimported.row_fields.len(), 1);
+        assert!(
+            !reimported.row_fields[0].subtotal,
+            "a lone (currently-innermost) row field's subtotal:false should still survive the round-trip"
+        );
+    }
+
+    #[test]
     fn test_xlsx_document_module_codename_survives_sheet_name_truncation() {
         // Regression test: patch_workbook_code_names used to match a bound
         // Document module's sheet by its original `Sheet::name`, but a
