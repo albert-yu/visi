@@ -1,8 +1,78 @@
 use std::fs;
-use visi::cli::{Cli, Commands, PivotSubcommands};
+use visi::cli::{ChartSubcommands, Cli, Commands, PivotSubcommands};
 use visi::engine::WorkbookManager;
 use visi::utils::{parse_cell_ref, parse_range_ref};
 use clap::Parser;
+
+#[test]
+fn test_chart_edit_parses_setters_and_clear_flags() {
+    let cli = Cli::try_parse_from([
+        "visi",
+        "chart",
+        "edit",
+        "data.xlsx",
+        "--id",
+        "5",
+        "--name",
+        "New",
+        "--chart-type",
+        "bar",
+        "--range",
+        "Sheet1!A1:C5",
+        "--title",
+        "T",
+        "--xlabel",
+        "X",
+        "--show-legend",
+        "-i",
+    ])
+    .expect("clap should parse a full chart edit invocation");
+
+    let Commands::Chart(chart_args) = cli.command else {
+        panic!("expected Commands::Chart");
+    };
+    let ChartSubcommands::Edit(edit_args) = chart_args.command else {
+        panic!("expected ChartSubcommands::Edit");
+    };
+    assert_eq!(edit_args.id, 5);
+    assert_eq!(edit_args.name.as_deref(), Some("New"));
+    assert_eq!(edit_args.range.as_deref(), Some("Sheet1!A1:C5"));
+    assert_eq!(edit_args.title.as_deref(), Some("T"));
+    assert_eq!(edit_args.xlabel.as_deref(), Some("X"));
+    assert!(edit_args.show_legend);
+    assert!(edit_args.in_place);
+}
+
+#[test]
+fn test_chart_edit_title_and_clear_title_are_mutually_exclusive() {
+    let result = Cli::try_parse_from([
+        "visi",
+        "chart",
+        "edit",
+        "data.xlsx",
+        "--id",
+        "5",
+        "--title",
+        "T",
+        "--clear-title",
+    ]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_chart_edit_show_legend_and_hide_legend_are_mutually_exclusive() {
+    let result = Cli::try_parse_from([
+        "visi",
+        "chart",
+        "edit",
+        "data.xlsx",
+        "--id",
+        "5",
+        "--show-legend",
+        "--hide-legend",
+    ]);
+    assert!(result.is_err());
+}
 
 #[test]
 fn test_pivot_filter_values_accepts_leading_hyphen_values() {
@@ -416,6 +486,87 @@ fn test_workbook_pivot_crud_and_computation() {
     assert!(reloaded.find_pivot_table("SalesPivot").is_none());
 
     let _ = pivot_id;
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
+fn test_workbook_chart_edit_and_round_trip() {
+    use libvisi::core::chart::ChartType;
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_chart_edit.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    let data = [["Cat1", "10"], ["Cat2", "20"], ["Cat3", "30"]];
+    for (r, row) in data.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            wb.set_cell(0, r, c, v.to_string());
+        }
+    }
+    wb.evaluate().unwrap();
+
+    let chart_id = wb
+        .add_chart(
+            "Sheet1",
+            ChartType::Line,
+            "Sheet1!A1:B3".to_string(),
+            Some("Orig".to_string()),
+        )
+        .unwrap();
+
+    // Exercise a genuine mix of set / clear / leave-unchanged fields.
+    wb.edit_chart(
+        chart_id,
+        Some("Renamed".to_string()),
+        Some(ChartType::Bar),
+        Some("Sheet1!A1:B3".to_string()),
+        Some(Some("New Title".to_string())),
+        Some(Some("X".to_string())),
+        None, // leave ylabel unchanged (stays None)
+        Some(false),
+    )
+    .unwrap();
+
+    {
+        let chart = wb.charts.iter().find(|c| c.id == chart_id).unwrap();
+        assert_eq!(chart.name, "Renamed");
+        assert_eq!(chart.chart_type, ChartType::Bar);
+        assert_eq!(chart.title, Some("New Title".to_string()));
+        assert_eq!(chart.xlabel, Some("X".to_string()));
+        assert_eq!(chart.ylabel, None);
+        assert!(!chart.show_legend);
+    }
+
+    // Clear the title in a second edit call.
+    wb.edit_chart(chart_id, None, None, None, Some(None), None, None, None)
+        .unwrap();
+    assert_eq!(
+        wb.charts.iter().find(|c| c.id == chart_id).unwrap().title,
+        None
+    );
+
+    // Save + reload: chart_type/data_range/title/xlabel/ylabel/show_legend
+    // must survive the xlsx round trip. `id`/`name` do NOT round-trip today
+    // (xlsx import always regenerates both), so they're deliberately not
+    // asserted on here.
+    wb.save_file(file_str).unwrap();
+    let reloaded = WorkbookManager::load_file(file_str).unwrap();
+    assert_eq!(reloaded.charts.len(), 1);
+    let reloaded_chart = &reloaded.charts[0];
+    assert_eq!(reloaded_chart.chart_type, ChartType::Bar);
+    assert_eq!(reloaded_chart.data_range, "Sheet1!A1:B3");
+    assert_eq!(reloaded_chart.title, None);
+    assert_eq!(reloaded_chart.xlabel, Some("X".to_string()));
+    assert!(!reloaded_chart.show_legend);
+
+    // Editing a nonexistent id must error.
+    let mut wb2 = reloaded;
+    assert!(
+        wb2.edit_chart(999999, Some("X".into()), None, None, None, None, None, None)
+            .is_err()
+    );
+
     let _ = fs::remove_file(file_path);
 }
 

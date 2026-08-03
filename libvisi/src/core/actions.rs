@@ -39,19 +39,4 @@ pub enum SheetAction {
     DeleteTable {
         sheet_name: String,
     },
-    AddChart {
-        chart: crate::core::chart::Chart,
-    },
-    DeleteChart {
-        chart_id: u64,
-    },
-    UpdateChartProperties {
-        chart_id: u64,
-        chart_type: crate::core::chart::ChartType,
-        data_range: String,
-        title: Option<String>,
-        xlabel: Option<String>,
-        ylabel: Option<String>,
-        show_legend: bool,
-    },
 }

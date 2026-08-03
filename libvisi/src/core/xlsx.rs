@@ -333,9 +333,16 @@ pub fn import_xlsx_data(
         start_total.elapsed()
     );
 
-    // Import charts from drawings and charts xml in ZIP
+    // Import charts from drawings and charts xml in ZIP. Chart ids are
+    // derived deterministically from (sheet name, position within that
+    // sheet's charts) rather than `rand::random()`: the CLI is a fresh
+    // process per invocation, so a random id would change on every reload
+    // of an unchanged file, making `chart edit --id`/`chart delete --id`
+    // unable to find a chart a prior `chart list` just reported.
     let mut imported_charts = Vec::new();
     if let Ok(parsed_charts) = import_charts_from_zip(buffer) {
+        let mut chart_index_by_sheet: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for parsed in parsed_charts {
             if let Some(sheet) = imported_tables
                 .iter()
@@ -347,8 +354,14 @@ pub fn import_xlsx_data(
                     parsed.info.data_range.clone()
                 };
 
+                let index_in_sheet = chart_index_by_sheet
+                    .entry(parsed.sheet_name.clone())
+                    .or_insert(0);
+                let chart_id = deterministic_chart_id(&parsed.sheet_name, *index_in_sheet);
+                *index_in_sheet += 1;
+
                 imported_charts.push(crate::core::chart::Chart {
-                    id: rand::random::<u64>(),
+                    id: chart_id,
                     name: format!("Chart {}", imported_charts.len() + 1),
                     chart_type: parsed.info.chart_type.clone(),
                     data_range,
@@ -690,11 +703,27 @@ pub fn export_xlsx_data(
                 if let Some(ref title) = chart.title {
                     rx_chart.title().set_name(title);
                 }
-                if let Some(ref xlabel) = chart.xlabel {
-                    rx_chart.x_axis().set_name(xlabel);
+                // `xlabel`/`ylabel` mean "category axis label"/"value axis
+                // label" (matching parse_chart_xml's in_cat_ax/in_val_ax
+                // reading on import), not "screen x/y axis". For horizontal
+                // Bar charts, rust_xlsxwriter's x_axis()/y_axis() address
+                // the *visual* bottom/left axes, which are the value/category
+                // axes respectively -- the opposite of every other chart
+                // type here, where the category axis is drawn horizontally.
+                // Swap the setters here so xlabel always lands on <c:catAx>
+                // and ylabel on <c:valAx>, keeping export consistent with
+                // what import expects to read back.
+                let (x_axis_label, y_axis_label) =
+                    if chart.chart_type == crate::core::chart::ChartType::Bar {
+                        (chart.ylabel.as_ref(), chart.xlabel.as_ref())
+                    } else {
+                        (chart.xlabel.as_ref(), chart.ylabel.as_ref())
+                    };
+                if let Some(label) = x_axis_label {
+                    rx_chart.x_axis().set_name(label);
                 }
-                if let Some(ref ylabel) = chart.ylabel {
-                    rx_chart.y_axis().set_name(ylabel);
+                if let Some(label) = y_axis_label {
+                    rx_chart.y_axis().set_name(label);
                 }
                 if !chart.show_legend {
                     rx_chart.legend().set_hidden();
@@ -1073,7 +1102,6 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
     let mut chart_type = crate::core::chart::ChartType::Column;
     let mut title = None;
     let mut xlabel = None;
-    let mut ylabel = None;
     let mut show_legend = false;
 
     let mut cat_f = String::new();
@@ -1087,6 +1115,17 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
     let mut in_ser = false;
     let mut in_cat = false;
     let mut in_val = false;
+
+    // Scatter charts (`<c:scatterChart>`) have no `<c:catAx>` at all -- both
+    // of their axes are `<c:valAx>` (there's no category axis for an XY
+    // scatter plot), so `in_cat_ax`/`in_val_ax` alone can't tell the first
+    // (x) axis's title from the second (y) axis's title the way they can
+    // for every other chart type, which has exactly one axis of each kind.
+    // Titles found while `in_val_ax` are collected here in document order
+    // and only classified into xlabel/ylabel once parsing finishes and it's
+    // known whether a `<c:catAx>` ever appeared at all.
+    let mut saw_cat_ax = false;
+    let mut val_ax_titles: Vec<String> = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1109,13 +1148,22 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                     in_title = true;
                 } else if local == b"catAx" {
                     in_cat_ax = true;
+                    saw_cat_ax = true;
                 } else if local == b"valAx" {
                     in_val_ax = true;
                 } else if local == b"ser" {
                     in_ser = true;
-                } else if local == b"cat" {
+                } else if local == b"cat" || local == b"xVal" {
+                    // Scatter charts (`<c:scatterChart>`) encode their two
+                    // series ranges as `<c:xVal>`/`<c:yVal>` instead of the
+                    // `<c:cat>`/`<c:val>` every other chart type uses --
+                    // without this, a Scatter chart's range silently
+                    // resolves to empty on every reimport (falls back to
+                    // "Sheet!A1" in the caller), corrupting it on the very
+                    // next save since the CLI is a fresh process per
+                    // invocation.
                     in_cat = true;
-                } else if local == b"val" {
+                } else if local == b"val" || local == b"yVal" {
                     in_val = true;
                 } else if local == b"legend" {
                     show_legend = true;
@@ -1146,9 +1194,9 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                     in_val_ax = false;
                 } else if local == b"ser" {
                     in_ser = false;
-                } else if local == b"cat" {
+                } else if local == b"cat" || local == b"xVal" {
                     in_cat = false;
-                } else if local == b"val" {
+                } else if local == b"val" || local == b"yVal" {
                     in_val = false;
                 }
                 current_tag.clear();
@@ -1162,7 +1210,7 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                                 if in_cat_ax {
                                     xlabel = Some(val_str.to_string());
                                 } else if in_val_ax {
-                                    ylabel = Some(val_str.to_string());
+                                    val_ax_titles.push(val_str.to_string());
                                 } else {
                                     title = Some(val_str.to_string());
                                 }
@@ -1192,6 +1240,22 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
         clean_excel_formula(&cat_f)
     } else {
         String::new()
+    };
+
+    // Classify the collected `<c:valAx>` titles now that it's known whether
+    // a `<c:catAx>` ever appeared: with one, this is a normal chart with a
+    // single value axis (its title is the y-axis label); without one, it's
+    // a Scatter chart whose first/second `<c:valAx>` are the x/y axes
+    // respectively, matching the order rust_xlsxwriter's x_axis()/y_axis()
+    // write them in on export.
+    let mut val_ax_titles = val_ax_titles.into_iter();
+    let ylabel = if saw_cat_ax {
+        val_ax_titles.next()
+    } else {
+        if let Some(first) = val_ax_titles.next() {
+            xlabel = Some(first);
+        }
+        val_ax_titles.next()
     };
 
     Some(ParsedChartInfo {
@@ -1273,6 +1337,22 @@ fn read_table_metadata_from_zip(
         }
     }
     (true, false, None)
+}
+
+/// Derives a stable chart id from its sheet name and position within that
+/// sheet's charts, so re-importing the same unchanged xlsx always assigns
+/// the same id to the same chart. Uses `DefaultHasher`, which (unlike
+/// `HashMap`'s default `RandomState`) is not seeded per-process, so this is
+/// deterministic across separate CLI invocations of the same binary.
+fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    sheet_name.hash(&mut hasher);
+    index_in_sheet.hash(&mut hasher);
+    // Cap to JS Number.MAX_SAFE_INTEGER (2^53 - 1), matching
+    // generate_unique_id's convention, to avoid serialization precision loss.
+    hasher.finish() & 0x001F_FFFF_FFFF_FFFF
 }
 
 fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String> {
@@ -1582,60 +1662,84 @@ mod tests {
 
     #[test]
     fn test_xlsx_chart_import_export_cycle() {
-        // Create a sheet with data for the chart to reference
-        let mut columns = Vec::new();
-        let mut col1 = DataColumn::new(3);
-        col1.name = "A".to_string();
-        col1.src = vec!["Cat1".to_string(), "Cat2".to_string(), "Cat3".to_string()].into();
-        columns.push(col1);
+        // Covers Bar and Column specifically (not just Line) because
+        // `parse_chart_xml`'s bar-vs-column disambiguation reads
+        // `<c:barDir val="col"|"bar">`, a branch the original single-type
+        // (Line) version of this test never exercised.
+        for chart_type in [
+            crate::core::chart::ChartType::Line,
+            crate::core::chart::ChartType::Bar,
+            crate::core::chart::ChartType::Column,
+            crate::core::chart::ChartType::Scatter,
+        ] {
+            // Create a sheet with data for the chart to reference
+            let mut columns = Vec::new();
+            let mut col1 = DataColumn::new(3);
+            col1.name = "A".to_string();
+            col1.src = vec!["Cat1".to_string(), "Cat2".to_string(), "Cat3".to_string()].into();
+            columns.push(col1);
 
-        let mut col2 = DataColumn::new(3);
-        col2.name = "B".to_string();
-        col2.src = vec!["10".to_string(), "20".to_string(), "30".to_string()].into();
-        columns.push(col2);
+            let mut col2 = DataColumn::new(3);
+            col2.name = "B".to_string();
+            col2.src = vec!["10".to_string(), "20".to_string(), "30".to_string()].into();
+            columns.push(col2);
 
-        let sheet = Sheet {
-            id: 1,
-            name: "Sheet1".to_string(),
-            columns,
-            tables: Vec::new(),
-            dependencies: std::collections::HashMap::new(),
-            dependencies_rev: std::collections::HashMap::new(),
-            uncommitted_actions: Vec::new(),
-        };
+            let sheet = Sheet {
+                id: 1,
+                name: "Sheet1".to_string(),
+                columns,
+                tables: Vec::new(),
+                dependencies: std::collections::HashMap::new(),
+                dependencies_rev: std::collections::HashMap::new(),
+                uncommitted_actions: Vec::new(),
+            };
 
-        // Create a chart referencing that sheet
-        let chart = crate::core::chart::Chart {
-            id: 101,
-            name: "Chart 1".to_string(),
-            chart_type: crate::core::chart::ChartType::Line,
-            data_range: "Sheet1!A1:B3".to_string(),
-            title: Some("My Chart Title".to_string()),
-            xlabel: Some("X Axis".to_string()),
-            ylabel: Some("Y Axis".to_string()),
-            show_legend: true,
-        };
+            // Create a chart referencing that sheet
+            let chart = crate::core::chart::Chart {
+                id: 101,
+                name: "Chart 1".to_string(),
+                chart_type: chart_type.clone(),
+                data_range: "Sheet1!A1:B3".to_string(),
+                title: Some("My Chart Title".to_string()),
+                xlabel: Some("X Axis".to_string()),
+                ylabel: Some("Y Axis".to_string()),
+                show_legend: true,
+            };
 
-        // Export sheet + chart
-        let xlsx_data = export_xlsx_data(&[sheet], &[chart.clone()], &[], None).unwrap();
-        assert!(!xlsx_data.is_empty());
+            // Export sheet + chart
+            let xlsx_data =
+                export_xlsx_data(&[sheet], std::slice::from_ref(&chart), &[], None).unwrap();
+            assert!(!xlsx_data.is_empty());
 
-        // Import back
-        let (imported_tables, imported_charts, _, _) =
-            import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+            // Import back
+            let (imported_tables, imported_charts, _, _) =
+                import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
-        assert_eq!(imported_tables.len(), 1);
-        assert_eq!(imported_charts.len(), 1);
+            assert_eq!(imported_tables.len(), 1);
+            assert_eq!(imported_charts.len(), 1, "chart_type={:?}", chart_type);
 
-        let imported_chart = &imported_charts[0];
-        assert_eq!(imported_chart.title, Some("My Chart Title".to_string()));
-        assert_eq!(imported_chart.xlabel, Some("X Axis".to_string()));
-        assert_eq!(imported_chart.ylabel, Some("Y Axis".to_string()));
-        assert_eq!(imported_chart.show_legend, true);
-        assert_eq!(
-            imported_chart.chart_type,
-            crate::core::chart::ChartType::Line
-        );
+            let imported_chart = &imported_charts[0];
+            assert_eq!(
+                imported_chart.data_range, "Sheet1!A1:B3",
+                "chart_type={:?}",
+                chart_type
+            );
+            assert_eq!(imported_chart.title, Some("My Chart Title".to_string()));
+            assert_eq!(
+                imported_chart.xlabel,
+                Some("X Axis".to_string()),
+                "chart_type={:?}",
+                chart_type
+            );
+            assert_eq!(
+                imported_chart.ylabel,
+                Some("Y Axis".to_string()),
+                "chart_type={:?}",
+                chart_type
+            );
+            assert!(imported_chart.show_legend);
+            assert_eq!(imported_chart.chart_type, chart_type);
+        }
     }
 
     #[test]
