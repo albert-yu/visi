@@ -407,6 +407,51 @@ impl WorkbookManager {
         Ok(id)
     }
 
+    /// Edit an existing chart's properties. Every parameter is optional;
+    /// `None` leaves that field unchanged. `title`/`xlabel`/`ylabel` are
+    /// tri-state (`Option<Option<String>>`): outer `None` leaves the field
+    /// unchanged, `Some(None)` clears it, `Some(Some(text))` sets it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_chart(
+        &mut self,
+        id: u64,
+        name: Option<String>,
+        chart_type: Option<ChartType>,
+        data_range: Option<String>,
+        title: Option<Option<String>>,
+        xlabel: Option<Option<String>>,
+        ylabel: Option<Option<String>>,
+        show_legend: Option<bool>,
+    ) -> Result<(), String> {
+        let chart = self
+            .charts
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(|| format!("Chart with ID {} not found", id))?;
+        if let Some(name) = name {
+            chart.name = name;
+        }
+        if let Some(chart_type) = chart_type {
+            chart.chart_type = chart_type;
+        }
+        if let Some(data_range) = data_range {
+            chart.data_range = data_range;
+        }
+        if let Some(title) = title {
+            chart.title = title;
+        }
+        if let Some(xlabel) = xlabel {
+            chart.xlabel = xlabel;
+        }
+        if let Some(ylabel) = ylabel {
+            chart.ylabel = ylabel;
+        }
+        if let Some(show_legend) = show_legend {
+            chart.show_legend = show_legend;
+        }
+        Ok(())
+    }
+
     pub fn has_vba_project(&self) -> bool {
         self.vba_project.is_some()
     }

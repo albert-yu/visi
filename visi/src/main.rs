@@ -593,14 +593,7 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 }
             };
 
-            let c_type = match add_args.chart_type {
-                ChartTypeArg::Line => ChartType::Line,
-                ChartTypeArg::Bar => ChartType::Bar,
-                ChartTypeArg::Column => ChartType::Column,
-                ChartTypeArg::Pie => ChartType::Pie,
-                ChartTypeArg::Scatter => ChartType::Scatter,
-                ChartTypeArg::Area => ChartType::Area,
-            };
+            let c_type = chart_type_arg_to_chart_type(add_args.chart_type);
 
             let chart_id = wb
                 .add_chart(&sheet_name, c_type, add_args.range, add_args.title)
@@ -614,6 +607,73 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 eprintln!(
                     "Added chart (ID {}) and saved to '{}'.",
                     chart_id, save_path
+                );
+            }
+        }
+        ChartSubcommands::Edit(edit_args) => {
+            let mut wb = WorkbookManager::load_file(&edit_args.file).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+
+            let title = if edit_args.clear_title {
+                Some(None)
+            } else {
+                edit_args.title.map(Some)
+            };
+            let xlabel = if edit_args.clear_xlabel {
+                Some(None)
+            } else {
+                edit_args.xlabel.map(Some)
+            };
+            let ylabel = if edit_args.clear_ylabel {
+                Some(None)
+            } else {
+                edit_args.ylabel.map(Some)
+            };
+            let show_legend = if edit_args.show_legend {
+                Some(true)
+            } else if edit_args.hide_legend {
+                Some(false)
+            } else {
+                None
+            };
+            let chart_type = edit_args.chart_type.map(chart_type_arg_to_chart_type);
+
+            if edit_args.name.is_none()
+                && chart_type.is_none()
+                && edit_args.range.is_none()
+                && title.is_none()
+                && xlabel.is_none()
+                && ylabel.is_none()
+                && show_legend.is_none()
+            {
+                exit_with_error(
+                    "Must specify at least one field to edit (--name, --chart-type, --range, --title/--clear-title, --xlabel/--clear-xlabel, --ylabel/--clear-ylabel, --show-legend/--hide-legend)",
+                    EXIT_USAGE_ERROR,
+                );
+            }
+
+            wb.edit_chart(
+                edit_args.id,
+                edit_args.name,
+                chart_type,
+                edit_args.range,
+                title,
+                xlabel,
+                ylabel,
+                show_legend,
+            )
+            .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+
+            let save_path =
+                resolve_output_path(edit_args.output, edit_args.in_place, &edit_args.file);
+            wb.save_file(&save_path).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_IO_ERROR);
+            });
+            if !quiet {
+                eprintln!(
+                    "Edited chart ID {} and saved to '{}'.",
+                    edit_args.id, save_path
                 );
             }
         }
@@ -874,6 +934,17 @@ fn handle_table(args: TableArgs, quiet: bool) {
                 );
             }
         }
+    }
+}
+
+fn chart_type_arg_to_chart_type(chart_type: ChartTypeArg) -> ChartType {
+    match chart_type {
+        ChartTypeArg::Line => ChartType::Line,
+        ChartTypeArg::Bar => ChartType::Bar,
+        ChartTypeArg::Column => ChartType::Column,
+        ChartTypeArg::Pie => ChartType::Pie,
+        ChartTypeArg::Scatter => ChartType::Scatter,
+        ChartTypeArg::Area => ChartType::Area,
     }
 }
 

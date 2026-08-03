@@ -368,6 +368,8 @@ pub enum ChartSubcommands {
     List(ChartListArgs),
     /// Add a new chart to a worksheet
     Add(ChartAddArgs),
+    /// Edit an existing chart's properties
+    Edit(ChartEditArgs),
     /// Delete a chart by ID
     Delete(ChartDeleteArgs),
 }
@@ -397,6 +399,54 @@ pub struct ChartAddArgs {
     /// Optional chart title
     #[arg(short, long)]
     pub title: Option<String>,
+    /// Write updated workbook to target output file
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ChartEditArgs {
+    /// Input Excel file path
+    pub file: String,
+    /// Chart ID to edit
+    #[arg(long)]
+    pub id: u64,
+    /// New display name for the chart
+    #[arg(long)]
+    pub name: Option<String>,
+    /// New chart type [line, bar, column, pie, scatter, area]
+    #[arg(long, value_enum)]
+    pub chart_type: Option<ChartTypeArg>,
+    /// New data range reference (e.g. Sheet1!A1:B10)
+    #[arg(long)]
+    pub range: Option<String>,
+    /// Set the chart title
+    #[arg(long, conflicts_with = "clear_title")]
+    pub title: Option<String>,
+    /// Remove the chart title
+    #[arg(long)]
+    pub clear_title: bool,
+    /// Set the X-axis label
+    #[arg(long, conflicts_with = "clear_xlabel")]
+    pub xlabel: Option<String>,
+    /// Remove the X-axis label
+    #[arg(long)]
+    pub clear_xlabel: bool,
+    /// Set the Y-axis label
+    #[arg(long, conflicts_with = "clear_ylabel")]
+    pub ylabel: Option<String>,
+    /// Remove the Y-axis label
+    #[arg(long)]
+    pub clear_ylabel: bool,
+    /// Show the chart legend
+    #[arg(long, conflicts_with = "hide_legend")]
+    pub show_legend: bool,
+    /// Hide the chart legend
+    #[arg(long)]
+    pub hide_legend: bool,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,

@@ -101,6 +101,35 @@ Failure artifacts land under `fuzz_results/failures/pivot_fail_iter_<N>_seed_<SE
 
 ---
 
+## Chart Fuzzing (`fuzz_chart.py`)
+
+Charts get their own script for the same reason pivot tables do: Excel must *actively construct* a chart object via its object model -- there's no XML shortcut the way `calculate` recalculates existing formulas -- and `fuzz_excel.py`'s `XLSXEvaluatedReader`/`DifferentialComparator` only understand cell values, so they're structurally blind to charts entirely. `fuzz_chart.py` instead:
+
+1. Uses `openpyxl` to generate a small source data grid (one category column, one numeric column).
+2. Picks a random chart configuration -- type, title, axis labels, legend visibility -- for an initial `visi chart add`, and a second, usually-different configuration for a follow-up `visi chart edit` (so `chart edit`, added alongside this fuzzer, gets differential coverage against real Excel too, not just `add`).
+3. Builds the chart in `visi` via the actual `visi chart add`/`visi chart edit` CLI (`VisiChartDriver`), and in Excel by driving its chart object model directly via AppleScript on macOS or COM on Windows (`ExcelChartDriver`) -- built to the *final* target state in one call, since Excel has no separate "edit" step to mirror; only the resulting xlsx structure is compared.
+4. Compares the two engines' resulting chart structure -- type, category/value ranges, title, axis labels, legend -- via `chart_xlsx_reader.read_charts`, a new `openpyxl`-based reader module (`ChartComparator`, not the cell-based comparator above).
+
+```bash
+python3 fuzz/fuzz_chart.py --driver mock --iterations 5                      # smoke-test the pipeline, no Excel needed
+python3 fuzz/fuzz_chart.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20 --seed 1
+```
+
+### Unlike pivot caches, AppleScript chart creation works natively
+
+`make new pivot cache at wb` fails outright against real Excel (see above), but the equivalent for charts does work -- with one undocumented quirk. `make new chart object at end of chart objects of <sheet>` (the form you'd expect from `Excel.sdef`, which lists `chart object` as an element of `sheet`) fails with the same generic "Parameter error (-50)"; the working form, found by manual trial, is `make new chart object at <sheet>` -- omitting `at end of chart objects of` entirely. Once the chart object exists, `chart wizard` (the AppleScript exposure of VBA's `Chart.ChartWizard`) reliably sets source data, chart type, title, axis titles, and legend in one call -- for every chart type except Pie, where passing `category title`/`value title` also raises -50 (pie charts have no axes), so those two parameters are omitted whenever the target type is Pie. No VBA-macro-template workaround (`BuildFuzzPivot.bas`'s approach) is needed for charts at all.
+
+### Known limitations
+
+- **One chart per iteration.** The comparator assumes exactly one chart per file to avoid chart-matching/ordering ambiguity; this matches `Chart`'s own single-series-per-chart model, so it isn't a meaningful coverage gap today.
+- **Pie and Area charts never get randomly generated axis labels.** Beyond the Pie/`chart wizard` restriction above, a manual spike found Area chart axis titles set via `chart wizard` don't reliably read back through openpyxl's `_charts` in this Excel/openpyxl version, for reasons not investigated further. Rather than chase that gap, the generator (`ChartFuzzGenerator.AXIS_LABEL_TYPES`) only ever assigns xlabel/ylabel to column/bar/line/scatter charts.
+- **openpyxl's Bar/Column distinction.** openpyxl represents both as a `BarChart`; `chart_xlsx_reader.py` disambiguates via `BarChart.type` (`"col"`/`"bar"`), mirroring `parse_chart_xml`'s own `<c:barDir>` handling.
+- **`Chart.id`/`Chart.name` don't round-trip through xlsx** (pre-existing, unrelated to this fuzzer -- `import_xlsx_data` always regenerates a fresh id and name-by-position on import). `VisiChartDriver` looks the id up fresh via `chart list --json` immediately before editing rather than assuming it's stable across a save/reload it didn't itself trigger.
+
+Failure artifacts land under `fuzz_results/failures/chart_fail_iter_<N>_seed_<SEED>/` (same shape as the formula fuzzer's, see below).
+
+---
+
 ## Key Considerations for Excel Parity
 
 When building full feature parity between `visi` and Microsoft Excel for formula evaluation and file import/export, several critical edge cases and subtle behaviors must be addressed:
