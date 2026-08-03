@@ -13,7 +13,7 @@ cargo fmt
 
 # A single test / module (engine tests live inside libvisi's lib target)
 cargo test -p libvisi test_fuzz_cell_reference_zero_coercion
-cargo test -p libvisi --lib core::engine::tests_fuzz::rounding
+cargo test -p libvisi --lib core::engine::tests::rounding
 cargo test -p visi --test cli_tests
 ```
 
@@ -116,7 +116,7 @@ Follows clig.dev. `-` means stdin/stdout for the file argument. Writes require e
 
 ## Tests
 
-- `libvisi/src/core/engine/tests.rs` — hand-written engine tests.
-- `libvisi/src/core/engine/tests_fuzz/{aggregate,logical,math,rounding,text}.rs` — **regression cases harvested from the differential fuzzer**, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell. When the Python harness finds an Excel mismatch, minimize it and add it here.
+- `libvisi/src/core/engine/tests/unit.rs` — hand-written engine tests.
+- `libvisi/src/core/engine/tests/{aggregate,logical,math,rounding,text}.rs` — **regression cases harvested from the differential fuzzer**, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell. When the Python harness finds an Excel mismatch, minimize it and add it here.
 - `libvisi/src/core/table.rs`, `pivot.rs`, and `xlsx.rs` have inline `#[cfg(test)] mod tests` for table CRUD, pivot computation/grouping, and xlsx round-tripping (including a pivot table round-trip through the hand-rolled OOXML).
 - `visi/tests/cli_tests.rs` — integration tests that drive `WorkbookManager` (the same API the CLI handlers call) through real file round-trips.
