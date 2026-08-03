@@ -442,6 +442,21 @@ class ExcelPivotDriver:
             macro_ws.add_table(table)
 
         macro_wb.save(macro_file)
+        # openpyxl's `keep_vba=True` path stashes a raw copy of the VBA
+        # project's zip parts in `macro_wb.vba_archive` (an in-memory
+        # ZipFile) but never closes it itself. Left unclosed, it only gets
+        # reclaimed by Python's *cyclic* garbage collector (Workbook's
+        # worksheet<->parent references form a reference cycle, so simple
+        # refcounting alone never frees it) -- and the cyclic collector may
+        # clear its underlying BytesIO buffer before running the ZipFile's
+        # own __del__/close() finalizer, which then raises "ValueError: I/O
+        # operation on closed file" from inside that finalizer. Python
+        # reports this as a harmless-but-noisy "Exception ignored while
+        # calling deallocator" on stderr -- it doesn't affect the saved
+        # file or the fuzzer's result, but closing it explicitly here (while
+        # its BytesIO is still guaranteed live) avoids the race entirely.
+        if macro_wb.vba_archive is not None:
+            macro_wb.vba_archive.close()
 
     def _build_applescript_macro_call(self, output_file, config):
         app_name = self.excel_path if self.excel_path else "Microsoft Excel"
