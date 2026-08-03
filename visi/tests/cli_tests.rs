@@ -1,6 +1,40 @@
 use std::fs;
+use visi::cli::{Cli, Commands, PivotSubcommands};
 use visi::engine::WorkbookManager;
 use visi::utils::{parse_cell_ref, parse_range_ref};
+use clap::Parser;
+
+#[test]
+fn test_pivot_filter_values_accepts_leading_hyphen_values() {
+    // Regression test: `visi pivot filter --values -7,3,12` used to fail
+    // clap parsing entirely -- a numeric-looking column's filter values can
+    // legitimately start with "-" (e.g. a negative Amount), but without
+    // `allow_hyphen_values` clap mistook the leading "-7" for an unknown
+    // flag ("error: unexpected argument '-7' found") instead of treating it
+    // as the value for `--values`. Found via fuzz/fuzz_pivot.py, whose
+    // NumStr source column includes negative-number-looking text.
+    let cli = Cli::try_parse_from([
+        "visi",
+        "pivot",
+        "filter",
+        "data.xlsx",
+        "--name",
+        "P1",
+        "--column",
+        "Num",
+        "--values",
+        "-7,3,12",
+    ])
+    .expect("clap should accept hyphen-leading filter values");
+
+    let Commands::Pivot(pivot_args) = cli.command else {
+        panic!("expected Commands::Pivot");
+    };
+    let PivotSubcommands::Filter(filter_args) = pivot_args.command else {
+        panic!("expected PivotSubcommands::Filter");
+    };
+    assert_eq!(filter_args.values, vec!["-7", "3", "12"]);
+}
 
 #[test]
 fn test_workbook_create_and_formula_evaluation() {

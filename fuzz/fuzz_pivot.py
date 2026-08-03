@@ -131,16 +131,40 @@ class PivotFuzzGenerator:
 
         # Track each filterable column's actual distinct (blank-normalized)
         # values as we generate, so the filter field picked below can select
-        # a real subset instead of guessing at what exists.
+        # a real subset instead of guessing at what exists. Both visi and
+        # Excel merge case-different text into a single pivot item keyed by
+        # whichever casing appeared first in the source (see pivot.rs's
+        # `test_case_variant_values_merge_using_globally_first_seen_casing`)
+        # -- a real Excel user filtering via the UI only ever sees one
+        # checkbox per merged item, under that one casing. So `distinct`
+        # must canonicalize to that same first-seen casing per
+        # case-insensitive key, or the filter field below could pick two
+        # different casings of what's actually a single merged item (e.g.
+        # both "East" and "east") as if they were independently
+        # selectable -- an unrepresentable config that made real Excel and
+        # visi diverge for a reason that has nothing to do with either
+        # engine's pivot correctness (fuzz/fuzz_pivot.py iteration 8, seed
+        # 599783: selecting "east" alone failed to match the merged
+        # "East"/"east" group in real Excel, since VBA's PivotItem.Name
+        # comparison is case-sensitive and the group's canonical name was
+        # "East").
+        canonical_casing = {}
+
+        def canonicalize(value):
+            key = value.lower()
+            if key not in canonical_casing:
+                canonical_casing[key] = value
+            return canonical_casing[key]
+
         distinct = {i: set() for i in self.FILTERABLE_COLS}
         for r in range(2, num_rows + 2):
             cat = "" if random.random() < 0.1 else random.choice(self.CATEGORIES)
             ws.cell(row=r, column=1, value=cat)
-            distinct[0].add(cat if cat else "(blank)")
+            distinct[0].add(canonicalize(cat) if cat else "(blank)")
 
             mixed = random.choice(self.CASE_VARIANTS)
             ws.cell(row=r, column=2, value=mixed)
-            distinct[1].add(mixed)
+            distinct[1].add(canonicalize(mixed))
 
             numstr = self._random_numstr()
             ws.cell(row=r, column=3, value=numstr)
@@ -418,6 +442,21 @@ class ExcelPivotDriver:
             macro_ws.add_table(table)
 
         macro_wb.save(macro_file)
+        # openpyxl's `keep_vba=True` path stashes a raw copy of the VBA
+        # project's zip parts in `macro_wb.vba_archive` (an in-memory
+        # ZipFile) but never closes it itself. Left unclosed, it only gets
+        # reclaimed by Python's *cyclic* garbage collector (Workbook's
+        # worksheet<->parent references form a reference cycle, so simple
+        # refcounting alone never frees it) -- and the cyclic collector may
+        # clear its underlying BytesIO buffer before running the ZipFile's
+        # own __del__/close() finalizer, which then raises "ValueError: I/O
+        # operation on closed file" from inside that finalizer. Python
+        # reports this as a harmless-but-noisy "Exception ignored while
+        # calling deallocator" on stderr -- it doesn't affect the saved
+        # file or the fuzzer's result, but closing it explicitly here (while
+        # its BytesIO is still guaranteed live) avoids the race entirely.
+        if macro_wb.vba_archive is not None:
+            macro_wb.vba_archive.close()
 
     def _build_applescript_macro_call(self, output_file, config):
         app_name = self.excel_path if self.excel_path else "Microsoft Excel"
@@ -570,8 +609,18 @@ class ExcelPivotDriver:
                 values = set(config["filter_field"]["values"])
                 pf = pt.PivotFields(col)
                 pf.Orientation = c.xlPageField
-                for item in pf.PivotItems():
-                    item.Visible = item.Name in values
+                # An empty `values` means the config wants "select nothing",
+                # but Excel refuses to let the last visible PivotItem in a
+                # field be hidden (runtime error 1004) -- visi's CLI has the
+                # identical gap (see VisiPivotDriver.run's comment above) and
+                # handles it the same way: leave the field unfiltered
+                # ("(All)") rather than attempting an unrepresentable
+                # all-hidden state. Mirrors the fix applied to
+                # BuildFuzzPivot.bas's ApplyFilterField for the AppleScript
+                # path.
+                if values:
+                    for item in pf.PivotItems():
+                        item.Visible = item.Name in values
 
             pt.RowAxisLayout(c.xlTabularRow)
             pt.SubtotalLocation(c.xlAtBottom)

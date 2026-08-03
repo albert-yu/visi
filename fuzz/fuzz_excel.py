@@ -444,8 +444,22 @@ class XLSXEvaluatedReader:
                             f_elem = cell.find('main:f', NS)
                             formula = f_elem.text if f_elem is not None else None
 
-                            v_elem = cell.find('main:v', NS)
-                            raw_val = v_elem.text if v_elem is not None else None
+                            if cell_type == 'inlineStr':
+                                # Inline strings live in <is><t>...</t></is> (or
+                                # <is><r><t>...</t></r>...</is> for rich-text runs),
+                                # not <v> -- real Excel writes these for some string
+                                # cells instead of using the shared-strings table
+                                # (observed via fuzz_pivot.py's AppleScript/VBA
+                                # macro save path).
+                                is_elem = cell.find('main:is', NS)
+                                if is_elem is not None:
+                                    t_elems = is_elem.findall('.//main:t', NS)
+                                    raw_val = "".join(t.text or "" for t in t_elems)
+                                else:
+                                    raw_val = None
+                            else:
+                                v_elem = cell.find('main:v', NS)
+                                raw_val = v_elem.text if v_elem is not None else None
 
                             normalized_val = XLSXEvaluatedReader._normalize_cell(cell_type, raw_val, shared_strings)
 

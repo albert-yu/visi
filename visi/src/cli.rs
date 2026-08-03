@@ -747,8 +747,8 @@ pub struct PivotFilterArgs {
     #[arg(short, long)]
     pub column: String,
     /// Comma-separated list of the only values to include (e.g.
-    /// "East,West")
-    #[arg(long, value_delimiter = ',')]
+    /// "East,West", or "-7,3,12" for a negative-number-valued column)
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     pub values: Vec<String>,
     /// Remove the filter, allowing every value again
     #[arg(long)]
