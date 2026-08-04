@@ -37,24 +37,33 @@ class ExcelFuzzGenerator:
     """Generates random data grids and formula trees for Excel compatibility testing."""
 
     FUNCTIONS_SINGLE_NUM = [
-        "ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN",
+        "ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC",
         "GAUSS", "PHI", "FISHER", "FISHERINV", "GAMMALN", "GAMMA",
-        "NORM.S.DIST", "NORM.S.INV", "ACOSH", "ACOT", "ACOTH",
+        "GAMMALN.PRECISE", "NORM.S.DIST", "NORM.S.INV", "ACOSH", "ACOT", "ACOTH",
         "ASINH", "ATANH", "COSH", "COT", "COTH", "CSC", "CSCH",
         "DEGREES", "EVEN", "FACT", "FACTDOUBLE", "ODD", "RADIANS",
-        "SEC", "SECH", "SIGN", "SINH", "SQRTPI", "TANH"
+        "SEC", "SECH", "SIGN", "SINH", "SQRTPI", "TANH",
+        "ACOS", "ASIN", "ATAN", "COS", "SIN", "TAN", "EXP", "LN", "LOG10",
+        "ERF", "ERF.PRECISE", "ERFC", "ERFC.PRECISE",
     ]
     FUNCTIONS_MULTI_NUM = [
         "SUM", "AVERAGE", "MIN", "MAX", "PRODUCT",
         "AVEDEV", "AVERAGEA", "DEVSQ", "GEOMEAN", "HARMEAN",
         "MEDIAN", "MODE.SNGL", "VAR.S", "VAR.P", "VARA", "VARPA",
         "STDEV.S", "STDEV.P", "STDEVA", "STDEVPA", "SKEW", "SKEW.P",
-        "KURT", "MAXA", "MINA", "GCD", "LCM", "MULTINOMIAL", "SUMSQ"
+        "KURT", "MAXA", "MINA", "GCD", "LCM", "MULTINOMIAL", "SUMSQ",
+        "COUNT", "COUNTA", "COUNTBLANK", "SUMPRODUCT",
+        "VAR", "VARP", "STDEV", "STDEVP", "MODE",
     ]
     FUNCTIONS_STAT_BIVARIATE = [
         "CORREL", "PEARSON", "SLOPE", "INTERCEPT", "RSQ", "STEYX",
-        "COVARIANCE.P", "COVARIANCE.S"
+        "COVARIANCE.P", "COVARIANCE.S", "COVAR", "F.TEST", "FTEST",
+        "CHISQ.TEST", "CHITEST", "SUMX2MY2", "SUMX2PY2", "SUMXMY2",
     ]
+    # Two-plain-numeric-argument math functions -- fits the same recursive
+    # sub-expression substitution as the "binary" fn_type in gen_expr, just
+    # rendered as a function call instead of an infix operator.
+    FUNCTIONS_TWO_NUM = ["ATAN2", "LOG", "MOD", "POWER", "QUOTIENT", "PERCENTOF"]
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
     FUNCTIONS_TEXT = [
         "CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER",
@@ -62,15 +71,99 @@ class ExcelFuzzGenerator:
         "LEFTB", "LENB", "MIDB", "REPT", "RIGHTB", "SEARCH", "SEARCHB",
         "SUBSTITUTE", "T", "TEXTAFTER", "TEXTBEFORE", "UNICHAR", "UNICODE"
     ]
-    FUNCTIONS_DATE = [
+    # Date/engineering/information functions used to live in
+    # FUNCTIONS_DATE/FUNCTIONS_ENGINEERING/FUNCTIONS_INFO but were never
+    # actually wired into gen_expr's fn_type dispatch (dead lists -- none of
+    # these were ever generated). They've been folded into the bespoke
+    # per-function generators below (generate_date_formula/
+    # generate_engineering_formula/generate_logic_formula) instead, since
+    # their wildly varying arities (DATE takes 3 args, YEAR takes 1, BASE
+    # takes a string + radix, ...) don't fit gen_expr's uniform
+    # arbitrary-sub-expression substitution model.
+    DATE_FUNCTIONS = [
         "DATE", "DAY", "DAYS", "DAYS360", "EDATE", "EOMONTH", "HOUR", "MINUTE",
-        "MONTH", "SECOND", "TIME", "WEEKDAY", "WEEKNUM", "YEAR", "YEARFRAC"
+        "MONTH", "SECOND", "TIME", "WEEKDAY", "WEEKNUM", "YEAR", "YEARFRAC",
+        "DATEDIF", "DATEVALUE", "TIMEVALUE", "ISOWEEKNUM",
+        "NETWORKDAYS", "NETWORKDAYS.INTL", "WORKDAY", "WORKDAY.INTL",
     ]
-    FUNCTIONS_ENGINEERING = [
+    ENGINEERING_FUNCTIONS = [
         "BIN2DEC", "DEC2BIN", "DEC2HEX", "DEC2OCT", "DELTA", "GESTEP",
-        "HEX2DEC", "OCT2DEC", "BITAND", "BITOR", "BITXOR"
+        "HEX2DEC", "OCT2DEC", "BITAND", "BITOR", "BITXOR",
+        "BIN2HEX", "BIN2OCT", "HEX2BIN", "HEX2OCT", "OCT2BIN", "OCT2HEX",
+        "BASE", "DECIMAL", "BITLSHIFT", "BITRSHIFT", "CONVERT",
+        "BESSELI", "BESSELJ", "BESSELK", "BESSELY", "COMPLEX",
+        "IMABS", "IMAGINARY", "IMARGUMENT", "IMCONJUGATE", "IMCOS", "IMCOSH",
+        "IMCOT", "IMCSC", "IMCSCH", "IMDIV", "IMEXP", "IMLN", "IMLOG10",
+        "IMLOG2", "IMPOWER", "IMPRODUCT", "IMREAL", "IMSEC", "IMSECH",
+        "IMSIN", "IMSINH", "IMSQRT", "IMSUB", "IMSUM", "IMTAN",
+        "ISO.CEILING", "CEILING", "CEILING.MATH", "CEILING.PRECISE",
+        "FLOOR", "FLOOR.MATH", "FLOOR.PRECISE",
+        "COMBIN", "COMBINA", "PERMUT", "PERMUTATIONA", "MROUND",
     ]
-    FUNCTIONS_INFO = ["ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR"]
+    LOGIC_EXTRA_FUNCTIONS = [
+        "ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR",
+        "IFERROR", "IFNA", "IFS", "SWITCH",
+        "ISBLANK", "ISERR", "ISERROR", "ISNA", "ISNUMBER", "ISTEXT",
+    ]
+    # Statistical distribution/percentile-rank functions: unlike
+    # FUNCTIONS_MULTI_NUM/STAT_BIVARIATE these need domain-restricted scalar
+    # parameters (probabilities in (0,1), positive shape/scale params,
+    # integer trial counts, ...) that gen_expr's arbitrary sub-expression
+    # substitution can't guarantee, so they get their own generator --
+    # same rationale as generate_financial_formula.
+    DISTRIBUTION_FUNCTIONS = [
+        "BETA.DIST", "BETADIST", "BETA.INV", "BETAINV",
+        "BINOM.DIST", "BINOMDIST", "BINOM.DIST.RANGE", "BINOM.INV", "CRITBINOM",
+        "CHISQ.DIST", "CHISQ.DIST.RT", "CHIDIST", "CHISQ.INV", "CHISQ.INV.RT", "CHIINV",
+        "CONFIDENCE.NORM", "CONFIDENCE", "CONFIDENCE.T",
+        "EXPON.DIST", "EXPONDIST",
+        "F.DIST", "F.DIST.RT", "FDIST", "F.INV", "F.INV.RT", "FINV",
+        "GAMMA.DIST", "GAMMADIST", "GAMMA.INV", "GAMMAINV",
+        "HYPGEOM.DIST", "HYPGEOMDIST",
+        "LOGNORM.DIST", "LOGNORMDIST", "LOGNORM.INV", "LOGINV",
+        "NEGBINOM.DIST", "NEGBINOMDIST",
+        "NORM.DIST", "NORMDIST", "NORM.INV", "NORMINV",
+        "NORM.S.DIST", "NORMSDIST", "NORM.S.INV", "NORMSINV",
+        "POISSON.DIST", "POISSON", "PROB", "STANDARDIZE",
+        "T.DIST", "T.DIST.2T", "T.DIST.RT", "TDIST", "T.INV", "T.INV.2T", "TINV",
+        "T.TEST", "TTEST", "WEIBULL.DIST", "WEIBULL", "Z.TEST", "ZTEST",
+        "LARGE", "SMALL",
+        "PERCENTILE", "PERCENTILE.INC", "PERCENTILE.EXC",
+        "QUARTILE", "QUARTILE.INC", "QUARTILE.EXC",
+        "PERCENTRANK", "PERCENTRANK.INC", "PERCENTRANK.EXC",
+        "RANK", "RANK.EQ", "RANK.AVG", "TRIMMEAN", "MODE.MULT", "FREQUENCY",
+    ]
+    LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
+    TEXT_EXTRA_FUNCTIONS = [
+        "PROPER", "TRIM", "CHAR", "TEXTJOIN", "TEXTSPLIT", "VALUE", "VALUETOTEXT",
+        "N", "NA", "DOLLAR", "FIXED", "NUMBERVALUE", "ARABIC", "ROMAN", "BAHTTEXT",
+        "REGEXEXTRACT", "REGEXREPLACE", "REGEXTEST", "REPLACE", "REPLACEB",
+        "CONCAT", "ERROR.TYPE", "MID", "TEXT", "ADDRESS", "ARRAYTOTEXT", "ENCODEURL",
+    ]
+    # Array/matrix-returning functions. Excel would spill these across
+    # multiple cells; visi's xlsx export caches one value per cell (see
+    # CLAUDE.md), so each is wrapped in INDEX(...) to pin down the single
+    # scalar a plain cell comparison can check, matching how a spreadsheet
+    # author would consume them from one cell in practice.
+    ARRAY_FUNCTIONS = [
+        "MDETERM", "MINVERSE", "MMULT", "MUNIT", "SEQUENCE",
+        "LINEST", "LOGEST", "GROWTH", "TREND",
+        "FORECAST", "FORECAST.LINEAR", "FORECAST.ETS",
+        "FORECAST.ETS.CONFINT", "FORECAST.ETS.SEASONALITY", "FORECAST.ETS.STAT",
+        "SERIESSUM",
+    ]
+    CONDITIONAL_AGG_FUNCTIONS = [
+        "AVERAGEIF", "AVERAGEIFS", "COUNTIF", "COUNTIFS",
+        "MAXIFS", "MINIFS", "SUMIF", "SUMIFS", "SUBTOTAL", "AGGREGATE",
+    ]
+    # Volatile/non-deterministic functions: each engine evaluates these
+    # independently (different real-world instant, different RNG state), so
+    # exact-value comparison would spuriously fail. RANDBETWEEN/RANDARRAY are
+    # called with min==max to force a deterministic value out of an
+    # inherently random function; RAND/NOW/TODAY have no such knob, so they
+    # get wrapped in a range/plausibility check both engines must satisfy
+    # regardless of the actual random or wall-clock value.
+    VOLATILE_FUNCTIONS = ["RAND", "RANDBETWEEN", "RANDARRAY", "NOW", "TODAY"]
 
     # Scalar-argument TVM/depreciation functions. Unlike the generic
     # FUNCTIONS_* lists above, financial functions can't have arbitrary
@@ -141,6 +234,24 @@ class ExcelFuzzGenerator:
         col_name = random.choice(self._table_cols)
         return f"{self._table_name}[[#Headers],[{col_name}]]"
 
+    def _random_cell_ref(self, current_row, min_col, max_col):
+        """A reference to a single cell in an earlier row (or row 1 if
+        current_row <= 1), used by generate_formula and the bespoke
+        generators below to avoid creating dependency cycles."""
+        r = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
+        c = random.randint(min_col, max_col)
+        return f"{self._col_name(c)}{r}"
+
+    def _random_range_ref(self, current_row, min_col, max_col):
+        """A reference to a rectangular range confined to earlier rows (or
+        row 1 if current_row <= 1), for the same reason as
+        _random_cell_ref."""
+        r1 = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
+        r2 = random.randint(r1, max(1, current_row - 1)) if current_row > 1 else 1
+        c1 = random.randint(min_col, max_col)
+        c2 = random.randint(c1, max_col)
+        return f"{self._col_name(c1)}{r1}:{self._col_name(c2)}{r2}"
+
     def generate_random_value(self):
         """Generates a random cell input value (number, string, boolean, date, edge case)."""
         choice = random.random()
@@ -169,16 +280,10 @@ class ExcelFuzzGenerator:
     def generate_formula(self, current_row, current_col, max_row, max_col, min_col=1):
         """Generates a random formula string referencing existing cells or constants."""
         def random_cell_ref():
-            r = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
-            c = random.randint(min_col, max_col)
-            return f"{self._col_name(c)}{r}"
+            return self._random_cell_ref(current_row, min_col, max_col)
 
         def random_range_ref():
-            r1 = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
-            r2 = random.randint(r1, max(1, current_row - 1)) if current_row > 1 else 1
-            c1 = random.randint(min_col, max_col)
-            c2 = random.randint(c1, max_col)
-            return f"{self._col_name(c1)}{r1}:{self._col_name(c2)}{r2}"
+            return self._random_range_ref(current_row, min_col, max_col)
 
         def gen_expr(depth=0):
             if depth >= 2 or random.random() < 0.4:
@@ -190,18 +295,28 @@ class ExcelFuzzGenerator:
                 if self._has_table() and roll < 0.15:
                     return self._random_structured_header_ref()
                 remaining = (roll - 0.15) / 0.85 if self._has_table() else roll
-                if remaining < 0.7:
+                if remaining < 0.65:
                     return random_cell_ref()
-                else:
+                elif remaining < 0.95:
                     return str(random.randint(-50, 50))
+                else:
+                    # PI() is a plain zero-arg numeric constant, so it fits
+                    # anywhere a scalar leaf does.
+                    return "PI()"
 
-            fn_type = random.choice(["binary", "multi_num", "single_num", "logic", "text", "stat_bivariate"])
+            fn_type = random.choice(["binary", "multi_num", "single_num", "logic", "text", "stat_bivariate", "two_num"])
 
             if fn_type == "binary":
                 op = random.choice(["+", "-", "*", "/", "^"])
                 left = gen_expr(depth + 1)
                 right = gen_expr(depth + 1)
                 return f"({left} {op} {right})"
+
+            elif fn_type == "two_num":
+                fn = random.choice(self.FUNCTIONS_TWO_NUM)
+                a = gen_expr(depth + 1)
+                b = gen_expr(depth + 1)
+                return f"{fn}({a}, {b})"
 
             elif fn_type == "multi_num":
                 fn = random.choice(self.FUNCTIONS_MULTI_NUM)
@@ -218,7 +333,7 @@ class ExcelFuzzGenerator:
             elif fn_type == "single_num":
                 fn = random.choice(self.FUNCTIONS_SINGLE_NUM)
                 arg = gen_expr(depth + 1)
-                if fn in ["ROUND", "ROUNDUP", "ROUNDDOWN"]:
+                if fn in ["ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC"]:
                     digits = random.randint(0, 2)
                     return f"{fn}({arg}, {digits})"
                 elif fn in ["NORM.S.DIST"]:
@@ -288,14 +403,20 @@ class ExcelFuzzGenerator:
             v = -v
         return v
 
-    def generate_financial_formula(self):
+    def generate_financial_formula(self, fn=None):
         """Generates a single self-contained financial-function formula
         with semantically valid inputs (small positive rates, periods
         within range, etc.) rather than composing arbitrary sub-expressions
         the way generate_formula() does -- most financial arguments have a
         specific meaning (a rate, a period count) that a random
-        sub-expression would violate far too often to be a useful test."""
-        fn = random.choice(self.FINANCIAL_FUNCTIONS)
+        sub-expression would violate far too often to be a useful test.
+
+        fn can be passed explicitly to deterministically cycle through
+        FINANCIAL_FUNCTIONS (see create_fuzz_workbook) so a single fuzz
+        iteration is guaranteed to exercise every function at least once,
+        rather than relying on random.choice's luck across many iterations."""
+        if fn is None:
+            fn = random.choice(self.FINANCIAL_FUNCTIONS)
 
         if fn in ("PV", "FV", "PMT"):
             rate = self._fin_rate()
@@ -452,6 +573,571 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for financial function {fn}")
 
+    # -- Statistical distribution / percentile-rank function generator ---
+    def generate_distribution_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one DISTRIBUTION_FUNCTIONS entry, with
+        domain-valid scalar parameters (probabilities in (0,1), positive
+        shape/scale parameters, integer trial counts, ...) plus a real
+        backward-looking range for the array-argument ones (LARGE, SMALL,
+        PERCENTILE*, RANK*, FREQUENCY, ...) drawn from the plain-value rows
+        of the formula block (rows 1..value_rows in [min_col, max_col],
+        which create_fuzz_workbook guarantees never contain formulas)."""
+        span = max(1, max_col - min_col + 1)
+
+        def col(offset):
+            return self._col_name(min_col + offset)
+
+        rng = f"{col(0)}1:{col(min(1, span - 1))}{value_rows}"
+
+        def p():
+            return round(random.uniform(0.05, 0.95), 3)
+
+        def pos(lo=0.5, hi=10):
+            return round(random.uniform(lo, hi), 3)
+
+        def cum():
+            return random.choice(["TRUE", "FALSE"])
+
+        def n_int(lo=1, hi=30):
+            return random.randint(lo, hi)
+
+        if fn in ("BETA.DIST",):
+            return f"=BETA.DIST({p()}, {pos()}, {pos()}, {cum()})"
+        if fn == "BETADIST":
+            return f"=BETADIST({p()}, {pos()}, {pos()})"
+        if fn in ("BETA.INV", "BETAINV"):
+            return f"={fn}({p()}, {pos()}, {pos()})"
+        if fn in ("BINOM.DIST", "BINOMDIST"):
+            n = n_int(5, 50)
+            k = random.randint(0, n)
+            return f"={fn}({k}, {n}, {p()}, {cum()})"
+        if fn == "BINOM.DIST.RANGE":
+            n = n_int(5, 50)
+            k1 = random.randint(0, n)
+            k2 = random.randint(k1, n)
+            return f"=BINOM.DIST.RANGE({n}, {p()}, {k1}, {k2})"
+        if fn in ("BINOM.INV", "CRITBINOM"):
+            return f"={fn}({n_int(5, 50)}, {p()}, {p()})"
+        if fn == "CHISQ.DIST":
+            return f"=CHISQ.DIST({pos(0.1, 20)}, {n_int(1, 30)}, {cum()})"
+        if fn in ("CHISQ.DIST.RT", "CHIDIST"):
+            return f"={fn}({pos(0.1, 20)}, {n_int(1, 30)})"
+        if fn == "CHISQ.INV":
+            return f"=CHISQ.INV({p()}, {n_int(1, 30)})"
+        if fn in ("CHISQ.INV.RT", "CHIINV"):
+            return f"={fn}({p()}, {n_int(1, 30)})"
+        if fn in ("CONFIDENCE.NORM", "CONFIDENCE", "CONFIDENCE.T"):
+            return f"={fn}({p()}, {pos(0.5, 20)}, {n_int(5, 100)})"
+        if fn in ("EXPON.DIST", "EXPONDIST"):
+            return f"={fn}({pos(0.1, 5)}, {pos(0.1, 3)}, {cum()})"
+        if fn == "F.DIST":
+            return f"=F.DIST({pos(0.1, 10)}, {n_int(1, 20)}, {n_int(1, 20)}, {cum()})"
+        if fn in ("F.DIST.RT", "FDIST"):
+            return f"={fn}({pos(0.1, 10)}, {n_int(1, 20)}, {n_int(1, 20)})"
+        if fn == "F.INV":
+            return f"=F.INV({p()}, {n_int(1, 20)}, {n_int(1, 20)})"
+        if fn in ("F.INV.RT", "FINV"):
+            return f"={fn}({p()}, {n_int(1, 20)}, {n_int(1, 20)})"
+        if fn in ("GAMMA.DIST", "GAMMADIST"):
+            return f"={fn}({pos(0.1, 20)}, {pos()}, {pos()}, {cum()})"
+        if fn in ("GAMMA.INV", "GAMMAINV"):
+            return f"={fn}({p()}, {pos()}, {pos()})"
+        if fn == "HYPGEOM.DIST":
+            pop_size = n_int(20, 100)
+            pop_s = random.randint(1, pop_size)
+            sample_size = random.randint(1, pop_size)
+            sample_s = random.randint(0, min(sample_size, pop_s))
+            return f"=HYPGEOM.DIST({sample_s}, {sample_size}, {pop_s}, {pop_size}, {cum()})"
+        if fn == "HYPGEOMDIST":
+            pop_size = n_int(20, 100)
+            pop_s = random.randint(1, pop_size)
+            sample_size = random.randint(1, pop_size)
+            sample_s = random.randint(0, min(sample_size, pop_s))
+            return f"=HYPGEOMDIST({sample_s}, {sample_size}, {pop_s}, {pop_size})"
+        if fn == "LOGNORM.DIST":
+            return f"=LOGNORM.DIST({pos(0.1, 20)}, {pos(0, 3)}, {pos(0.1, 3)}, {cum()})"
+        if fn == "LOGNORMDIST":
+            return f"=LOGNORMDIST({pos(0.1, 20)}, {pos(0, 3)}, {pos(0.1, 3)})"
+        if fn in ("LOGNORM.INV", "LOGINV"):
+            return f"={fn}({p()}, {pos(0, 3)}, {pos(0.1, 3)})"
+        if fn == "NEGBINOM.DIST":
+            return f"=NEGBINOM.DIST({n_int(0, 30)}, {n_int(1, 20)}, {p()}, {cum()})"
+        if fn == "NEGBINOMDIST":
+            return f"=NEGBINOMDIST({n_int(0, 30)}, {n_int(1, 20)}, {p()})"
+        if fn == "NORM.DIST":
+            return f"=NORM.DIST({pos(-20, 20)}, {pos(-10, 10)}, {pos(0.1, 5)}, {cum()})"
+        if fn == "NORMDIST":
+            return f"=NORMDIST({pos(-20, 20)}, {pos(-10, 10)}, {pos(0.1, 5)}, {cum()})"
+        if fn in ("NORM.INV", "NORMINV"):
+            return f"={fn}({p()}, {pos(-10, 10)}, {pos(0.1, 5)})"
+        if fn == "NORM.S.DIST":
+            return f"=NORM.S.DIST({pos(-4, 4)}, {cum()})"
+        if fn == "NORMSDIST":
+            return f"=NORMSDIST({pos(-4, 4)})"
+        if fn in ("NORM.S.INV", "NORMSINV"):
+            return f"={fn}({p()})"
+        if fn == "POISSON.DIST":
+            return f"=POISSON.DIST({n_int(0, 30)}, {pos(0.5, 15)}, {cum()})"
+        if fn == "POISSON":
+            return f"=POISSON({n_int(0, 30)}, {pos(0.5, 15)}, {cum()})"
+        if fn == "PROB":
+            data_rng = f"{col(0)}1:{col(0)}{value_rows}"
+            prob_rng = f"{col(min(1, span - 1))}1:{col(min(1, span - 1))}{value_rows}"
+            return f"=PROB({data_rng}, {prob_rng}, {random.randint(-20, 0)}, {random.randint(1, 20)})"
+        if fn == "STANDARDIZE":
+            return f"=STANDARDIZE({pos(-20, 20)}, {pos(-10, 10)}, {pos(0.1, 5)})"
+        if fn == "T.DIST":
+            return f"=T.DIST({pos(-5, 5)}, {n_int(1, 30)}, {cum()})"
+        if fn in ("T.DIST.2T",):
+            return f"=T.DIST.2T({pos(0.1, 5)}, {n_int(1, 30)})"
+        if fn == "TDIST":
+            return f"=TDIST({pos(0.1, 5)}, {n_int(1, 30)}, {random.choice([1, 2])})"
+        if fn == "T.DIST.RT":
+            return f"=T.DIST.RT({pos(-5, 5)}, {n_int(1, 30)})"
+        if fn == "T.INV":
+            return f"=T.INV({p()}, {n_int(1, 30)})"
+        if fn in ("T.INV.2T", "TINV"):
+            return f"={fn}({p()}, {n_int(1, 30)})"
+        if fn in ("T.TEST", "TTEST"):
+            r1 = f"{col(0)}1:{col(0)}{value_rows}"
+            r2 = f"{col(min(1, span - 1))}1:{col(min(1, span - 1))}{value_rows}"
+            return f"={fn}({r1}, {r2}, {random.choice([1, 2])}, {random.choice([1, 2, 3])})"
+        if fn == "WEIBULL.DIST":
+            return f"=WEIBULL.DIST({pos(0.1, 20)}, {pos()}, {pos()}, {cum()})"
+        if fn == "WEIBULL":
+            return f"=WEIBULL({pos(0.1, 20)}, {pos()}, {pos()}, {cum()})"
+        if fn in ("Z.TEST", "ZTEST"):
+            return f"={fn}({rng}, {random.randint(-20, 20)})"
+        if fn == "LARGE":
+            return f"=LARGE({rng}, {random.randint(1, 3)})"
+        if fn == "SMALL":
+            return f"=SMALL({rng}, {random.randint(1, 3)})"
+        if fn in ("PERCENTILE", "PERCENTILE.INC"):
+            return f"={fn}({rng}, {p()})"
+        if fn == "PERCENTILE.EXC":
+            return f"=PERCENTILE.EXC({rng}, {p()})"
+        if fn in ("QUARTILE", "QUARTILE.INC"):
+            return f"={fn}({rng}, {random.randint(0, 4)})"
+        if fn == "QUARTILE.EXC":
+            return f"=QUARTILE.EXC({rng}, {random.randint(1, 3)})"
+        if fn in ("PERCENTRANK", "PERCENTRANK.INC", "PERCENTRANK.EXC"):
+            return f"={fn}({rng}, {random.randint(-20, 20)})"
+        if fn in ("RANK", "RANK.EQ", "RANK.AVG"):
+            return f"={fn}({random.randint(-20, 20)}, {rng}, {random.choice([0, 1])})"
+        if fn == "TRIMMEAN":
+            return f"=TRIMMEAN({rng}, {round(random.uniform(0.05, 0.4), 2)})"
+        if fn == "MODE.MULT":
+            return f"=INDEX(MODE.MULT({rng}), 1)"
+        if fn == "FREQUENCY":
+            data_rng = f"{col(0)}1:{col(0)}{value_rows}"
+            bins_rng = f"{col(min(1, span - 1))}1:{col(min(1, span - 1))}{min(3, value_rows)}"
+            return f"=INDEX(FREQUENCY({data_rng}, {bins_rng}), 1)"
+
+        raise AssertionError(f"no generator wired up for distribution function {fn}")
+
+    # -- Lookup function generator ----------------------------------------
+    def generate_lookup_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained INDEX/MATCH/VLOOKUP/HLOOKUP/XLOOKUP formula against
+        a real backward-looking range in the plain-value rows of the formula
+        block. Exact-match modes (FALSE / match_type 0) are used throughout
+        so results stay well-defined regardless of whether the source data
+        happens to be sorted."""
+        row_hi = max(2, value_rows)
+
+        if fn == "MATCH":
+            c = random.randint(min_col, max_col)
+            r2 = random.randint(2, row_hi)
+            rng = f"{self._col_name(c)}1:{self._col_name(c)}{r2}"
+            return f"=MATCH({self._col_name(c)}1, {rng}, 0)"
+
+        if fn == "INDEX":
+            r2 = random.randint(2, row_hi)
+            c1 = random.randint(min_col, max_col)
+            c2 = random.randint(c1, max_col)
+            rng = f"{self._col_name(c1)}1:{self._col_name(c2)}{r2}"
+            return f"=INDEX({rng}, {random.randint(1, r2)}, {random.randint(1, c2 - c1 + 1)})"
+
+        if fn == "VLOOKUP":
+            r2 = random.randint(2, row_hi)
+            c1 = random.randint(min_col, max(min_col, max_col - 1))
+            c2 = random.randint(c1 + 1, max_col) if max_col > c1 else c1
+            table = f"{self._col_name(c1)}1:{self._col_name(c2)}{r2}"
+            return f"=VLOOKUP({self._col_name(c1)}1, {table}, {c2 - c1 + 1}, FALSE)"
+
+        if fn == "HLOOKUP":
+            r2 = random.randint(2, row_hi)
+            c1 = random.randint(min_col, max(min_col, max_col - 1))
+            c2 = random.randint(c1 + 1, max_col) if max_col > c1 else c1
+            table = f"{self._col_name(c1)}1:{self._col_name(c2)}{r2}"
+            return f"=HLOOKUP({self._col_name(c1)}1, {table}, {r2}, FALSE)"
+
+        if fn == "XLOOKUP":
+            r2 = random.randint(2, row_hi)
+            c1 = random.randint(min_col, max_col)
+            others = [c for c in range(min_col, max_col + 1) if c != c1]
+            c2 = random.choice(others) if others else c1
+            lookup_arr = f"{self._col_name(c1)}1:{self._col_name(c1)}{r2}"
+            return_arr = f"{self._col_name(c2)}1:{self._col_name(c2)}{r2}"
+            return f"=XLOOKUP({self._col_name(c1)}1, {lookup_arr}, {return_arr})"
+
+        raise AssertionError(f"no generator wired up for lookup function {fn}")
+
+    # -- Engineering / complex-number function generator -------------------
+    def generate_engineering_formula(self, fn):
+        """Self-contained formula for one ENGINEERING_FUNCTIONS entry.
+        Base-conversion functions need digit strings valid in their source
+        radix (not arbitrary numeric expressions); complex-number functions
+        need "a+bi"/"a+bj" formatted strings, matching the same suffix
+        within a single binary call since Excel (and visi's parse_complex)
+        errors out on mixed i/j suffixes."""
+
+        def bin_str(n=None):
+            n = n or random.randint(1, 8)
+            return "".join(random.choice("01") for _ in range(n))
+
+        def hex_str(n=None):
+            n = n or random.randint(1, 4)
+            return "".join(random.choice("0123456789ABCDEF") for _ in range(n))
+
+        def oct_str(n=None):
+            n = n or random.randint(1, 6)
+            return "".join(random.choice("01234567") for _ in range(n))
+
+        def cplx(suf=None):
+            re_ = random.randint(-9, 9)
+            im_ = random.choice([x for x in range(-9, 10) if x != 0])
+            suf = suf or random.choice(["i", "j"])
+            return f'{re_}{"+" if im_ > 0 else ""}{im_}{suf}'
+
+        if fn == "BIN2DEC":
+            return f'=BIN2DEC("{bin_str()}")'
+        if fn == "DEC2BIN":
+            return f"=DEC2BIN({random.randint(-512, 511)})"
+        if fn == "DEC2HEX":
+            return f"=DEC2HEX({random.randint(-1000, 1000)})"
+        if fn == "DEC2OCT":
+            return f"=DEC2OCT({random.randint(-512, 511)})"
+        if fn == "DELTA":
+            return f"=DELTA({random.randint(-5, 5)}, {random.randint(-5, 5)})"
+        if fn == "GESTEP":
+            return f"=GESTEP({round(random.uniform(-10, 10), 2)}, {round(random.uniform(-10, 10), 2)})"
+        if fn == "HEX2DEC":
+            return f'=HEX2DEC("{hex_str(3)}")'
+        if fn == "OCT2DEC":
+            return f'=OCT2DEC("{oct_str(4)}")'
+        if fn in ("BITAND", "BITOR", "BITXOR"):
+            return f"={fn}({random.randint(0, 2**20)}, {random.randint(0, 2**20)})"
+        if fn == "BIN2HEX":
+            return f'=BIN2HEX("{bin_str()}")'
+        if fn == "BIN2OCT":
+            return f'=BIN2OCT("{bin_str()}")'
+        if fn == "HEX2BIN":
+            return f'=HEX2BIN("{hex_str(2)}")'
+        if fn == "HEX2OCT":
+            return f'=HEX2OCT("{hex_str(2)}")'
+        if fn == "OCT2BIN":
+            return f'=OCT2BIN("{oct_str(3)}")'
+        if fn == "OCT2HEX":
+            return f'=OCT2HEX("{oct_str(3)}")'
+        if fn == "BASE":
+            return f"=BASE({random.randint(0, 5000)}, {random.randint(2, 36)})"
+        if fn == "DECIMAL":
+            radix = random.randint(2, 36)
+            digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:radix]
+            s = "".join(random.choice(digits) for _ in range(random.randint(1, 4)))
+            return f'=DECIMAL("{s}", {radix})'
+        if fn in ("BITLSHIFT", "BITRSHIFT"):
+            return f"={fn}({random.randint(0, 2**20)}, {random.randint(0, 10)})"
+        if fn == "CONVERT":
+            groups = [("C", "F"), ("C", "K"), ("m", "ft"), ("km", "mi"),
+                      ("kg", "lbm"), ("g", "ozm"), ("in", "cm"), ("yd", "m")]
+            u1, u2 = random.choice(groups)
+            if random.random() < 0.5:
+                u1, u2 = u2, u1
+            return f'=CONVERT({round(random.uniform(-100, 500), 2)}, "{u1}", "{u2}")'
+        if fn in ("BESSELI", "BESSELJ", "BESSELK", "BESSELY"):
+            return f"={fn}({round(random.uniform(0.1, 10), 2)}, {random.randint(0, 4)})"
+        if fn == "COMPLEX":
+            suf = random.choice(["i", "j"])
+            return f'=COMPLEX({random.randint(-9, 9)}, {random.randint(-9, 9)}, "{suf}")'
+        if fn in ("IMABS", "IMAGINARY", "IMARGUMENT", "IMCONJUGATE", "IMCOS", "IMCOSH", "IMCOT",
+                   "IMCSC", "IMCSCH", "IMEXP", "IMLN", "IMLOG10", "IMLOG2", "IMREAL", "IMSEC",
+                   "IMSECH", "IMSIN", "IMSINH", "IMSQRT", "IMTAN"):
+            return f'={fn}("{cplx()}")'
+        if fn == "IMPOWER":
+            return f'=IMPOWER("{cplx()}", {random.randint(1, 4)})'
+        if fn in ("IMDIV", "IMSUB"):
+            suf = random.choice(["i", "j"])
+            return f'={fn}("{cplx(suf)}", "{cplx(suf)}")'
+        if fn in ("IMSUM", "IMPRODUCT"):
+            suf = random.choice(["i", "j"])
+            args = ", ".join(f'"{cplx(suf)}"' for _ in range(random.randint(2, 3)))
+            return f"={fn}({args})"
+        if fn in ("ISO.CEILING", "CEILING", "CEILING.MATH", "CEILING.PRECISE",
+                   "FLOOR", "FLOOR.MATH", "FLOOR.PRECISE"):
+            num = round(random.uniform(-100, 100), 2)
+            sig = random.choice([1, 2, 5, 10, 0.5])
+            return f"={fn}({num}, {sig})"
+        if fn in ("COMBIN", "COMBINA", "PERMUT", "PERMUTATIONA"):
+            n = random.randint(1, 20)
+            return f"={fn}({n}, {random.randint(0, n)})"
+        if fn == "MROUND":
+            return f"=MROUND({round(random.uniform(1, 100), 2)}, {random.choice([2, 3, 5, 10])})"
+
+        raise AssertionError(f"no generator wired up for engineering function {fn}")
+
+    # -- Date function generator --------------------------------------------
+    def generate_date_formula(self, fn):
+        """Self-contained formula for one DATE_FUNCTIONS entry, using plain
+        Excel serial-date integers (visi has no DATE-literal parsing outside
+        the DATE() function itself, mirrored by the financial data block's
+        own comment about serial dates)."""
+
+        def serial(lo=40000, hi=46000):
+            return random.randint(lo, hi)
+
+        if fn == "DATE":
+            return f"=DATE({random.randint(1990, 2035)}, {random.randint(1, 12)}, {random.randint(1, 28)})"
+        if fn in ("DAY", "MONTH", "YEAR", "HOUR", "MINUTE", "SECOND", "WEEKDAY", "ISOWEEKNUM"):
+            return f"={fn}({serial()})"
+        if fn == "WEEKNUM":
+            return f"=WEEKNUM({serial()}, {random.choice([1, 2, 11, 21])})"
+        if fn == "DAYS":
+            s1, s2 = serial(), serial()
+            return f"=DAYS({max(s1, s2)}, {min(s1, s2)})"
+        if fn == "DAYS360":
+            s1, s2 = serial(), serial()
+            return f"=DAYS360({min(s1, s2)}, {max(s1, s2)}, {random.choice(['TRUE', 'FALSE'])})"
+        if fn == "EDATE":
+            return f"=EDATE({serial()}, {random.randint(-24, 24)})"
+        if fn == "EOMONTH":
+            return f"=EOMONTH({serial()}, {random.randint(-24, 24)})"
+        if fn == "TIME":
+            return f"=TIME({random.randint(0, 23)}, {random.randint(0, 59)}, {random.randint(0, 59)})"
+        if fn == "YEARFRAC":
+            s1, s2 = serial(), serial()
+            return f"=YEARFRAC({min(s1, s2)}, {max(s1, s2)}, {random.choice([0, 1, 2, 3, 4])})"
+        if fn == "DATEDIF":
+            s1, s2 = serial(40000, 43000), serial(43001, 46000)
+            unit = random.choice(["Y", "M", "D", "MD", "YM", "YD"])
+            return f'=DATEDIF({s1}, {s2}, "{unit}")'
+        if fn == "DATEVALUE":
+            y, m, d = random.randint(2000, 2035), random.randint(1, 12), random.randint(1, 28)
+            return f'=DATEVALUE("{y:04d}-{m:02d}-{d:02d}")'
+        if fn == "TIMEVALUE":
+            h, mi, s = random.randint(0, 23), random.randint(0, 59), random.randint(0, 59)
+            return f'=TIMEVALUE("{h:02d}:{mi:02d}:{s:02d}")'
+        if fn in ("NETWORKDAYS", "NETWORKDAYS.INTL"):
+            s1, s2 = serial(), serial()
+            return f"={fn}({min(s1, s2)}, {max(s1, s2)})"
+        if fn in ("WORKDAY", "WORKDAY.INTL"):
+            return f"={fn}({serial()}, {random.randint(-60, 60)})"
+
+        raise AssertionError(f"no generator wired up for date function {fn}")
+
+    # -- Extra text function generator --------------------------------------
+    def generate_text2_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one TEXT_EXTRA_FUNCTIONS entry. Only
+        ARRAYTOTEXT needs a real range (everything else takes literal
+        scalars), so value_rows/min_col/max_col are only used there."""
+        words = ["hello world", "Excel Formula", "  padded text  ", "MiXeD Case", "foo-bar-baz", "123abc"]
+
+        def txt():
+            return random.choice(words)
+
+        if fn == "PROPER":
+            return f'=PROPER("{txt()}")'
+        if fn == "TRIM":
+            return f'=TRIM("{txt()}")'
+        if fn == "CHAR":
+            return f"=CHAR({random.randint(33, 126)})"
+        if fn == "TEXTJOIN":
+            parts = ", ".join(f'"{random.choice(["a", "b", "", "c"])}"' for _ in range(4))
+            return f'=TEXTJOIN("-", TRUE, {parts})'
+        if fn == "TEXTSPLIT":
+            return '=INDEX(TEXTSPLIT("a,b,c", ","), 1)'
+        if fn == "VALUE":
+            return f'=VALUE("{round(random.uniform(-1000, 1000), 2)}")'
+        if fn == "VALUETOTEXT":
+            return f"=VALUETOTEXT({random.randint(-100, 100)})"
+        if fn == "N":
+            choice = random.choice(["number", "bool", "text"])
+            arg = {"number": str(random.randint(-100, 100)), "bool": random.choice(["TRUE", "FALSE"]), "text": '"hello"'}[choice]
+            return f"=N({arg})"
+        if fn == "NA":
+            return "=NA()"
+        if fn == "DOLLAR":
+            return f"=DOLLAR({round(random.uniform(-10000, 10000), 2)}, {random.randint(0, 4)})"
+        if fn == "FIXED":
+            return f"=FIXED({round(random.uniform(-10000, 10000), 2)}, {random.randint(0, 4)}, {random.choice(['TRUE', 'FALSE'])})"
+        if fn == "NUMBERVALUE":
+            return f'=NUMBERVALUE("{round(random.uniform(-1000, 1000), 2)}")'
+        if fn == "ARABIC":
+            romans = ["III", "IX", "LVIII", "MCMXCIV", "XL", "CD"]
+            return f'=ARABIC("{random.choice(romans)}")'
+        if fn == "ROMAN":
+            return f"=ROMAN({random.randint(1, 3999)}, {random.randint(0, 4)})"
+        if fn == "BAHTTEXT":
+            return f"=BAHTTEXT({round(random.uniform(0, 100000), 2)})"
+        if fn == "REGEXEXTRACT":
+            return '=REGEXEXTRACT("order-12345", "[0-9]+")'
+        if fn == "REGEXREPLACE":
+            return '=REGEXREPLACE("order-12345", "[0-9]+", "X")'
+        if fn == "REGEXTEST":
+            return '=REGEXTEST("order-12345", "[0-9]+")'
+        if fn in ("REPLACE", "REPLACEB"):
+            return f'={fn}("{txt()}", {random.randint(1, 5)}, {random.randint(1, 4)}, "NEW")'
+        if fn == "CONCAT":
+            return f'=CONCAT("{txt()}", "{txt()}")'
+        if fn == "ERROR.TYPE":
+            return "=ERROR.TYPE(1/0)"
+        if fn == "MID":
+            return f'=MID("{txt()}", {random.randint(1, 5)}, {random.randint(1, 6)})'
+        if fn == "TEXT":
+            fmts = ["0.00", "#,##0", "0%", "$#,##0.00", "yyyy-mm-dd"]
+            return f'=TEXT({round(random.uniform(-10000, 10000), 4)}, "{random.choice(fmts)}")'
+        if fn == "ADDRESS":
+            return f"=ADDRESS({random.randint(1, 100)}, {random.randint(1, 20)}, {random.randint(1, 4)})"
+        if fn == "ARRAYTOTEXT":
+            rng = self._random_range_ref(value_rows + 1, min_col, max_col)
+            return f"=ARRAYTOTEXT({rng})"
+        if fn == "ENCODEURL":
+            return '=ENCODEURL("hello world/test?a=1&b=2")'
+
+        raise AssertionError(f"no generator wired up for text function {fn}")
+
+    # -- Logic/information function generator --------------------------------
+    def generate_logic_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one LOGIC_EXTRA_FUNCTIONS entry. Where
+        an operand is just "some numeric expression", reuses
+        generate_formula() itself (stripping its leading '=') rather than
+        re-implementing sub-expression generation -- passing
+        current_row=value_rows+1 keeps any cell/range refs it emits confined
+        to the plain-value rows, same as the other bespoke generators."""
+
+        def expr():
+            return self.generate_formula(value_rows + 1, 0, value_rows, max_col, min_col)[1:]
+
+        if fn == "IFERROR":
+            return f"=IFERROR({expr()}, {expr()})"
+        if fn == "IFNA":
+            return f"=IFNA({expr()}, {expr()})"
+        if fn == "IFS":
+            return f"=IFS({expr()}>0, {expr()}, TRUE, {expr()})"
+        if fn == "SWITCH":
+            return f"=SWITCH({random.randint(1, 3)}, 1, {expr()}, 2, {expr()}, {expr()})"
+        if fn in ("ISBLANK", "ISERR", "ISERROR", "ISNA", "ISNUMBER", "ISTEXT", "ISLOGICAL", "ISNONTEXT"):
+            return f"={fn}({expr()})"
+        if fn in ("ISEVEN", "ISODD"):
+            return f"={fn}(INT({expr()}))"
+        if fn == "TYPE":
+            return f"=TYPE({expr()})"
+        if fn == "XOR":
+            return f"=XOR({expr()}>0, {expr()}<0)"
+
+        raise AssertionError(f"no generator wired up for logic function {fn}")
+
+    # -- Array/matrix function generator -------------------------------------
+    def generate_array_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one ARRAY_FUNCTIONS entry. Matrix
+        functions (MDETERM/MINVERSE/MMULT) use small square subranges of the
+        plain-value area so shapes are always compatible; MMULT's second
+        operand is placed in a disjoint column block when there's room, else
+        reuses the first so the call is still valid."""
+        span = max(1, max_col - min_col + 1)
+
+        def col(offset):
+            return self._col_name(min_col + offset)
+
+        dim = max(1, min(2, span, value_rows))
+
+        if fn == "MDETERM":
+            return f"=MDETERM({col(0)}1:{col(dim - 1)}{dim})"
+        if fn == "MINVERSE":
+            return f"=INDEX(MINVERSE({col(0)}1:{col(dim - 1)}{dim}), 1, 1)"
+        if fn == "MMULT":
+            a_rng = f"{col(0)}1:{col(dim - 1)}{dim}"
+            b_off = dim if dim + dim <= span else 0
+            b_rng = f"{col(b_off)}1:{col(b_off + dim - 1)}{dim}"
+            return f"=INDEX(MMULT({a_rng}, {b_rng}), 1, 1)"
+        if fn == "MUNIT":
+            return f"=INDEX(MUNIT({random.randint(1, 4)}), 1, 1)"
+        if fn == "SEQUENCE":
+            return f"=INDEX(SEQUENCE({random.randint(1, 4)}, {random.randint(1, 4)}, {random.randint(-5, 5)}, {random.randint(1, 3)}), 1, 1)"
+        if fn in ("LINEST", "LOGEST", "GROWTH", "TREND", "FORECAST", "FORECAST.LINEAR",
+                  "FORECAST.ETS", "FORECAST.ETS.CONFINT", "FORECAST.ETS.SEASONALITY", "FORECAST.ETS.STAT"):
+            c2_off = 1 if span > 1 else 0
+            ys = f"{col(0)}1:{col(0)}{value_rows}"
+            xs = f"{col(c2_off)}1:{col(c2_off)}{value_rows}"
+            if fn in ("LINEST", "LOGEST"):
+                return f"=INDEX({fn}({ys}, {xs}), 1)"
+            if fn in ("TREND", "GROWTH"):
+                return f"={fn}({ys}, {xs}, {random.randint(1, value_rows + 2)})"
+            return f"={fn}({random.randint(1, value_rows + 2)}, {ys}, {xs})"
+        if fn == "SERIESSUM":
+            coeffs = f"{col(0)}1:{col(0)}{min(4, value_rows)}"
+            return f"=SERIESSUM({round(random.uniform(0.1, 2), 2)}, {random.randint(0, 3)}, {random.randint(1, 2)}, {coeffs})"
+
+        raise AssertionError(f"no generator wired up for array function {fn}")
+
+    # -- Conditional-aggregation function generator --------------------------
+    def generate_conditional_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one CONDITIONAL_AGG_FUNCTIONS entry."""
+        span = max(1, max_col - min_col + 1)
+
+        def col(offset):
+            return self._col_name(min_col + offset)
+
+        rng = f"{col(0)}1:{col(0)}{value_rows}"
+        rng2_off = 1 if span > 1 else 0
+        rng2 = f"{col(rng2_off)}1:{col(rng2_off)}{value_rows}"
+        crit = f'">{random.randint(-20, 20)}"'
+
+        if fn == "AVERAGEIF":
+            return f"=AVERAGEIF({rng}, {crit}, {rng2})"
+        if fn == "AVERAGEIFS":
+            return f"=AVERAGEIFS({rng2}, {rng}, {crit})"
+        if fn == "COUNTIF":
+            return f"=COUNTIF({rng}, {crit})"
+        if fn == "COUNTIFS":
+            return f"=COUNTIFS({rng}, {crit})"
+        if fn == "SUMIF":
+            return f"=SUMIF({rng}, {crit}, {rng2})"
+        if fn == "SUMIFS":
+            return f"=SUMIFS({rng2}, {rng}, {crit})"
+        if fn == "MAXIFS":
+            return f"=MAXIFS({rng2}, {rng}, {crit})"
+        if fn == "MINIFS":
+            return f"=MINIFS({rng2}, {rng}, {crit})"
+        if fn == "SUBTOTAL":
+            return f"=SUBTOTAL({random.choice([1, 2, 4, 5, 9])}, {rng})"
+        if fn == "AGGREGATE":
+            # Real Excel form is AGGREGATE(function_num, options, ref...).
+            return f"=AGGREGATE({random.choice([1, 4, 5, 9])}, 6, {rng})"
+
+        raise AssertionError(f"no generator wired up for conditional-aggregate function {fn}")
+
+    # -- Volatile function generator ------------------------------------------
+    def generate_volatile_formula(self, fn):
+        """RANDBETWEEN/RANDARRAY force min==max for a deterministic result;
+        RAND/NOW/TODAY have no such knob so they're wrapped in a
+        plausibility/range check both engines must satisfy regardless of the
+        actual random or wall-clock value (see VOLATILE_FUNCTIONS)."""
+        if fn == "RAND":
+            return "=IF(AND(RAND()>=0,RAND()<1),1,0)"
+        if fn == "RANDBETWEEN":
+            k = random.randint(1, 1000)
+            return f"=RANDBETWEEN({k}, {k})"
+        if fn == "RANDARRAY":
+            k = random.randint(1, 1000)
+            return f"=INDEX(RANDARRAY(1,1,{k},{k}),1,1)"
+        if fn == "NOW":
+            return "=IF(NOW()>40000,1,0)"
+        if fn == "TODAY":
+            return "=IF(TODAY()>40000,1,0)"
+
+        raise AssertionError(f"no generator wired up for volatile function {fn}")
+
     def create_fuzz_workbook(self, file_path, num_rows=10, num_cols=5):
         """Creates a workbook with a mixture of raw values and formulas, plus
         a real Excel Table for structured references to resolve against.
@@ -564,9 +1250,55 @@ class ExcelFuzzGenerator:
             f"{self._col_name(fin_schedule_col)}1:{self._col_name(fin_schedule_col)}{schedule_rows}"
         )
 
-        financial_formula_rows = max(6, num_rows)
+        # financial_formula_rows is sized to len(FINANCIAL_FUNCTIONS) and the
+        # column cycles through the list deterministically (rather than
+        # random.choice) so a single fuzz iteration is guaranteed to
+        # exercise every financial function at least once, instead of
+        # leaving coverage to chance across many --iterations runs.
+        financial_formula_rows = max(len(self.FINANCIAL_FUNCTIONS), num_rows)
         for r in range(1, financial_formula_rows + 1):
-            ws.cell(row=r, column=fin_formula_col, value=self.generate_financial_formula())
+            fn = self.FINANCIAL_FUNCTIONS[(r - 1) % len(self.FINANCIAL_FUNCTIONS)]
+            ws.cell(row=r, column=fin_formula_col, value=self.generate_financial_formula(fn))
+
+        # --- Bespoke-generator blocks: one column per category, each row
+        # cycling deterministically through that category's function list so
+        # every genuinely-implemented function (per docs/missing-excel-
+        # formulas.md) is exercised at least once per fuzz iteration. Laid
+        # out sequentially to the right of the financial block; each
+        # generator reaches back into the plain-value rows (1..value_rows)
+        # of the formula block, which are guaranteed never to contain a
+        # formula, so there's no risk of a dependency cycle regardless of
+        # which of these columns comes first.
+        #
+        # DETECTLANGUAGE, TRANSLATE, and PHONETIC are genuinely implemented
+        # in visi (not stubs -- see core/text.rs) but are deliberately left
+        # out of this differential harness: real Excel's versions call
+        # Microsoft's cloud translation/language-detection services, so
+        # their output depends on network access and service state that
+        # this environment doesn't control, and isn't comparable to visi's
+        # local implementation even when both succeed. LET is also left out:
+        # its dispatch in sheet.rs evaluates every argument positionally,
+        # including the name-binding identifiers, with no real variable
+        # scoping -- LET(x, 5, x+1) isn't actually usable, so it isn't
+        # "genuinely working" either.
+        next_col = fin_formula_col + 2
+
+        def emit_block(fn_list, formula_for):
+            nonlocal next_col
+            col = next_col
+            for i, fn in enumerate(fn_list, start=1):
+                ws.cell(row=i, column=col, value=formula_for(fn))
+            next_col = col + 1
+
+        emit_block(self.DISTRIBUTION_FUNCTIONS, lambda fn: self.generate_distribution_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.LOOKUP_FUNCTIONS, lambda fn: self.generate_lookup_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.ENGINEERING_FUNCTIONS, lambda fn: self.generate_engineering_formula(fn))
+        emit_block(self.DATE_FUNCTIONS, lambda fn: self.generate_date_formula(fn))
+        emit_block(self.TEXT_EXTRA_FUNCTIONS, lambda fn: self.generate_text2_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.LOGIC_EXTRA_FUNCTIONS, lambda fn: self.generate_logic_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.ARRAY_FUNCTIONS, lambda fn: self.generate_array_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.CONDITIONAL_AGG_FUNCTIONS, lambda fn: self.generate_conditional_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.VOLATILE_FUNCTIONS, lambda fn: self.generate_volatile_formula(fn))
 
         wb.save(file_path)
 

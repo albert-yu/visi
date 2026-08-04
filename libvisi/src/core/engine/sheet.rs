@@ -2440,7 +2440,7 @@ impl Sheet {
                     let nums: Vec<f64> = evaluated_args.iter().flat_map(|arg| self.flatten_stat_numbers_a(arg)).collect();
                     res_to_rd(crate::core::stats::stdev_p(&nums))
                 }
-                "STDEYX" => {
+                "STEYX" => {
                     let ys: Vec<f64> = evaluated_args.first().map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
                     let xs: Vec<f64> = evaluated_args.get(1).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
                     res_to_rd(crate::core::stats::steyx(&ys, &xs))
