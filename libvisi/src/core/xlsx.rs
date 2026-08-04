@@ -369,6 +369,8 @@ pub fn import_xlsx_data(
                     xlabel: parsed.info.xlabel.clone(),
                     ylabel: parsed.info.ylabel.clone(),
                     show_legend: parsed.info.show_legend,
+                    anchor_row: parsed.anchor.from_row.max(0) as usize,
+                    anchor_col: parsed.anchor.from_col.max(0) as usize,
                 });
             }
         }
@@ -730,7 +732,11 @@ pub fn export_xlsx_data(
                 }
 
                 worksheet
-                    .insert_chart(0, 0, &rx_chart)
+                    .insert_chart(
+                        chart.anchor_row as u32,
+                        chart.anchor_col as u16,
+                        &rx_chart,
+                    )
                     .map_err(|e| format!("Failed to insert Excel chart: {}", e))?;
             }
         }
@@ -773,7 +779,6 @@ struct ParsedChartInfo {
 
 struct ParsedChartData {
     sheet_name: String,
-    #[allow(dead_code)]
     anchor: ParsedAnchor,
     info: ParsedChartInfo,
 }
@@ -1704,6 +1709,8 @@ mod tests {
                 xlabel: Some("X Axis".to_string()),
                 ylabel: Some("Y Axis".to_string()),
                 show_legend: true,
+                anchor_row: 4,
+                anchor_col: 2,
             };
 
             // Export sheet + chart
@@ -1739,6 +1746,12 @@ mod tests {
             );
             assert!(imported_chart.show_legend);
             assert_eq!(imported_chart.chart_type, chart_type);
+            assert_eq!(
+                (imported_chart.anchor_row, imported_chart.anchor_col),
+                (4, 2),
+                "chart_type={:?}",
+                chart_type
+            );
         }
     }
 

@@ -24,6 +24,8 @@ fn test_chart_edit_parses_setters_and_clear_flags() {
         "--xlabel",
         "X",
         "--show-legend",
+        "--anchor",
+        "D5",
         "-i",
     ])
     .expect("clap should parse a full chart edit invocation");
@@ -40,6 +42,7 @@ fn test_chart_edit_parses_setters_and_clear_flags() {
     assert_eq!(edit_args.title.as_deref(), Some("T"));
     assert_eq!(edit_args.xlabel.as_deref(), Some("X"));
     assert!(edit_args.show_legend);
+    assert_eq!(edit_args.anchor.as_deref(), Some("D5"));
     assert!(edit_args.in_place);
 }
 
@@ -512,6 +515,7 @@ fn test_workbook_chart_edit_and_round_trip() {
             ChartType::Line,
             "Sheet1!A1:B3".to_string(),
             Some("Orig".to_string()),
+            Some((3, 1)),
         )
         .unwrap();
 
@@ -525,6 +529,7 @@ fn test_workbook_chart_edit_and_round_trip() {
         Some(Some("X".to_string())),
         None, // leave ylabel unchanged (stays None)
         Some(false),
+        Some((5, 2)),
     )
     .unwrap();
 
@@ -536,20 +541,23 @@ fn test_workbook_chart_edit_and_round_trip() {
         assert_eq!(chart.xlabel, Some("X".to_string()));
         assert_eq!(chart.ylabel, None);
         assert!(!chart.show_legend);
+        assert_eq!((chart.anchor_row, chart.anchor_col), (5, 2));
     }
 
     // Clear the title in a second edit call.
-    wb.edit_chart(chart_id, None, None, None, Some(None), None, None, None)
-        .unwrap();
+    wb.edit_chart(
+        chart_id, None, None, None, Some(None), None, None, None, None,
+    )
+    .unwrap();
     assert_eq!(
         wb.charts.iter().find(|c| c.id == chart_id).unwrap().title,
         None
     );
 
-    // Save + reload: chart_type/data_range/title/xlabel/ylabel/show_legend
-    // must survive the xlsx round trip. `id`/`name` do NOT round-trip today
-    // (xlsx import always regenerates both), so they're deliberately not
-    // asserted on here.
+    // Save + reload: chart_type/data_range/title/xlabel/ylabel/show_legend/
+    // anchor must survive the xlsx round trip. `id`/`name` do NOT round-trip
+    // today (xlsx import always regenerates both), so they're deliberately
+    // not asserted on here.
     wb.save_file(file_str).unwrap();
     let reloaded = WorkbookManager::load_file(file_str).unwrap();
     assert_eq!(reloaded.charts.len(), 1);
@@ -559,12 +567,23 @@ fn test_workbook_chart_edit_and_round_trip() {
     assert_eq!(reloaded_chart.title, None);
     assert_eq!(reloaded_chart.xlabel, Some("X".to_string()));
     assert!(!reloaded_chart.show_legend);
+    assert_eq!((reloaded_chart.anchor_row, reloaded_chart.anchor_col), (5, 2));
 
     // Editing a nonexistent id must error.
     let mut wb2 = reloaded;
     assert!(
-        wb2.edit_chart(999999, Some("X".into()), None, None, None, None, None, None)
-            .is_err()
+        wb2.edit_chart(
+            999999,
+            Some("X".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        )
+        .is_err()
     );
 
     let _ = fs::remove_file(file_path);

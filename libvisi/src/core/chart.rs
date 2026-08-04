@@ -20,4 +20,11 @@ pub struct Chart {
     pub xlabel: Option<String>,
     pub ylabel: Option<String>,
     pub show_legend: bool,
+    /// 0-based row/col of the cell the chart's top-left corner is anchored
+    /// to on its worksheet (which worksheet that is comes from
+    /// `data_range`'s sheet/table prefix, same as today).
+    #[serde(default)]
+    pub anchor_row: usize,
+    #[serde(default)]
+    pub anchor_col: usize,
 }

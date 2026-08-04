@@ -554,7 +554,12 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                             "name": c.name,
                             "type": format!("{:?}", c.chart_type),
                             "data_range": c.data_range,
-                            "title": c.title
+                            "title": c.title,
+                            "anchor": format!(
+                                "{}{}",
+                                col_idx_to_letters(c.anchor_col),
+                                c.anchor_row + 1
+                            )
                         }))
                         .collect::<Vec<_>>()
                 );
@@ -565,15 +570,16 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                     return;
                 }
                 println!(
-                    "{:<12} {:<15} {:<10} {:<20} {:<20}",
-                    "ID", "Name", "Type", "Range", "Title"
+                    "{:<12} {:<15} {:<10} {:<20} {:<20} {:<8}",
+                    "ID", "Name", "Type", "Range", "Title", "Anchor"
                 );
-                println!("{}", "-".repeat(77));
+                println!("{}", "-".repeat(85));
                 for c in &wb.charts {
                     let title = c.title.as_deref().unwrap_or("-");
+                    let anchor = format!("{}{}", col_idx_to_letters(c.anchor_col), c.anchor_row + 1);
                     println!(
-                        "{:<12} {:<15} {:<10?} {:<20} {:<20}",
-                        c.id, c.name, c.chart_type, c.data_range, title
+                        "{:<12} {:<15} {:<10?} {:<20} {:<20} {:<8}",
+                        c.id, c.name, c.chart_type, c.data_range, title, anchor
                     );
                 }
             }
@@ -594,9 +600,15 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
             };
 
             let c_type = chart_type_arg_to_chart_type(add_args.chart_type);
+            let anchor = add_args
+                .anchor
+                .as_deref()
+                .map(parse_chart_anchor)
+                .transpose()
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
             let chart_id = wb
-                .add_chart(&sheet_name, c_type, add_args.range, add_args.title)
+                .add_chart(&sheet_name, c_type, add_args.range, add_args.title, anchor)
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
 
             let save_path = resolve_output_path(add_args.output, add_args.in_place, &add_args.file);
@@ -638,6 +650,12 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 None
             };
             let chart_type = edit_args.chart_type.map(chart_type_arg_to_chart_type);
+            let anchor = edit_args
+                .anchor
+                .as_deref()
+                .map(parse_chart_anchor)
+                .transpose()
+                .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
             if edit_args.name.is_none()
                 && chart_type.is_none()
@@ -646,9 +664,10 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 && xlabel.is_none()
                 && ylabel.is_none()
                 && show_legend.is_none()
+                && anchor.is_none()
             {
                 exit_with_error(
-                    "Must specify at least one field to edit (--name, --chart-type, --range, --title/--clear-title, --xlabel/--clear-xlabel, --ylabel/--clear-ylabel, --show-legend/--hide-legend)",
+                    "Must specify at least one field to edit (--name, --chart-type, --range, --title/--clear-title, --xlabel/--clear-xlabel, --ylabel/--clear-ylabel, --show-legend/--hide-legend, --anchor)",
                     EXIT_USAGE_ERROR,
                 );
             }
@@ -662,6 +681,7 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 xlabel,
                 ylabel,
                 show_legend,
+                anchor,
             )
             .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
@@ -946,6 +966,20 @@ fn chart_type_arg_to_chart_type(chart_type: ChartTypeArg) -> ChartType {
         ChartTypeArg::Scatter => ChartType::Scatter,
         ChartTypeArg::Area => ChartType::Area,
     }
+}
+
+/// Parses a `--anchor` value like "D5" into a 0-based (row, col) pair.
+/// Rejects a sheet prefix (e.g. "Sheet1!D5") since the chart's sheet is
+/// already fixed by `--sheet` (add) or the chart's existing placement (edit).
+fn parse_chart_anchor(spec: &str) -> Result<(usize, usize), String> {
+    let (sheet, row, col) = parse_cell_ref(spec)?;
+    if sheet.is_some() {
+        return Err(format!(
+            "Anchor '{}' must be a plain cell reference without a sheet prefix (e.g. D5)",
+            spec
+        ));
+    }
+    Ok((row, col))
 }
 
 fn pivot_area_arg_to_area(area: PivotAreaArg) -> PivotArea {

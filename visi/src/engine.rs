@@ -381,16 +381,19 @@ impl WorkbookManager {
     }
 
     /// Add chart to workbook
+    #[allow(clippy::too_many_arguments)]
     pub fn add_chart(
         &mut self,
         sheet_name: &str,
         chart_type: ChartType,
         range: String,
         title: Option<String>,
+        anchor: Option<(usize, usize)>,
     ) -> Result<u64, String> {
         let _ = self.find_sheet_index(Some(sheet_name))?;
         let id = generate_unique_id();
         let name = format!("Chart {}", self.charts.len() + 1);
+        let (anchor_row, anchor_col) = anchor.unwrap_or((0, 0));
 
         let chart = Chart {
             id,
@@ -401,6 +404,8 @@ impl WorkbookManager {
             xlabel: None,
             ylabel: None,
             show_legend: true,
+            anchor_row,
+            anchor_col,
         };
 
         self.charts.push(chart);
@@ -422,6 +427,7 @@ impl WorkbookManager {
         xlabel: Option<Option<String>>,
         ylabel: Option<Option<String>>,
         show_legend: Option<bool>,
+        anchor: Option<(usize, usize)>,
     ) -> Result<(), String> {
         let chart = self
             .charts
@@ -448,6 +454,10 @@ impl WorkbookManager {
         }
         if let Some(show_legend) = show_legend {
             chart.show_legend = show_legend;
+        }
+        if let Some((anchor_row, anchor_col)) = anchor {
+            chart.anchor_row = anchor_row;
+            chart.anchor_col = anchor_col;
         }
         Ok(())
     }

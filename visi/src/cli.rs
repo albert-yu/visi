@@ -399,6 +399,9 @@ pub struct ChartAddArgs {
     /// Optional chart title
     #[arg(short, long)]
     pub title: Option<String>,
+    /// Cell where the chart's top-left corner is anchored (e.g. D5); defaults to A1
+    #[arg(long)]
+    pub anchor: Option<String>,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,
@@ -447,6 +450,9 @@ pub struct ChartEditArgs {
     /// Hide the chart legend
     #[arg(long)]
     pub hide_legend: bool,
+    /// Move the chart: cell for its new top-left anchor (e.g. D5)
+    #[arg(long)]
+    pub anchor: Option<String>,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,
