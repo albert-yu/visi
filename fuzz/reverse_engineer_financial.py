@@ -447,7 +447,7 @@ def values_close(a, b):
     if a == "ERROR" or b == "ERROR":
         return a == b
     try:
-        return math.isclose(float(a), float(b), rel_tol=1e-3, abs_tol=1e-3)
+        return math.isclose(float(a), float(b), rel_tol=1e-6, abs_tol=1e-6)
     except (TypeError, ValueError):
         return a == b
 

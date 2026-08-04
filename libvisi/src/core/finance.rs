@@ -78,6 +78,16 @@ fn newton_raphson_bounded(
     max_step: Option<f64>,
     allow_pos_transition: bool,
 ) -> Option<f64> {
+    newton_raphson_bounded_df::<_, fn(f64) -> f64>(f, None, guess, max_step, allow_pos_transition)
+}
+
+fn newton_raphson_bounded_df<F: Fn(f64) -> f64, DF: Fn(f64) -> f64>(
+    f: F,
+    df: Option<DF>,
+    guess: f64,
+    max_step: Option<f64>,
+    allow_pos_transition: bool,
+) -> Option<f64> {
     let mut r = guess;
     const EPS: f64 = 1e-7;
     const MAX_ITER: usize = 200;
@@ -95,8 +105,13 @@ fn newton_raphson_bounded(
             return Some(r);
         }
 
-        let h = 1e-6 * (1.0 + r.abs());
-        let deriv = (f(r + h) - f(r - h)) / (2.0 * h);
+        let deriv = if let Some(ref deriv_fn) = df {
+            deriv_fn(r)
+        } else {
+            let h = 1e-6 * (1.0 + r.abs());
+            (f(r + h) - f(r - h)) / (2.0 * h)
+        };
+
         if deriv == 0.0 || !deriv.is_finite() {
             return None;
         }
@@ -375,6 +390,22 @@ fn xirr_asymptotic_guess(values: &[f64], dates: &[f64]) -> Option<f64> {
     None
 }
 
+fn xnpv_prime(rate: f64, values: &[f64], dates: &[f64]) -> f64 {
+    let d0 = dates[0];
+    values
+        .iter()
+        .zip(dates.iter())
+        .map(|(v, d)| {
+            let f = (d - d0) / 365.0;
+            if f == 0.0 {
+                0.0
+            } else {
+                -f * v / (1.0 + rate).powf(f + 1.0)
+            }
+        })
+        .sum()
+}
+
 pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
     if values.is_empty() || dates.len() != values.len() {
         return None;
@@ -402,7 +433,10 @@ pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
         }
     }
 
-    let res = newton_raphson_bounded(|r| xnpv(r, values, dates), start_r, None, start_r >= 0.0);
+    let f = |r: f64| xnpv(r, values, dates);
+    let df = |r: f64| xnpv_prime(r, values, dates);
+
+    let res = newton_raphson_bounded_df(f, Some(df), start_r, None, start_r >= 0.0);
 
     let is_neg_when_pos_guess = guess >= 0.0
         && res.map_or(false, |r| r < 0.0)
@@ -412,7 +446,7 @@ pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
     if (res.is_none() || is_trivial_zero || is_neg_when_pos_guess) && guess >= 0.0 {
         if let Some(asymp_g) = xirr_asymptotic_guess(values, dates) {
             if asymp_g > 0.0 {
-                let res_asymp = newton_raphson_bounded(|r| xnpv(r, values, dates), asymp_g, None, true);
+                let res_asymp = newton_raphson_bounded_df(f, Some(df), asymp_g, None, true);
                 if res_asymp.is_some() {
                     return res_asymp;
                 }
