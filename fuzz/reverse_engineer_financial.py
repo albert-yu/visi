@@ -121,60 +121,70 @@ def col_name(col_idx):
 
 CANDIDATE_VARIANTS = [
     {"name": name, "deriv": deriv, "eps": eps, "max_iter": max_iter,
-     "cap_error": cap_error, "retry_zero": retry_zero}
+     "cap_error": cap_error, "retry_zero": retry_zero,
+     "step_halving": step_halving, "max_step": max_step}
     for deriv in ("closed", "numeric")
     for eps in (1e-6, 1e-7, 1e-10)
-    for max_iter in (20, 50, 100)
+    for max_iter in (20, 50, 100, 200)
     for cap_error in (True, False)
     for retry_zero in (False, True)
-    for name in [f"{deriv}/eps={eps:g}/iter={max_iter}/cap={cap_error}/retry0={retry_zero}"]
+    for step_halving in (False, True)
+    for max_step in (None, 1.0)
+    for name in [f"{deriv}/eps={eps:g}/iter={max_iter}/cap={cap_error}/retry0={retry_zero}/halve={step_halving}/ms={max_step}"]
 ]
 
 
 def newton_raphson_generic(f, fprime_numeric, fprime_closed, guess, variant):
     """Shared Newton-Raphson core parameterized by `variant` (see
-    CANDIDATE_VARIANTS). `f(r)` is the equation to zero; `fprime_closed(r)`
-    is the closed-form derivative (may be None if not available -- falls
-    back to numeric); `fprime_numeric(r)` is the central-difference
-    derivative visi's current implementation uses.
-
-    Closed-form derivatives, by equation:
-      - RATE: Y = pv*(1+r)^n + pmt*(1/r+type)*((1+r)^n-1) + fv
-              Y' = pv*n*(1+r)^(n-1) + pmt*(1/r+type)*n*(1+r)^(n-1)
-                   - pmt/r^2*((1+r)^n-1)
-        (algebraically pmt*(1+r*type)/r == pmt*(1/r+type), just a different
-        grouping of the same RATE closed-form used in finance.rs::rate).
-      - IRR:  Y = sum(v_i / (1+r)^i),  Y' = sum(-i*v_i / (1+r)^(i+1))
-      - XIRR: Y = sum(v_i / (1+r)^((d_i-d_0)/365))
-              Y' = sum(-((d_i-d_0)/365) * v_i / (1+r)^((d_i-d_0)/365 + 1))
+    CANDIDATE_VARIANTS). Includes reverse-engineered step halving, step capping,
+    and domain boundary protection.
     """
     rate = guess
     eps = variant["eps"]
     max_iter = variant["max_iter"]
     use_closed = variant["deriv"] == "closed" and fprime_closed is not None
+    step_halving = variant.get("step_halving", False)
+    max_step = variant.get("max_step")
+    allow_pos_transition = guess >= 0.0
 
     def is_bad(x):
         return isinstance(x, complex) or not math.isfinite(x)
 
     for _ in range(max_iter):
-        if rate <= -1.0:
-            return None
+        if rate <= -0.9999:
+            rate = -0.999999
         try:
             y = f(rate)
             if is_bad(y):
                 return None
             if abs(y) < eps:
+                if not allow_pos_transition and rate > 0.0:
+                    return None
                 return rate
             dy = fprime_closed(rate) if use_closed else fprime_numeric(rate)
             if is_bad(dy) or dy == 0:
                 return None
-            new_rate = rate - y / dy
-            if is_bad(new_rate):
+
+            step = -y / dy
+            if max_step is not None:
+                if step > max_step:
+                    step = max_step
+                elif step < -max_step:
+                    step = -max_step
+
+            if step_halving:
+                halvings = 0
+                while rate + step <= -0.9999 and halvings < 50:
+                    step /= 2.0
+                    halvings += 1
+
+            new_rate = rate + step
+            if is_bad(new_rate) or new_rate <= -0.9999:
+                return None
+
+            if not allow_pos_transition and new_rate > 0.0:
                 return None
         except (OverflowError, ValueError, ZeroDivisionError):
-            # Negative base to a fractional power (e.g. (1+r)**nper with
-            # r <= -1 slipping through, or a wild Newton-Raphson overshoot)
-            # -- a real divergence, not a bug in the candidate itself.
             return None
         if abs(new_rate - rate) < eps:
             return new_rate

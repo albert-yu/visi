@@ -67,29 +67,74 @@ pub fn nper(rate: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64) -> Option<f64>
 /// `rate`/`irr`/`xirr`, which are all "solve this TVM/cashflow equation for
 /// a rate" problems differing only in `f`.
 fn newton_raphson(f: impl Fn(f64) -> f64, guess: f64) -> Option<f64> {
+    newton_raphson_bounded(f, guess, None, true)
+}
+
+/// Reverse-engineered Newton-Raphson solver with step halving, step capping,
+/// and configurable domain boundary protection matching Excel.
+fn newton_raphson_bounded(
+    f: impl Fn(f64) -> f64,
+    guess: f64,
+    max_step: Option<f64>,
+    allow_pos_transition: bool,
+) -> Option<f64> {
     let mut r = guess;
     const EPS: f64 = 1e-7;
-    const MAX_ITER: usize = 100;
+    const MAX_ITER: usize = 200;
+
     for _ in 0..MAX_ITER {
-        if r <= -1.0 {
+        if r <= -0.9999 {
             r = -0.999999;
         }
+
         let y = f(r);
+        if abs_val(y) < EPS {
+            if !allow_pos_transition && r > 0.0 {
+                return None;
+            }
+            return Some(r);
+        }
+
         let h = 1e-6 * (1.0 + r.abs());
         let deriv = (f(r + h) - f(r - h)) / (2.0 * h);
         if deriv == 0.0 || !deriv.is_finite() {
             return None;
         }
-        let next = r - y / deriv;
-        if !next.is_finite() {
+
+        let mut step = -y / deriv;
+        if let Some(ms) = max_step {
+            if step > ms {
+                step = ms;
+            } else if step < -ms {
+                step = -ms;
+            }
+        }
+
+        let mut halvings = 0;
+        while r + step <= -0.9999 && halvings < 50 {
+            step /= 2.0;
+            halvings += 1;
+        }
+
+        let next = r + step;
+        if !next.is_finite() || next <= -0.9999 {
             return None;
         }
+
+        if !allow_pos_transition && next > 0.0 {
+            return None;
+        }
+
         if (next - r).abs() < EPS {
             return Some(next);
         }
         r = next;
     }
     None
+}
+
+fn abs_val(x: f64) -> f64 {
+    x.abs()
 }
 
 /// Mirrors Excel's `RATE`, which also fails to converge (`#NUM!`) for some
@@ -213,18 +258,23 @@ fn npv_from_period_zero(rate: f64, values: &[f64]) -> f64 {
 /// IRR/XIRR occasionally succeed from a guess this doesn't reach, so this
 /// narrow, specifically-verified-safe retry is a deliberate compromise,
 /// not a general "keep trying harder" policy.
-fn newton_raphson_with_zero_fallback(f: impl Fn(f64) -> f64, guess: f64) -> Option<f64> {
-    if let Some(r) = newton_raphson(&f, guess) {
+fn newton_raphson_with_zero_fallback(
+    f: impl Fn(f64) -> f64,
+    guess: f64,
+    max_step: Option<f64>,
+) -> Option<f64> {
+    let allow_pos_transition = guess >= 0.0;
+    if let Some(r) = newton_raphson_bounded(&f, guess, max_step, allow_pos_transition) {
         return Some(r);
     }
     if guess == 0.0 {
         return None;
     }
-    newton_raphson(f, 0.0)
+    newton_raphson_bounded(f, 0.0, max_step, true)
 }
 
 pub fn irr(values: &[f64], guess: f64) -> Option<f64> {
-    newton_raphson_with_zero_fallback(|r| npv_from_period_zero(r, values), guess)
+    newton_raphson_with_zero_fallback(|r| npv_from_period_zero(r, values), guess, Some(1.0))
 }
 
 pub fn mirr(values: &[f64], finance_rate: f64, reinvest_rate: f64) -> Option<f64> {
@@ -278,7 +328,7 @@ pub fn xnpv(rate: f64, values: &[f64], dates: &[f64]) -> f64 {
 }
 
 pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
-    newton_raphson_with_zero_fallback(|r| xnpv(r, values, dates), guess)
+    newton_raphson_with_zero_fallback(|r| xnpv(r, values, dates), guess, None)
 }
 
 pub fn sln(cost: f64, salvage: f64, life: f64) -> f64 {
