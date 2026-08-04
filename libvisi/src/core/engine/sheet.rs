@@ -1781,8 +1781,8 @@ impl Sheet {
                     let val = self.to_f64_arg(evaluated_args.first(), "FLOOR")?;
                     Ok(ResultData::Float(val.floor()))
                 }
-                "CEIL" => {
-                    let val = self.to_f64_arg(evaluated_args.first(), "CEIL")?;
+                "CEILING" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "CEILING")?;
                     Ok(ResultData::Float(val.ceil()))
                 }
                 "LOG10" => {
@@ -2200,6 +2200,8 @@ impl Sheet {
                         Ok(ResultData::Boolean(res))
                     }
                 }
+                "TRUE" => Ok(ResultData::Boolean(true)),
+                "FALSE" => Ok(ResultData::Boolean(false)),
                 "NOT" => {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);

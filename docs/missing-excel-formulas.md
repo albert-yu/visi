@@ -12,8 +12,8 @@ support.microsoft.com.
 ## Summary
 
 - Microsoft-documented functions: **522**
-- Implemented in libvisi: **58**
-- Missing: **464**
+- Implemented in libvisi: **61**
+- Missing: **461**
 
 libvisi implements `PLOT`, `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
 `STR` — these are engine-specific extensions, not Excel functions, so they
@@ -21,25 +21,28 @@ aren't counted above in either total.
 
 ## Caveats
 
-- `CEIL` is implemented, but Excel's actual name is `CEILING` (with
-  `CEILING.MATH`/`CEILING.PRECISE` variants) — `CEIL` isn't a real Excel
-  function name, so `CEILING` is still listed as missing below.
-- `TRUE` and `FALSE` are handled as boolean literal tokens in
-  `parser.rs` (not as zero-argument function calls), so `TRUE()`/`FALSE()`
-  call syntax is not supported even though the values are.
+- ~~`CEIL` is implemented, but Excel's actual name is `CEILING`~~ — fixed:
+  the dispatch arm is now named `CEILING` (still single-arg, matching the
+  existing simplified `FLOOR`; `CEILING.MATH`/`CEILING.PRECISE` are still
+  missing).
+- ~~`TRUE`/`FALSE` only work as literal tokens, not `TRUE()`/`FALSE()`
+  calls~~ — fixed: the tokenizer now only collapses `TRUE`/`FALSE` into a
+  boolean literal when *not* followed by `(`, and `evaluate_function` has
+  zero-arg `TRUE`/`FALSE` cases.
 - This is a name-level diff, not a semantics/argument-compatibility check.
   A handful of implemented functions (e.g. `INDEX`, `MATCH`, `CHOOSE`)
   likely don't cover every argument form Excel supports (array forms,
   optional args, etc.) — that's out of scope for this list.
 
-## Implemented (58)
+## Implemented (61)
 
-ABS, ACOS, AND, ASIN, ATAN, AVERAGE, CHOOSE, CONCAT, CONCATENATE, COS,
-COUNT, COUNTA, COUNTIF, COUNTIFS, EXP, FLOOR, IF, IFERROR, INDEX, INT,
-ISBLANK, ISERROR, ISNA, ISNUMBER, ISTEXT, LEFT, LEN, LN, LOG10, LOWER,
-MATCH, MAX, MID, MIN, MMULT, MOD, NOT, NOW, OR, PRODUCT, PROPER, RAND,
-RANDBETWEEN, RIGHT, ROUND, ROUNDDOWN, ROUNDUP, SIN, SQRT, SUM, SUMIF,
-SUMIFS, TAN, TODAY, TRIM, UPPER, VLOOKUP, XLOOKUP
+ABS, ACOS, AND, ASIN, ATAN, AVERAGE, CEILING, CHOOSE, CONCAT,
+CONCATENATE, COS, COUNT, COUNTA, COUNTIF, COUNTIFS, EXP, FALSE, FLOOR,
+IF, IFERROR, INDEX, INT, ISBLANK, ISERROR, ISNA, ISNUMBER, ISTEXT, LEFT,
+LEN, LN, LOG10, LOWER, MATCH, MAX, MID, MIN, MMULT, MOD, NOT, NOW, OR,
+PRODUCT, PROPER, RAND, RANDBETWEEN, RIGHT, ROUND, ROUNDDOWN, ROUNDUP,
+SIN, SQRT, SUM, SUMIF, SUMIFS, TAN, TODAY, TRIM, TRUE, UPPER, VLOOKUP,
+XLOOKUP
 
 ## Missing, by category
 
@@ -75,9 +78,9 @@ WEIBULL.DIST, Z.TEST
 
 *(Implemented: AVERAGE, COUNT, COUNTA, COUNTIF, COUNTIFS, MAX, MIN)*
 
-### Math and Trigonometry (59/83 missing)
+### Math and Trigonometry (58/83 missing)
 
-ACOSH, ACOT, ACOTH, AGGREGATE, ARABIC, ASINH, ATAN2, ATANH, BASE, CEILING,
+ACOSH, ACOT, ACOTH, AGGREGATE, ARABIC, ASINH, ATAN2, ATANH, BASE,
 CEILING.MATH, CEILING.PRECISE, COMBIN, COMBINA, COSH, COT, COTH, CSC,
 CSCH, DECIMAL, DEGREES, EVEN, FACT, FACTDOUBLE, FLOOR.MATH, FLOOR.PRECISE,
 GCD, ISO.CEILING, LCM, LET, LOG, MDETERM, MINVERSE, MROUND, MULTINOMIAL,
@@ -85,10 +88,9 @@ MUNIT, ODD, PERCENTOF, PI, POWER, QUOTIENT, RADIANS, RANDARRAY, ROMAN,
 SEC, SECH, SEQUENCE, SERIESSUM, SIGN, SINH, SQRTPI, SUBTOTAL, SUMPRODUCT,
 SUMSQ, SUMX2MY2, SUMX2PY2, SUMXMY2, TANH, TRUNC
 
-*(Implemented: ABS, ACOS, ASIN, ATAN, COS, EXP, FLOOR, INT, LN, LOG10,
-MMULT, MOD, PRODUCT, RAND, RANDBETWEEN, ROUND, ROUNDDOWN, ROUNDUP, SIN,
-SQRT, SUM, SUMIF, SUMIFS, TAN — plus non-standard `CEIL` in place of
-`CEILING`)*
+*(Implemented: ABS, ACOS, ASIN, ATAN, CEILING, COS, EXP, FLOOR, INT, LN,
+LOG10, MMULT, MOD, PRODUCT, RAND, RANDBETWEEN, ROUND, ROUNDDOWN, ROUNDUP,
+SIN, SQRT, SUM, SUMIF, SUMIFS, TAN)*
 
 ### Text (39/49 missing)
 
@@ -147,13 +149,12 @@ ISODD, ISOMITTED, ISREF, N, NA, SHEET, SHEETS, STOCKHISTORY, TYPE
 
 *(Implemented: ISBLANK, ISERROR, ISNA, ISNUMBER, ISTEXT)*
 
-### Logical (14/19 missing)
+### Logical (12/19 missing)
 
 BYCOL, BYROW, IFNA, IFS, LAMBDA, LET, MAKEARRAY, MAP, REDUCE, SCAN,
-SWITCH, XOR — plus `TRUE`/`FALSE` as zero-arg function calls (see
-Caveats)
+SWITCH, XOR
 
-*(Implemented: AND, IF, IFERROR, NOT, OR)*
+*(Implemented: AND, FALSE, IF, IFERROR, NOT, OR, TRUE)*
 
 ### Database (12/12 missing — entire category unimplemented)
 

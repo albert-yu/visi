@@ -84,12 +84,16 @@ fn test_excel_formula_evaluations() {
 
     test_floats("=LN(EXP(1))", 1.0).unwrap();
     test_floats("=LOG10(100)", 2.0).unwrap();
-    test_floats("=CEIL(4.2)", 5.0).unwrap();
+    test_floats("=CEILING(4.2)", 5.0).unwrap();
     test_floats("=FLOOR(4.8)", 4.0).unwrap();
     test_floats("=TAN(0)", 0.0).unwrap();
     test_floats("=ASIN(0)", 0.0).unwrap();
     test_floats("=ACOS(1)", 0.0).unwrap();
     test_floats("=ATAN(0)", 0.0).unwrap();
+
+    test_booleans("=TRUE()", true).unwrap();
+    test_booleans("=FALSE()", false).unwrap();
+    test_booleans("=AND(TRUE(), TRUE)", true).unwrap();
 
     let mut sheet = Sheet::new(SheetInit {
         name: Some("table_1".to_string()),
@@ -655,7 +659,7 @@ fn test_builtin_math_functions() {
     let (result, _) = sheet.eval("=floor(3.9)", None).unwrap();
     assert_eq!(get_int_val(&result), Some(3));
 
-    let (result, _) = sheet.eval("=ceil(3.1)", None).unwrap();
+    let (result, _) = sheet.eval("=ceiling(3.1)", None).unwrap();
     assert_eq!(get_int_val(&result), Some(4));
 
     let (result, _) = sheet.eval("=round(3.7)", None).unwrap();
