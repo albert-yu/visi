@@ -5,6 +5,7 @@ use web_time::Instant;
 use super::cell::{CellRef, Dependency, EngineError, EvalError, TextCellRef, generate_unique_id};
 use super::column::{ColumnPosition, DataColumn};
 use super::result_data::ResultData;
+use crate::core::finance;
 /// Context for evaluating expressions, containing references to other sheets
 #[derive(Default)]
 pub struct Context<'a> {
@@ -1117,6 +1118,41 @@ impl Sheet {
             }
             _ => 0.0,
         }
+    }
+
+    /// Flattens a single argument (which may be a range/array `List`) into
+    /// an ordered `Vec<f64>` for the financial functions that take a
+    /// cashflow series (`NPV`, `IRR`, `MIRR`, `XNPV`, `XIRR`, `FVSCHEDULE`).
+    /// Mirrors `sum_helper`'s convention: booleans/text only count when
+    /// passed directly (not through a range).
+    fn flatten_finance_numbers(&self, arg: &ResultData, is_direct: bool) -> Vec<f64> {
+        match arg {
+            ResultData::Float(f) => vec![*f],
+            ResultData::Integer(i) => vec![*i as f64],
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    vec![if *b { 1.0 } else { 0.0 }]
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).into_iter().collect()
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::List(list) => list
+                .iter()
+                .flat_map(|v| self.flatten_finance_numbers(v, false))
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    fn opt_f64(&self, args: &[ResultData], i: usize, default: f64) -> f64 {
+        args.get(i).and_then(|v| self.to_f64(v)).unwrap_or(default)
     }
 
     fn average_helper(&self, arg: &ResultData, is_direct: bool) -> (f64, usize) {
@@ -2790,6 +2826,275 @@ impl Sheet {
                     } else {
                         Ok(ResultData::Error("#VALUE!".to_string()))
                     }
+                }
+                "PV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PV")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "PV")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(2), "PV")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::pv(
+                        rate, nper, pmt, fv, pmt_type,
+                    )))
+                }
+                "FV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "FV")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "FV")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(2), "FV")?;
+                    let pv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::fv(
+                        rate, nper, pmt, pv, pmt_type,
+                    )))
+                }
+                "PMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "PMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "PMT")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::pmt(
+                        rate, nper, pv, fv, pmt_type,
+                    )))
+                }
+                "NPER" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "NPER")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(1), "NPER")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "NPER")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    match finance::nper(rate, pmt, pv, fv, pmt_type) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "RATE" => {
+                    let nper = self.to_f64_arg(evaluated_args.first(), "RATE")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(1), "RATE")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "RATE")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    let guess = self.opt_f64(&evaluated_args, 5, 0.1);
+                    match finance::rate(nper, pmt, pv, fv, pmt_type, guess) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "IPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "IPMT")?;
+                    let per = self.to_f64_arg(evaluated_args.get(1), "IPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(2), "IPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(3), "IPMT")?;
+                    let fv = self.opt_f64(&evaluated_args, 4, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::ipmt(
+                        rate, per, nper, pv, fv, pmt_type,
+                    )))
+                }
+                "PPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PPMT")?;
+                    let per = self.to_f64_arg(evaluated_args.get(1), "PPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(2), "PPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(3), "PPMT")?;
+                    let fv = self.opt_f64(&evaluated_args, 4, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::ppmt(
+                        rate, per, nper, pv, fv, pmt_type,
+                    )))
+                }
+                "CUMIPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "CUMIPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "CUMIPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "CUMIPMT")?;
+                    let start = self.to_f64_arg(evaluated_args.get(3), "CUMIPMT")?;
+                    let end = self.to_f64_arg(evaluated_args.get(4), "CUMIPMT")?;
+                    let pmt_type = self.to_f64_arg(evaluated_args.get(5), "CUMIPMT")?;
+                    Ok(ResultData::Float(finance::cumipmt(
+                        rate, nper, pv, start, end, pmt_type,
+                    )))
+                }
+                "CUMPRINC" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "CUMPRINC")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "CUMPRINC")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "CUMPRINC")?;
+                    let start = self.to_f64_arg(evaluated_args.get(3), "CUMPRINC")?;
+                    let end = self.to_f64_arg(evaluated_args.get(4), "CUMPRINC")?;
+                    let pmt_type = self.to_f64_arg(evaluated_args.get(5), "CUMPRINC")?;
+                    Ok(ResultData::Float(finance::cumprinc(
+                        rate, nper, pv, start, end, pmt_type,
+                    )))
+                }
+                "NPV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "NPV")?;
+                    let mut values = Vec::new();
+                    for (i, arg) in evaluated_args.iter().enumerate().skip(1) {
+                        values.extend(self.flatten_finance_numbers(arg, arg_is_direct[i]));
+                    }
+                    Ok(ResultData::Float(finance::npv(rate, &values)))
+                }
+                "IRR" => {
+                    let values = evaluated_args
+                        .first()
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[0]))
+                        .unwrap_or_default();
+                    let guess = self.opt_f64(&evaluated_args, 1, 0.1);
+                    match finance::irr(&values, guess) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "MIRR" => {
+                    let values = evaluated_args
+                        .first()
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[0]))
+                        .unwrap_or_default();
+                    let finance_rate = self.to_f64_arg(evaluated_args.get(1), "MIRR")?;
+                    let reinvest_rate = self.to_f64_arg(evaluated_args.get(2), "MIRR")?;
+                    match finance::mirr(&values, finance_rate, reinvest_rate) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "XNPV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "XNPV")?;
+                    let values = evaluated_args
+                        .get(1)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[1]))
+                        .unwrap_or_default();
+                    let dates = evaluated_args
+                        .get(2)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[2]))
+                        .unwrap_or_default();
+                    if values.is_empty() || values.len() != dates.len() {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::xnpv(rate, &values, &dates)))
+                }
+                "XIRR" => {
+                    let values = evaluated_args
+                        .first()
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[0]))
+                        .unwrap_or_default();
+                    let dates = evaluated_args
+                        .get(1)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[1]))
+                        .unwrap_or_default();
+                    let guess = self.opt_f64(&evaluated_args, 2, 0.1);
+                    if values.is_empty() || values.len() != dates.len() {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    match finance::xirr(&values, &dates, guess) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "SLN" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "SLN")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "SLN")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "SLN")?;
+                    Ok(ResultData::Float(finance::sln(cost, salvage, life)))
+                }
+                "SYD" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "SYD")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "SYD")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "SYD")?;
+                    let per = self.to_f64_arg(evaluated_args.get(3), "SYD")?;
+                    Ok(ResultData::Float(finance::syd(cost, salvage, life, per)))
+                }
+                "DB" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "DB")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "DB")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "DB")?;
+                    let period = self.to_f64_arg(evaluated_args.get(3), "DB")?;
+                    let month = self.opt_f64(&evaluated_args, 4, 12.0);
+                    Ok(ResultData::Float(finance::db(
+                        cost, salvage, life, period, month,
+                    )))
+                }
+                "DDB" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "DDB")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "DDB")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "DDB")?;
+                    let period = self.to_f64_arg(evaluated_args.get(3), "DDB")?;
+                    let factor = self.opt_f64(&evaluated_args, 4, 2.0);
+                    Ok(ResultData::Float(finance::ddb(
+                        cost, salvage, life, period, factor,
+                    )))
+                }
+                "VDB" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "VDB")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "VDB")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "VDB")?;
+                    let start = self.to_f64_arg(evaluated_args.get(3), "VDB")?;
+                    let end = self.to_f64_arg(evaluated_args.get(4), "VDB")?;
+                    let factor = self.opt_f64(&evaluated_args, 5, 2.0);
+                    let no_switch = evaluated_args
+                        .get(6)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(false);
+                    match finance::vdb(cost, salvage, life, start, end, factor, no_switch) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "EFFECT" => {
+                    let nominal_rate = self.to_f64_arg(evaluated_args.first(), "EFFECT")?;
+                    let npery = self.to_f64_arg(evaluated_args.get(1), "EFFECT")?;
+                    Ok(ResultData::Float(finance::effect(nominal_rate, npery)))
+                }
+                "NOMINAL" => {
+                    let effect_rate = self.to_f64_arg(evaluated_args.first(), "NOMINAL")?;
+                    let npery = self.to_f64_arg(evaluated_args.get(1), "NOMINAL")?;
+                    Ok(ResultData::Float(finance::nominal(effect_rate, npery)))
+                }
+                "DOLLARDE" => {
+                    let fractional_dollar = self.to_f64_arg(evaluated_args.first(), "DOLLARDE")?;
+                    let fraction = self.to_f64_arg(evaluated_args.get(1), "DOLLARDE")?;
+                    match finance::dollarde(fractional_dollar, fraction) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "DOLLARFR" => {
+                    let decimal_dollar = self.to_f64_arg(evaluated_args.first(), "DOLLARFR")?;
+                    let fraction = self.to_f64_arg(evaluated_args.get(1), "DOLLARFR")?;
+                    match finance::dollarfr(decimal_dollar, fraction) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "FVSCHEDULE" => {
+                    let principal = self.to_f64_arg(evaluated_args.first(), "FVSCHEDULE")?;
+                    let schedule = evaluated_args
+                        .get(1)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[1]))
+                        .unwrap_or_default();
+                    Ok(ResultData::Float(finance::fvschedule(principal, &schedule)))
+                }
+                "RRI" => {
+                    let nper = self.to_f64_arg(evaluated_args.first(), "RRI")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(1), "RRI")?;
+                    let fv = self.to_f64_arg(evaluated_args.get(2), "RRI")?;
+                    match finance::rri(nper, pv, fv) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "PDURATION" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PDURATION")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(1), "PDURATION")?;
+                    let fv = self.to_f64_arg(evaluated_args.get(2), "PDURATION")?;
+                    match finance::pduration(rate, pv, fv) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "ISPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "ISPMT")?;
+                    let per = self.to_f64_arg(evaluated_args.get(1), "ISPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(2), "ISPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(3), "ISPMT")?;
+                    Ok(ResultData::Float(finance::ispmt(rate, per, nper, pv)))
                 }
                 _ => Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
                     "Unknown function: {}",

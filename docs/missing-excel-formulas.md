@@ -12,8 +12,8 @@ support.microsoft.com.
 ## Summary
 
 - Microsoft-documented functions: **522**
-- Implemented in libvisi: **61**
-- Missing: **461**
+- Implemented in libvisi: **88**
+- Missing: **434**
 
 libvisi implements `PLOT`, `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
 `STR` — these are engine-specific extensions, not Excel functions, so they
@@ -34,27 +34,48 @@ aren't counted above in either total.
   likely don't cover every argument form Excel supports (array forms,
   optional args, etc.) — that's out of scope for this list.
 
-## Implemented (61)
+## Implemented (88)
 
 ABS, ACOS, AND, ASIN, ATAN, AVERAGE, CEILING, CHOOSE, CONCAT,
-CONCATENATE, COS, COUNT, COUNTA, COUNTIF, COUNTIFS, EXP, FALSE, FLOOR,
-IF, IFERROR, INDEX, INT, ISBLANK, ISERROR, ISNA, ISNUMBER, ISTEXT, LEFT,
-LEN, LN, LOG10, LOWER, MATCH, MAX, MID, MIN, MMULT, MOD, NOT, NOW, OR,
-PRODUCT, PROPER, RAND, RANDBETWEEN, RIGHT, ROUND, ROUNDDOWN, ROUNDUP,
-SIN, SQRT, SUM, SUMIF, SUMIFS, TAN, TODAY, TRIM, TRUE, UPPER, VLOOKUP,
-XLOOKUP
+CONCATENATE, COS, COUNT, COUNTA, COUNTIF, COUNTIFS, CUMIPMT, CUMPRINC,
+DB, DDB, DOLLARDE, DOLLARFR, EFFECT, EXP, FALSE, FLOOR, FV, FVSCHEDULE,
+IF, IFERROR, INDEX, INT, IPMT, IRR, ISBLANK, ISERROR, ISNA, ISNUMBER,
+ISPMT, ISTEXT, LEFT, LEN, LN, LOG10, LOWER, MATCH, MAX, MID, MIN, MIRR,
+MMULT, MOD, NOMINAL, NOT, NOW, NPER, NPV, OR, PDURATION, PMT, PPMT,
+PRODUCT, PROPER, PV, RAND, RANDBETWEEN, RATE, RIGHT, ROUND, ROUNDDOWN,
+ROUNDUP, RRI, SIN, SLN, SQRT, SUM, SUMIF, SUMIFS, SYD, TAN, TODAY, TRIM,
+TRUE, UPPER, VDB, VLOOKUP, XIRR, XLOOKUP, XNPV
+
+Financial functions (27 of them, listed above) were added 2026-08-03 —
+the pure TVM/depreciation math lives in `libvisi/src/core/finance.rs`,
+dispatched from `evaluate_function` in `sheet.rs`. The remaining 28
+Financial functions (bond pricing, day-count-basis, T-bill functions)
+need real calendar-date arithmetic with a basis convention (30/360,
+actual/actual, etc.) that libvisi doesn't have yet — see the Financial
+section below.
 
 ## Missing, by category
 
-### Financial (55/55 missing — entire category unimplemented)
+### Financial (28/55 missing — the day-count/bond-pricing half)
 
 ACCRINT, ACCRINTM, AMORDEGRC, AMORLINC, COUPDAYBS, COUPDAYS, COUPDAYSNC,
-COUPNCD, COUPNUM, COUPPCD, CUMIPMT, CUMPRINC, DB, DDB, DISC, DOLLARDE,
-DOLLARFR, DURATION, EFFECT, FV, FVSCHEDULE, INTRATE, IPMT, IRR, ISPMT,
-MDURATION, MIRR, NOMINAL, NPER, NPV, ODDFPRICE, ODDFYIELD, ODDLPRICE,
-ODDLYIELD, PDURATION, PMT, PPMT, PRICE, PRICEDISC, PRICEMAT, PV, RATE,
-RECEIVED, RRI, SLN, SYD, TBILLEQ, TBILLPRICE, TBILLYIELD, VDB, XIRR, XNPV,
-YIELD, YIELDDISC, YIELDMAT
+COUPNCD, COUPNUM, COUPPCD, DISC, DURATION, INTRATE, MDURATION, ODDFPRICE,
+ODDFYIELD, ODDLPRICE, ODDLYIELD, PRICE, PRICEDISC, PRICEMAT, RECEIVED,
+TBILLEQ, TBILLPRICE, TBILLYIELD, YIELD, YIELDDISC, YIELDMAT
+
+All of these depend on a day-count-basis convention (US 30/360,
+actual/actual, actual/360, actual/365, European 30/360) and real
+calendar-date arithmetic — libvisi has no `DATE()`/`YEAR()`/`MONTH()`
+functions yet (only `NOW`/`TODAY`), so implementing this half means
+building that date infrastructure first.
+
+*(Implemented: CUMIPMT, CUMPRINC, DB, DDB, DOLLARDE, DOLLARFR, EFFECT, FV,
+FVSCHEDULE, IPMT, IRR, ISPMT, MIRR, NOMINAL, NPER, NPV, PDURATION, PMT,
+PPMT, PV, RATE, RRI, SLN, SYD, VDB, XIRR, XNPV — the pure time-value-of-
+money/depreciation half, none of which need a calendar date. `IRR`/`XIRR`/
+`RATE` use Newton-Raphson and can return `#NUM!` on inputs real Excel's
+own solver happens to converge on and vice versa — a known, documented
+residual gap in `finance.rs`, not a formula bug.)*
 
 ### Statistical (104/111 missing)
 

@@ -70,6 +70,49 @@ python3 fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runne
 python3 fuzz/fuzz_excel.py --driver mock --iterations 5
 ```
 
+### Financial functions (`ExcelFuzzGenerator.generate_financial_formula`)
+
+The 27 TVM/depreciation Financial functions (`PV`/`FV`/`PMT`/`RATE`/`IRR`/
+`XIRR`/`DDB`/etc. -- see `libvisi/src/core/finance.rs`) get their own
+generator method rather than feeding into `generate_formula`'s recursive
+`gen_expr` tree: their arguments have specific meanings (a rate has to
+stay small and positive, a period has to stay within `[1, nper]`) that
+arbitrary sub-expression substitution would violate far too often to be a
+useful test. `create_fuzz_workbook` lays out a small "financial data"
+block (a cashflow column, an aligned ascending-date column, a small-rates
+"schedule" column) for the array-argument functions
+(`NPV`/`IRR`/`MIRR`/`XNPV`/`XIRR`/`FVSCHEDULE`) to reference, since visi's
+parser has no `{...}` array-literal syntax.
+
+`_fin_rate()`'s range is deliberately realistic (0.1%-3% per period), not
+wide -- an earlier version generated up to 20% per period, and at a high
+per-period rate compounded over hundreds of periods, `(1+rate)^nper`
+overflows into territory where computing the amortizing payment loses
+essentially all `f64` precision (verified against arbitrary-precision
+decimal arithmetic while chasing a real mismatch this generator found).
+That's a real floating-point floor no formula rewrite escapes, so the fix
+was to stop generating inputs no real financial instrument would have.
+
+`PDURATION`/`RRI` (added in Excel 2013) are written with an explicit
+`_xlfn.` prefix (`_xlfn.RRI(...)`) -- real Excel's own OOXML writer always
+prefixes post-2007 functions this way, and a plain `RRI(...)` with no
+prefix (what `openpyxl` writes by default) reads back as `#NAME?` in real
+Excel even though the function exists. `evaluate_function` already strips
+a leading `_xlfn.` before dispatch, so writing the prefix here is what a
+real xlsx producer would do and keeps both sides consistent.
+
+`IRR`/`XIRR`/`RATE` are Newton-Raphson root finds and a known residual
+source of differential fuzzer failures even after all of the above: they
+can return `#NUM!` on inputs real Excel's own (undocumented) solver
+happens to converge on, and occasionally the reverse. `rate()` rejects
+solutions that converge to the degenerate `-100%` boundary (Excel does
+too); `irr()`/`xirr()` retry once from a `0.0` guess if the caller's guess
+fails, a narrow fallback verified not to also introduce false positives
+(finding a root Excel's own solver doesn't bother to find) the way an
+earlier, broader multi-guess version did. Closing the rest of this gap
+would mean reverse-engineering Excel's exact iterative algorithm, which is
+out of scope for now.
+
 ---
 
 ## Pivot Table Fuzzing (`fuzz_pivot.py`)

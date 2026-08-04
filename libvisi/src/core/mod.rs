@@ -2,6 +2,7 @@ pub mod actions;
 pub mod chart;
 pub mod date;
 pub mod engine;
+pub mod finance;
 pub mod formula;
 pub mod ovba;
 pub mod parser;

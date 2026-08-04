@@ -41,6 +41,19 @@ class ExcelFuzzGenerator:
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
     FUNCTIONS_TEXT = ["CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER"]
 
+    # Scalar-argument TVM/depreciation functions. Unlike the generic
+    # FUNCTIONS_* lists above, financial functions can't have arbitrary
+    # sub-expressions substituted into their arguments (a rate must stay
+    # small and positive, a period must stay within [1, nper], etc.), so
+    # they get their own generator methods below instead of feeding into
+    # gen_expr's recursive substitution.
+    FINANCIAL_FUNCTIONS = [
+        "PV", "FV", "PMT", "NPER", "RATE", "IPMT", "PPMT", "CUMIPMT",
+        "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
+        "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "DOLLARDE", "DOLLARFR",
+        "FVSCHEDULE", "RRI", "PDURATION", "ISPMT",
+    ]
+
     def __init__(self, seed=None):
         if seed is not None:
             random.seed(seed)
@@ -51,6 +64,14 @@ class ExcelFuzzGenerator:
         # create_fuzz_workbook() first.
         self._table_name = None
         self._table_cols = []
+        # Populated by create_fuzz_workbook()'s financial data block; used
+        # by generate_financial_formula() for the array-argument functions
+        # (NPV/IRR/MIRR/XNPV/XIRR/FVSCHEDULE). visi's parser has no `{...}`
+        # array-literal syntax, so those functions must reference real
+        # ranges rather than inline arrays.
+        self._fin_cash_range = None
+        self._fin_date_range = None
+        self._fin_schedule_range = None
 
     def _col_name(self, col_idx):
         """Converts 1-based column index to A1 column letter (1 -> A, 2 -> B, 27 -> AA)."""
@@ -194,6 +215,204 @@ class ExcelFuzzGenerator:
 
         return "=" + gen_expr(0)
 
+    # -- Financial function argument helpers -----------------------------
+    def _fin_rate(self, lo=0.001, hi=0.03):
+        """Per-period rate. Deliberately realistic (0.1%-3%), not the
+        0.5%-20% range an earlier version used: at high per-period rates
+        compounded over hundreds of periods (nper goes up to 360 below),
+        (1+rate)^nper explodes into territory where computing the
+        amortizing payment itself loses essentially all f64 precision --
+        confirmed against arbitrary-precision decimal arithmetic while
+        chasing real mismatches this generator surfaced against actual
+        Excel (see finance.rs's ppmt test for the worked example). That's
+        a real f64 floor no closed-form or iterative rewrite escapes, not
+        a bug -- so the fix here is to stop generating inputs no real
+        financial instrument would ever have anyway.
+        """
+        return f"{round(random.uniform(lo, hi), 4)}"
+
+    def _fin_money(self, lo=100, hi=50000, allow_negative=True):
+        v = round(random.uniform(lo, hi), 2)
+        if allow_negative and random.random() < 0.5:
+            v = -v
+        return f"{v}"
+
+    def _fin_int(self, lo, hi):
+        return str(random.randint(lo, hi))
+
+    def _fin_type01(self):
+        return str(random.choice([0, 1]))
+
+    def _fin_money_value(self, lo=100, hi=20000, allow_negative=True):
+        v = round(random.uniform(lo, hi), 2)
+        if allow_negative and random.random() < 0.5:
+            v = -v
+        return v
+
+    def generate_financial_formula(self):
+        """Generates a single self-contained financial-function formula
+        with semantically valid inputs (small positive rates, periods
+        within range, etc.) rather than composing arbitrary sub-expressions
+        the way generate_formula() does -- most financial arguments have a
+        specific meaning (a rate, a period count) that a random
+        sub-expression would violate far too often to be a useful test."""
+        fn = random.choice(self.FINANCIAL_FUNCTIONS)
+
+        if fn in ("PV", "FV", "PMT"):
+            rate = self._fin_rate()
+            nper = self._fin_int(1, 360)
+            middle = self._fin_money(10, 5000)
+            other = self._fin_money(0, 5000) if random.random() < 0.6 else "0"
+            typ = self._fin_type01()
+            return f"={fn}({rate}, {nper}, {middle}, {other}, {typ})"
+
+        if fn == "NPER":
+            rate = self._fin_rate()
+            pmt = self._fin_money(10, 2000, allow_negative=False)
+            pv = self._fin_money(1000, 20000, allow_negative=False)
+            typ = self._fin_type01()
+            return f"=NPER({rate}, -{pmt}, {pv}, 0, {typ})"
+
+        if fn == "RATE":
+            nper = self._fin_int(6, 360)
+            pmt = self._fin_money(10, 2000, allow_negative=False)
+            pv = self._fin_money(1000, 20000, allow_negative=False)
+            typ = self._fin_type01()
+            return f"=RATE({nper}, -{pmt}, {pv}, 0, {typ})"
+
+        if fn in ("IPMT", "PPMT"):
+            rate = self._fin_rate()
+            nper = self._fin_int(2, 360)
+            per = self._fin_int(1, int(nper))
+            pv = self._fin_money(1000, 100000, allow_negative=False)
+            typ = self._fin_type01()
+            return f"={fn}({rate}, {per}, {nper}, {pv}, 0, {typ})"
+
+        if fn in ("CUMIPMT", "CUMPRINC"):
+            rate = self._fin_rate()
+            nper = int(self._fin_int(12, 360))
+            start = random.randint(1, nper)
+            end = random.randint(start, nper)
+            pv = self._fin_money(1000, 100000, allow_negative=False)
+            typ = self._fin_type01()
+            return f"={fn}({rate}, {nper}, {pv}, {start}, {end}, {typ})"
+
+        # NPV/IRR/MIRR/XNPV/XIRR/FVSCHEDULE take an array argument. visi's
+        # parser has no `{...}` array-literal syntax, so these always
+        # reference the financial data block create_fuzz_workbook lays out
+        # before calling this method -- there is no standalone-call path
+        # for this generator, so no inline-array fallback is needed.
+        if fn == "NPV":
+            assert self._fin_cash_range
+            return f"=NPV({self._fin_rate()}, {self._fin_cash_range})"
+
+        if fn == "IRR":
+            assert self._fin_cash_range
+            return f"=IRR({self._fin_cash_range})"
+
+        if fn == "MIRR":
+            assert self._fin_cash_range
+            return f"=MIRR({self._fin_cash_range}, {self._fin_rate()}, {self._fin_rate()})"
+
+        if fn == "XNPV":
+            assert self._fin_cash_range and self._fin_date_range
+            return f"=XNPV({self._fin_rate()}, {self._fin_cash_range}, {self._fin_date_range})"
+
+        if fn == "XIRR":
+            assert self._fin_cash_range and self._fin_date_range
+            return f"=XIRR({self._fin_cash_range}, {self._fin_date_range})"
+
+        if fn in ("SLN",):
+            cost = self._fin_money(1000, 50000, allow_negative=False)
+            salvage = self._fin_money(0, 999, allow_negative=False)
+            life = self._fin_int(1, 30)
+            return f"=SLN({cost}, {salvage}, {life})"
+
+        if fn == "SYD":
+            cost = self._fin_money(1000, 50000, allow_negative=False)
+            salvage = self._fin_money(0, 999, allow_negative=False)
+            life = int(self._fin_int(1, 30))
+            per = self._fin_int(1, life)
+            return f"=SYD({cost}, {salvage}, {life}, {per})"
+
+        if fn == "DB":
+            cost = self._fin_money(1000, 50000, allow_negative=False)
+            salvage = self._fin_money(1, 999, allow_negative=False)
+            life = int(self._fin_int(1, 20))
+            period = self._fin_int(1, life)
+            month = self._fin_int(1, 12)
+            return f"=DB({cost}, {salvage}, {life}, {period}, {month})"
+
+        if fn == "DDB":
+            cost = self._fin_money(1000, 50000, allow_negative=False)
+            salvage = self._fin_money(1, 999, allow_negative=False)
+            life = int(self._fin_int(1, 20))
+            period = self._fin_int(1, life)
+            factor = round(random.uniform(1.0, 3.0), 2)
+            return f"=DDB({cost}, {salvage}, {life}, {period}, {factor})"
+
+        if fn == "VDB":
+            cost = self._fin_money(1000, 50000, allow_negative=False)
+            salvage = self._fin_money(1, 999, allow_negative=False)
+            life = int(self._fin_int(1, 20))
+            start = random.randint(0, life - 1) if life > 1 else 0
+            end = random.randint(start + 1, life)
+            factor = round(random.uniform(1.0, 3.0), 2)
+            no_switch = random.choice(["TRUE", "FALSE"])
+            return f"=VDB({cost}, {salvage}, {life}, {start}, {end}, {factor}, {no_switch})"
+
+        if fn == "EFFECT":
+            nominal_rate = self._fin_rate()
+            npery = self._fin_int(1, 12)
+            return f"=EFFECT({nominal_rate}, {npery})"
+
+        if fn == "NOMINAL":
+            effect_rate = self._fin_rate()
+            npery = self._fin_int(1, 12)
+            return f"=NOMINAL({effect_rate}, {npery})"
+
+        if fn in ("DOLLARDE", "DOLLARFR"):
+            dollar = round(random.uniform(1.0, 100.0), random.choice([1, 2]))
+            fraction = random.choice([2, 4, 8, 16, 32, 64])
+            return f"={fn}({dollar}, {fraction})"
+
+        if fn == "FVSCHEDULE":
+            assert self._fin_schedule_range
+            principal = self._fin_money(1000, 50000, allow_negative=False)
+            return f"=FVSCHEDULE({principal}, {self._fin_schedule_range})"
+
+        # RRI and PDURATION were both added in Excel 2013; real Excel's own
+        # OOXML writer always stores post-2007 functions with an `_xlfn.`
+        # prefix in the underlying formula text (invisible in the formula
+        # bar) so older parsers degrade gracefully instead of choking on an
+        # unknown name -- confirmed as the actual cause of a real `#NAME?`
+        # mismatch this generator produced: openpyxl writes plain
+        # `RRI(...)`/`PDURATION(...)` with no prefix, and Excel refuses to
+        # recognize the bare name on load. visi already strips a leading
+        # `_xlfn.` before dispatch (see evaluate_function in sheet.rs), so
+        # writing the prefix here is what a real xlsx producer would do and
+        # keeps both sides consistent.
+        if fn == "RRI":
+            nper = self._fin_int(1, 30)
+            pv = self._fin_money(1000, 50000, allow_negative=False)
+            fv = self._fin_money(1000, 100000, allow_negative=False)
+            return f"=_xlfn.RRI({nper}, {pv}, {fv})"
+
+        if fn == "PDURATION":
+            rate = self._fin_rate()
+            pv = self._fin_money(1000, 50000, allow_negative=False)
+            fv = self._fin_money(1000, 100000, allow_negative=False)
+            return f"=_xlfn.PDURATION({rate}, {pv}, {fv})"
+
+        if fn == "ISPMT":
+            rate = self._fin_rate()
+            nper = int(self._fin_int(2, 360))
+            per = self._fin_int(1, nper)
+            pv = self._fin_money(1000, 100000, allow_negative=False)
+            return f"=ISPMT({rate}, {per}, {nper}, {pv})"
+
+        raise AssertionError(f"no generator wired up for financial function {fn}")
+
     def create_fuzz_workbook(self, file_path, num_rows=10, num_cols=5):
         """Creates a workbook with a mixture of raw values and formulas, plus
         a real Excel Table for structured references to resolve against.
@@ -272,6 +491,43 @@ class ExcelFuzzGenerator:
                     val = self.generate_random_value()
                     if val is not None:
                         ws.cell(row=r, column=c, value=val)
+
+        # --- Financial data block: a small "cashflow" column, an aligned
+        # ascending "date" column (plain Excel serial numbers, since visi
+        # has no DATE() function to build one from parts), and a "schedule"
+        # column of small rates, all plain values (never formulas). These
+        # back the array-argument financial functions (NPV/IRR/MIRR/XNPV/
+        # XIRR/FVSCHEDULE) via real ranges, since visi's parser doesn't
+        # support `{...}` array literals the way generate_financial_formula
+        # falls back to when this block hasn't been laid out.
+        fin_cash_col = max_col + 2
+        fin_date_col = fin_cash_col + 1
+        fin_schedule_col = fin_cash_col + 2
+        fin_formula_col = fin_cash_col + 4
+
+        cash_rows = 6
+        ws.cell(row=1, column=fin_cash_col, value=-round(random.uniform(5000, 50000), 2))
+        for r in range(2, cash_rows + 1):
+            ws.cell(row=r, column=fin_cash_col, value=self._fin_money_value())
+
+        date_serial = random.randint(40000, 45000)
+        for r in range(1, cash_rows + 1):
+            date_serial += random.randint(15, 90)
+            ws.cell(row=r, column=fin_date_col, value=date_serial)
+
+        schedule_rows = 3
+        for r in range(1, schedule_rows + 1):
+            ws.cell(row=r, column=fin_schedule_col, value=round(random.uniform(0.01, 0.15), 4))
+
+        self._fin_cash_range = f"{self._col_name(fin_cash_col)}1:{self._col_name(fin_cash_col)}{cash_rows}"
+        self._fin_date_range = f"{self._col_name(fin_date_col)}1:{self._col_name(fin_date_col)}{cash_rows}"
+        self._fin_schedule_range = (
+            f"{self._col_name(fin_schedule_col)}1:{self._col_name(fin_schedule_col)}{schedule_rows}"
+        )
+
+        financial_formula_rows = max(6, num_rows)
+        for r in range(1, financial_formula_rows + 1):
+            ws.cell(row=r, column=fin_formula_col, value=self.generate_financial_formula())
 
         wb.save(file_path)
 
