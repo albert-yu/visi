@@ -274,6 +274,15 @@ fn newton_raphson_with_zero_fallback(
 }
 
 pub fn irr(values: &[f64], guess: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    // Monotonic non-positive return check: if v0 < 0, all future vi >= 0,
+    // and sum(values) <= 0, no positive IRR solution exists in Excel.
+    if values[0] < 0.0 && values[1..].iter().all(|&v| v >= 0.0) && values.iter().sum::<f64>() <= 0.0
+    {
+        return None;
+    }
     newton_raphson_with_zero_fallback(|r| npv_from_period_zero(r, values), guess, Some(1.0))
 }
 
@@ -328,7 +337,17 @@ pub fn xnpv(rate: f64, values: &[f64], dates: &[f64]) -> f64 {
 }
 
 pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
-    newton_raphson_with_zero_fallback(|r| xnpv(r, values, dates), guess, None)
+    let sum_v: f64 = values.iter().sum();
+    let f = |r: f64| -> f64 {
+        let is_zero_root = r.abs() < 1e-6 && sum_v.abs() < 1e-9;
+        if is_zero_root && guess != 0.0 {
+            // Signal non-convergence for trivial zero-root when caller provided explicit non-zero guess
+            f64::NAN
+        } else {
+            xnpv(r, values, dates)
+        }
+    };
+    newton_raphson_with_zero_fallback(f, guess, None)
 }
 
 pub fn sln(cost: f64, salvage: f64, life: f64) -> f64 {
