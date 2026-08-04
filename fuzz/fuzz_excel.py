@@ -104,6 +104,7 @@ class ExcelFuzzGenerator:
         "ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR",
         "IFERROR", "IFNA", "IFS", "SWITCH",
         "ISBLANK", "ISERR", "ISERROR", "ISNA", "ISNUMBER", "ISTEXT",
+        "LET",
     ]
     # Statistical distribution/percentile-rank functions: unlike
     # FUNCTIONS_MULTI_NUM/STAT_BIVARIATE these need domain-restricted scalar
@@ -1034,6 +1035,25 @@ class ExcelFuzzGenerator:
             return f"=TYPE({expr()})"
         if fn == "XOR":
             return f"=XOR({expr()}>0, {expr()}<0)"
+        if fn == "LET":
+            # LET(name1, value1, [name2, value2, ...], calculation). Names
+            # must be distinct within a single LET (visi's implementation
+            # rejects duplicates the same way Excel does), and the
+            # calculation references every bound name so the whole chain --
+            # including later values referencing earlier names, which is
+            # valid in real Excel -- gets exercised.
+            names = random.sample(["a", "b", "c", "d"], random.randint(1, 3))
+            pairs = []
+            bound_so_far = []
+            for nm in names:
+                pairs.append(nm)
+                if bound_so_far and random.random() < 0.5:
+                    pairs.append(f"{random.choice(bound_so_far)} + {expr()}")
+                else:
+                    pairs.append(expr())
+                bound_so_far.append(nm)
+            calc = " + ".join(names)
+            return f"=LET({', '.join(pairs)}, {calc})"
 
         raise AssertionError(f"no generator wired up for logic function {fn}")
 
@@ -1276,11 +1296,9 @@ class ExcelFuzzGenerator:
         # Microsoft's cloud translation/language-detection services, so
         # their output depends on network access and service state that
         # this environment doesn't control, and isn't comparable to visi's
-        # local implementation even when both succeed. LET is also left out:
-        # its dispatch in sheet.rs evaluates every argument positionally,
-        # including the name-binding identifiers, with no real variable
-        # scoping -- LET(x, 5, x+1) isn't actually usable, so it isn't
-        # "genuinely working" either.
+        # local implementation even when both succeed. (LET now has real
+        # variable-binding support -- see LetScope in sheet.rs -- so it's
+        # generated like any other LOGIC_EXTRA_FUNCTIONS entry below.)
         next_col = fin_formula_col + 2
 
         def emit_block(fn_list, formula_for):

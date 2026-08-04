@@ -27,6 +27,41 @@ impl<'a> Context<'a> {
     }
 }
 
+/// A chain of LET name/value bindings in scope while evaluating a single
+/// formula. This is a linked list (not a cloned `HashMap`) because LET
+/// binds names one at a time -- each value expression, and the final
+/// calculation, must see all *earlier* bindings from the same LET (and any
+/// outer LET it's nested inside), and a name can shadow an outer binding of
+/// the same spelling. `evaluate_let` builds this chain by recursing one
+/// pair at a time rather than mutating a shared map.
+enum LetScope<'a> {
+    Empty,
+    Bound {
+        name: &'a str,
+        value: &'a ResultData,
+        parent: &'a LetScope<'a>,
+    },
+}
+
+impl<'a> LetScope<'a> {
+    fn get(&self, name: &str) -> Option<&ResultData> {
+        match self {
+            LetScope::Empty => None,
+            LetScope::Bound {
+                name: n,
+                value,
+                parent,
+            } => {
+                if n.eq_ignore_ascii_case(name) {
+                    Some(value)
+                } else {
+                    parent.get(name)
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Direction {
     None,
@@ -373,7 +408,7 @@ impl Sheet {
             .map_err(|e| EngineError::EvalError(EvalError::UnknownFunction(e)))?;
 
         let mut deps = Vec::new();
-        let result = match self.evaluate_ast(&ast, context, row, &mut deps) {
+        let result = match self.evaluate_ast(&ast, context, row, &mut deps, &LetScope::Empty) {
             Ok(r) => r,
             Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
                 if err_str.starts_with('#') =>
@@ -391,6 +426,7 @@ impl Sheet {
         context: Option<&Context>,
         row: Option<usize>,
         deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         use crate::core::SheetSection;
         use crate::core::parser::Expr;
@@ -400,7 +436,10 @@ impl Sheet {
             Expr::Number(n) => Ok(ResultData::Float(*n)),
             Expr::String(s) => Ok(ResultData::String(s.clone())),
             Expr::Boolean(b) => Ok(ResultData::Boolean(*b)),
-            Expr::Identifier(_) => Ok(ResultData::None),
+            Expr::Identifier(name) => match scope.get(name) {
+                Some(val) => Ok(val.clone()),
+                None => Ok(ResultData::Error("#NAME?".to_string())),
+            },
             Expr::StructuredRef {
                 sheet,
                 column,
@@ -788,12 +827,12 @@ impl Sheet {
             Expr::List(list) => {
                 let mut results = Vec::new();
                 for item in list {
-                    results.push(self.evaluate_ast(item, context, row, deps)?);
+                    results.push(self.evaluate_ast(item, context, row, deps, scope)?);
                 }
                 Ok(ResultData::List(results))
             }
             Expr::UnaryOp { op, expr } => {
-                let val = self.evaluate_ast(expr, context, row, deps)?;
+                let val = self.evaluate_ast(expr, context, row, deps, scope)?;
                 match op {
                     Op::Sub => match val {
                         ResultData::Float(f) => Ok(ResultData::Float(-f)),
@@ -806,8 +845,8 @@ impl Sheet {
                 }
             }
             Expr::BinaryOp { op, left, right } => {
-                let l_val = self.evaluate_ast(left, context, row, deps)?;
-                let r_val = self.evaluate_ast(right, context, row, deps)?;
+                let l_val = self.evaluate_ast(left, context, row, deps, scope)?;
+                let r_val = self.evaluate_ast(right, context, row, deps, scope)?;
 
                 match op {
                     Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => {
@@ -883,7 +922,7 @@ impl Sheet {
                 }
             }
             Expr::FunctionCall { name, args } => {
-                self.evaluate_function(name, args, context, row, deps)
+                self.evaluate_function(name, args, context, row, deps, scope)
             }
         }
     }
@@ -1507,6 +1546,56 @@ impl Sheet {
         ((year, m, d), (hour, minute, second))
     }
 
+    /// Evaluates Excel's LET(name1, value1, [name2, value2, ...],
+    /// calculation). Binds each name/value pair in order -- value2 (and
+    /// later pairs, and the final calculation) can reference name1, per
+    /// Excel's LET semantics -- by recursing one pair at a time so each
+    /// level's scope chain only needs to borrow the *previous* level's
+    /// binding rather than mutate a shared map (see `LetScope`).
+    fn evaluate_let(
+        &self,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        use crate::core::parser::Expr;
+
+        if args.is_empty() || args.len() % 2 == 0 {
+            // Needs one or more name/value pairs followed by a calculation,
+            // i.e. an odd number of arguments overall.
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+        if args.len() == 1 {
+            return self.evaluate_ast(&args[0], context, row, deps, scope);
+        }
+
+        let name = match &args[0] {
+            Expr::Identifier(n) => n.as_str(),
+            _ => return Ok(ResultData::Error("#VALUE!".to_string())),
+        };
+        // Excel rejects reusing a name across a single LET's own pairs,
+        // rather than letting a later pair silently shadow an earlier one.
+        let remaining_pairs = args.len() / 2 - 1;
+        let is_duplicate = args[2..]
+            .iter()
+            .step_by(2)
+            .take(remaining_pairs)
+            .any(|a| matches!(a, Expr::Identifier(n2) if n2.eq_ignore_ascii_case(name)));
+        if is_duplicate {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+
+        let value = self.evaluate_ast(&args[1], context, row, deps, scope)?;
+        let inner_scope = LetScope::Bound {
+            name,
+            value: &value,
+            parent: scope,
+        };
+        self.evaluate_let(&args[2..], context, row, deps, &inner_scope)
+    }
+
     fn evaluate_function(
         &self,
         name: &str,
@@ -1514,11 +1603,16 @@ impl Sheet {
         context: Option<&Context>,
         row: Option<usize>,
         deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         use crate::core::parser::Expr;
         let mut upper_name = name.to_uppercase();
         if upper_name.starts_with("_XLFN.") {
             upper_name = upper_name["_XLFN.".len()..].to_string();
+        }
+
+        if upper_name == "LET" {
+            return self.evaluate_let(args, context, row, deps, scope);
         }
 
         if upper_name == "PLOT" {
@@ -1544,7 +1638,7 @@ impl Sheet {
                 } = arg
                 {
                     if let Expr::Identifier(name) = &**left {
-                        let val = self.evaluate_ast(right, context, row, deps)?;
+                        let val = self.evaluate_ast(right, context, row, deps, scope)?;
                         match name.to_lowercase().as_str() {
                             "color" => {
                                 if let ResultData::List(list) = val {
@@ -1576,7 +1670,7 @@ impl Sheet {
                     }
                 }
 
-                let val = self.evaluate_ast(arg, context, row, deps)?;
+                let val = self.evaluate_ast(arg, context, row, deps, scope)?;
                 match positional_count {
                     0 => {
                         if let ResultData::List(list) = val {
@@ -1658,7 +1752,7 @@ impl Sheet {
                         "IF requires 3 arguments".to_string(),
                     )));
                 }
-                let cond_val = self.evaluate_ast(&args[0], context, row, deps)?;
+                let cond_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
                 if let ResultData::Error(_) = cond_val {
                     return Ok(cond_val);
                 }
@@ -1667,9 +1761,9 @@ impl Sheet {
                     None => return Ok(ResultData::Error("#VALUE!".to_string())),
                 };
                 if condition {
-                    return self.evaluate_ast(&args[1], context, row, deps);
+                    return self.evaluate_ast(&args[1], context, row, deps, scope);
                 } else {
-                    return self.evaluate_ast(&args[2], context, row, deps);
+                    return self.evaluate_ast(&args[2], context, row, deps, scope);
                 }
             }
 
@@ -1679,10 +1773,10 @@ impl Sheet {
                         "IFERROR requires 2 arguments".to_string(),
                     )));
                 }
-                let first_res = self.evaluate_ast(&args[0], context, row, deps);
+                let first_res = self.evaluate_ast(&args[0], context, row, deps, scope);
                 match first_res {
                     Ok(ResultData::Error(_)) | Err(_) => {
-                        return self.evaluate_ast(&args[1], context, row, deps);
+                        return self.evaluate_ast(&args[1], context, row, deps, scope);
                     }
                     Ok(val) => return Ok(val),
                 }
@@ -1692,7 +1786,7 @@ impl Sheet {
                 if args.is_empty() {
                     return Ok(ResultData::Boolean(false));
                 }
-                let res = self.evaluate_ast(&args[0], context, row, deps);
+                let res = self.evaluate_ast(&args[0], context, row, deps, scope);
                 return match res {
                     Ok(ResultData::Error(_)) | Err(_) => Ok(ResultData::Boolean(true)),
                     _ => Ok(ResultData::Boolean(false)),
@@ -1703,7 +1797,7 @@ impl Sheet {
                 if args.is_empty() {
                     return Ok(ResultData::Boolean(false));
                 }
-                let res = self.evaluate_ast(&args[0], context, row, deps);
+                let res = self.evaluate_ast(&args[0], context, row, deps, scope);
                 return match res {
                     Ok(ResultData::Error(e)) => Ok(ResultData::Boolean(e.contains("#N/A"))),
                     _ => Ok(ResultData::Boolean(false)),
@@ -1724,7 +1818,7 @@ impl Sheet {
                     _ => true,
                 };
                 arg_is_direct.push(is_direct_arg);
-                let eval_res = match self.evaluate_ast(arg, context, row, deps) {
+                let eval_res = match self.evaluate_ast(arg, context, row, deps, scope) {
                     Ok(r) => r,
                     Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
                         if err_str.starts_with('#') =>
@@ -2648,13 +2742,6 @@ impl Sheet {
                 "LCM" => {
                     let nums: Vec<f64> = evaluated_args.iter().flat_map(|arg| self.flatten_stat_numbers(arg, false)).collect();
                     res_to_rd(crate::core::math_trig::lcm(&nums))
-                }
-                "LET" => {
-                    if let Some(last) = evaluated_args.last() {
-                        Ok(last.clone())
-                    } else {
-                        Ok(ResultData::None)
-                    }
                 }
                 "LOG" => {
                     let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
