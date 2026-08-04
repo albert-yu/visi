@@ -32,4 +32,5 @@ mod math_trig;
 mod rounding;
 mod stats;
 mod text;
+mod text_fn;
 mod unit;

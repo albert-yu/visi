@@ -56,7 +56,12 @@ class ExcelFuzzGenerator:
         "COVARIANCE.P", "COVARIANCE.S"
     ]
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
-    FUNCTIONS_TEXT = ["CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER"]
+    FUNCTIONS_TEXT = [
+        "CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER",
+        "ASC", "CLEAN", "CODE", "DBCS", "EXACT", "FIND", "FINDB",
+        "LEFTB", "LENB", "MIDB", "REPT", "RIGHTB", "SEARCH", "SEARCHB",
+        "SUBSTITUTE", "T", "TEXTAFTER", "TEXTBEFORE", "UNICHAR", "UNICODE"
+    ]
 
     # Scalar-argument TVM/depreciation functions. Unlike the generic
     # FUNCTIONS_* lists above, financial functions can't have arbitrary
