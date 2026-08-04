@@ -36,8 +36,22 @@ NS = {
 class ExcelFuzzGenerator:
     """Generates random data grids and formula trees for Excel compatibility testing."""
 
-    FUNCTIONS_SINGLE_NUM = ["ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN"]
-    FUNCTIONS_MULTI_NUM = ["SUM", "AVERAGE", "MIN", "MAX", "PRODUCT"]
+    FUNCTIONS_SINGLE_NUM = [
+        "ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN",
+        "GAUSS", "PHI", "FISHER", "FISHERINV", "GAMMALN", "GAMMA",
+        "NORM.S.DIST", "NORM.S.INV"
+    ]
+    FUNCTIONS_MULTI_NUM = [
+        "SUM", "AVERAGE", "MIN", "MAX", "PRODUCT",
+        "AVEDEV", "AVERAGEA", "DEVSQ", "GEOMEAN", "HARMEAN",
+        "MEDIAN", "MODE.SNGL", "VAR.S", "VAR.P", "VARA", "VARPA",
+        "STDEV.S", "STDEV.P", "STDEVA", "STDEVPA", "SKEW", "SKEW.P",
+        "KURT", "MAXA", "MINA"
+    ]
+    FUNCTIONS_STAT_BIVARIATE = [
+        "CORREL", "PEARSON", "SLOPE", "INTERCEPT", "RSQ", "STEYX",
+        "COVARIANCE.P", "COVARIANCE.S"
+    ]
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
     FUNCTIONS_TEXT = ["CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER"]
 
@@ -164,7 +178,7 @@ class ExcelFuzzGenerator:
                 else:
                     return str(random.randint(-50, 50))
 
-            fn_type = random.choice(["binary", "multi_num", "single_num", "logic", "text"])
+            fn_type = random.choice(["binary", "multi_num", "single_num", "logic", "text", "stat_bivariate"])
 
             if fn_type == "binary":
                 op = random.choice(["+", "-", "*", "/", "^"])
@@ -190,7 +204,15 @@ class ExcelFuzzGenerator:
                 if fn in ["ROUND", "ROUNDUP", "ROUNDDOWN"]:
                     digits = random.randint(0, 2)
                     return f"{fn}({arg}, {digits})"
+                elif fn in ["NORM.S.DIST"]:
+                    return f"{fn}({arg}, TRUE)"
                 return f"{fn}({arg})"
+
+            elif fn_type == "stat_bivariate":
+                fn = random.choice(self.FUNCTIONS_STAT_BIVARIATE)
+                r1 = random_range_ref()
+                r2 = random_range_ref()
+                return f"{fn}({r1}, {r2})"
 
             elif fn_type == "logic":
                 if random.random() < 0.5:

@@ -9,6 +9,7 @@ pub mod parser;
 pub mod pivot;
 pub mod pivot_xlsx;
 pub mod shared_vec;
+pub mod stats;
 pub mod table;
 pub mod vba;
 pub mod vba_synth;

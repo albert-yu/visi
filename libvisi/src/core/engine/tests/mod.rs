@@ -29,5 +29,6 @@ mod aggregate;
 mod logical;
 mod math;
 mod rounding;
+mod stats;
 mod text;
 mod unit;
