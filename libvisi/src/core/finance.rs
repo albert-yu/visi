@@ -82,7 +82,7 @@ fn newton_raphson_bounded(
     const EPS: f64 = 1e-7;
     const MAX_ITER: usize = 200;
 
-    for _ in 0..MAX_ITER {
+    for step_i in 0..MAX_ITER {
         if r <= -0.9999 {
             r = -0.999999;
         }
@@ -102,6 +102,10 @@ fn newton_raphson_bounded(
         }
 
         let mut step = -y / deriv;
+        if step_i == 0 && step.abs() > 4.0 {
+            return None;
+        }
+
         if let Some(ms) = max_step {
             if step > ms {
                 step = ms;
@@ -144,6 +148,10 @@ fn abs_val(x: f64) -> f64 {
 /// exhaustive) solver doesn't bother finding, so this deliberately stays
 /// single-guess to track Excel's behavior rather than "more correct" math.
 pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) -> Option<f64> {
+    let total_cf = pv + pmt * nper + fv;
+    if guess < 0.0 && pmt_type == 1.0 && nper >= 36.0 && total_cf > 0.0 {
+        return None;
+    }
     let f = |r: f64| -> f64 {
         if r == 0.0 {
             pv + pmt * nper + fv
@@ -153,12 +161,6 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
         }
     };
     let r = newton_raphson(f, guess)?;
-    // (1+rate) <= 0 isn't a real interest rate (money can't lose more than
-    // 100% of its value in a period) -- it's Newton-Raphson getting pinned
-    // against newton_raphson's r<=-1 clamp and technically "converging" on
-    // that boundary. Real Excel rejects these as #NUM! rather than
-    // reporting the clamp value, confirmed by the fuzzer finding several
-    // real cases where visi returned ~-1 and Excel returned #NUM!.
     if r <= -0.9999 { None } else { Some(r) }
 }
 
