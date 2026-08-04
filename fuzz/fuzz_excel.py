@@ -39,14 +39,17 @@ class ExcelFuzzGenerator:
     FUNCTIONS_SINGLE_NUM = [
         "ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN",
         "GAUSS", "PHI", "FISHER", "FISHERINV", "GAMMALN", "GAMMA",
-        "NORM.S.DIST", "NORM.S.INV"
+        "NORM.S.DIST", "NORM.S.INV", "ACOSH", "ACOT", "ACOTH",
+        "ASINH", "ATANH", "COSH", "COT", "COTH", "CSC", "CSCH",
+        "DEGREES", "EVEN", "FACT", "FACTDOUBLE", "ODD", "RADIANS",
+        "SEC", "SECH", "SIGN", "SINH", "SQRTPI", "TANH"
     ]
     FUNCTIONS_MULTI_NUM = [
         "SUM", "AVERAGE", "MIN", "MAX", "PRODUCT",
         "AVEDEV", "AVERAGEA", "DEVSQ", "GEOMEAN", "HARMEAN",
         "MEDIAN", "MODE.SNGL", "VAR.S", "VAR.P", "VARA", "VARPA",
         "STDEV.S", "STDEV.P", "STDEVA", "STDEVPA", "SKEW", "SKEW.P",
-        "KURT", "MAXA", "MINA"
+        "KURT", "MAXA", "MINA", "GCD", "LCM", "MULTINOMIAL", "SUMSQ"
     ]
     FUNCTIONS_STAT_BIVARIATE = [
         "CORREL", "PEARSON", "SLOPE", "INTERCEPT", "RSQ", "STEYX",

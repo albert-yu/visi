@@ -28,6 +28,7 @@ fn create_sheet<const ROWS: usize, const COLS: usize>(grid: &[[&str; COLS]; ROWS
 mod aggregate;
 mod logical;
 mod math;
+mod math_trig;
 mod rounding;
 mod stats;
 mod text;

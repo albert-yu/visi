@@ -1192,6 +1192,31 @@ impl Sheet {
         }
     }
 
+    fn extract_matrix(&self, arg: &ResultData) -> Vec<Vec<f64>> {
+        match arg {
+            ResultData::List(list) => {
+                let mut rows = Vec::new();
+                for item in list {
+                    match item {
+                        ResultData::List(sub_list) => {
+                            let row: Vec<f64> = sub_list.iter().flat_map(|v| self.to_f64(v)).collect();
+                            if !row.is_empty() {
+                                rows.push(row);
+                            }
+                        }
+                        _ => {
+                            if let Some(f) = self.to_f64(item) {
+                                rows.push(vec![f]);
+                            }
+                        }
+                    }
+                }
+                rows
+            }
+            _ => vec![],
+        }
+    }
+
     fn opt_f64(&self, args: &[ResultData], i: usize, default: f64) -> f64 {
         args.get(i).and_then(|v| self.to_f64(v)).unwrap_or(default)
     }
@@ -2494,6 +2519,290 @@ impl Sheet {
                     let x = self.to_f64_arg(evaluated_args.get(1), "Z.TEST")?;
                     let sigma = evaluated_args.get(2).and_then(|v| self.to_f64(v));
                     res_to_rd(crate::core::stats::z_test(&array, x, sigma))
+                }
+
+                // --- MATH AND TRIGONOMETRY FUNCTIONS ---
+                "ACOSH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ACOSH")?;
+                    res_to_rd(crate::core::math_trig::acosh(x))
+                }
+                "ACOT" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ACOT")?;
+                    res_to_rd(crate::core::math_trig::acot(x))
+                }
+                "ACOTH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ACOTH")?;
+                    res_to_rd(crate::core::math_trig::acoth(x))
+                }
+                "AGGREGATE" | "SUBTOTAL" => {
+                    let fn_num = self.to_f64_arg(evaluated_args.first(), "AGGREGATE")?.round() as usize;
+                    let nums: Vec<f64> = evaluated_args.iter().skip(1).flat_map(|arg| self.flatten_stat_numbers(arg, false)).collect();
+                    match fn_num % 100 {
+                        1 => res_to_rd(if nums.is_empty() { Err("#DIV/0!".to_string()) } else { Ok(nums.iter().sum::<f64>() / nums.len() as f64) }),
+                        2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
+                        4 => Ok(ResultData::Float(nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max))),
+                        5 => Ok(ResultData::Float(nums.iter().cloned().fold(f64::INFINITY, f64::min))),
+                        6 => Ok(ResultData::Float(nums.iter().product())),
+                        7 => res_to_rd(crate::core::stats::stdev_s(&nums)),
+                        8 => res_to_rd(crate::core::stats::stdev_p(&nums)),
+                        9 => Ok(ResultData::Float(nums.iter().sum())),
+                        10 => res_to_rd(crate::core::stats::var_s(&nums)),
+                        11 => res_to_rd(crate::core::stats::var_p(&nums)),
+                        12 => res_to_rd(crate::core::stats::median(&nums)),
+                        _ => Ok(ResultData::Float(nums.iter().sum())),
+                    }
+                }
+                "ARABIC" => {
+                    let text = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::arabic(&text))
+                }
+                "ASINH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ASINH")?;
+                    res_to_rd(crate::core::math_trig::asinh(x))
+                }
+                "ATAN2" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ATAN2")?;
+                    let y = self.to_f64_arg(evaluated_args.get(1), "ATAN2")?;
+                    res_to_rd(crate::core::math_trig::atan2(x, y))
+                }
+                "ATANH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ATANH")?;
+                    res_to_rd(crate::core::math_trig::atanh(x))
+                }
+                "BASE" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "BASE")?;
+                    let radix = self.to_f64_arg(evaluated_args.get(1), "BASE")?;
+                    let min_len = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    match crate::core::math_trig::base(num, radix, min_len) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "CEILING.MATH" | "CEILING.PRECISE" | "ISO.CEILING" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CEILING.MATH")?;
+                    let sig = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let mode = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::ceiling_math(x, sig, mode))
+                }
+                "COMBIN" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "COMBIN")?;
+                    let k = self.to_f64_arg(evaluated_args.get(1), "COMBIN")?;
+                    res_to_rd(crate::core::math_trig::combin(n, k))
+                }
+                "COMBINA" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "COMBINA")?;
+                    let k = self.to_f64_arg(evaluated_args.get(1), "COMBINA")?;
+                    res_to_rd(crate::core::math_trig::combina(n, k))
+                }
+                "COSH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "COSH")?;
+                    res_to_rd(crate::core::math_trig::cosh(x))
+                }
+                "COT" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "COT")?;
+                    res_to_rd(crate::core::math_trig::cot(x))
+                }
+                "COTH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "COTH")?;
+                    res_to_rd(crate::core::math_trig::coth(x))
+                }
+                "CSC" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CSC")?;
+                    res_to_rd(crate::core::math_trig::csc(x))
+                }
+                "CSCH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CSCH")?;
+                    res_to_rd(crate::core::math_trig::csch(x))
+                }
+                "DECIMAL" => {
+                    let text = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let radix = self.to_f64_arg(evaluated_args.get(1), "DECIMAL")?;
+                    res_to_rd(crate::core::math_trig::decimal(&text, radix))
+                }
+                "DEGREES" => {
+                    let rad = self.to_f64_arg(evaluated_args.first(), "DEGREES")?;
+                    res_to_rd(crate::core::math_trig::degrees(rad))
+                }
+                "EVEN" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "EVEN")?;
+                    res_to_rd(crate::core::math_trig::even(x))
+                }
+                "FACT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "FACT")?;
+                    res_to_rd(crate::core::math_trig::fact(n))
+                }
+                "FACTDOUBLE" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "FACTDOUBLE")?;
+                    res_to_rd(crate::core::math_trig::factdouble(n))
+                }
+                "FLOOR.MATH" | "FLOOR.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "FLOOR.MATH")?;
+                    let sig = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let mode = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::floor_math(x, sig, mode))
+                }
+                "GCD" => {
+                    let nums: Vec<f64> = evaluated_args.iter().flat_map(|arg| self.flatten_stat_numbers(arg, false)).collect();
+                    res_to_rd(crate::core::math_trig::gcd(&nums))
+                }
+                "LCM" => {
+                    let nums: Vec<f64> = evaluated_args.iter().flat_map(|arg| self.flatten_stat_numbers(arg, false)).collect();
+                    res_to_rd(crate::core::math_trig::lcm(&nums))
+                }
+                "LET" => {
+                    if let Some(last) = evaluated_args.last() {
+                        Ok(last.clone())
+                    } else {
+                        Ok(ResultData::None)
+                    }
+                }
+                "LOG" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
+                    let base = evaluated_args.get(1).and_then(|v| self.to_f64(v)).unwrap_or(10.0);
+                    if num <= 0.0 || base <= 0.0 || base == 1.0 {
+                        Ok(ResultData::Error("#NUM!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(num.log(base)))
+                    }
+                }
+                "MDETERM" => {
+                    let matrix = evaluated_args.first().map(|arg| self.extract_matrix(arg)).unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::mdeterm(&matrix))
+                }
+                "MINVERSE" => {
+                    let matrix = evaluated_args.first().map(|arg| self.extract_matrix(arg)).unwrap_or_default();
+                    match crate::core::math_trig::minverse(&matrix) {
+                        Ok(inv) => Ok(ResultData::List(inv.into_iter().map(|row| ResultData::List(row.into_iter().map(ResultData::Float).collect())).collect())),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "MROUND" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "MROUND")?;
+                    let mult = self.to_f64_arg(evaluated_args.get(1), "MROUND")?;
+                    res_to_rd(crate::core::math_trig::mround(x, mult))
+                }
+                "MULTINOMIAL" => {
+                    let nums: Vec<f64> = evaluated_args.iter().flat_map(|arg| self.flatten_stat_numbers(arg, false)).collect();
+                    res_to_rd(crate::core::math_trig::multinomial(&nums))
+                }
+                "MUNIT" => {
+                    let dim = self.to_f64_arg(evaluated_args.first(), "MUNIT")?;
+                    match crate::core::math_trig::munit(dim) {
+                        Ok(mat) => Ok(ResultData::List(mat.into_iter().map(|row| ResultData::List(row.into_iter().map(ResultData::Float).collect())).collect())),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "ODD" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ODD")?;
+                    res_to_rd(crate::core::math_trig::odd(x))
+                }
+                "PERCENTOF" => {
+                    let data_val = self.to_f64_arg(evaluated_args.first(), "PERCENTOF")?;
+                    let target_val = self.to_f64_arg(evaluated_args.get(1), "PERCENTOF")?;
+                    res_to_rd(crate::core::math_trig::percentof(data_val, target_val))
+                }
+                "PI" => Ok(ResultData::Float(std::f64::consts::PI)),
+                "POWER" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "POWER")?;
+                    let p = self.to_f64_arg(evaluated_args.get(1), "POWER")?;
+                    res_to_rd(crate::core::math_trig::power(num, p))
+                }
+                "QUOTIENT" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "QUOTIENT")?;
+                    let den = self.to_f64_arg(evaluated_args.get(1), "QUOTIENT")?;
+                    res_to_rd(crate::core::math_trig::quotient(num, den))
+                }
+                "RADIANS" => {
+                    let deg = self.to_f64_arg(evaluated_args.first(), "RADIANS")?;
+                    res_to_rd(crate::core::math_trig::radians(deg))
+                }
+                "RANDARRAY" => {
+                    let rows = evaluated_args.first().and_then(|v| self.to_f64(v));
+                    let cols = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let min = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    let max = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    let whole = evaluated_args.get(4).map(|v| self.to_bool(v));
+                    match crate::core::math_trig::randarray(rows, cols, min, max, whole) {
+                        Ok(grid) => Ok(ResultData::List(grid.into_iter().map(|row| ResultData::List(row.into_iter().map(ResultData::Float).collect())).collect())),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "ROMAN" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "ROMAN")?;
+                    let form = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::math_trig::roman(num, form) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "SEC" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SEC")?;
+                    res_to_rd(crate::core::math_trig::sec(x))
+                }
+                "SECH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SECH")?;
+                    res_to_rd(crate::core::math_trig::sech(x))
+                }
+                "SEQUENCE" => {
+                    let rows = self.to_f64_arg(evaluated_args.first(), "SEQUENCE")?;
+                    let cols = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let start = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    let step = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    match crate::core::math_trig::sequence(rows, cols, start, step) {
+                        Ok(grid) => Ok(ResultData::List(grid.into_iter().map(|row| ResultData::List(row.into_iter().map(ResultData::Float).collect())).collect())),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "SERIESSUM" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SERIESSUM")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "SERIESSUM")?;
+                    let m = self.to_f64_arg(evaluated_args.get(2), "SERIESSUM")?;
+                    let coeffs: Vec<f64> = evaluated_args.get(3).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::seriessum(x, n, m, &coeffs))
+                }
+                "SIGN" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SIGN")?;
+                    res_to_rd(crate::core::math_trig::sign(x))
+                }
+                "SINH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SINH")?;
+                    res_to_rd(crate::core::math_trig::sinh(x))
+                }
+                "SQRTPI" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SQRTPI")?;
+                    res_to_rd(crate::core::math_trig::sqrtpi(x))
+                }
+                "SUMPRODUCT" => {
+                    let arrays: Vec<Vec<f64>> = evaluated_args.iter().map(|arg| self.flatten_stat_numbers(arg, false)).collect();
+                    res_to_rd(crate::core::math_trig::sumproduct(&arrays))
+                }
+                "SUMSQ" => {
+                    let nums: Vec<f64> = evaluated_args.iter().flat_map(|arg| self.flatten_stat_numbers(arg, false)).collect();
+                    res_to_rd(crate::core::math_trig::sumsq(&nums))
+                }
+                "SUMX2MY2" => {
+                    let xs: Vec<f64> = evaluated_args.first().map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args.get(1).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::sumx2my2(&xs, &ys))
+                }
+                "SUMX2PY2" => {
+                    let xs: Vec<f64> = evaluated_args.first().map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args.get(1).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::sumx2py2(&xs, &ys))
+                }
+                "SUMXMY2" => {
+                    let xs: Vec<f64> = evaluated_args.first().map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args.get(1).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::sumxmy2(&xs, &ys))
+                }
+                "TANH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "TANH")?;
+                    res_to_rd(crate::core::math_trig::tanh(x))
+                }
+                "TRUNC" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "TRUNC")?;
+                    let digits = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::trunc(x, digits))
                 }
 
                 "SUM" => {

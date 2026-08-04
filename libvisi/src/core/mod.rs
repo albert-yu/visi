@@ -4,6 +4,7 @@ pub mod date;
 pub mod engine;
 pub mod finance;
 pub mod formula;
+pub mod math_trig;
 pub mod ovba;
 pub mod parser;
 pub mod pivot;
