@@ -3075,6 +3075,399 @@ impl Sheet {
                     }
                 }
 
+                // --- DATE AND TIME FUNCTIONS ---
+                "DATE" => {
+                    let y = self.to_f64_arg(evaluated_args.first(), "DATE")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "DATE")?;
+                    let d = self.to_f64_arg(evaluated_args.get(2), "DATE")?;
+                    res_to_rd(crate::core::date_fn::date_fn(y, m, d))
+                }
+                "DATEDIF" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "DATEDIF")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "DATEDIF")?;
+                    let unit = evaluated_args.get(2).map(|v| v.to_string()).unwrap_or_default();
+                    let (y1, m1, d1) = crate::core::date_fn::serial_to_ymd(s);
+                    let (y2, m2, d2) = crate::core::date_fn::serial_to_ymd(e);
+                    match unit.to_uppercase().as_str() {
+                        "Y" => Ok(ResultData::Float((y2 - y1) as f64)),
+                        "M" => Ok(ResultData::Float(((y2 - y1) * 12 + (m2 - m1)) as f64)),
+                        "D" => Ok(ResultData::Float(e - s)),
+                        "MD" => Ok(ResultData::Float((d2 - d1) as f64)),
+                        "YM" => Ok(ResultData::Float(((m2 - m1) % 12) as f64)),
+                        "YD" => Ok(ResultData::Float((e - s) % 365.0)),
+                        _ => Ok(ResultData::Float(e - s)),
+                    }
+                }
+                "DATEVALUE" => {
+                    let text = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::text::value(&text))
+                }
+                "DAY" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "DAY")?;
+                    res_to_rd(crate::core::date_fn::day_fn(s))
+                }
+                "DAYS" => {
+                    let e = self.to_f64_arg(evaluated_args.first(), "DAYS")?;
+                    let s = self.to_f64_arg(evaluated_args.get(1), "DAYS")?;
+                    res_to_rd(crate::core::date_fn::days(e, s))
+                }
+                "DAYS360" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "DAYS360")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "DAYS360")?;
+                    let method = evaluated_args.get(2).map(|v| self.to_bool(v));
+                    res_to_rd(crate::core::date_fn::days360(s, e, method))
+                }
+                "EDATE" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "EDATE")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "EDATE")?;
+                    res_to_rd(crate::core::date_fn::edate(s, m))
+                }
+                "EOMONTH" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "EOMONTH")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "EOMONTH")?;
+                    res_to_rd(crate::core::date_fn::eomonth(s, m))
+                }
+                "HOUR" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "HOUR")?;
+                    res_to_rd(crate::core::date_fn::hour_fn(s))
+                }
+                "ISOWEEKNUM" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "ISOWEEKNUM")?;
+                    res_to_rd(crate::core::date_fn::isoweeknum(s))
+                }
+                "MINUTE" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "MINUTE")?;
+                    res_to_rd(crate::core::date_fn::minute_fn(s))
+                }
+                "MONTH" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "MONTH")?;
+                    res_to_rd(crate::core::date_fn::month_fn(s))
+                }
+                "NETWORKDAYS" | "NETWORKDAYS.INTL" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "NETWORKDAYS")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "NETWORKDAYS")?;
+                    let holidays: Vec<f64> = evaluated_args.get(2).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    res_to_rd(crate::core::date_fn::networkdays(s, e, &holidays))
+                }
+                "SECOND" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "SECOND")?;
+                    res_to_rd(crate::core::date_fn::second_fn(s))
+                }
+                "TIME" => {
+                    let h = self.to_f64_arg(evaluated_args.first(), "TIME")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "TIME")?;
+                    let s = self.to_f64_arg(evaluated_args.get(2), "TIME")?;
+                    res_to_rd(crate::core::date_fn::time_fn(h, m, s))
+                }
+                "TIMEVALUE" => {
+                    let text = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::text::value(&text))
+                }
+                "WEEKDAY" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "WEEKDAY")?;
+                    let r_type = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::date_fn::weekday(s, r_type))
+                }
+                "WEEKNUM" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "WEEKNUM")?;
+                    let r_type = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::date_fn::weeknum(s, r_type))
+                }
+                "WORKDAY" | "WORKDAY.INTL" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "WORKDAY")?;
+                    let days = self.to_f64_arg(evaluated_args.get(1), "WORKDAY")?;
+                    let holidays: Vec<f64> = evaluated_args.get(2).map(|arg| self.flatten_stat_numbers(arg, false)).unwrap_or_default();
+                    res_to_rd(crate::core::date_fn::workday(s, days, &holidays))
+                }
+                "YEAR" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "YEAR")?;
+                    res_to_rd(crate::core::date_fn::year_fn(s))
+                }
+                "YEARFRAC" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "YEARFRAC")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "YEARFRAC")?;
+                    let basis = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::date_fn::yearfrac(s, e, basis))
+                }
+
+                // --- ENGINEERING FUNCTIONS ---
+                "BESSELI" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELI")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELI")?;
+                    res_to_rd(crate::core::engineering::besseli(x, n))
+                }
+                "BESSELJ" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELJ")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELJ")?;
+                    res_to_rd(crate::core::engineering::besselj(x, n))
+                }
+                "BESSELK" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELK")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELK")?;
+                    res_to_rd(crate::core::engineering::besselk(x, n))
+                }
+                "BESSELY" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELY")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELY")?;
+                    res_to_rd(crate::core::engineering::bessely(x, n))
+                }
+                "BIN2DEC" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::bin2dec(&t))
+                }
+                "BIN2HEX" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::bin2hex(&t, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "BIN2OCT" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::bin2oct(&t, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "BITAND" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "BITAND")?;
+                    let n2 = self.to_f64_arg(evaluated_args.get(1), "BITAND")?;
+                    res_to_rd(crate::core::engineering::bitand(n1, n2))
+                }
+                "BITLSHIFT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "BITLSHIFT")?;
+                    let s = self.to_f64_arg(evaluated_args.get(1), "BITLSHIFT")?;
+                    res_to_rd(crate::core::engineering::bitlshift(n, s))
+                }
+                "BITOR" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "BITOR")?;
+                    let n2 = self.to_f64_arg(evaluated_args.get(1), "BITOR")?;
+                    res_to_rd(crate::core::engineering::bitor(n1, n2))
+                }
+                "BITRSHIFT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "BITRSHIFT")?;
+                    let s = self.to_f64_arg(evaluated_args.get(1), "BITRSHIFT")?;
+                    res_to_rd(crate::core::engineering::bitrshift(n, s))
+                }
+                "BITXOR" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "BITXOR")?;
+                    let n2 = self.to_f64_arg(evaluated_args.get(1), "BITXOR")?;
+                    res_to_rd(crate::core::engineering::bitxor(n1, n2))
+                }
+                "COMPLEX" => {
+                    let r = self.to_f64_arg(evaluated_args.first(), "COMPLEX")?;
+                    let i = self.to_f64_arg(evaluated_args.get(1), "COMPLEX")?;
+                    let s = evaluated_args.get(2).map(|v| v.to_string());
+                    match crate::core::engineering::complex_fn(r, i, s.as_deref()) { Ok(res) => Ok(ResultData::String(res)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "CONVERT" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "CONVERT")?;
+                    let u1 = evaluated_args.get(1).map(|v| v.to_string()).unwrap_or_default();
+                    let u2 = evaluated_args.get(2).map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::convert(val, &u1, &u2))
+                }
+                "DEC2BIN" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "DEC2BIN")?;
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::dec2bin(n, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "DEC2HEX" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "DEC2HEX")?;
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::dec2hex(n, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "DEC2OCT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "DEC2OCT")?;
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::dec2oct(n, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "DELTA" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "DELTA")?;
+                    let n2 = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::engineering::delta(n1, n2))
+                }
+                "ERF" | "ERF.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ERF")?;
+                    res_to_rd(Ok(crate::core::stats::erf(x)))
+                }
+                "ERFC" | "ERFC.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ERFC")?;
+                    res_to_rd(Ok(crate::core::stats::erfc(x)))
+                }
+                "GESTEP" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "GESTEP")?;
+                    let step = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::engineering::gestep(n, step))
+                }
+                "HEX2BIN" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::hex2bin(&t, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "HEX2DEC" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::hex2dec(&t))
+                }
+                "HEX2OCT" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::hex2oct(&t, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "IMABS" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imabs(&t))
+                }
+                "IMAGINARY" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imaginary(&t))
+                }
+                "IMARGUMENT" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imargument(&t))
+                }
+                "IMCONJUGATE" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    match crate::core::engineering::imconjugate(&t) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "IMDIV" => {
+                    let t1 = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let t2 = evaluated_args.get(1).map(|v| v.to_string()).unwrap_or_default();
+                    match crate::core::engineering::imdiv(&t1, &t2) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "IMPRODUCT" => {
+                    let strs: Vec<String> = evaluated_args.iter().map(|v| v.to_string()).collect();
+                    let refs: Vec<&str> = strs.iter().map(|s| s.as_str()).collect();
+                    match crate::core::engineering::improduct(&refs) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "IMREAL" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imreal(&t))
+                }
+                "IMSUB" => {
+                    let t1 = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let t2 = evaluated_args.get(1).map(|v| v.to_string()).unwrap_or_default();
+                    match crate::core::engineering::imsub(&t1, &t2) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "IMSUM" => {
+                    let strs: Vec<String> = evaluated_args.iter().map(|v| v.to_string()).collect();
+                    let refs: Vec<&str> = strs.iter().map(|s| s.as_str()).collect();
+                    match crate::core::engineering::imsum(&refs) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "OCT2BIN" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::oct2bin(&t, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "OCT2DEC" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::engineering::oct2dec(&t))
+                }
+                "OCT2HEX" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::oct2hex(&t, p) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "IMCOS" | "IMCOSH" | "IMCOT" | "IMCSC" | "IMCSCH" | "IMEXP" | "IMLN" | "IMLOG10" | "IMLOG2" | "IMPOWER" | "IMSEC" | "IMSECH" | "IMSIN" | "IMSINH" | "IMSQRT" | "IMTAN" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    Ok(ResultData::String(t))
+                }
+
+                // --- INFORMATION & LOGICAL & DATABASE & LOOKUP & WEB & CUBE FUNCTIONS ---
+                "ERROR.TYPE" => {
+                    let t = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::extended_fn::error_type(&t))
+                }
+                "ISERR" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Boolean(crate::core::extended_fn::iserr(&val)))
+                }
+                "ISEVEN" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "ISEVEN")?;
+                    Ok(ResultData::Boolean(crate::core::extended_fn::iseven(n)))
+                }
+                "ISLOGICAL" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Boolean(crate::core::extended_fn::islogical(&val)))
+                }
+                "ISNONTEXT" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Boolean(crate::core::extended_fn::isnontext(&val)))
+                }
+                "ISODD" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "ISODD")?;
+                    Ok(ResultData::Boolean(crate::core::extended_fn::isodd(n)))
+                }
+                "N" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Float(crate::core::extended_fn::n_fn(&val)))
+                }
+                "NA" => Ok(crate::core::extended_fn::na_fn()),
+                "TYPE" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Float(crate::core::extended_fn::type_fn(&val)))
+                }
+                "XOR" => {
+                    let bools: Vec<bool> = evaluated_args.iter().map(|v| self.to_bool(v)).collect();
+                    Ok(ResultData::Boolean(crate::core::extended_fn::xor_fn(&bools)))
+                }
+                "IFNA" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    let alt = evaluated_args.get(1).cloned().unwrap_or(ResultData::None);
+                    Ok(crate::core::extended_fn::ifna(val, alt))
+                }
+                "IFS" => {
+                    for chunk in evaluated_args.chunks(2) {
+                        if chunk.len() == 2 && self.to_bool(&chunk[0]) {
+                            return Ok(chunk[1].clone());
+                        }
+                    }
+                    Ok(ResultData::Error("#N/A".to_string()))
+                }
+                "SWITCH" => {
+                    if evaluated_args.is_empty() { return Ok(ResultData::Error("#VALUE!".to_string())); }
+                    let expr = &evaluated_args[0];
+                    let rest = &evaluated_args[1..];
+                    let mut i = 0;
+                    while i + 1 < rest.len() {
+                        if expr.to_string() == rest[i].to_string() {
+                            return Ok(rest[i + 1].clone());
+                        }
+                        i += 2;
+                    }
+                    if i < rest.len() {
+                        Ok(rest[i].clone())
+                    } else {
+                        Ok(ResultData::Error("#N/A".to_string()))
+                    }
+                }
+                "ADDRESS" => {
+                    let r = self.to_f64_arg(evaluated_args.first(), "ADDRESS")?;
+                    let c = self.to_f64_arg(evaluated_args.get(1), "ADDRESS")?;
+                    let abs_n = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    let a1 = evaluated_args.get(3).map(|v| self.to_bool(v));
+                    let s_name = evaluated_args.get(4).map(|v| v.to_string());
+                    match crate::core::extended_fn::address_fn(r, c, abs_n, a1, s_name.as_deref()) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "HLOOKUP" => {
+                    let lookup_val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    let table: Vec<Vec<ResultData>> = evaluated_args.get(1).map(|arg| self.extract_matrix(arg).into_iter().map(|row| row.into_iter().map(ResultData::Float).collect()).collect()).unwrap_or_default();
+                    let row_idx = self.to_f64_arg(evaluated_args.get(2), "HLOOKUP")?;
+                    let range_lookup = evaluated_args.get(3).map(|v| self.to_bool(v));
+                    Ok(crate::core::extended_fn::hlookup(&lookup_val, &table, row_idx, range_lookup))
+                }
+                "ENCODEURL" => {
+                    let text = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
+                    match crate::core::extended_fn::encodeurl(&text) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
+                }
+                "CELL" | "INFO" | "ISFORMULA" | "ISOMITTED" | "ISREF" | "SHEET" | "SHEETS" | "STOCKHISTORY" | "BYCOL" | "BYROW" | "LAMBDA" | "MAKEARRAY" | "MAP" | "REDUCE" | "SCAN" => {
+                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+                "DAVERAGE" | "DCOUNT" | "DCOUNTA" | "DGET" | "DMAX" | "DMIN" | "DPRODUCT" | "DSTDEV" | "DSTDEVP" | "DSUM" | "DVAR" | "DVARP" => {
+                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+                "AREAS" | "CHOOSECOLS" | "CHOOSEROWS" | "COLUMN" | "COLUMNS" | "DROP" | "EXPAND" | "FILTER" | "FORMULATEXT" | "GETPIVOTDATA" | "GROUPBY" | "HSTACK" | "HYPERLINK" | "IMAGE" | "INDIRECT" | "LOOKUP" | "OFFSET" | "PIVOTBY" | "ROW" | "ROWS" | "RTD" | "SORT" | "SORTBY" | "TAKE" | "TOCOL" | "TOROW" | "TRANSPOSE" | "TRIMRANGE" | "UNIQUE" | "VSTACK" | "WRAPCOLS" | "WRAPROWS" | "XMATCH" => {
+                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+                "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER" | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" | "FILTERXML" | "WEBSERVICE" => {
+                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+
                 "SUM" => {
                     if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);

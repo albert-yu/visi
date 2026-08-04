@@ -1,7 +1,10 @@
 pub mod actions;
 pub mod chart;
 pub mod date;
+pub mod date_fn;
 pub mod engine;
+pub mod engineering;
+pub mod extended_fn;
 pub mod finance;
 pub mod formula;
 pub mod math_trig;

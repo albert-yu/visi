@@ -26,6 +26,7 @@ fn create_sheet<const ROWS: usize, const COLS: usize>(grid: &[[&str; COLS]; ROWS
 }
 
 mod aggregate;
+mod extended;
 mod logical;
 mod math;
 mod math_trig;

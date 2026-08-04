@@ -62,6 +62,15 @@ class ExcelFuzzGenerator:
         "LEFTB", "LENB", "MIDB", "REPT", "RIGHTB", "SEARCH", "SEARCHB",
         "SUBSTITUTE", "T", "TEXTAFTER", "TEXTBEFORE", "UNICHAR", "UNICODE"
     ]
+    FUNCTIONS_DATE = [
+        "DATE", "DAY", "DAYS", "DAYS360", "EDATE", "EOMONTH", "HOUR", "MINUTE",
+        "MONTH", "SECOND", "TIME", "WEEKDAY", "WEEKNUM", "YEAR", "YEARFRAC"
+    ]
+    FUNCTIONS_ENGINEERING = [
+        "BIN2DEC", "DEC2BIN", "DEC2HEX", "DEC2OCT", "DELTA", "GESTEP",
+        "HEX2DEC", "OCT2DEC", "BITAND", "BITOR", "BITXOR"
+    ]
+    FUNCTIONS_INFO = ["ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR"]
 
     # Scalar-argument TVM/depreciation functions. Unlike the generic
     # FUNCTIONS_* lists above, financial functions can't have arbitrary
