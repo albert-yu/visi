@@ -113,6 +113,80 @@ earlier, broader multi-guess version did. Closing the rest of this gap
 would mean reverse-engineering Excel's exact iterative algorithm, which is
 out of scope for now.
 
+### Reverse-engineering the IRR/XIRR/RATE solver gap (`reverse_engineer_financial.py`)
+
+Rather than guessing at Excel's exact iterative algorithm, `reverse_engineer_financial.py`
+grades a grid of ~70 candidate Newton-Raphson variants (closed-form TVM
+derivative -- the standard OpenOffice-lineage formulation used by
+`formulajs` -- vs. visi's current numeric/central-difference derivative,
+crossed with several `(epsilon, max_iter, error-on-non-convergence,
+retry-from-zero-guess)` combinations) against real Excel's actual output,
+using cashflow/RATE inputs deliberately chosen to sit near the convergence
+boundary rather than typical random-fuzz inputs: multi-sign-change
+cashflows with more than one real root (including the classic
+`[-10, 21, -11]` dual-root case, whose second root is the trivial `r=0`
+since the cashflows sum to exactly zero), a wide sweep of starting guesses
+per case, RATE inputs pushed toward the `-100%` floor, and irregular/
+out-of-order XIRR dates.
+
+```bash
+python3 fuzz/reverse_engineer_financial.py --driver mock                     # pipeline smoke-test, no Excel
+python3 fuzz/reverse_engineer_financial.py --excel-path "/Applications/Microsoft Excel.app" --seed 1
+```
+
+It writes every case as one formula into a workbook, evaluates it with both
+`visi` and real Excel (via the same `ExcelDriver`/`VisiDriver`/
+`XLSXEvaluatedReader` drivers `fuzz_excel.py` uses -- sheet cells are
+looked up by parsing `xl/workbook.xml` + `xl/_rels/workbook.xml.rels` for
+the real name -> `sheetN.xml` mapping, since the reader keys cells by the
+latter), then evaluates every candidate variant in pure Python against the
+same inputs and ranks them by agreement rate with Excel. Findings from a
+real run (`--seed 1`, one Excel installation, not treated as universal
+constants -- rerun to confirm before relying on exact percentages):
+
+- **No candidate variant closes the gap.** The best-scoring IRR/XIRR
+  variants beat visi's current behavior by only about one percentage point
+  (e.g. 81.5% vs. visi's 80.4% on IRR), which confirms the gap is not a
+  tuning problem (wrong epsilon/iteration cap/derivative form) but a
+  genuinely different, undocumented solver path in Excel -- consistent
+  with this section's existing conclusion.
+- **The `[-10, 21, -11]`-style dual-root case reveals *why* the
+  zero-guess retry fallback (`irr()`/`xirr()` above) is a real trade-off,
+  not a free win.** From guesses far from either root (`2.0`, `5.0`,
+  `20.0`), plain Newton-Raphson on the true NPV equation (a rational
+  function of `r`, not the equivalent polynomial in `1+r` -- the
+  distinction matters because the derivative flattens out at large `r`,
+  causing wild first steps) diverges past the `r <= -1` boundary; the
+  zero-guess retry then "succeeds" by finding the trivial `r=0` root
+  (NPV(0) = sum of cashflows = 0 here) instead of Excel's `r=0.1`. So the
+  retry converts a correctly-absent answer into a *wrong* one for this
+  shape of input -- a concrete case for the backlog if this class of
+  cashflow turns out to matter, though the fuzzer hasn't hit it in
+  practice yet.
+- **XIRR match rate is strongly guess-sign-dependent**: negative starting
+  guesses matched Excel only ~17% of the time across these adversarial
+  cases vs. ~64% for non-negative guesses -- real Excel appears far more
+  willing to give up (`#NUM!`) from a negative guess than visi's solver
+  is, in both directions (Excel erroring where visi converges, and,
+  less often, the reverse).
+- **visi's RATE solver already matches Excel 97.9% of the time** on these
+  adversarial boundary cases specifically *because* of the existing
+  `r <= -0.9999 -> #NUM!` rejection heuristic -- every closed-form/numeric
+  candidate variant *without* that heuristic scored notably lower
+  (best: 88.5%), i.e. that heuristic is doing real work and isn't a
+  guess to second-guess. The 7 remaining RATE mismatches in the seed-1 run
+  were evenly split both directions: visi returning `#NUM!` where Excel
+  converged (all from `guess=2.0` on long-duration, `nper=120` loans) and
+  visi converging where Excel returned `#NUM!` (all from `guess<=0` on
+  short loans) -- too small a sample to generalize a fix from without
+  more runs.
+
+Full per-case, per-variant results land in
+`fuzz_results/financial_reverse_engineering/report.json` (gitignored) for
+further offline analysis; the console output prints, per function, visi's
+current agreement rate with Excel as a baseline, the top-scoring candidate
+variants, and the worst remaining mismatches for the best one.
+
 ---
 
 ## Pivot Table Fuzzing (`fuzz_pivot.py`)
