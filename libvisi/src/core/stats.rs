@@ -107,7 +107,9 @@ pub fn erf(x: f64) -> f64 {
 
     // High-precision Chebyshev approximation (erfc(x) for x >= 0)
     let t = 1.0 / (1.0 + 0.3275911 * ax);
-    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let poly = t
+        * (0.254829592
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
     let ans = 1.0 - poly * (-ax * ax).exp();
     sign * ans
 }
@@ -810,7 +812,11 @@ pub fn covariance_p(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     let mean_x = xs.iter().sum::<f64>() / n;
     let mean_y = ys.iter().sum::<f64>() / n;
 
-    let cov = xs.iter().zip(ys.iter()).map(|(&x, &y)| (x - mean_x) * (y - mean_y)).sum::<f64>();
+    let cov = xs
+        .iter()
+        .zip(ys.iter())
+        .map(|(&x, &y)| (x - mean_x) * (y - mean_y))
+        .sum::<f64>();
     Ok(cov / n)
 }
 
@@ -822,7 +828,11 @@ pub fn covariance_s(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     let mean_x = xs.iter().sum::<f64>() / n;
     let mean_y = ys.iter().sum::<f64>() / n;
 
-    let cov = xs.iter().zip(ys.iter()).map(|(&x, &y)| (x - mean_x) * (y - mean_y)).sum::<f64>();
+    let cov = xs
+        .iter()
+        .zip(ys.iter())
+        .map(|(&x, &y)| (x - mean_x) * (y - mean_y))
+        .sum::<f64>();
     Ok(cov / (n - 1.0))
 }
 
@@ -916,11 +926,7 @@ pub fn steyx(ys: &[f64], xs: &[f64]) -> Result<f64, String> {
     }
 
     let val = (s_yy - (s_xy * s_xy) / s_xx) / (n - 2.0);
-    if val < 0.0 {
-        Ok(0.0)
-    } else {
-        Ok(val.sqrt())
-    }
+    if val < 0.0 { Ok(0.0) } else { Ok(val.sqrt()) }
 }
 
 pub fn forecast_linear(x: f64, ys: &[f64], xs: &[f64]) -> Result<f64, String> {
@@ -1054,7 +1060,14 @@ pub fn gamma_inv(p: f64, alpha: f64, beta: f64) -> Result<f64, String> {
     Ok(g_val * beta)
 }
 
-pub fn beta_dist(x: f64, alpha: f64, beta: f64, cumulative: bool, a: f64, b: f64) -> Result<f64, String> {
+pub fn beta_dist(
+    x: f64,
+    alpha: f64,
+    beta: f64,
+    cumulative: bool,
+    a: f64,
+    b: f64,
+) -> Result<f64, String> {
     if alpha <= 0.0 || beta <= 0.0 || a >= b || x < a || x > b {
         return Err("#NUM!".to_string());
     }
@@ -1076,8 +1089,18 @@ pub fn beta_inv(p: f64, alpha: f64, beta: f64, a: f64, b: f64) -> Result<f64, St
     Ok(a + y * (b - a))
 }
 
-pub fn binom_dist(number_s: f64, trials: f64, probability_s: f64, cumulative: bool) -> Result<f64, String> {
-    if number_s < 0.0 || trials < 0.0 || number_s > trials || probability_s < 0.0 || probability_s > 1.0 {
+pub fn binom_dist(
+    number_s: f64,
+    trials: f64,
+    probability_s: f64,
+    cumulative: bool,
+) -> Result<f64, String> {
+    if number_s < 0.0
+        || trials < 0.0
+        || number_s > trials
+        || probability_s < 0.0
+        || probability_s > 1.0
+    {
         return Err("#NUM!".to_string());
     }
     let k = number_s.floor();
@@ -1101,7 +1124,12 @@ pub fn binom_dist(number_s: f64, trials: f64, probability_s: f64, cumulative: bo
     }
 }
 
-pub fn binom_dist_range(trials: f64, probability_s: f64, number_s: f64, number_s2: Option<f64>) -> Result<f64, String> {
+pub fn binom_dist_range(
+    trials: f64,
+    probability_s: f64,
+    number_s: f64,
+    number_s2: Option<f64>,
+) -> Result<f64, String> {
     let k1 = number_s.floor();
     let k2 = number_s2.unwrap_or(number_s).floor();
     if k1 > k2 {
@@ -1129,7 +1157,12 @@ pub fn binom_inv(trials: f64, probability_s: f64, alpha: f64) -> Result<f64, Str
     Ok(n as f64)
 }
 
-pub fn negbinom_dist(number_f: f64, number_s: f64, probability_s: f64, cumulative: bool) -> Result<f64, String> {
+pub fn negbinom_dist(
+    number_f: f64,
+    number_s: f64,
+    probability_s: f64,
+    cumulative: bool,
+) -> Result<f64, String> {
     if number_f < 0.0 || number_s < 1.0 || probability_s < 0.0 || probability_s > 1.0 {
         return Err("#NUM!".to_string());
     }
@@ -1147,14 +1180,27 @@ pub fn negbinom_dist(number_f: f64, number_s: f64, probability_s: f64, cumulativ
         }
         Ok(sum.min(1.0))
     } else {
-        let pmf = (lgamma(k + r) - lgamma(k + 1.0) - lgamma(r)).exp() * p.powf(r) * (1.0 - p).powf(k);
+        let pmf =
+            (lgamma(k + r) - lgamma(k + 1.0) - lgamma(r)).exp() * p.powf(r) * (1.0 - p).powf(k);
         Ok(pmf)
     }
 }
 
-pub fn hypgeom_dist(sample_s: f64, sample_size: f64, pop_s: f64, pop_size: f64, cumulative: bool) -> Result<f64, String> {
-    if sample_s < 0.0 || sample_size < 0.0 || pop_s < 0.0 || pop_size < 0.0
-        || sample_s > sample_size || sample_s > pop_s || sample_size > pop_size {
+pub fn hypgeom_dist(
+    sample_s: f64,
+    sample_size: f64,
+    pop_s: f64,
+    pop_size: f64,
+    cumulative: bool,
+) -> Result<f64, String> {
+    if sample_s < 0.0
+        || sample_size < 0.0
+        || pop_s < 0.0
+        || pop_size < 0.0
+        || sample_s > sample_size
+        || sample_s > pop_s
+        || sample_size > pop_size
+    {
         return Err("#NUM!".to_string());
     }
     let k = sample_s.floor();
@@ -1164,7 +1210,9 @@ pub fn hypgeom_dist(sample_s: f64, sample_size: f64, pop_s: f64, pop_size: f64, 
 
     let pmf_fn = |x: f64| -> f64 {
         let log_comb1 = lgamma(m_pop + 1.0) - lgamma(x + 1.0) - lgamma(m_pop - x + 1.0);
-        let log_comb2 = lgamma(n_pop - m_pop + 1.0) - lgamma(n - x + 1.0) - lgamma(n_pop - m_pop - (n - x) + 1.0);
+        let log_comb2 = lgamma(n_pop - m_pop + 1.0)
+            - lgamma(n - x + 1.0)
+            - lgamma(n_pop - m_pop - (n - x) + 1.0);
         let log_comb3 = lgamma(n_pop + 1.0) - lgamma(n + 1.0) - lgamma(n_pop - n + 1.0);
         (log_comb1 + log_comb2 - log_comb3).exp()
     };
@@ -1330,7 +1378,12 @@ pub fn t_inv_2t(p: f64, df: f64) -> Result<f64, String> {
     t_inv(1.0 - p / 2.0, df)
 }
 
-pub fn t_test(array1: &[f64], array2: &[f64], tails: usize, test_type: usize) -> Result<f64, String> {
+pub fn t_test(
+    array1: &[f64],
+    array2: &[f64],
+    tails: usize,
+    test_type: usize,
+) -> Result<f64, String> {
     if tails != 1 && tails != 2 {
         return Err("#NUM!".to_string());
     }
@@ -1343,7 +1396,11 @@ pub fn t_test(array1: &[f64], array2: &[f64], tails: usize, test_type: usize) ->
             if n1 != n2 || n1 <= 1 {
                 return Err("#N/A".to_string());
             }
-            let diffs: Vec<f64> = array1.iter().zip(array2.iter()).map(|(&a, &b)| a - b).collect();
+            let diffs: Vec<f64> = array1
+                .iter()
+                .zip(array2.iter())
+                .map(|(&a, &b)| a - b)
+                .collect();
             let mean_d = diffs.iter().sum::<f64>() / n1 as f64;
             let sd = stdev_s(&diffs)?;
             if sd == 0.0 {
@@ -1383,18 +1440,15 @@ pub fn t_test(array1: &[f64], array2: &[f64], tails: usize, test_type: usize) ->
             if se == 0.0 {
                 return Err("#DIV/0!".to_string());
             }
-            let df = (v1 + v2).powi(2) / ((v1 * v1) / (n1 - 1) as f64 + (v2 * v2) / (n2 - 1) as f64);
+            let df =
+                (v1 + v2).powi(2) / ((v1 * v1) / (n1 - 1) as f64 + (v2 * v2) / (n2 - 1) as f64);
             ((m1 - m2) / se, df)
         }
         _ => return Err("#NUM!".to_string()),
     };
 
     let p_rt = t_dist_rt(t_stat.abs(), df)?;
-    if tails == 1 {
-        Ok(p_rt)
-    } else {
-        Ok(2.0 * p_rt)
-    }
+    if tails == 1 { Ok(p_rt) } else { Ok(2.0 * p_rt) }
 }
 
 pub fn z_test(array: &[f64], x: f64, sigma: Option<f64>) -> Result<f64, String> {
@@ -1464,7 +1518,12 @@ pub fn permutationa(n: f64, k: f64) -> Result<f64, String> {
     Ok(n.floor().powf(k.floor()))
 }
 
-pub fn prob(x_range: &[f64], prob_range: &[f64], lower_limit: f64, upper_limit: Option<f64>) -> Result<f64, String> {
+pub fn prob(
+    x_range: &[f64],
+    prob_range: &[f64],
+    lower_limit: f64,
+    upper_limit: Option<f64>,
+) -> Result<f64, String> {
     if x_range.len() != prob_range.len() || x_range.is_empty() {
         return Err("#N/A".to_string());
     }

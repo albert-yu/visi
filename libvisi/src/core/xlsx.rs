@@ -732,11 +732,7 @@ pub fn export_xlsx_data(
                 }
 
                 worksheet
-                    .insert_chart(
-                        chart.anchor_row as u32,
-                        chart.anchor_col as u16,
-                        &rx_chart,
-                    )
+                    .insert_chart(chart.anchor_row as u32, chart.anchor_col as u16, &rx_chart)
                     .map_err(|e| format!("Failed to insert Excel chart: {}", e))?;
             }
         }

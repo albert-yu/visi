@@ -39,7 +39,18 @@ pub fn bahttext(number: f64) -> Result<String, String> {
     let baht = abs_num.floor() as u64;
     let satang = ((abs_num - baht as f64) * 100.0).round() as u64;
 
-    let digits = ["ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า"];
+    let digits = [
+        "ศูนย์",
+        "หนึ่ง",
+        "สอง",
+        "สาม",
+        "สี่",
+        "ห้า",
+        "หก",
+        "เจ็ด",
+        "แปด",
+        "เก้า",
+    ];
     let positions = ["", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน"];
 
     fn convert_group(n: u64, digits: &[&str; 10], positions: &[&str; 7]) -> String {
@@ -196,7 +207,11 @@ pub fn find(find_text: &str, within_text: &str, start_num: Option<f64>) -> Resul
     }
 }
 
-pub fn fixed(number: f64, decimals: Option<f64>, no_commas: Option<bool>) -> Result<String, String> {
+pub fn fixed(
+    number: f64,
+    decimals: Option<f64>,
+    no_commas: Option<bool>,
+) -> Result<String, String> {
     let dec = decimals.unwrap_or(2.0).round() as usize;
     let skip_commas = no_commas.unwrap_or(false);
     let is_neg = number < 0.0;
@@ -233,7 +248,11 @@ pub fn fixed(number: f64, decimals: Option<f64>, no_commas: Option<bool>) -> Res
     }
 }
 
-pub fn numbervalue(text: &str, decimal_sep: Option<&str>, group_sep: Option<&str>) -> Result<f64, String> {
+pub fn numbervalue(
+    text: &str,
+    decimal_sep: Option<&str>,
+    group_sep: Option<&str>,
+) -> Result<f64, String> {
     let dec = decimal_sep.unwrap_or(".");
     let group = group_sep.unwrap_or(",");
     let mut cleaned = text.trim().to_string();
@@ -265,7 +284,12 @@ pub fn regextest(text: &str, pattern: &str) -> Result<bool, String> {
     Ok(text.contains(pattern))
 }
 
-pub fn replace_fn(old_text: &str, start_num: f64, num_chars: f64, new_text: &str) -> Result<String, String> {
+pub fn replace_fn(
+    old_text: &str,
+    start_num: f64,
+    num_chars: f64,
+    new_text: &str,
+) -> Result<String, String> {
     let start = start_num.floor() as usize;
     let n = num_chars.floor() as usize;
     if start < 1 {
@@ -317,7 +341,12 @@ pub fn search(find_text: &str, within_text: &str, start_num: Option<f64>) -> Res
     }
 }
 
-pub fn substitute(text: &str, old_text: &str, new_text: &str, instance: Option<f64>) -> Result<String, String> {
+pub fn substitute(
+    text: &str,
+    old_text: &str,
+    new_text: &str,
+    instance: Option<f64>,
+) -> Result<String, String> {
     if old_text.is_empty() {
         return Ok(text.to_string());
     }

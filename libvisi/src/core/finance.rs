@@ -438,9 +438,7 @@ pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
 
     let res = newton_raphson_bounded_df(f, Some(df), start_r, None, start_r >= 0.0);
 
-    let is_neg_when_pos_guess = guess >= 0.0
-        && res.map_or(false, |r| r < 0.0)
-        && flips >= 2;
+    let is_neg_when_pos_guess = guess >= 0.0 && res.map_or(false, |r| r < 0.0) && flips >= 2;
     let is_trivial_zero = res.map_or(false, |r| r.abs() < 1e-5) && sum_v.abs() < 1e-9;
 
     if (res.is_none() || is_trivial_zero || is_neg_when_pos_guess) && guess >= 0.0 {
@@ -771,7 +769,10 @@ pub fn coupncd(settlement: f64, maturity: f64, frequency: f64) -> f64 {
 
 pub fn coupdays(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> f64 {
     match basis as i64 {
-        1 => coupon_ncd(settlement, maturity, frequency) - coupon_pcd(settlement, maturity, frequency),
+        1 => {
+            coupon_ncd(settlement, maturity, frequency)
+                - coupon_pcd(settlement, maturity, frequency)
+        }
         3 => 365.0 / frequency,
         _ => 360.0 / frequency,
     }
@@ -841,7 +842,9 @@ pub fn price(
     frequency: f64,
     basis: f64,
 ) -> f64 {
-    bond_price_from_yield(settlement, maturity, rate, yld, redemption, frequency, basis)
+    bond_price_from_yield(
+        settlement, maturity, rate, yld, redemption, frequency, basis,
+    )
 }
 
 pub fn yield_(
@@ -853,7 +856,9 @@ pub fn yield_(
     frequency: f64,
     basis: f64,
 ) -> Option<f64> {
-    let f = |y: f64| bond_price_from_yield(settlement, maturity, rate, y, redemption, frequency, basis) - pr;
+    let f = |y: f64| {
+        bond_price_from_yield(settlement, maturity, rate, y, redemption, frequency, basis) - pr
+    };
     bisection(f, -0.99, 10.0)
 }
 
@@ -911,7 +916,11 @@ pub fn duration(
     let mut price_sum = 0.0;
     for k in 1..=n.max(1) {
         let t = (k - 1) as f64 + dsc / e;
-        let cf = if k == n { coupon_amt + 100.0 } else { coupon_amt };
+        let cf = if k == n {
+            coupon_amt + 100.0
+        } else {
+            coupon_amt
+        };
         let pv = cf / (1.0 + yld / frequency).powf(t);
         weighted_sum += t * pv;
         price_sum += pv;
@@ -936,7 +945,13 @@ pub fn disc(settlement: f64, maturity: f64, pr: f64, redemption: f64, basis: f64
     (redemption - pr) / redemption * (year / dsm)
 }
 
-pub fn pricedisc(settlement: f64, maturity: f64, discount: f64, redemption: f64, basis: f64) -> f64 {
+pub fn pricedisc(
+    settlement: f64,
+    maturity: f64,
+    discount: f64,
+    redemption: f64,
+    basis: f64,
+) -> f64 {
     let dsm = basis_days_between(settlement, maturity, basis);
     let year = basis_year_days(basis, settlement, maturity);
     redemption * (1.0 - discount * dsm / year)
@@ -968,14 +983,7 @@ pub fn pricemat(
     num / (1.0 + (dsm / year) * yld) - (a / year) * rate * 100.0
 }
 
-pub fn yieldmat(
-    settlement: f64,
-    maturity: f64,
-    issue: f64,
-    rate: f64,
-    pr: f64,
-    basis: f64,
-) -> f64 {
+pub fn yieldmat(settlement: f64, maturity: f64, issue: f64, rate: f64, pr: f64, basis: f64) -> f64 {
     let dim = basis_days_between(issue, maturity, basis);
     let a = basis_days_between(issue, settlement, basis);
     let dsm = basis_days_between(settlement, maturity, basis);
@@ -995,7 +1003,13 @@ pub fn received(settlement: f64, maturity: f64, investment: f64, discount: f64, 
     investment / (1.0 - discount * dsm / year)
 }
 
-pub fn intrate(settlement: f64, maturity: f64, investment: f64, redemption: f64, basis: f64) -> f64 {
+pub fn intrate(
+    settlement: f64,
+    maturity: f64,
+    investment: f64,
+    redemption: f64,
+    basis: f64,
+) -> f64 {
     let dsm = basis_days_between(settlement, maturity, basis);
     let year = basis_year_days(basis, settlement, maturity);
     (redemption - investment) / investment * (year / dsm)
@@ -1031,7 +1045,13 @@ pub fn tbilleq(settlement: f64, maturity: f64, discount: f64) -> Option<f64> {
     }
 }
 
-pub fn accrintm(issue: f64, settlement: f64, rate: f64, par: f64, basis: f64) -> Result<f64, String> {
+pub fn accrintm(
+    issue: f64,
+    settlement: f64,
+    rate: f64,
+    par: f64,
+    basis: f64,
+) -> Result<f64, String> {
     let frac = date_fn::yearfrac(issue, settlement, Some(basis))?;
     Ok(par * rate * frac)
 }
@@ -1094,7 +1114,12 @@ pub fn accrint(
     basis: f64,
     _calc_method: bool,
 ) -> f64 {
-    let schedule = quasi_coupon_schedule(first_interest, issue, settlement.max(first_interest), frequency);
+    let schedule = quasi_coupon_schedule(
+        first_interest,
+        issue,
+        settlement.max(first_interest),
+        frequency,
+    );
     let coupon_amt = par * rate / frequency;
 
     let mut total = 0.0;
@@ -1279,7 +1304,8 @@ fn oddfprice_from_yield(
     // DFC (issue -> first_coupon) and A (issue -> settlement) summed
     // piecewise across quasi-coupon periods, which stays correct whether
     // the odd first period is shorter or longer than a normal period.
-    let schedule = quasi_coupon_schedule(first_coupon, issue, settlement.max(first_coupon), frequency);
+    let schedule =
+        quasi_coupon_schedule(first_coupon, issue, settlement.max(first_coupon), frequency);
     let mut dfc = 0.0;
     let mut a = 0.0;
     for w in schedule.windows(2) {
@@ -1287,7 +1313,11 @@ fn oddfprice_from_yield(
         let seg = |lo: f64, hi: f64| -> f64 {
             let s = p_start.max(lo);
             let e = p_end.min(hi);
-            if e > s { basis_days_between(s, e, basis) } else { 0.0 }
+            if e > s {
+                basis_days_between(s, e, basis)
+            } else {
+                0.0
+            }
         };
         dfc += seg(issue, first_coupon);
         a += seg(issue, settlement);

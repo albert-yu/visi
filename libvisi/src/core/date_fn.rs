@@ -149,11 +149,19 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
     let is_euro = method.unwrap_or(false);
 
     if is_euro {
-        if d1 == 31 { d1 = 30; }
-        if d2 == 31 { d2 = 30; }
+        if d1 == 31 {
+            d1 = 30;
+        }
+        if d2 == 31 {
+            d2 = 30;
+        }
     } else {
-        if d1 == 31 { d1 = 30; }
-        if d2 == 31 && d1 == 30 { d2 = 30; }
+        if d1 == 31 {
+            d1 = 30;
+        }
+        if d2 == 31 && d1 == 30 {
+            d2 = 30;
+        }
     }
 
     Ok(((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64)
@@ -166,7 +174,21 @@ pub fn edate(start_date: f64, months: f64) -> Result<f64, String> {
     let target_m = (total_m - 1).rem_euclid(12) + 1;
 
     let leap = (target_y % 4 == 0 && target_y % 100 != 0) || (target_y % 400 == 0);
-    let max_days = [0, 31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][target_m as usize];
+    let max_days = [
+        0,
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ][target_m as usize];
     let target_d = d.min(max_days);
 
     Ok(ymd_to_serial(target_y, target_m, target_d) + start_date.fract())
@@ -179,7 +201,21 @@ pub fn eomonth(start_date: f64, months: f64) -> Result<f64, String> {
     let target_m = (total_m - 1).rem_euclid(12) + 1;
 
     let leap = (target_y % 4 == 0 && target_y % 100 != 0) || (target_y % 400 == 0);
-    let max_days = [0, 31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][target_m as usize];
+    let max_days = [
+        0,
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ][target_m as usize];
 
     Ok(ymd_to_serial(target_y, target_m, max_days))
 }

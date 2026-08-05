@@ -671,10 +671,19 @@ pub fn sumxmy2(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
     }
-    Ok(xs.iter().zip(ys.iter()).map(|(&x, &y)| (x - y) * (x - y)).sum())
+    Ok(xs
+        .iter()
+        .zip(ys.iter())
+        .map(|(&x, &y)| (x - y) * (x - y))
+        .sum())
 }
 
-pub fn sequence(rows: f64, cols: Option<f64>, start: Option<f64>, step: Option<f64>) -> Result<Vec<Vec<f64>>, String> {
+pub fn sequence(
+    rows: f64,
+    cols: Option<f64>,
+    start: Option<f64>,
+    step: Option<f64>,
+) -> Result<Vec<Vec<f64>>, String> {
     let r = rows.floor() as usize;
     let c = cols.unwrap_or(1.0).floor() as usize;
     if r == 0 || c == 0 {
@@ -693,7 +702,13 @@ pub fn sequence(rows: f64, cols: Option<f64>, start: Option<f64>, step: Option<f
     Ok(grid)
 }
 
-pub fn randarray(rows: Option<f64>, cols: Option<f64>, min: Option<f64>, max: Option<f64>, whole_number: Option<bool>) -> Result<Vec<Vec<f64>>, String> {
+pub fn randarray(
+    rows: Option<f64>,
+    cols: Option<f64>,
+    min: Option<f64>,
+    max: Option<f64>,
+    whole_number: Option<bool>,
+) -> Result<Vec<Vec<f64>>, String> {
     use rand::Rng;
     let r = rows.unwrap_or(1.0).floor() as usize;
     let c = cols.unwrap_or(1.0).floor() as usize;

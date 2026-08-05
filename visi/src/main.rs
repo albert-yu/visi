@@ -576,7 +576,8 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
                 println!("{}", "-".repeat(85));
                 for c in &wb.charts {
                     let title = c.title.as_deref().unwrap_or("-");
-                    let anchor = format!("{}{}", col_idx_to_letters(c.anchor_col), c.anchor_row + 1);
+                    let anchor =
+                        format!("{}{}", col_idx_to_letters(c.anchor_col), c.anchor_row + 1);
                     println!(
                         "{:<12} {:<15} {:<10?} {:<20} {:<20} {:<8}",
                         c.id, c.name, c.chart_type, c.data_range, title, anchor

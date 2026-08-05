@@ -8,10 +8,7 @@ fn eval1(source: &str) -> ResultData {
 
 fn assert_float_close(result: &ResultData, expected: f64, tol: f64) {
     match result {
-        ResultData::Float(f) => assert!(
-            (f - expected).abs() < tol,
-            "expected {expected}, got {f}"
-        ),
+        ResultData::Float(f) => assert!((f - expected).abs() < tol, "expected {expected}, got {f}"),
         ResultData::Integer(i) => assert!(
             (*i as f64 - expected).abs() < tol,
             "expected {expected}, got {i}"
@@ -49,8 +46,12 @@ fn test_choose_basic() {
 
 #[test]
 fn test_choose_out_of_range_errors() {
-    assert!(matches!(eval1("=CHOOSE(0, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!")));
-    assert!(matches!(eval1("=CHOOSE(5, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!")));
+    assert!(
+        matches!(eval1("=CHOOSE(0, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!"))
+    );
+    assert!(
+        matches!(eval1("=CHOOSE(5, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!"))
+    );
 }
 
 #[test]
@@ -66,9 +67,21 @@ fn test_yearfrac_basis1_uses_actual_actual_year_average() {
     // Confirmed against real Excel via the differential fuzzer: basis 1
     // averages 365/366 across every calendar year the span touches, not
     // the average Julian year (365.2425) the previous implementation used.
-    assert_float_close(&eval1("=YEARFRAC(DATE(1998,8,8),DATE(1998,9,8),1)"), 0.08493150684931507, 1e-9);
-    assert_float_close(&eval1("=YEARFRAC(DATE(2016,1,1),DATE(2016,6,1),1)"), 0.41530054644808745, 1e-9);
-    assert_float_close(&eval1("=YEARFRAC(DATE(2017,6,1),DATE(2020,9,1),1)"), 3.252566735112936, 1e-6);
+    assert_float_close(
+        &eval1("=YEARFRAC(DATE(1998,8,8),DATE(1998,9,8),1)"),
+        0.08493150684931507,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=YEARFRAC(DATE(2016,1,1),DATE(2016,6,1),1)"),
+        0.41530054644808745,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=YEARFRAC(DATE(2017,6,1),DATE(2020,9,1),1)"),
+        3.252566735112936,
+        1e-6,
+    );
 }
 
 // --- Day-count / bond-pricing financial functions -----------------------
@@ -82,10 +95,26 @@ fn test_coupon_date_functions_match_microsoft_docs_example() {
     // Microsoft's own COUPDAYS/COUPDAYBS/COUPNUM/COUPPCD documentation
     // example: settlement 1/25/2011, maturity 11/15/2011, semiannual,
     // actual/actual.
-    assert_float_close(&eval1("=COUPDAYBS(DATE(2011,1,25), DATE(2011,11,15), 2, 1)"), 71.0, 1e-9);
-    assert_float_close(&eval1("=COUPDAYS(DATE(2011,1,25), DATE(2011,11,15), 2, 1)"), 181.0, 1e-9);
-    assert_float_close(&eval1("=COUPNUM(DATE(2011,1,25), DATE(2011,11,15), 2)"), 2.0, 1e-9);
-    assert_float_close(&eval1("=COUPPCD(DATE(2011,1,25), DATE(2011,11,15), 2)"), 40497.0, 1e-9);
+    assert_float_close(
+        &eval1("=COUPDAYBS(DATE(2011,1,25), DATE(2011,11,15), 2, 1)"),
+        71.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=COUPDAYS(DATE(2011,1,25), DATE(2011,11,15), 2, 1)"),
+        181.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=COUPNUM(DATE(2011,1,25), DATE(2011,11,15), 2)"),
+        2.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=COUPPCD(DATE(2011,1,25), DATE(2011,11,15), 2)"),
+        40497.0,
+        1e-9,
+    );
 }
 
 #[test]
@@ -223,7 +252,11 @@ fn test_received_and_intrate_match_real_excel() {
 
 #[test]
 fn test_tbill_functions_match_real_excel() {
-    assert_float_close(&eval1("=TBILLPRICE(DATE(2008,3,31), DATE(2008,6,1), 0.09)"), 98.45, 1e-9);
+    assert_float_close(
+        &eval1("=TBILLPRICE(DATE(2008,3,31), DATE(2008,6,1), 0.09)"),
+        98.45,
+        1e-9,
+    );
     assert_float_close(
         &eval1("=TBILLYIELD(DATE(2008,3,31), DATE(2008,6,1), 98.45)"),
         0.09141696292534264,
@@ -243,12 +276,16 @@ fn test_accrint_totals_from_issue_regardless_of_calc_method() {
     // (TRUE vs FALSE) never changes ACCRINT's result in practice, so both
     // must total the same accrued-since-issue amount.
     assert_float_close(
-        &eval1("=ACCRINT(DATE(2017,6,7), DATE(2018,6,7), DATE(2018,7,7), 0.0547, 14735.46, 1, 0, TRUE)"),
+        &eval1(
+            "=ACCRINT(DATE(2017,6,7), DATE(2018,6,7), DATE(2018,7,7), 0.0547, 14735.46, 1, 0, TRUE)",
+        ),
         873.1988004999998,
         1e-6,
     );
     assert_float_close(
-        &eval1("=ACCRINT(DATE(2017,6,7), DATE(2018,6,7), DATE(2018,7,7), 0.0547, 14735.46, 1, 0, FALSE)"),
+        &eval1(
+            "=ACCRINT(DATE(2017,6,7), DATE(2018,6,7), DATE(2018,7,7), 0.0547, 14735.46, 1, 0, FALSE)",
+        ),
         873.1988004999998,
         1e-6,
     );
@@ -297,7 +334,9 @@ fn test_amordegrc_rejects_life_at_or_below_two_years() {
 fn test_amordegrc_period_sequence_matches_real_excel() {
     // A full period-by-period depreciation schedule confirmed against real
     // Excel, including the first-period prorate and final-period taper.
-    let expected = [5699.0, 8515.0, 6742.0, 5338.0, 4226.0, 3346.0, 2649.0, 2098.0, 1661.0, 1315.0];
+    let expected = [
+        5699.0, 8515.0, 6742.0, 5338.0, 4226.0, 3346.0, 2649.0, 2098.0, 1661.0, 1315.0,
+    ];
     for (period, exp) in expected.iter().enumerate() {
         let f = format!(
             "=AMORDEGRC(46587.76, DATE(2028,7,27), EDATE(DATE(2028,7,27),7), 3292.26, {period}, 0.0833, 1)"
@@ -371,7 +410,9 @@ fn test_oddlprice_oddlyield_match_real_excel() {
         1e-6,
     );
     assert_float_close(
-        &eval1("=ODDLPRICE(DATE(2019,6,21)+65, DATE(2019,6,21)+90, DATE(2019,6,21), 0.0478, 0.0376, 100, 2, 2)"),
+        &eval1(
+            "=ODDLPRICE(DATE(2019,6,21)+65, DATE(2019,6,21)+90, DATE(2019,6,21), 0.0478, 0.0376, 100, 2, 2)",
+        ),
         100.06731898218347,
         1e-6,
     );
@@ -407,7 +448,11 @@ fn test_euroconvert_same_currency_is_a_no_op() {
 #[test]
 fn test_euroconvert_rounds_zero_decimal_currencies_to_whole_units() {
     // ITL/ESP/BEF/LUF had no meaningful subunit in everyday use.
-    assert_float_close(&eval1("=EUROCONVERT(100, \"EUR\", \"ITL\")"), 193627.0, 1e-9);
+    assert_float_close(
+        &eval1("=EUROCONVERT(100, \"EUR\", \"ITL\")"),
+        193627.0,
+        1e-9,
+    );
 }
 
 #[test]
@@ -472,13 +517,104 @@ fn test_odd_period_functions_reject_settlement_at_or_before_anchor() {
 // K3:K4 = Tree header with a blank criteria row -> matches everything
 fn database_test_sheet() -> Sheet {
     let grid: [[&str; 12]; 7] = [
-        ["Tree", "Height", "Age", "Yield", "Profit", "", "Tree", "Height", "", "Tree", "Tree", "=DSUM(A1:E7, \"Profit\", G1:H2)"],
-        ["Apple", "18", "20", "14", "105", "", "Apple", ">12", "", "Pear", "Cherry", "=DAVERAGE(A1:E7, \"Yield\", G1:H2)"],
-        ["Pear", "12", "12", "10", "96", "", "", "", "", "Cherry", "Tree", "=DCOUNT(A1:E7, \"Age\", G1:H2)"],
-        ["Cherry", "13", "14", "9", "105", "", "", "", "", "", "", "=DCOUNTA(A1:E7, \"Tree\", G1:H2)"],
-        ["Apple", "14", "15", "10", "75", "", "Tree", "", "", "", "", "=DMAX(A1:E7, \"Profit\", G1:H2)"],
-        ["Pear", "9", "8", "8", "76.8", "", "Pear", "", "", "", "", "=DMIN(A1:E7, \"Profit\", G1:H2)"],
-        ["Apple", "8", "9", "6", "45", "", "Cherry", "", "", "", "", "=DPRODUCT(A1:E7, \"Yield\", G1:H2)"],
+        [
+            "Tree",
+            "Height",
+            "Age",
+            "Yield",
+            "Profit",
+            "",
+            "Tree",
+            "Height",
+            "",
+            "Tree",
+            "Tree",
+            "=DSUM(A1:E7, \"Profit\", G1:H2)",
+        ],
+        [
+            "Apple",
+            "18",
+            "20",
+            "14",
+            "105",
+            "",
+            "Apple",
+            ">12",
+            "",
+            "Pear",
+            "Cherry",
+            "=DAVERAGE(A1:E7, \"Yield\", G1:H2)",
+        ],
+        [
+            "Pear",
+            "12",
+            "12",
+            "10",
+            "96",
+            "",
+            "",
+            "",
+            "",
+            "Cherry",
+            "Tree",
+            "=DCOUNT(A1:E7, \"Age\", G1:H2)",
+        ],
+        [
+            "Cherry",
+            "13",
+            "14",
+            "9",
+            "105",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "=DCOUNTA(A1:E7, \"Tree\", G1:H2)",
+        ],
+        [
+            "Apple",
+            "14",
+            "15",
+            "10",
+            "75",
+            "",
+            "Tree",
+            "",
+            "",
+            "",
+            "",
+            "=DMAX(A1:E7, \"Profit\", G1:H2)",
+        ],
+        [
+            "Pear",
+            "9",
+            "8",
+            "8",
+            "76.8",
+            "",
+            "Pear",
+            "",
+            "",
+            "",
+            "",
+            "=DMIN(A1:E7, \"Profit\", G1:H2)",
+        ],
+        [
+            "Apple",
+            "8",
+            "9",
+            "6",
+            "45",
+            "",
+            "Cherry",
+            "",
+            "",
+            "",
+            "",
+            "=DPRODUCT(A1:E7, \"Yield\", G1:H2)",
+        ],
     ];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -532,8 +668,16 @@ fn test_database_blank_criteria_row_matches_every_record() {
     sheet.set_cell_src(0, 11, "=DSTDEV(A1:E7, \"Profit\", K3:K4)".to_string());
     sheet.set_cell_src(1, 11, "=DVARP(A1:E7, \"Profit\", K3:K4)".to_string());
     sheet.commit(None).unwrap();
-    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 11)), 23.149946004256645, 1e-6);
-    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 11)), 446.59999999999934, 1e-6);
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(0, 11)),
+        23.149946004256645,
+        1e-6,
+    );
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 11)),
+        446.59999999999934,
+        1e-6,
+    );
 }
 
 #[test]
@@ -570,7 +714,7 @@ fn test_database_numeric_criteria_excludes_non_numeric_cells() {
     let grid: [[&str; 4]; 6] = [
         ["Key", "Val", "=DCOUNT(A1:B6, \"Val\", D1:D2)", "Val"],
         ["x", "1", "", "<1000"],
-        ["x", "", "", ""], // blank -- must not match "<1000" as if it were 0
+        ["x", "", "", ""],     // blank -- must not match "<1000" as if it were 0
         ["x", "text", "", ""], // text -- must not match either
         ["x", "TRUE", "", ""], // boolean -- must not match either
         ["x", "-5", "", ""],
@@ -680,15 +824,31 @@ fn test_byrow_and_bycol_sum_hand_verified() {
     ];
     let mut sheet = create_sheet(&grid);
     for i in 0..3 {
-        sheet.set_cell_src(i, 3, format!("=INDEX(BYROW(A1:C3, LAMBDA(zz, SUM(zz))), {})", i + 1));
-        sheet.set_cell_src(i, 4, format!("=INDEX(BYCOL(A1:C3, LAMBDA(zz, SUM(zz))), {})", i + 1));
+        sheet.set_cell_src(
+            i,
+            3,
+            format!("=INDEX(BYROW(A1:C3, LAMBDA(zz, SUM(zz))), {})", i + 1),
+        );
+        sheet.set_cell_src(
+            i,
+            4,
+            format!("=INDEX(BYCOL(A1:C3, LAMBDA(zz, SUM(zz))), {})", i + 1),
+        );
     }
     sheet.commit(None).unwrap();
     for (i, expected_row) in [6.0, 15.0, 24.0].iter().enumerate() {
-        assert_float_close(&sheet.get_result_data(&CellRef::new(i, 3)), *expected_row, 1e-9);
+        assert_float_close(
+            &sheet.get_result_data(&CellRef::new(i, 3)),
+            *expected_row,
+            1e-9,
+        );
     }
     for (i, expected_col) in [12.0, 15.0, 18.0].iter().enumerate() {
-        assert_float_close(&sheet.get_result_data(&CellRef::new(i, 4)), *expected_col, 1e-9);
+        assert_float_close(
+            &sheet.get_result_data(&CellRef::new(i, 4)),
+            *expected_col,
+            1e-9,
+        );
     }
 }
 
@@ -800,7 +960,10 @@ fn test_formulatext_and_isformula() {
 
 #[test]
 fn test_hyperlink_returns_friendly_name_or_link() {
-    assert_eq!(eval1("=HYPERLINK(\"https://example.com\")").to_string(), "https://example.com");
+    assert_eq!(
+        eval1("=HYPERLINK(\"https://example.com\")").to_string(),
+        "https://example.com"
+    );
     assert_eq!(
         eval1("=HYPERLINK(\"https://example.com\", \"Click\")").to_string(),
         "Click"
@@ -851,7 +1014,10 @@ fn test_cell_info_subset() {
     sheet.commit(None).unwrap();
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 3.0, 1e-9);
     assert_float_close(&sheet.get_result_data(&CellRef::new(1, 1)), 1.0, 1e-9);
-    assert_eq!(sheet.get_result_data(&CellRef::new(2, 1)).to_string(), "$A$3");
+    assert_eq!(
+        sheet.get_result_data(&CellRef::new(2, 1)).to_string(),
+        "$A$3"
+    );
     assert_float_close(&sheet.get_result_data(&CellRef::new(3, 1)), 10.0, 1e-9);
 }
 
@@ -906,18 +1072,38 @@ fn test_index_recovers_shape_of_nested_reshape_function() {
 #[test]
 fn test_hstack_vstack_combine_arrays() {
     // HSTACK(SEQUENCE(2,1), SEQUENCE(2,1)) side-by-side: [[1,1],[2,2]].
-    assert_float_close(&eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,1)"), 2.0, 1e-9);
-    assert_float_close(&eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,2)"), 2.0, 1e-9);
+    assert_float_close(
+        &eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,1)"),
+        2.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,2)"),
+        2.0,
+        1e-9,
+    );
     // VSTACK(SEQUENCE(1,2), SEQUENCE(1,2)) stacked: [[1,2],[1,2]].
-    assert_float_close(&eval1("=INDEX(VSTACK(SEQUENCE(1,2),SEQUENCE(1,2)),2,2)"), 2.0, 1e-9);
-    assert_float_close(&eval1("=SUM(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)))"), 6.0, 1e-9);
+    assert_float_close(
+        &eval1("=INDEX(VSTACK(SEQUENCE(1,2),SEQUENCE(1,2)),2,2)"),
+        2.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=SUM(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)))"),
+        6.0,
+        1e-9,
+    );
 }
 
 #[test]
 fn test_chooserows_chosecols_select_by_index() {
     // SEQUENCE(3,3) = [[1,2,3],[4,5,6],[7,8,9]].
     assert_float_close(&eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),2),1,1)"), 4.0, 1e-9);
-    assert_float_close(&eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),-1),1,1)"), 7.0, 1e-9);
+    assert_float_close(
+        &eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),-1),1,1)"),
+        7.0,
+        1e-9,
+    );
     assert_float_close(&eval1("=INDEX(CHOOSECOLS(SEQUENCE(3,3),2),1,1)"), 2.0, 1e-9);
 }
 

@@ -28,19 +28,35 @@ pub fn iserr(val: &ResultData) -> bool {
     }
 }
 
-pub fn iseven(number: f64) -> bool { (number.floor() as i64) % 2 == 0 }
-pub fn isodd(number: f64) -> bool { (number.floor() as i64) % 2 != 0 }
-pub fn islogical(val: &ResultData) -> bool { matches!(val, ResultData::Boolean(_)) }
-pub fn isnontext(val: &ResultData) -> bool { !matches!(val, ResultData::String(_)) }
+pub fn iseven(number: f64) -> bool {
+    (number.floor() as i64) % 2 == 0
+}
+pub fn isodd(number: f64) -> bool {
+    (number.floor() as i64) % 2 != 0
+}
+pub fn islogical(val: &ResultData) -> bool {
+    matches!(val, ResultData::Boolean(_))
+}
+pub fn isnontext(val: &ResultData) -> bool {
+    !matches!(val, ResultData::String(_))
+}
 pub fn n_fn(val: &ResultData) -> f64 {
     match val {
         ResultData::Float(f) => *f,
         ResultData::Integer(i) => *i as f64,
-        ResultData::Boolean(b) => if *b { 1.0 } else { 0.0 },
+        ResultData::Boolean(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
         _ => 0.0,
     }
 }
-pub fn na_fn() -> ResultData { ResultData::Error("#N/A".to_string()) }
+pub fn na_fn() -> ResultData {
+    ResultData::Error("#N/A".to_string())
+}
 pub fn type_fn(val: &ResultData) -> f64 {
     match val {
         ResultData::Float(_) | ResultData::Integer(_) => 1.0,
@@ -62,7 +78,9 @@ pub fn xor_fn(bools: &[bool]) -> bool {
 
 pub fn ifna(val: ResultData, alt: ResultData) -> ResultData {
     if let ResultData::Error(ref e) = val {
-        if e == "#N/A" { return alt; }
+        if e == "#N/A" {
+            return alt;
+        }
     }
     val
 }
@@ -71,19 +89,29 @@ pub fn ifna(val: ResultData, alt: ResultData) -> ResultData {
 // 3. Lookup & Reference Helpers
 // ============================================================================
 
-pub fn address_fn(row_num: f64, col_num: f64, abs_num: Option<f64>, _a1: Option<bool>, _sheet_name: Option<&str>) -> Result<String, String> {
+pub fn address_fn(
+    row_num: f64,
+    col_num: f64,
+    abs_num: Option<f64>,
+    _a1: Option<bool>,
+    _sheet_name: Option<&str>,
+) -> Result<String, String> {
     let r = row_num.floor() as usize;
     let c = col_num.floor() as usize;
     let abs_type = abs_num.unwrap_or(1.0).floor() as i32;
 
-    if r == 0 || c == 0 { return Err("#VALUE!".to_string()); }
+    if r == 0 || c == 0 {
+        return Err("#VALUE!".to_string());
+    }
 
     let mut col_str = String::new();
     let mut curr_c = c - 1;
     loop {
         let rem = curr_c % 26;
         col_str.insert(0, (b'A' + rem as u8) as char);
-        if curr_c < 26 { break; }
+        if curr_c < 26 {
+            break;
+        }
         curr_c = curr_c / 26 - 1;
     }
     match abs_type {
@@ -95,9 +123,16 @@ pub fn address_fn(row_num: f64, col_num: f64, abs_num: Option<f64>, _a1: Option<
     }
 }
 
-pub fn hlookup(lookup_val: &ResultData, table: &[Vec<ResultData>], row_idx: f64, range_lookup: Option<bool>) -> ResultData {
+pub fn hlookup(
+    lookup_val: &ResultData,
+    table: &[Vec<ResultData>],
+    row_idx: f64,
+    range_lookup: Option<bool>,
+) -> ResultData {
     let row = row_idx.floor() as usize;
-    if row == 0 || table.is_empty() || row > table.len() { return ResultData::Error("#VALUE!".to_string()); }
+    if row == 0 || table.is_empty() || row > table.len() {
+        return ResultData::Error("#VALUE!".to_string());
+    }
     let exact = !range_lookup.unwrap_or(true);
 
     let first_row = &table[0];
