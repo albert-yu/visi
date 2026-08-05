@@ -2,11 +2,16 @@ use super::*;
 
 #[test]
 fn test_date_and_time_functions() {
-    let grid = [
-        ["=DATE(2024, 8, 3)", "=YEAR(DATE(2024, 8, 3))", "=MONTH(DATE(2024, 8, 3))", "=DAY(DATE(2024, 8, 3))", "=TIME(12, 30, 0)", "=HOUR(0.5)"],
-    ];
+    let grid = [[
+        "=DATE(2024, 8, 3)",
+        "=YEAR(DATE(2024, 8, 3))",
+        "=MONTH(DATE(2024, 8, 3))",
+        "=DAY(DATE(2024, 8, 3))",
+        "=TIME(12, 30, 0)",
+        "=HOUR(0.5)",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Float(v) if (v - 45507.0).abs() < 10.0));
@@ -29,11 +34,16 @@ fn test_date_and_time_functions() {
 
 #[test]
 fn test_engineering_functions() {
-    let grid = [
-        ["=BIN2DEC(\"1010\")", "=DEC2HEX(255)", "=BITAND(6, 3)", "=DELTA(5, 5)", "=GESTEP(10, 5)", "=CONVERT(1, \"km\", \"m\")"],
-    ];
+    let grid = [[
+        "=BIN2DEC(\"1010\")",
+        "=DEC2HEX(255)",
+        "=BITAND(6, 3)",
+        "=DELTA(5, 5)",
+        "=GESTEP(10, 5)",
+        "=CONVERT(1, \"km\", \"m\")",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Float(v) if (v - 10.0).abs() < 1e-6));
@@ -56,11 +66,16 @@ fn test_engineering_functions() {
 
 #[test]
 fn test_information_logical_lookup_web_functions() {
-    let grid = [
-        ["=ISEVEN(4)", "=ISODD(5)", "=TYPE(100)", "=XOR(TRUE, FALSE)", "=ADDRESS(1, 1)", "=ENCODEURL(\"hello world\")"],
-    ];
+    let grid = [[
+        "=ISEVEN(4)",
+        "=ISODD(5)",
+        "=TYPE(100)",
+        "=XOR(TRUE, FALSE)",
+        "=ADDRESS(1, 1)",
+        "=ENCODEURL(\"hello world\")",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Boolean(true)));

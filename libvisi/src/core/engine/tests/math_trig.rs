@@ -2,11 +2,16 @@ use super::*;
 
 #[test]
 fn test_trig_and_hyperbolic_functions() {
-    let grid = [
-        ["=DEGREES(PI())", "=RADIANS(180)", "=SINH(0)", "=COSH(0)", "=TANH(0)", "=SQRTPI(4)"],
-    ];
+    let grid = [[
+        "=DEGREES(PI())",
+        "=RADIANS(180)",
+        "=SINH(0)",
+        "=COSH(0)",
+        "=TANH(0)",
+        "=SQRTPI(4)",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Float(v) if (v - 180.0).abs() < 1e-6));
@@ -24,16 +29,23 @@ fn test_trig_and_hyperbolic_functions() {
     assert!(matches!(r5, ResultData::Float(v) if v.abs() < 1e-6));
 
     let r6 = sheet.get_result_data(&CellRef::new(0, 5));
-    assert!(matches!(r6, ResultData::Float(v) if (v - (4.0 * std::f64::consts::PI).sqrt()).abs() < 1e-6));
+    assert!(
+        matches!(r6, ResultData::Float(v) if (v - (4.0 * std::f64::consts::PI).sqrt()).abs() < 1e-6)
+    );
 }
 
 #[test]
 fn test_rounding_and_integers() {
-    let grid = [
-        ["=EVEN(3)", "=ODD(4)", "=MROUND(10, 3)", "=QUOTIENT(10, 3)", "=SIGN(-5)", "=TRUNC(3.14159, 2)"],
-    ];
+    let grid = [[
+        "=EVEN(3)",
+        "=ODD(4)",
+        "=MROUND(10, 3)",
+        "=QUOTIENT(10, 3)",
+        "=SIGN(-5)",
+        "=TRUNC(3.14159, 2)",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Float(v) if (v - 4.0).abs() < 1e-6));
@@ -56,11 +68,14 @@ fn test_rounding_and_integers() {
 
 #[test]
 fn test_base_conversions_and_roman() {
-    let grid = [
-        ["=BASE(255, 16)", "=DECIMAL(\"FF\", 16)", "=ARABIC(\"MCMXCIX\")", "=ROMAN(1999)"],
-    ];
+    let grid = [[
+        "=BASE(255, 16)",
+        "=DECIMAL(\"FF\", 16)",
+        "=ARABIC(\"MCMXCIX\")",
+        "=ROMAN(1999)",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::String(ref s) if s == "FF"));
@@ -77,11 +92,16 @@ fn test_base_conversions_and_roman() {
 
 #[test]
 fn test_combinatorics_and_factors() {
-    let grid = [
-        ["=COMBIN(5, 2)", "=COMBINA(5, 2)", "=FACT(5)", "=FACTDOUBLE(5)", "=GCD(12, 18, 24)", "=LCM(4, 6)"],
-    ];
+    let grid = [[
+        "=COMBIN(5, 2)",
+        "=COMBINA(5, 2)",
+        "=FACT(5)",
+        "=FACTDOUBLE(5)",
+        "=GCD(12, 18, 24)",
+        "=LCM(4, 6)",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Float(v) if (v - 10.0).abs() < 1e-6));
@@ -107,10 +127,15 @@ fn test_array_and_matrix_functions() {
     let grid = [
         ["1", "2", "0", "0"],
         ["3", "4", "0", "0"],
-        ["=SUMPRODUCT(A1:B1, A2:B2)", "=SUMSQ(A1:B2)", "=POWER(2, 10)", "=LOG(1000, 10)"],
+        [
+            "=SUMPRODUCT(A1:B1, A2:B2)",
+            "=SUMSQ(A1:B2)",
+            "=POWER(2, 10)",
+            "=LOG(1000, 10)",
+        ],
     ];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     // SUMPRODUCT([1, 2], [3, 4]) = 1*3 + 2*4 = 11
     let r1 = sheet.get_result_data(&CellRef::new(2, 0));

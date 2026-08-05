@@ -2,11 +2,16 @@ use super::*;
 
 #[test]
 fn test_text_manipulation_functions() {
-    let grid = [
-        ["=CHAR(65)", "=CODE(\"A\")", "=EXACT(\"abc\", \"abc\")", "=REPT(\"a\", 3)", "=SUBSTITUTE(\"banana\", \"a\", \"o\")", "=UNICHAR(65)"],
-    ];
+    let grid = [[
+        "=CHAR(65)",
+        "=CODE(\"A\")",
+        "=EXACT(\"abc\", \"abc\")",
+        "=REPT(\"a\", 3)",
+        "=SUBSTITUTE(\"banana\", \"a\", \"o\")",
+        "=UNICHAR(65)",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::String(ref s) if s == "A"));
@@ -29,11 +34,15 @@ fn test_text_manipulation_functions() {
 
 #[test]
 fn test_text_search_and_split_functions() {
-    let grid = [
-        ["=FIND(\"bar\", \"foobar\")", "=TEXTBEFORE(\"hello-world\", \"-\")", "=TEXTAFTER(\"hello-world\", \"-\")", "=TEXTJOIN(\", \", TRUE, \"a\", \"b\", \"c\")", "=VALUE(\"123.45\")"],
-    ];
+    let grid = [[
+        "=FIND(\"bar\", \"foobar\")",
+        "=TEXTBEFORE(\"hello-world\", \"-\")",
+        "=TEXTAFTER(\"hello-world\", \"-\")",
+        "=TEXTJOIN(\", \", TRUE, \"a\", \"b\", \"c\")",
+        "=VALUE(\"123.45\")",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::Float(v) if (v - 4.0).abs() < 1e-6));
@@ -53,11 +62,14 @@ fn test_text_search_and_split_functions() {
 
 #[test]
 fn test_currency_and_formatting_functions() {
-    let grid = [
-        ["=DOLLAR(1234.56)", "=FIXED(1234.56, 1)", "=TEXT(0.25, \"0.0%\")", "=NUMBERVALUE(\"1,234.56\", \".\", \",\")"],
-    ];
+    let grid = [[
+        "=DOLLAR(1234.56)",
+        "=FIXED(1234.56, 1)",
+        "=TEXT(0.25, \"0.0%\")",
+        "=NUMBERVALUE(\"1,234.56\", \".\", \",\")",
+    ]];
     let mut sheet = create_sheet(&grid);
-    sheet.commit(None);
+    sheet.commit(None).unwrap();
 
     let r1 = sheet.get_result_data(&CellRef::new(0, 0));
     assert!(matches!(r1, ResultData::String(ref s) if s == "$1,234.56"));
