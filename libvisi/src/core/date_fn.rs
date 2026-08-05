@@ -42,7 +42,7 @@ pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
     // Excel 1900 epoch offset (1900-01-01 is serial 1).
     // Dec 31 1BC is day 0 in this count.
     // Excel includes non-existent leap day Feb 29, 1900 (serial 60).
-    let mut serial = (days - 693594) as f64;
+    let mut serial = (days - 693595) as f64;
     if serial >= 60.0 {
         serial += 1.0;
     }
@@ -61,7 +61,7 @@ pub fn serial_to_ymd(serial: f64) -> (i32, i32, i32) {
         s -= 1;
     }
     // Shift to Dec 31 1BC offset
-    let days = s + 693594;
+    let days = s + 693595;
 
     let mut y = (days as f64 / 365.2425) as i64 + 2;
     let mut y1 = y - 1;
@@ -295,6 +295,37 @@ pub fn workday(start_date: f64, days: f64, holidays: &[f64]) -> Result<f64, Stri
     Ok(curr as f64)
 }
 
+/// Actual/actual year length for basis-1 day-count conventions. Confirmed
+/// against real Excel via the differential fuzzer to have two regimes:
+/// for a span of at most 366 days (including one that crosses a calendar
+/// year boundary, e.g. Dec into Jan), it's simply whether the *later*
+/// date's own calendar year is a leap year -- not a days-weighted blend
+/// of the two years. Only once the span genuinely covers multiple full
+/// calendar years does it become the average of 365/366 across every
+/// year from `start`'s year through `end`'s year inclusive (e.g. a span
+/// covering 4 calendar years with a single leap year among them averages
+/// to (365*3+366)/4 = 365.25). Shared by `YEARFRAC` and the bond/discount
+/// functions in `finance.rs` that use this same basis-1 convention.
+pub fn actual_actual_year_days(start: f64, end: f64) -> f64 {
+    let d1 = start.min(end);
+    let d2 = start.max(end);
+    if d2 - d1 <= 366.0 {
+        let (y, _, _) = serial_to_ymd(d2);
+        let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        return if leap { 366.0 } else { 365.0 };
+    }
+    let (y1, _, _) = serial_to_ymd(d1);
+    let (y2, _, _) = serial_to_ymd(d2);
+    let n = y2 - y1 + 1;
+    let total: i32 = (y1..=y2)
+        .map(|y| {
+            let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+            if leap { 366 } else { 365 }
+        })
+        .sum();
+    total as f64 / n as f64
+}
+
 pub fn yearfrac(start_date: f64, end_date: f64, basis: Option<f64>) -> Result<f64, String> {
     let b = basis.unwrap_or(0.0).floor() as i32;
     let d1 = start_date.min(end_date);
@@ -303,7 +334,7 @@ pub fn yearfrac(start_date: f64, end_date: f64, basis: Option<f64>) -> Result<f6
 
     match b {
         0 => Ok(days360(d1, d2, Some(false))? / 360.0),
-        1 => Ok(diff / 365.2425),
+        1 => Ok(diff / actual_actual_year_days(d1, d2)),
         2 => Ok(diff / 360.0),
         3 => Ok(diff / 365.0),
         4 => Ok(days360(d1, d2, Some(true))? / 360.0),

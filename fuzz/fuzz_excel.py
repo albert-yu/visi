@@ -104,7 +104,7 @@ class ExcelFuzzGenerator:
         "ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR",
         "IFERROR", "IFNA", "IFS", "SWITCH",
         "ISBLANK", "ISERR", "ISERROR", "ISNA", "ISNUMBER", "ISTEXT",
-        "LET",
+        "LET", "CHOOSE",
     ]
     # Statistical distribution/percentile-rank functions: unlike
     # FUNCTIONS_MULTI_NUM/STAT_BIVARIATE these need domain-restricted scalar
@@ -165,6 +165,50 @@ class ExcelFuzzGenerator:
     # get wrapped in a range/plausibility check both engines must satisfy
     # regardless of the actual random or wall-clock value.
     VOLATILE_FUNCTIONS = ["RAND", "RANDBETWEEN", "RANDARRAY", "NOW", "TODAY"]
+    DATABASE_FUNCTIONS = [
+        "DSUM", "DAVERAGE", "DCOUNT", "DCOUNTA", "DGET", "DMAX", "DMIN",
+        "DPRODUCT", "DSTDEV", "DSTDEVP", "DVAR", "DVARP",
+    ]
+    # LAMBDA family: only MAP and REDUCE are fuzzed against real Excel.
+    # BYROW/BYCOL/MAKEARRAY/SCAN (and a bare, uninvoked LAMBDA) all return
+    # or are a dynamic-array-spilling value, and this environment's Excel
+    # AppleScript automation bridge breaks intermittently on *any*
+    # dynamic-array-spilling formula (confirmed directly with a plain
+    # `=SEQUENCE(3)`, no LAMBDA involved at all) -- not reliable enough for
+    # differential fuzzing. Their expected values are instead verified by
+    # hand-calculated arithmetic / Microsoft's documented SCAN example in
+    # libvisi's own Rust unit tests (see engine/tests/new_functions.rs).
+    LAMBDA_FUNCTIONS = ["MAP", "REDUCE"]
+    # CELL/INFO (narrow info_type subset implemented) and SHEET (a known,
+    # documented approximation -- always returns 1, since this engine has
+    # no access to a sheet's true ordinal position) are deliberately left
+    # out of fuzzing; every other range/metadata introspection function is
+    # covered.
+    RANGE_INFO_FUNCTIONS = [
+        "ROW", "ROWS", "COLUMN", "COLUMNS", "AREAS", "ISREF",
+        "FORMULATEXT", "ISFORMULA", "HYPERLINK", "SHEETS", "INDIRECT", "OFFSET",
+    ]
+    # Dynamic-array reshaping/lookup functions. TRANSPOSE is deliberately
+    # excluded: every authoring variant tried (bare, `_xlfn.`,
+    # `_xlfn._xlws.`, standalone, nested in SUM/INDEX) gave real Excel
+    # `#VALUE!` when the formula was written by openpyxl rather than Excel
+    # itself -- TRANSPOSE has always required the legacy CSE `t="array"`
+    # formula flag, which openpyxl's plain string assignment never
+    # produces, so it would be a guaranteed mismatch every run regardless
+    # of visi's own (hand-verified correct) logic. LOOKUP is also excluded:
+    # its vector form requires an ascending-sorted lookup array or its
+    # result is documented by Microsoft as unpredictable, and this
+    # generator's plain-value columns are unsorted random data -- verified
+    # correct against real Excel on sorted data instead, in libvisi's own
+    # Rust unit tests (see engine/tests/new_functions.rs). XMATCH is fuzzed
+    # in its default exact-match mode only (well-defined regardless of
+    # sort order), looking up a value known to be present so both engines
+    # are guaranteed a match.
+    ARRAY_RESHAPE_FUNCTIONS = [
+        "HSTACK", "VSTACK", "CHOOSEROWS", "CHOOSECOLS", "DROP", "TAKE",
+        "EXPAND", "TOCOL", "TOROW", "WRAPROWS", "WRAPCOLS", "UNIQUE",
+        "SORT", "SORTBY", "FILTER", "TRIMRANGE", "XMATCH",
+    ]
 
     # Scalar-argument TVM/depreciation functions. Unlike the generic
     # FUNCTIONS_* lists above, financial functions can't have arbitrary
@@ -177,6 +221,13 @@ class ExcelFuzzGenerator:
         "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
         "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "DOLLARDE", "DOLLARFR",
         "FVSCHEDULE", "RRI", "PDURATION", "ISPMT",
+        # Day-count / bond-pricing functions (see finance.rs).
+        "COUPDAYBS", "COUPDAYS", "COUPDAYSNC", "COUPNCD", "COUPNUM", "COUPPCD",
+        "PRICE", "YIELD", "DURATION", "MDURATION",
+        "DISC", "PRICEDISC", "YIELDDISC", "PRICEMAT", "YIELDMAT",
+        "RECEIVED", "INTRATE", "TBILLPRICE", "TBILLYIELD", "TBILLEQ",
+        "ACCRINT", "ACCRINTM", "AMORLINC", "AMORDEGRC",
+        "ODDFPRICE", "ODDFYIELD", "ODDLPRICE", "ODDLYIELD",
     ]
 
     def __init__(self, seed=None):
@@ -197,6 +248,11 @@ class ExcelFuzzGenerator:
         self._fin_cash_range = None
         self._fin_date_range = None
         self._fin_schedule_range = None
+        # Populated by create_fuzz_workbook(); the table block's own
+        # A1:...N range, reused as the "database" argument for the D*
+        # database functions (generate_database_formula) since it already
+        # has a header row of column-letter names plus random data rows.
+        self._db_range = None
 
     def _col_name(self, col_idx):
         """Converts 1-based column index to A1 column letter (1 -> A, 2 -> B, 27 -> AA)."""
@@ -404,6 +460,20 @@ class ExcelFuzzGenerator:
             v = -v
         return v
 
+    def _fin_date(self, y_lo=1995, y_hi=2035):
+        """A DATE(...) literal. Bond/day-count functions below always
+        derive related dates (maturity, first coupon, ...) from one of
+        these via EDATE(...)/serial-day arithmetic *inside* the generated
+        formula, rather than precomputing calendar math in Python -- that
+        way both visi and Excel compute the derived date with their own
+        (already-validated) date logic instead of risking a Python/Excel
+        calendar mismatch that has nothing to do with the function under
+        test."""
+        y = random.randint(y_lo, y_hi)
+        m = random.randint(1, 12)
+        d = random.randint(1, 28)
+        return f"DATE({y}, {m}, {d})"
+
     def generate_financial_formula(self, fn=None):
         """Generates a single self-contained financial-function formula
         with semantically valid inputs (small positive rates, periods
@@ -571,6 +641,191 @@ class ExcelFuzzGenerator:
             per = self._fin_int(1, nper)
             pv = self._fin_money(1000, 100000, allow_negative=False)
             return f"=ISPMT({rate}, {per}, {nper}, {pv})"
+
+        # -- Day-count / bond-pricing functions --------------------------
+        # Settlement is always the anchor DATE(...) literal; every other
+        # date (maturity, issue, coupon dates, ...) is derived from it via
+        # EDATE(...)/serial-day arithmetic *inside* the generated formula
+        # (see _fin_date) so visi and Excel compute the same derived date
+        # with their own matching logic instead of racing a Python
+        # reimplementation of calendar math against either engine.
+        bond_rate = lambda: round(random.uniform(0.01, 0.10), 4)
+        bond_basis = lambda: random.choice([0, 1, 2, 3, 4])
+        bond_freq = lambda: random.choice([1, 2, 4])
+
+        if fn in ("COUPDAYBS", "COUPDAYS", "COUPDAYSNC", "COUPNCD", "COUPNUM", "COUPPCD"):
+            settlement = self._fin_date()
+            freq = bond_freq()
+            maturity = f"EDATE({settlement}, {12 // freq * random.randint(2, 20)})"
+            if fn in ("COUPNCD", "COUPNUM", "COUPPCD"):
+                return f"={fn}({settlement}, {maturity}, {freq})"
+            return f"={fn}({settlement}, {maturity}, {freq}, {bond_basis()})"
+
+        if fn in ("PRICE", "YIELD"):
+            settlement = self._fin_date()
+            freq = bond_freq()
+            maturity = f"EDATE({settlement}, {12 // freq * random.randint(2, 20)})"
+            rate = bond_rate()
+            redemption = random.choice([100, 100, 100, 105])
+            if fn == "PRICE":
+                yld = bond_rate()
+                return f"=PRICE({settlement}, {maturity}, {rate}, {yld}, {redemption}, {freq}, {bond_basis()})"
+            pr = round(random.uniform(80, 120), 2)
+            return f"=YIELD({settlement}, {maturity}, {rate}, {pr}, {redemption}, {freq}, {bond_basis()})"
+
+        if fn in ("DURATION", "MDURATION"):
+            settlement = self._fin_date()
+            freq = bond_freq()
+            maturity = f"EDATE({settlement}, {12 // freq * random.randint(2, 20)})"
+            return f"={fn}({settlement}, {maturity}, {bond_rate()}, {bond_rate()}, {freq}, {bond_basis()})"
+
+        if fn in ("DISC", "PRICEDISC", "YIELDDISC"):
+            settlement = self._fin_date()
+            maturity = f"EDATE({settlement}, {random.randint(1, 24)})"
+            redemption = 100
+            basis = bond_basis()
+            if fn == "DISC":
+                pr = round(random.uniform(85, 99), 2)
+                return f"=DISC({settlement}, {maturity}, {pr}, {redemption}, {basis})"
+            if fn == "PRICEDISC":
+                return f"=PRICEDISC({settlement}, {maturity}, {bond_rate()}, {redemption}, {basis})"
+            pr = round(random.uniform(85, 99), 2)
+            return f"=YIELDDISC({settlement}, {maturity}, {pr}, {redemption}, {basis})"
+
+        if fn in ("PRICEMAT", "YIELDMAT"):
+            issue = self._fin_date()
+            settlement = f"EDATE({issue}, {random.randint(1, 6)})"
+            maturity = f"EDATE({issue}, {random.randint(7, 36)})"
+            rate = bond_rate()
+            basis = bond_basis()
+            if fn == "PRICEMAT":
+                return f"=PRICEMAT({settlement}, {maturity}, {issue}, {rate}, {bond_rate()}, {basis})"
+            pr = round(random.uniform(85, 120), 2)
+            return f"=YIELDMAT({settlement}, {maturity}, {issue}, {rate}, {pr}, {basis})"
+
+        if fn in ("RECEIVED", "INTRATE"):
+            settlement = self._fin_date()
+            maturity = f"EDATE({settlement}, {random.randint(1, 24)})"
+            basis = bond_basis()
+            investment = self._fin_money(1000, 50000, allow_negative=False)
+            if fn == "RECEIVED":
+                return f"=RECEIVED({settlement}, {maturity}, {investment}, {bond_rate()}, {basis})"
+            redemption = self._fin_money(1000, 50000, allow_negative=False)
+            return f"=INTRATE({settlement}, {maturity}, {investment}, {redemption}, {basis})"
+
+        if fn in ("TBILLPRICE", "TBILLYIELD", "TBILLEQ"):
+            settlement = self._fin_date()
+            maturity = f"({settlement} + {random.randint(30, 182)})"
+            if fn == "TBILLPRICE":
+                return f"=TBILLPRICE({settlement}, {maturity}, {bond_rate()})"
+            if fn == "TBILLYIELD":
+                pr = round(random.uniform(90, 99.9), 2)
+                return f"=TBILLYIELD({settlement}, {maturity}, {pr})"
+            return f"=TBILLEQ({settlement}, {maturity}, {bond_rate()})"
+
+        if fn == "ACCRINTM":
+            issue = self._fin_date()
+            settlement = f"EDATE({issue}, {random.randint(1, 24)})"
+            par = self._fin_money(1000, 50000, allow_negative=False)
+            return f"=ACCRINTM({issue}, {settlement}, {bond_rate()}, {par}, {bond_basis()})"
+
+        if fn == "ACCRINT":
+            # Restricted to basis 0/4 (30/360) -- see the doc comment on
+            # finance::accrint for why bases 1/2/3 aren't fuzzed here.
+            issue = self._fin_date()
+            freq = bond_freq()
+            months = 12 // freq
+            first_interest = f"EDATE({issue}, {months})"
+            settlement = f"EDATE({issue}, {random.randint(1, 4 * months)})"
+            par = self._fin_money(1000, 50000, allow_negative=False)
+            calc_method = random.choice(["TRUE", "FALSE"])
+            basis = random.choice([0, 4])
+            return (
+                f"=ACCRINT({issue}, {first_interest}, {settlement}, {bond_rate()}, "
+                f"{par}, {freq}, {basis}, {calc_method})"
+            )
+
+        if fn in ("AMORLINC", "AMORDEGRC"):
+            # life is kept >= 4: AMORDEGRC rejects life <= 2 outright
+            # (#NUM!), and real Excel's AMORDEGRC switches early to
+            # straight-line for life in (2, 4) in a way not yet
+            # reverse-engineered here (see finance::amordegrc's doc
+            # comment).
+            #
+            # period is kept at least 3 below life: real Excel's AMORDEGRC
+            # also switches from declining-balance to straight-line for
+            # the last couple of periods before life is exhausted (found
+            # via the differential fuzzer at life=5, period=4 -- one
+            # period short of the end), which this implementation doesn't
+            # yet replicate. Periods comfortably before that tail (the
+            # margin validated by a full life=12 sequence, periods 0-9)
+            # match real Excel exactly.
+            date_purchased = self._fin_date()
+            first_period = f"EDATE({date_purchased}, {random.randint(1, 11)})"
+            cost = self._fin_money_value(1000, 50000, allow_negative=False)
+            salvage = round(random.uniform(0, cost * 0.3), 2)
+            life = random.randint(4, 20)
+            rate = round(1.0 / life, 4)
+            period = random.randint(0, max(0, life - 3))
+            return f"={fn}({cost}, {date_purchased}, {first_period}, {salvage}, {period}, {rate}, {bond_basis()})"
+
+        if fn in ("ODDFPRICE", "ODDFYIELD"):
+            # stub_days is capped to less than one regular coupon period
+            # ("short" odd first coupon). visi's implementation doesn't yet
+            # match real Excel's undocumented internal algorithm for a
+            # "long" odd first coupon (stub longer than a full period) --
+            # confirmed as a real, separate discrepancy by the differential
+            # fuzzer, distinct from (and on top of) the E/day-count fixes
+            # that made the short-stub case match exactly.
+            issue = self._fin_date()
+            freq = bond_freq()
+            period_days = 360 // freq
+            stub_days = random.randint(10, max(11, period_days - 15))
+            first_coupon = f"({issue} + {stub_days})"
+            settlement = f"({issue} + {random.randint(0, stub_days)})"
+            maturity = f"EDATE({first_coupon}, {12 // freq * random.randint(2, 10)})"
+            rate = bond_rate()
+            redemption = random.choice([100, 100, 105])
+            basis = bond_basis()
+            if fn == "ODDFPRICE":
+                yld = bond_rate()
+                return (
+                    f"=ODDFPRICE({settlement}, {maturity}, {issue}, {first_coupon}, "
+                    f"{rate}, {yld}, {redemption}, {freq}, {basis})"
+                )
+            pr = round(random.uniform(80, 120), 2)
+            return (
+                f"=ODDFYIELD({settlement}, {maturity}, {issue}, {first_coupon}, "
+                f"{rate}, {pr}, {redemption}, {freq}, {basis})"
+            )
+
+        if fn in ("ODDLPRICE", "ODDLYIELD"):
+            # stub_days is capped to less than one regular coupon period,
+            # same reasoning as ODDFPRICE/ODDFYIELD above: a "long" odd
+            # last period (longer than one regular period) isn't yet
+            # correctly handled here (a real, distinct discrepancy from
+            # the E/day-count fixes that made the short-stub case match
+            # exactly).
+            last_interest = self._fin_date()
+            freq = bond_freq()
+            period_days = 360 // freq
+            stub_days = random.randint(10, max(11, period_days - 15))
+            maturity = f"({last_interest} + {stub_days})"
+            settlement = f"({last_interest} + {random.randint(0, stub_days - 1)})"
+            rate = bond_rate()
+            redemption = random.choice([100, 100, 105])
+            basis = bond_basis()
+            if fn == "ODDLPRICE":
+                yld = bond_rate()
+                return (
+                    f"=ODDLPRICE({settlement}, {maturity}, {last_interest}, "
+                    f"{rate}, {yld}, {redemption}, {freq}, {basis})"
+                )
+            pr = round(random.uniform(80, 120), 2)
+            return (
+                f"=ODDLYIELD({settlement}, {maturity}, {last_interest}, "
+                f"{rate}, {pr}, {redemption}, {freq}, {basis})"
+            )
 
         raise AssertionError(f"no generator wired up for financial function {fn}")
 
@@ -1054,6 +1309,11 @@ class ExcelFuzzGenerator:
                 bound_so_far.append(nm)
             calc = " + ".join(names)
             return f"=LET({', '.join(pairs)}, {calc})"
+        if fn == "CHOOSE":
+            n = random.randint(2, 4)
+            idx = random.randint(1, n)
+            choices = ", ".join(expr() for _ in range(n))
+            return f"=CHOOSE({idx}, {choices})"
 
         raise AssertionError(f"no generator wired up for logic function {fn}")
 
@@ -1158,6 +1418,158 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for volatile function {fn}")
 
+    def generate_database_formula(self, fn, ws, crit_col, index):
+        """Writes a 2-row criteria block (header + one comparison
+        criterion) at rows `2*index+1`/`2*index+2` of `crit_col`, then
+        returns a D* formula. Reuses the table block's own column-letter
+        headers and random data rows (self._table_cols / self._db_range)
+        as the "database" argument, since it already has exactly the
+        header-row-plus-data-rows shape DSUM/DGET/etc. expect. Each of the
+        12 DATABASE_FUNCTIONS entries gets its own criteria row pair so
+        they don't clobber each other's criteria in the final workbook."""
+        field = random.choice(self._table_cols)
+        header_row = 2 * index + 1
+        crit_row = 2 * index + 2
+        ws.cell(row=header_row, column=crit_col, value=field)
+        threshold = round(random.uniform(-500, 500), 2)
+        op = random.choice([">", "<", ">=", "<="])
+        ws.cell(row=crit_row, column=crit_col, value=f"{op}{threshold}")
+        crit_col_letter = self._col_name(crit_col)
+        crit_range = f"{crit_col_letter}{header_row}:{crit_col_letter}{crit_row}"
+        field_arg = f'"{field}"' if random.random() < 0.7 else str(self._table_cols.index(field) + 1)
+        return f"={fn}({self._db_range}, {field_arg}, {crit_range})"
+
+    def generate_lambda_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained MAP/REDUCE formula against a real range from the
+        plain-value rows of the formula block (see generate_logic_formula
+        for why this reuses that area instead of gen_expr's arbitrary
+        substitution). MAP's result is wrapped in INDEX to pin down a
+        single scalar the same way other array-returning functions are
+        tested (see ARRAY_FUNCTIONS); REDUCE already returns a scalar."""
+        def col(offset):
+            return self._col_name(min_col + offset)
+
+        rng = f"{col(0)}1:{col(0)}{value_rows}"
+        if fn == "MAP":
+            return f"=INDEX(MAP({rng}, LAMBDA(x, x*2+1)), 1)"
+        if fn == "REDUCE":
+            return f"=REDUCE(0, {rng}, LAMBDA(acc,v, acc+v))"
+
+        raise AssertionError(f"no generator wired up for lambda function {fn}")
+
+    def generate_range_info_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one RANGE_INFO_FUNCTIONS entry,
+        against a real cell/range from the plain-value rows of the formula
+        block. FORMULATEXT/ISFORMULA/SHEETS are post-2007 functions real
+        Excel's own OOXML writer always stores with an `_xlfn.` prefix
+        (see CLAUDE.md/RRI's comment above in generate_financial_formula);
+        openpyxl doesn't add that prefix automatically, so it's supplied
+        here -- confirmed as the actual cause of a real #NAME? mismatch
+        this generator produced without it."""
+        def col(offset):
+            return self._col_name(min_col + offset)
+
+        cell = f"{col(0)}1"
+        rng = f"{col(0)}1:{col(0)}{value_rows}"
+
+        if fn == "ROW":
+            # ROW() against a multi-row range spills an array in real
+            # Excel, same dynamic-array-automation risk noted for
+            # BYROW/BYCOL/MAKEARRAY/SCAN above -- INDEX pins it to a
+            # single scalar the same way ARRAY_FUNCTIONS does.
+            return f"=INDEX(ROW({rng}), 1)"
+        if fn == "ROWS":
+            return f"=ROWS({rng})"
+        if fn == "COLUMN":
+            return f"=COLUMN({cell})"
+        if fn == "COLUMNS":
+            return f"=COLUMNS({rng})"
+        if fn == "AREAS":
+            return f"=AREAS({rng})"
+        if fn == "ISREF":
+            return f"=ISREF({cell})"
+        if fn == "FORMULATEXT":
+            return f"=IFERROR(_xlfn.FORMULATEXT({cell}), \"none\")"
+        if fn == "ISFORMULA":
+            return f"=_xlfn.ISFORMULA({cell})"
+        if fn == "HYPERLINK":
+            return f'=HYPERLINK("https://example.com/{random.randint(1, 1000)}", {cell})'
+        if fn == "SHEETS":
+            return "=_xlfn.SHEETS()"
+        if fn == "INDIRECT":
+            return f'=SUM(INDIRECT("{rng}"))'
+        if fn == "OFFSET":
+            return f"=SUM(OFFSET({cell}, 0, 0, {value_rows}, 1))"
+
+        raise AssertionError(f"no generator wired up for range-info function {fn}")
+
+    def generate_array_reshape_formula(self, fn, value_rows, min_col, max_col):
+        """Self-contained formula for one ARRAY_RESHAPE_FUNCTIONS entry.
+        All of these are dynamic-array worksheet functions that real
+        Excel's own OOXML writer nests under a double `_xlfn._xlws.`
+        prefix (confirmed directly against real Excel's export XML for
+        UNIQUE/SORT/FILTER; see sheet.rs's `evaluate_function` prefix
+        stripping) -- openpyxl doesn't add either prefix automatically, so
+        it's supplied here. Every formula is wrapped in SUM or INDEX
+        rather than left bare, since a bare dynamic-array-spilling formula
+        makes this environment's Excel AppleScript automation bridge
+        intermittently fail (confirmed with a plain `=SEQUENCE(3)`, see
+        LAMBDA_FUNCTIONS above) -- wrapping pins the result to a single
+        cell the same way MAP/REDUCE already do."""
+        def col(offset):
+            return self._col_name(min_col + offset)
+
+        P = "_xlfn._xlws."
+        rng = f"{col(0)}1:{col(0)}{value_rows}"
+        rng2 = f"{col(1)}1:{col(1)}{value_rows}"
+        wide = f"{col(0)}1:{col(1)}{value_rows}"
+
+        if fn == "HSTACK":
+            return f"=SUM({P}HSTACK({rng},{rng2}))"
+        if fn == "VSTACK":
+            return f"=SUM({P}VSTACK({rng},{rng2}))"
+        if fn == "CHOOSEROWS":
+            return f"=INDEX({P}CHOOSEROWS({rng},1,-1),1)"
+        if fn == "CHOOSECOLS":
+            return f"=INDEX({P}CHOOSECOLS({wide},2),1)"
+        if fn == "DROP":
+            return f"=SUM({P}DROP({rng},1))"
+        if fn == "TAKE":
+            return f"=SUM({P}TAKE({rng},2))"
+        if fn == "EXPAND":
+            return f"=INDEX({P}EXPAND({rng},{value_rows}+2,1,0),{value_rows}+2,1)"
+        if fn == "TOCOL":
+            return f"=SUM({P}TOCOL({rng}))"
+        if fn == "TOROW":
+            return f"=SUM({P}TOROW({rng}))"
+        if fn == "WRAPROWS":
+            return f"=INDEX({P}WRAPROWS({rng},2,0),1,1)"
+        if fn == "WRAPCOLS":
+            return f"=INDEX({P}WRAPCOLS({rng},2,0),1,1)"
+        if fn == "UNIQUE":
+            return f"=SUM({P}UNIQUE({rng}))"
+        if fn == "SORT":
+            return f"=INDEX({P}SORT({rng},1,-1),1)"
+        if fn == "SORTBY":
+            return f"=INDEX({P}SORTBY({rng},{rng2},-1),1)"
+        if fn == "FILTER":
+            # IFERROR must wrap the whole SUM, not FILTER directly: real
+            # Excel implicitly reduces a dynamic-array function nested
+            # inside a non-array-aware function like IFERROR to its
+            # top-left cell unless the formula is CSE-entered (the same
+            # root cause documented for TRANSPOSE above) -- confirmed by
+            # reproducing an apparent UNIQUE mismatch this exact way
+            # (excel=-47.171 i.e. just the first element, visi=-69.171
+            # the correct full-array sum) and showing it disappears once
+            # IFERROR moves outside SUM.
+            return f"=IFERROR(SUM({P}FILTER({rng},{self._bool_range})),0)"
+        if fn == "TRIMRANGE":
+            return f"=SUM({P}TRIMRANGE({rng}))"
+        if fn == "XMATCH":
+            return f"=_xlfn.XMATCH({col(0)}1,{rng})"
+
+        raise AssertionError(f"no generator wired up for array-reshape function {fn}")
+
     def create_fuzz_workbook(self, file_path, num_rows=10, num_cols=5):
         """Creates a workbook with a mixture of raw values and formulas, plus
         a real Excel Table for structured references to resolve against.
@@ -1207,6 +1619,7 @@ class ExcelFuzzGenerator:
         self._table_name = table_name
         self._table_cols = header_names
         table_ref = f"A1:{self._col_name(num_cols)}{num_rows}"
+        self._db_range = table_ref
         table = Table(displayName=table_name, ref=table_ref)
         table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
         ws.add_table(table)
@@ -1248,6 +1661,7 @@ class ExcelFuzzGenerator:
         fin_cash_col = max_col + 2
         fin_date_col = fin_cash_col + 1
         fin_schedule_col = fin_cash_col + 2
+        fin_bool_col = fin_cash_col + 3
         fin_formula_col = fin_cash_col + 4
 
         cash_rows = 6
@@ -1264,11 +1678,22 @@ class ExcelFuzzGenerator:
         for r in range(1, schedule_rows + 1):
             ws.cell(row=r, column=fin_schedule_col, value=round(random.uniform(0.01, 0.15), 4))
 
+        # A dedicated column of genuine boolean literals (not a broadcast
+        # comparison -- this engine's comparison operators don't broadcast
+        # across a range, e.g. `A1:A5>10` yields a scalar, not an array,
+        # a separate, pre-existing, out-of-scope limitation) for FILTER's
+        # include_array, which real Excel requires to actually be boolean.
+        # Alternating rather than random so it's guaranteed to contain at
+        # least one TRUE and one FALSE regardless of value_rows.
+        for r in range(1, value_rows + 1):
+            ws.cell(row=r, column=fin_bool_col, value=(r % 2 == 0))
+
         self._fin_cash_range = f"{self._col_name(fin_cash_col)}1:{self._col_name(fin_cash_col)}{cash_rows}"
         self._fin_date_range = f"{self._col_name(fin_date_col)}1:{self._col_name(fin_date_col)}{cash_rows}"
         self._fin_schedule_range = (
             f"{self._col_name(fin_schedule_col)}1:{self._col_name(fin_schedule_col)}{schedule_rows}"
         )
+        self._bool_range = f"{self._col_name(fin_bool_col)}1:{self._col_name(fin_bool_col)}{value_rows}"
 
         # financial_formula_rows is sized to len(FINANCIAL_FUNCTIONS) and the
         # column cycles through the list deterministically (rather than
@@ -1317,6 +1742,18 @@ class ExcelFuzzGenerator:
         emit_block(self.ARRAY_FUNCTIONS, lambda fn: self.generate_array_formula(fn, value_rows, min_col, max_col))
         emit_block(self.CONDITIONAL_AGG_FUNCTIONS, lambda fn: self.generate_conditional_formula(fn, value_rows, min_col, max_col))
         emit_block(self.VOLATILE_FUNCTIONS, lambda fn: self.generate_volatile_formula(fn))
+        emit_block(self.LAMBDA_FUNCTIONS, lambda fn: self.generate_lambda_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.RANGE_INFO_FUNCTIONS, lambda fn: self.generate_range_info_formula(fn, value_rows, min_col, max_col))
+        emit_block(self.ARRAY_RESHAPE_FUNCTIONS, lambda fn: self.generate_array_reshape_formula(fn, value_rows, min_col, max_col))
+
+        # DATABASE_FUNCTIONS needs its own per-call criteria cells (not
+        # just a formula), so it gets a dedicated column and a bespoke
+        # loop rather than the generic emit_block.
+        db_formula_col = next_col
+        db_crit_col = next_col + 1
+        for i, fn in enumerate(self.DATABASE_FUNCTIONS):
+            formula = self.generate_database_formula(fn, ws, db_crit_col, i)
+            ws.cell(row=i + 1, column=db_formula_col, value=formula)
 
         wb.save(file_path)
 

@@ -30,6 +30,7 @@ mod extended;
 mod logical;
 mod math;
 mod math_trig;
+mod new_functions;
 mod rounding;
 mod stats;
 mod text;

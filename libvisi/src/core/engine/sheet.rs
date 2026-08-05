@@ -994,6 +994,27 @@ impl Sheet {
         }
     }
 
+    /// `SORT`/`SORTBY`-specific comparator: Microsoft documents that both
+    /// functions always place blank cells last, regardless of ascending
+    /// vs. descending order -- unlike `compare_excel_values`'s general
+    /// blank-coerces-to-0/""/false rule (correct for comparison operators,
+    /// MATCH, etc.), which would otherwise rank a blank ahead of every
+    /// negative number once descending order reverses the comparison.
+    /// Found via the differential fuzzer: `SORT({-215.8,,-100,-240.97,-88},1,-1)`
+    /// put the blank first (coerced to 0, the largest value once reversed)
+    /// instead of last, so `INDEX(...,1)` returned 0 instead of -88.
+    fn sort_compare_blanks_last(l: &ResultData, r: &ResultData, sort_order: f64) -> std::cmp::Ordering {
+        match (matches!(l, ResultData::None), matches!(r, ResultData::None)) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => {
+                let ord = Self::compare_excel_values(l, r);
+                if sort_order < 0.0 { ord.reverse() } else { ord }
+            }
+        }
+    }
+
     fn is_excel_number_str(s: &str) -> bool {
         let s = s.trim();
         if s.is_empty() {
@@ -1466,10 +1487,35 @@ impl Sheet {
         self.to_bool_opt(val).unwrap_or(false)
     }
 
+    /// Strict "is this a genuine number" check for range-value aggregation
+    /// (DCOUNT/DSUM/DAVERAGE/... and friends), as opposed to `to_f64`'s
+    /// scalar-arithmetic coercion (which maps blank -> 0 and booleans ->
+    /// 1/0). Confirmed against real Excel via the differential fuzzer that
+    /// blank and boolean database cells must be excluded here the same
+    /// way SUM/COUNT/AVERAGE ignore them within a range argument -- using
+    /// `to_f64` instead let a blank row zero out DPRODUCT entirely and
+    /// skewed DCOUNT/DSUM/DAVERAGE by counting/summing blanks and
+    /// TRUE/FALSE as 0/1.
+    fn range_numeric(val: &ResultData) -> Option<f64> {
+        match val {
+            ResultData::Integer(i) => Some(*i as f64),
+            ResultData::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
         let crit_str = criteria.to_string();
         if crit_str.starts_with('>') {
-            let val_f = self.to_f64(val).unwrap_or(0.0);
+            // A numeric comparison can only ever be satisfied by a genuine
+            // number -- confirmed against real Excel via the differential
+            // fuzzer (fuzzing the new database D* functions): blank, text,
+            // and boolean cells must all fail ">"/"<" criteria outright,
+            // not fall back to comparing as if they were 0.
+            let val_f = match Self::range_numeric(val) {
+                Some(f) => f,
+                None => return false,
+            };
             if crit_str.starts_with(">=") {
                 let crit_f = crit_str[2..].trim().parse::<f64>().unwrap_or(0.0);
                 val_f >= crit_f
@@ -1478,13 +1524,17 @@ impl Sheet {
                 val_f > crit_f
             }
         } else if crit_str.starts_with('<') {
-            let val_f = self.to_f64(val).unwrap_or(0.0);
+            if crit_str.starts_with("<>") {
+                let remainder = crit_str[2..].trim().to_string();
+                return val.to_string() != remainder;
+            }
+            let val_f = match Self::range_numeric(val) {
+                Some(f) => f,
+                None => return false,
+            };
             if crit_str.starts_with("<=") {
                 let crit_f = crit_str[2..].trim().parse::<f64>().unwrap_or(0.0);
                 val_f <= crit_f
-            } else if crit_str.starts_with("<>") {
-                let remainder = crit_str[2..].trim().to_string();
-                val.to_string() != remainder
             } else {
                 let crit_f = crit_str[1..].trim().parse::<f64>().unwrap_or(0.0);
                 val_f < crit_f
@@ -1494,6 +1544,207 @@ impl Sheet {
             val.to_string() == remainder
         } else {
             val.to_string() == crit_str
+        }
+    }
+
+    /// Resolves an argument `Expr` to its raw `(sheet, start_row, start_col,
+    /// end_row, end_col)` range bounds, for functions (like the database
+    /// `D*` family below) that need genuine 2D shape and can't work off the
+    /// pre-flattened `ResultData::List` every other argument already went
+    /// through in `evaluated_args`.
+    fn range_bounds(expr: &crate::core::parser::Expr) -> Option<(Option<String>, usize, usize, usize, usize)> {
+        use crate::core::parser::Expr;
+        match expr {
+            Expr::RangeRef {
+                sheet,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                ..
+            } => Some((sheet.clone(), *start_row, *start_col, *end_row, *end_col)),
+            Expr::CellRef { sheet, row, col, .. } => Some((sheet.clone(), *row, *col, *row, *col)),
+            _ => None,
+        }
+    }
+
+    /// Reads a range's cells into a row-major grid, resolving a whole-column
+    /// range's `end_row` sentinel and cross-sheet references via `context`.
+    /// Materializing into an owned `Vec<Vec<ResultData>>` (rather than
+    /// keeping a live `&Sheet` around) sidesteps the local-vs-remote
+    /// lifetime split for the rest of the database-function logic, and
+    /// database/criteria ranges are small enough that this is cheap.
+    fn materialize_range(
+        &self,
+        sheet_opt: &Option<String>,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+        context: Option<&Context>,
+    ) -> Option<Vec<Vec<ResultData>>> {
+        let is_self = match sheet_opt {
+            Some(name) => name == &self.name,
+            None => true,
+        };
+        let source: &Sheet = if is_self {
+            self
+        } else {
+            context?.sheets.get(sheet_opt.as_ref()?)?
+        };
+        let actual_end_row = if end_row == usize::MAX {
+            source.row_count().saturating_sub(1)
+        } else {
+            end_row
+        };
+        if actual_end_row < start_row || end_col < start_col {
+            return Some(Vec::new());
+        }
+        let mut grid = Vec::with_capacity(actual_end_row - start_row + 1);
+        for r in start_row..=actual_end_row {
+            let mut row = Vec::with_capacity(end_col - start_col + 1);
+            for c in start_col..=end_col {
+                row.push(source.get_result_data(&CellRef::new(r, c)));
+            }
+            grid.push(row);
+        }
+        Some(grid)
+    }
+
+    /// Shared implementation for the 12 database `D*` functions
+    /// (DAVERAGE/DCOUNT/DCOUNTA/DGET/DMAX/DMIN/DPRODUCT/DSTDEV/DSTDEVP/
+    /// DSUM/DVAR/DVARP): each reduces to "match database rows against the
+    /// criteria table, then aggregate one field column of the matches" --
+    /// they differ only in which aggregation runs at the end.
+    ///
+    /// `database`/`criteria` are read from the raw `args` AST nodes (not
+    /// `evaluated_args`) specifically to recover real row/column bounds;
+    /// `field` (name or 1-based index) still comes from `evaluated_args`
+    /// since it's a scalar. Criteria semantics match Excel's: multiple
+    /// criteria *rows* are OR'd together, multiple non-blank cells within
+    /// one criteria row are AND'd, and a blank criteria cell imposes no
+    /// constraint on that field.
+    fn evaluate_database_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        evaluated_args: &[ResultData],
+        context: Option<&Context>,
+    ) -> Result<ResultData, EngineError> {
+        if args.len() < 3 || evaluated_args.len() < 3 {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+        let (db_sheet, db_sr, db_sc, db_er, db_ec) = match Self::range_bounds(&args[0]) {
+            Some(v) => v,
+            None => return Ok(ResultData::Error("#VALUE!".to_string())),
+        };
+        let (crit_sheet, crit_sr, crit_sc, crit_er, crit_ec) = match Self::range_bounds(&args[2]) {
+            Some(v) => v,
+            None => return Ok(ResultData::Error("#VALUE!".to_string())),
+        };
+        let db = match self.materialize_range(&db_sheet, db_sr, db_sc, db_er, db_ec, context) {
+            Some(g) => g,
+            None => return Ok(ResultData::Error("#REF!".to_string())),
+        };
+        let crit = match self.materialize_range(&crit_sheet, crit_sr, crit_sc, crit_er, crit_ec, context) {
+            Some(g) => g,
+            None => return Ok(ResultData::Error("#REF!".to_string())),
+        };
+        if db.len() < 2 || crit.len() < 2 {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+
+        let db_headers: Vec<String> = db[0].iter().map(|v| v.to_string()).collect();
+        let field_idx: usize = match &evaluated_args[1] {
+            ResultData::String(s) => match db_headers.iter().position(|h| h.eq_ignore_ascii_case(s)) {
+                Some(idx) => idx,
+                None => return Ok(ResultData::Error("#VALUE!".to_string())),
+            },
+            other => match self.to_f64(other) {
+                Some(n) if n >= 1.0 && (n as usize) <= db_headers.len() => n as usize - 1,
+                _ => return Ok(ResultData::Error("#VALUE!".to_string())),
+            },
+        };
+
+        let crit_headers: Vec<String> = crit[0].iter().map(|v| v.to_string()).collect();
+        let crit_to_db: Vec<Option<usize>> = crit_headers
+            .iter()
+            .map(|h| db_headers.iter().position(|dh| dh.eq_ignore_ascii_case(h)))
+            .collect();
+
+        let mut matched: Vec<ResultData> = Vec::new();
+        for row in db.iter().skip(1) {
+            let row_matches_any_criteria_row = crit.iter().skip(1).any(|crit_row| {
+                crit_row.iter().enumerate().all(|(ci, cell)| {
+                    if matches!(cell, ResultData::None) {
+                        return true;
+                    }
+                    match crit_to_db.get(ci).copied().flatten() {
+                        Some(db_col) => self.match_criteria(&row[db_col], cell),
+                        None => false,
+                    }
+                })
+            });
+            if row_matches_any_criteria_row {
+                matched.push(row[field_idx].clone());
+            }
+        }
+
+        match func_name {
+            "DGET" => match matched.len() {
+                0 => Ok(ResultData::Error("#VALUE!".to_string())),
+                1 => Ok(matched.into_iter().next().unwrap()),
+                _ => Ok(ResultData::Error("#NUM!".to_string())),
+            },
+            "DCOUNT" => Ok(ResultData::Float(
+                matched.iter().filter(|v| Self::range_numeric(v).is_some()).count() as f64,
+            )),
+            "DCOUNTA" => Ok(ResultData::Float(
+                matched.iter().map(|v| self.counta_helper(v)).sum::<usize>() as f64,
+            )),
+            _ => {
+                let nums: Vec<f64> = matched.iter().filter_map(Self::range_numeric).collect();
+                match func_name {
+                    "DSUM" => Ok(ResultData::Float(nums.iter().sum())),
+                    "DPRODUCT" => Ok(ResultData::Float(if nums.is_empty() {
+                        0.0
+                    } else {
+                        nums.iter().product()
+                    })),
+                    "DMAX" => {
+                        let m = nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                        Ok(ResultData::Float(if m.is_finite() { m } else { 0.0 }))
+                    }
+                    "DMIN" => {
+                        let m = nums.iter().cloned().fold(f64::INFINITY, f64::min);
+                        Ok(ResultData::Float(if m.is_finite() { m } else { 0.0 }))
+                    }
+                    "DAVERAGE" => {
+                        if nums.is_empty() {
+                            Ok(ResultData::Error("#DIV/0!".to_string()))
+                        } else {
+                            Ok(ResultData::Float(nums.iter().sum::<f64>() / nums.len() as f64))
+                        }
+                    }
+                    "DSTDEV" => match crate::core::stats::stdev_s(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    "DSTDEVP" => match crate::core::stats::stdev_p(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    "DVAR" => match crate::core::stats::var_s(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    "DVARP" => match crate::core::stats::var_p(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 
@@ -1596,6 +1847,1158 @@ impl Sheet {
         self.evaluate_let(&args[2..], context, row, deps, &inner_scope)
     }
 
+    /// Recognizes `expr` as a `LAMBDA(param1, [param2, ...], body)` call
+    /// and, if so, returns its declared parameter names alongside the
+    /// (still-unevaluated) body expression. Used by every function below
+    /// that takes a lambda argument: the lambda is never evaluated as an
+    /// ordinary function call (there's no value a bare LAMBDA could
+    /// produce on its own -- see the `#CALC!` case in `evaluate_function`)
+    /// -- callers instead inspect its raw AST here and invoke the body
+    /// themselves, once per element, via `invoke_lambda`.
+    fn extract_lambda(expr: &crate::core::parser::Expr) -> Option<(Vec<&str>, &crate::core::parser::Expr)> {
+        use crate::core::parser::Expr;
+        let Expr::FunctionCall { name, args } = expr else {
+            return None;
+        };
+        if !name.eq_ignore_ascii_case("LAMBDA") || args.is_empty() {
+            return None;
+        }
+        let (body, params) = args.split_last().unwrap();
+        let param_names: Vec<&str> = params
+            .iter()
+            .filter_map(|p| match p {
+                Expr::Identifier(n) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        if param_names.len() != params.len() {
+            return None;
+        }
+        Some((param_names, body))
+    }
+
+    /// Evaluates a lambda's body with each of `params` bound (via
+    /// `LetScope`) to the corresponding entry of `values`, which must be
+    /// the same length. `values` is borrowed rather than consumed so
+    /// callers can reuse per-element storage across many invocations
+    /// (e.g. MAP calling this once per array element).
+    fn invoke_lambda<'v>(
+        &self,
+        params: &[&str],
+        values: &'v [ResultData],
+        body: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'v>,
+    ) -> Result<ResultData, EngineError> {
+        match (params.split_first(), values.split_first()) {
+            (Some((&pname, prest)), Some((vfirst, vrest))) => {
+                let inner_scope = LetScope::Bound {
+                    name: pname,
+                    value: vfirst,
+                    parent: scope,
+                };
+                self.invoke_lambda(prest, vrest, body, context, row, deps, &inner_scope)
+            }
+            _ => self.evaluate_ast(body, context, row, deps, scope),
+        }
+    }
+
+    /// Flattens `expr` (evaluated) into a `Vec<ResultData>`, treating a
+    /// scalar as a single-element array -- shared by MAP/REDUCE/SCAN,
+    /// which all iterate an "array" argument that might just be one cell.
+    fn eval_as_array(
+        &self,
+        expr: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<Vec<ResultData>, EngineError> {
+        Ok(match self.evaluate_ast(expr, context, row, deps, scope)? {
+            ResultData::List(items) => Self::flatten_row_major(items).0,
+            other => vec![other],
+        })
+    }
+
+    /// `SEQUENCE`/`MUNIT` (unlike every array-*reshaping* function added
+    /// this session) return their 2D result as a genuinely nested
+    /// `List(List(row_values), ...)`, one inner list per row, rather than
+    /// a flat row-major list -- that's the only place in this engine a
+    /// `ResultData::List` still carries real shape. Detect that shape
+    /// here and flatten it so downstream consumers (`array_shape`,
+    /// `INDEX`, reshape functions) don't need to special-case it; a list
+    /// that isn't uniformly nested (the flat convention) passes through
+    /// unchanged, with `None` signaling "no shape recovered here".
+    fn flatten_row_major(items: Vec<ResultData>) -> (Vec<ResultData>, Option<usize>) {
+        if !items.is_empty() && items.iter().all(|v| matches!(v, ResultData::List(_))) {
+            let cols = match &items[0] {
+                ResultData::List(inner) => inner.len().max(1),
+                _ => 1,
+            };
+            let flat = items
+                .into_iter()
+                .flat_map(|v| match v {
+                    ResultData::List(inner) => inner,
+                    other => vec![other],
+                })
+                .collect();
+            (flat, Some(cols))
+        } else {
+            (items, None)
+        }
+    }
+
+    /// Infers `(flat_values, num_cols)` for an array-like argument: real
+    /// column count from a `RangeRef`/`CellRef` AST node when available,
+    /// otherwise treats the flattened result as a single row -- the same
+    /// convention `INDEX`'s 3-arg form already uses (see its `num_cols`
+    /// match on `args[0]`), since a computed/nested array result (e.g. the
+    /// output of another array function) carries no shape of its own in
+    /// this engine's flat-`ResultData::List` representation.
+    fn array_shape(
+        &self,
+        expr: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<(Vec<ResultData>, usize), EngineError> {
+        use crate::core::parser::Expr;
+        let items = match self.evaluate_ast(expr, context, row, deps, scope)? {
+            ResultData::List(items) => items,
+            other => vec![other],
+        };
+        let (flat, nested_cols) = Self::flatten_row_major(items);
+        if let Some(cols) = nested_cols {
+            return Ok((flat, cols));
+        }
+        let num_cols = match expr {
+            Expr::RangeRef { start_col, end_col, .. } => (end_col - start_col + 1).max(1),
+            Expr::CellRef { .. } => 1,
+            Expr::FunctionCall { name, args } => self
+                .function_call_cols(name, args, context, row, deps, scope)
+                .unwrap_or_else(|| flat.len().max(1)),
+            _ => flat.len().max(1),
+        };
+        Ok((flat, num_cols))
+    }
+
+    /// Recovers the column count an array-reshaping function call's result
+    /// would have, purely from its argument expressions -- needed because
+    /// this engine's flat `ResultData::List` carries no shape of its own,
+    /// so nesting one of these calls inside another (e.g.
+    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) previously fell back to treating
+    /// the whole result as a single row, corrupting the flat-index math.
+    /// Returns `None` for anything not in this known set, so callers fall
+    /// back to the single-row assumption.
+    fn function_call_cols(
+        &self,
+        name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Option<usize> {
+        let mut upper = name.to_ascii_uppercase();
+        if let Some(rest) = upper.strip_prefix("_XLFN.") {
+            upper = rest.to_string();
+        }
+        if let Some(rest) = upper.strip_prefix("_XLWS.") {
+            upper = rest.to_string();
+        }
+        match upper.as_str() {
+            "TRANSPOSE" => {
+                let (flat, cols) = self.array_shape(args.first()?, context, row, deps, scope).ok()?;
+                Some((if cols == 0 { 0 } else { flat.len() / cols }).max(1))
+            }
+            "HSTACK" => {
+                let mut total = 0usize;
+                for a in args {
+                    total += self.array_shape(a, context, row, deps, scope).ok()?.1;
+                }
+                Some(total)
+            }
+            "VSTACK" => {
+                let mut max_cols = 0usize;
+                for a in args {
+                    max_cols = max_cols.max(self.array_shape(a, context, row, deps, scope).ok()?.1);
+                }
+                Some(max_cols)
+            }
+            "CHOOSEROWS" => Some(self.array_shape(args.first()?, context, row, deps, scope).ok()?.1),
+            "CHOOSECOLS" => Some(args.len().saturating_sub(1).max(1)),
+            "DROP" | "TAKE" => {
+                let (_, cols) = self.array_shape(args.first()?, context, row, deps, scope).ok()?;
+                let is_take = upper == "TAKE";
+                match args.get(2) {
+                    Some(e) => {
+                        let n = self
+                            .to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                            .unwrap_or(0.0) as isize;
+                        let (s, e2) = Self::drop_take_bounds(cols as isize, n, is_take);
+                        Some((e2 - s).max(0) as usize)
+                    }
+                    None => Some(if is_take { cols } else { 0 }),
+                }
+            }
+            "EXPAND" => {
+                let (_, cols) = self.array_shape(args.first()?, context, row, deps, scope).ok()?;
+                match args.get(2) {
+                    Some(e) => Some(
+                        self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                            .unwrap_or(cols as f64) as usize,
+                    ),
+                    None => Some(cols),
+                }
+            }
+            "TOCOL" => Some(1),
+            "WRAPROWS" => {
+                let n = self
+                    .to_f64(&self.evaluate_ast(args.get(1)?, context, row, deps, scope).ok()?)
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                Some(n)
+            }
+            "WRAPCOLS" => {
+                let (flat, _) = self.array_shape(args.first()?, context, row, deps, scope).ok()?;
+                let wrap = self
+                    .to_f64(&self.evaluate_ast(args.get(1)?, context, row, deps, scope).ok()?)
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                Some(flat.len().div_ceil(wrap).max(1))
+            }
+            "UNIQUE" | "SORT" | "SORTBY" | "FILTER" | "TRIMRANGE" => {
+                Some(self.array_shape(args.first()?, context, row, deps, scope).ok()?.1)
+            }
+            "SEQUENCE" => match args.get(1) {
+                Some(e) => Some(
+                    self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                        .unwrap_or(1.0)
+                        .max(1.0) as usize,
+                ),
+                None => Some(1),
+            },
+            "MUNIT" => {
+                let n = self
+                    .to_f64(&self.evaluate_ast(args.first()?, context, row, deps, scope).ok()?)
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                Some(n)
+            }
+            "MAKEARRAY" => match args.get(1) {
+                Some(e) => Some(
+                    self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                        .unwrap_or(1.0)
+                        .max(1.0) as usize,
+                ),
+                None => Some(1),
+            },
+            _ => None,
+        }
+    }
+
+    /// Shared `[start, end)` bound computation for `TAKE`/`DROP`: a
+    /// positive count counts from the start, negative from the end;
+    /// `is_take` selects which side of that split is kept.
+    fn drop_take_bounds(total: isize, n: isize, is_take: bool) -> (isize, isize) {
+        let n = n.clamp(-total, total);
+        if is_take {
+            if n >= 0 { (0, n) } else { (total + n, total) }
+        } else if n >= 0 {
+            (n, total)
+        } else {
+            (0, total + n)
+        }
+    }
+
+    /// Shared implementation for MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY:
+    /// each applies a `LAMBDA` argument to some shape of input (parallel
+    /// arrays, rows, columns, an accumulator, or generated row/col
+    /// indices) and collects the results -- see each branch for the
+    /// specific shape. Dynamic-array results are returned as a flat,
+    /// row-major `ResultData::List`, the same convention `SEQUENCE`/
+    /// `MUNIT`/etc. already use, since this engine doesn't spill formulas
+    /// across cells; callers pull out a single value with `INDEX`.
+    fn evaluate_lambda_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        use crate::core::parser::Expr;
+
+        match func_name {
+            "MAP" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (lambda_expr, array_exprs) = args.split_last().unwrap();
+                let Some((params, body)) = Self::extract_lambda(lambda_expr) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != array_exprs.len() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let arrays: Vec<Vec<ResultData>> = array_exprs
+                    .iter()
+                    .map(|e| self.eval_as_array(e, context, row, deps, scope))
+                    .collect::<Result<_, _>>()?;
+                let len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+                let mut results = Vec::with_capacity(len);
+                for i in 0..len {
+                    let values: Vec<ResultData> = arrays
+                        .iter()
+                        .map(|a| a.get(i).cloned().unwrap_or(ResultData::None))
+                        .collect();
+                    results.push(self.invoke_lambda(&params, &values, body, context, row, deps, scope)?);
+                }
+                Ok(ResultData::List(results))
+            }
+            "BYROW" | "BYCOL" => {
+                if args.len() != 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let Some((params, body)) = Self::extract_lambda(&args[1]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != 1 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                // Recovers real column count the same way INDEX's 3-arg
+                // form does: re-matching the raw AST node, since the
+                // already-evaluated array argument is just a flat List.
+                let num_cols = match &args[0] {
+                    Expr::RangeRef { start_col, end_col, .. } => (end_col - start_col + 1).max(1),
+                    _ => 1,
+                };
+                let flat = self.eval_as_array(&args[0], context, row, deps, scope)?;
+                let num_rows = if num_cols == 0 { 0 } else { flat.len().div_ceil(num_cols) };
+                let mut results = Vec::new();
+                if func_name == "BYROW" {
+                    for r in 0..num_rows {
+                        let row_vals: Vec<ResultData> = (0..num_cols)
+                            .filter_map(|c| flat.get(r * num_cols + c).cloned())
+                            .collect();
+                        let arg = vec![ResultData::List(row_vals)];
+                        results.push(self.invoke_lambda(&params, &arg, body, context, row, deps, scope)?);
+                    }
+                } else {
+                    for c in 0..num_cols {
+                        let col_vals: Vec<ResultData> = (0..num_rows)
+                            .filter_map(|r| flat.get(r * num_cols + c).cloned())
+                            .collect();
+                        let arg = vec![ResultData::List(col_vals)];
+                        results.push(self.invoke_lambda(&params, &arg, body, context, row, deps, scope)?);
+                    }
+                }
+                Ok(ResultData::List(results))
+            }
+            "REDUCE" | "SCAN" => {
+                // initial_value is optional in real Excel's 3-argument
+                // REDUCE/SCAN; since the parser has no dedicated "omitted
+                // argument" syntax to express that, this implementation
+                // also accepts a plain 2-argument call (array, lambda) as
+                // the omitted-initial-value form, seeding the accumulator
+                // from the array's own first element and folding over the
+                // rest -- rather than only supporting a literal 3rd
+                // argument that happens to error out.
+                if args.len() != 2 && args.len() != 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let lambda_idx = args.len() - 1;
+                let array_idx = args.len() - 2;
+                let Some((params, body)) = Self::extract_lambda(&args[lambda_idx]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let array = self.eval_as_array(&args[array_idx], context, row, deps, scope)?;
+                // SCAN's output has the same length as `array` -- an
+                // explicit initial_value (3-arg form) is external to the
+                // array and doesn't get its own output entry (every entry
+                // is a real fold), whereas the 2-arg fallback's seed *is*
+                // the array's own first element, so it does.
+                let (mut acc, rest, mut history): (ResultData, &[ResultData], Vec<ResultData>) = if args.len() == 3 {
+                    let init = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                    (init, &array[..], Vec::new())
+                } else {
+                    match array.split_first() {
+                        Some((first, rest)) => (first.clone(), rest, vec![first.clone()]),
+                        None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                    }
+                };
+                for item in rest {
+                    let call_args = [acc.clone(), item.clone()];
+                    acc = self.invoke_lambda(&params, &call_args, body, context, row, deps, scope)?;
+                    history.push(acc.clone());
+                }
+                if func_name == "REDUCE" {
+                    Ok(acc)
+                } else {
+                    Ok(ResultData::List(history))
+                }
+            }
+            "MAKEARRAY" => {
+                if args.len() != 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let Some((params, body)) = Self::extract_lambda(&args[2]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let rows_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                let cols_val = self.evaluate_ast(&args[1], context, row, deps, scope)?;
+                let num_rows = self.to_f64(&rows_val).unwrap_or(0.0).max(0.0) as usize;
+                let num_cols = self.to_f64(&cols_val).unwrap_or(0.0).max(0.0) as usize;
+                let mut results = Vec::with_capacity(num_rows * num_cols);
+                for r in 1..=num_rows {
+                    for c in 1..=num_cols {
+                        let call_args = [ResultData::Float(r as f64), ResultData::Float(c as f64)];
+                        results.push(self.invoke_lambda(&params, &call_args, body, context, row, deps, scope)?);
+                    }
+                }
+                Ok(ResultData::List(results))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Minimal A1-notation string parser for `INDIRECT`: `"A1"`,
+    /// `"B2:C5"`, `"Sheet1!A1"`, `"Sheet1!A1:B2"`, with optional `$`
+    /// absolute markers and an optional `'quoted sheet name'!` prefix.
+    /// Deliberately small and local rather than shared with
+    /// `visi/src/utils.rs`'s equivalent parser (`parse_cell_ref`/
+    /// `parse_range_ref`): `libvisi` cannot depend on the `visi` crate
+    /// (the dependency direction is the other way), so this necessarily
+    /// duplicates that logic in miniature.
+    fn parse_a1_reference(text: &str) -> Option<(Option<String>, usize, usize, usize, usize)> {
+        let text = text.trim();
+        let (sheet_part, ref_part) = match text.rfind('!') {
+            Some(idx) => (Some(&text[..idx]), &text[idx + 1..]),
+            None => (None, text),
+        };
+        let sheet = sheet_part.map(|s| s.trim().trim_matches('\'').to_string());
+
+        fn parse_cell(s: &str) -> Option<(usize, usize)> {
+            let s = s.replace('$', "");
+            let col_end = s.find(|c: char| c.is_ascii_digit())?;
+            let (col_str, row_str) = s.split_at(col_end);
+            if col_str.is_empty() || row_str.is_empty() {
+                return None;
+            }
+            let mut col = 0usize;
+            for ch in col_str.chars() {
+                if !ch.is_ascii_alphabetic() {
+                    return None;
+                }
+                col = col * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1);
+            }
+            let row: usize = row_str.parse().ok()?;
+            if row == 0 || col == 0 {
+                return None;
+            }
+            Some((row - 1, col - 1))
+        }
+
+        if let Some((start, end)) = ref_part.split_once(':') {
+            let (r1, c1) = parse_cell(start)?;
+            let (r2, c2) = parse_cell(end)?;
+            Some((sheet, r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
+        } else {
+            let (r, c) = parse_cell(ref_part)?;
+            Some((sheet, r, c, r, c))
+        }
+    }
+
+    /// Reads a single cell, registering the appropriate local/remote
+    /// dependency -- the same local-vs-remote branch used throughout this
+    /// file (see e.g. `evaluate_ast`'s `Expr::CellRef` arm), factored out
+    /// since `CELL`/`FORMULATEXT`/`ISFORMULA`/`INDIRECT`/`OFFSET` all need
+    /// it for a reference resolved dynamically rather than parsed as an
+    /// AST node.
+    fn read_cell_with_deps(
+        &self,
+        sheet_opt: &Option<String>,
+        r: usize,
+        c: usize,
+        context: Option<&Context>,
+        deps: &mut Vec<Dependency>,
+    ) -> ResultData {
+        let is_self = sheet_opt.as_deref().is_none_or(|n| n == self.name);
+        if is_self {
+            deps.push(Dependency::Local(CellRef::new(r, c)));
+            self.get_result_data(&CellRef::new(r, c))
+        } else if let Some(ctx) = context {
+            let name = sheet_opt.clone().unwrap();
+            deps.push(Dependency::Remote {
+                sheet: name.clone(),
+                cell: CellRef::new(r, c),
+            });
+            ctx.sheets
+                .get(&name)
+                .map(|s| s.get_result_data(&CellRef::new(r, c)))
+                .unwrap_or(ResultData::None)
+        } else {
+            ResultData::None
+        }
+    }
+
+    /// Shared implementation for the range/reference-introspection and
+    /// workbook-metadata functions: ROW/ROWS/COLUMN/COLUMNS need the raw
+    /// reference's real bounds (not a flattened `evaluated_args` value);
+    /// AREAS/ISREF are purely syntactic checks on the argument's AST
+    /// shape; FORMULATEXT/ISFORMULA need the cell's raw source text;
+    /// INDIRECT/OFFSET build a reference dynamically instead of relying
+    /// on one already resolved at parse time; SHEET/SHEETS/CELL/INFO
+    /// report workbook/environment metadata.
+    fn evaluate_range_info_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        use crate::core::parser::Expr;
+
+        match func_name {
+            "ROW" => match args.first() {
+                // A multi-row reference returns an array of row numbers
+                // (one per row spanned), not just the first one -- a
+                // single-row reference (including a plain cell, where
+                // start_row == end_row) still returns the plain scalar.
+                Some(arg) => match Self::range_bounds(arg) {
+                    Some((_, start_row, _, end_row, _)) if end_row > start_row => Ok(ResultData::List(
+                        (start_row..=end_row).map(|r| ResultData::Float((r + 1) as f64)).collect(),
+                    )),
+                    Some((_, start_row, _, _, _)) => Ok(ResultData::Float((start_row + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
+                None => match row {
+                    Some(r) => Ok(ResultData::Float((r + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
+            },
+            "COLUMN" => match args.first() {
+                // Same array-vs-scalar distinction as ROW, but across
+                // columns instead of rows.
+                Some(arg) => match Self::range_bounds(arg) {
+                    Some((_, _, start_col, _, end_col)) if end_col > start_col => Ok(ResultData::List(
+                        (start_col..=end_col).map(|c| ResultData::Float((c + 1) as f64)).collect(),
+                    )),
+                    Some((_, _, start_col, _, _)) => Ok(ResultData::Float((start_col + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
+                // The current cell's own column isn't threaded through
+                // this evaluator the way `row` is (every call site
+                // already passes `row`, but adding an equivalent `col`
+                // parameter would mean threading it through every
+                // `evaluate_ast`/`evaluate_function` call site in this
+                // file) -- a real, documented gap. Bare `=COLUMN()` isn't
+                // supported; called with an explicit reference argument,
+                // COLUMN works correctly.
+                None => Ok(ResultData::Error("#N/A".to_string())),
+            },
+            "ROWS" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let Some((sheet_opt, start_row, _, end_row, _)) = Self::range_bounds(arg) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let is_self = sheet_opt.as_deref().is_none_or(|n| n == self.name);
+                let actual_end_row = if end_row == usize::MAX {
+                    if is_self {
+                        self.row_count().saturating_sub(1)
+                    } else {
+                        context
+                            .and_then(|ctx| sheet_opt.as_ref().and_then(|n| ctx.sheets.get(n)))
+                            .map(|s| s.row_count().saturating_sub(1))
+                            .unwrap_or(0)
+                    }
+                } else {
+                    end_row
+                };
+                Ok(ResultData::Float((actual_end_row.saturating_sub(start_row) + 1) as f64))
+            }
+            "COLUMNS" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                match Self::range_bounds(arg) {
+                    Some((_, _, start_col, _, end_col)) => Ok(ResultData::Float((end_col.saturating_sub(start_col) + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            "AREAS" => {
+                // This engine's parser has no multi-area (comma-separated
+                // union) reference syntax, so every reference is exactly
+                // one area.
+                if args.is_empty() {
+                    Ok(ResultData::Error("#VALUE!".to_string()))
+                } else {
+                    Ok(ResultData::Float(1.0))
+                }
+            }
+            "ISREF" => Ok(ResultData::Boolean(matches!(
+                args.first(),
+                Some(Expr::CellRef { .. } | Expr::RangeRef { .. } | Expr::StructuredRef { .. })
+            ))),
+            "FORMULATEXT" | "ISFORMULA" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let Some((sheet_opt, r, c, _, _)) = Self::range_bounds(arg) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let is_self = sheet_opt.as_deref().is_none_or(|n| n == self.name);
+                let src = if is_self {
+                    deps.push(Dependency::Local(CellRef::new(r, c)));
+                    self.get_src_str(&CellRef::new(r, c))
+                } else if let Some(ctx) = context {
+                    let name = sheet_opt.unwrap();
+                    deps.push(Dependency::Remote {
+                        sheet: name.clone(),
+                        cell: CellRef::new(r, c),
+                    });
+                    ctx.sheets.get(&name).map(|s| s.get_src_str(&CellRef::new(r, c))).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let is_formula = src.starts_with('=');
+                if func_name == "ISFORMULA" {
+                    Ok(ResultData::Boolean(is_formula))
+                } else if is_formula {
+                    Ok(ResultData::String(src))
+                } else {
+                    Ok(ResultData::Error("#N/A".to_string()))
+                }
+            }
+            "SHEETS" => Ok(ResultData::Float(context.map(|c| c.sheets.len() + 1).unwrap_or(1) as f64)),
+            "SHEET" => {
+                // This sheet's ordinal position within the workbook isn't
+                // available here -- `Context` only holds an unordered
+                // `HashMap` of sheets, and true sheet order is tracked
+                // one layer up, in `visi`'s `WorkbookManager`, which
+                // isn't reachable from inside `Sheet::evaluate_function`.
+                // Always returning 1 is a documented approximation, not a
+                // correct ordinal, for any sheet that isn't genuinely
+                // first in the workbook.
+                Ok(ResultData::Float(1.0))
+            }
+            "CELL" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let info_type = self
+                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .to_string()
+                    .to_lowercase();
+                let bounds = args.get(1).and_then(Self::range_bounds);
+                match info_type.as_str() {
+                    "row" => match bounds.map(|b| b.1).or(row) {
+                        Some(r) => Ok(ResultData::Float((r + 1) as f64)),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    "col" => match bounds {
+                        Some((_, _, c, _, _)) => Ok(ResultData::Float((c + 1) as f64)),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    "address" => match bounds {
+                        Some((_, r, c, _, _)) => Ok(ResultData::String(format!(
+                            "${}${}",
+                            crate::core::parser::col_idx_to_letters(c),
+                            r + 1
+                        ))),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    "contents" => match bounds {
+                        Some((sheet_opt, r, c, _, _)) => Ok(self.read_cell_with_deps(&sheet_opt, r, c, context, deps)),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    _ => Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            "INFO" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let info_type = self
+                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .to_string()
+                    .to_lowercase();
+                match info_type.as_str() {
+                    "numfile" => Ok(ResultData::Float(context.map(|c| c.sheets.len() + 1).unwrap_or(1) as f64)),
+                    "release" => Ok(ResultData::String("16.0".to_string())),
+                    "system" => Ok(ResultData::String(if cfg!(target_os = "macos") { "mac" } else { "pcdos" }.to_string())),
+                    _ => Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            "INDIRECT" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let text = self.evaluate_ast(&args[0], context, row, deps, scope)?.to_string();
+                let a1_style = match args.get(1) {
+                    Some(a) => self.to_bool(&self.evaluate_ast(a, context, row, deps, scope)?),
+                    None => true,
+                };
+                if !a1_style {
+                    // R1C1-style reference text isn't supported.
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                match Self::parse_a1_reference(&text) {
+                    Some((sheet_opt, start_row, start_col, end_row, end_col)) => {
+                        if start_row == end_row && start_col == end_col {
+                            Ok(self.read_cell_with_deps(&sheet_opt, start_row, start_col, context, deps))
+                        } else {
+                            match self.materialize_range(&sheet_opt, start_row, start_col, end_row, end_col, context) {
+                                Some(grid) => Ok(ResultData::List(grid.into_iter().flatten().collect())),
+                                None => Ok(ResultData::Error("#REF!".to_string())),
+                            }
+                        }
+                    }
+                    None => Ok(ResultData::Error("#REF!".to_string())),
+                }
+            }
+            "OFFSET" => {
+                if args.len() < 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let Some((sheet_opt, base_row, base_col, base_end_row, base_end_col)) = Self::range_bounds(&args[0]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let row_offset = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(0.0) as isize;
+                let col_offset = self
+                    .to_f64(&self.evaluate_ast(&args[2], context, row, deps, scope)?)
+                    .unwrap_or(0.0) as isize;
+                let base_height = (base_end_row.saturating_sub(base_row) + 1) as isize;
+                let base_width = (base_end_col.saturating_sub(base_col) + 1) as isize;
+                let height = match args.get(3) {
+                    Some(a) => self
+                        .to_f64(&self.evaluate_ast(a, context, row, deps, scope)?)
+                        .unwrap_or(base_height as f64) as isize,
+                    None => base_height,
+                };
+                let width = match args.get(4) {
+                    Some(a) => self
+                        .to_f64(&self.evaluate_ast(a, context, row, deps, scope)?)
+                        .unwrap_or(base_width as f64) as isize,
+                    None => base_width,
+                };
+                let new_row = base_row as isize + row_offset;
+                let new_col = base_col as isize + col_offset;
+                if new_row < 0 || new_col < 0 || height <= 0 || width <= 0 {
+                    return Ok(ResultData::Error("#REF!".to_string()));
+                }
+                let (start_row, start_col) = (new_row as usize, new_col as usize);
+                let (end_row, end_col) = (start_row + (height - 1) as usize, start_col + (width - 1) as usize);
+                if start_row == end_row && start_col == end_col {
+                    Ok(self.read_cell_with_deps(&sheet_opt, start_row, start_col, context, deps))
+                } else {
+                    match self.materialize_range(&sheet_opt, start_row, start_col, end_row, end_col, context) {
+                        Some(grid) => Ok(ResultData::List(grid.into_iter().flatten().collect())),
+                        None => Ok(ResultData::Error("#REF!".to_string())),
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Shared implementation for the dynamic-array reshaping functions.
+    /// All operate on `array_shape`'s `(flat, num_cols)` view and return a
+    /// flat, row-major `ResultData::List` -- the same convention
+    /// `SEQUENCE`/`MUNIT`/`MAKEARRAY`/etc. already use, since this engine
+    /// doesn't spill formulas across cells (a caller pulls out a single
+    /// value with `INDEX`, or consumes the whole list with e.g. `SUM`).
+    ///
+    /// Known simplifications, each accepted given limited fuzzing time
+    /// against real Excel for this batch: `UNIQUE`'s `by_col` and `SORT`'s
+    /// `by_col` arguments are ignored (both always operate row-wise);
+    /// `SORTBY` only supports a single `by_array`/`sort_order` pair, not
+    /// the documented repeating list; `XMATCH`'s wildcard match mode and
+    /// binary/reverse search modes aren't implemented (falls through to a
+    /// forward linear scan).
+    fn evaluate_array_reshape_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        match func_name {
+            "TRANSPOSE" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let mut result = Vec::with_capacity(flat.len());
+                for c in 0..cols {
+                    for r in 0..rows {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "HSTACK" | "VSTACK" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let mut shapes = Vec::with_capacity(args.len());
+                for a in args {
+                    shapes.push(self.array_shape(a, context, row, deps, scope)?);
+                }
+                let mut result = Vec::new();
+                if func_name == "HSTACK" {
+                    let max_rows = shapes.iter().map(|(f, c)| if *c == 0 { 0 } else { f.len() / c }).max().unwrap_or(0);
+                    for r in 0..max_rows {
+                        for (flat, cols) in &shapes {
+                            let rows = if *cols == 0 { 0 } else { flat.len() / cols };
+                            for c in 0..*cols {
+                                result.push(if r < rows {
+                                    flat[r * cols + c].clone()
+                                } else {
+                                    ResultData::Error("#N/A".to_string())
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    let max_cols = shapes.iter().map(|(_, c)| *c).max().unwrap_or(0);
+                    for (flat, cols) in &shapes {
+                        let rows = if *cols == 0 { 0 } else { flat.len() / cols };
+                        for r in 0..rows {
+                            for c in 0..max_cols {
+                                result.push(if c < *cols {
+                                    flat[r * cols + c].clone()
+                                } else {
+                                    ResultData::Error("#N/A".to_string())
+                                });
+                            }
+                        }
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "CHOOSEROWS" | "CHOOSECOLS" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let total = if func_name == "CHOOSEROWS" { rows } else { cols } as isize;
+                let mut indices = Vec::with_capacity(args.len() - 1);
+                for idx_expr in &args[1..] {
+                    let n = self.to_f64(&self.evaluate_ast(idx_expr, context, row, deps, scope)?).unwrap_or(0.0) as isize;
+                    let real_idx = if n < 0 { total + n } else { n - 1 };
+                    if real_idx < 0 || real_idx >= total {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    indices.push(real_idx as usize);
+                }
+                let mut result = Vec::new();
+                if func_name == "CHOOSEROWS" {
+                    for r in indices {
+                        for c in 0..cols {
+                            result.push(flat[r * cols + c].clone());
+                        }
+                    }
+                } else {
+                    for r in 0..rows {
+                        for &c in &indices {
+                            result.push(flat[r * cols + c].clone());
+                        }
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "DROP" | "TAKE" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let num_rows = if cols == 0 { 0 } else { flat.len() / cols } as isize;
+                let is_take = func_name == "TAKE";
+                let rows_n = self.to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?).unwrap_or(0.0) as isize;
+                let cols_n = match args.get(2) {
+                    Some(e) => self.to_f64(&self.evaluate_ast(e, context, row, deps, scope)?).unwrap_or(0.0) as isize,
+                    None => if is_take { cols as isize } else { 0 },
+                };
+                let (row_start, row_end) = Self::drop_take_bounds(num_rows, rows_n, is_take);
+                let (col_start, col_end) = Self::drop_take_bounds(cols as isize, cols_n, is_take);
+                if row_start >= row_end || col_start >= col_end {
+                    return Ok(ResultData::Error("#CALC!".to_string()));
+                }
+                let mut result = Vec::new();
+                for r in row_start..row_end {
+                    for c in col_start..col_end {
+                        result.push(flat[(r as usize) * cols + (c as usize)].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "EXPAND" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let orig_rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let new_rows = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(orig_rows as f64) as usize;
+                let new_cols = match args.get(2) {
+                    Some(e) => self.to_f64(&self.evaluate_ast(e, context, row, deps, scope)?).unwrap_or(cols as f64) as usize,
+                    None => cols,
+                };
+                let pad = match args.get(3) {
+                    Some(e) => self.evaluate_ast(e, context, row, deps, scope)?,
+                    None => ResultData::Error("#N/A".to_string()),
+                };
+                if new_rows < orig_rows || new_cols < cols {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let mut result = Vec::with_capacity(new_rows * new_cols);
+                for r in 0..new_rows {
+                    for c in 0..new_cols {
+                        result.push(if r < orig_rows && c < cols {
+                            flat[r * cols + c].clone()
+                        } else {
+                            pad.clone()
+                        });
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "TOCOL" | "TOROW" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let ignore = match args.get(1) {
+                    Some(e) => self.to_f64(&self.evaluate_ast(e, context, row, deps, scope)?).unwrap_or(0.0) as i64,
+                    None => 0,
+                };
+                let scan_by_col = match args.get(2) {
+                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, deps, scope)?),
+                    None => false,
+                };
+                let ordered: Vec<ResultData> = if scan_by_col {
+                    let mut v = Vec::with_capacity(flat.len());
+                    for c in 0..cols {
+                        for r in 0..rows {
+                            v.push(flat[r * cols + c].clone());
+                        }
+                    }
+                    v
+                } else {
+                    flat
+                };
+                let filtered: Vec<ResultData> = ordered
+                    .into_iter()
+                    .filter(|v| match ignore {
+                        1 => !matches!(v, ResultData::None),
+                        2 => !matches!(v, ResultData::Error(_)),
+                        3 => !matches!(v, ResultData::None | ResultData::Error(_)),
+                        _ => true,
+                    })
+                    .collect();
+                Ok(ResultData::List(filtered))
+            }
+            "WRAPROWS" | "WRAPCOLS" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, _cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let wrap = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                let pad = match args.get(2) {
+                    Some(e) => self.evaluate_ast(e, context, row, deps, scope)?,
+                    None => ResultData::Error("#N/A".to_string()),
+                };
+                if func_name == "WRAPROWS" {
+                    // Row-major flat storage with num_cols == wrap is
+                    // exactly the padded input sequence itself.
+                    let mut result = flat;
+                    let rem = result.len() % wrap;
+                    if rem != 0 {
+                        result.extend(std::iter::repeat_n(pad, wrap - rem));
+                    }
+                    Ok(ResultData::List(result))
+                } else {
+                    let num_result_cols = flat.len().div_ceil(wrap).max(1);
+                    let total = wrap * num_result_cols;
+                    let mut result = Vec::with_capacity(total);
+                    for i in 0..total {
+                        let col = i / wrap;
+                        let r = i % wrap;
+                        let target = r * num_result_cols + col;
+                        while result.len() <= target {
+                            result.push(pad.clone());
+                        }
+                        if i < flat.len() {
+                            result[target] = flat[i].clone();
+                        }
+                    }
+                    Ok(ResultData::List(result))
+                }
+            }
+            "UNIQUE" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, _cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let exactly_once = match args.get(2) {
+                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, deps, scope)?),
+                    None => false,
+                };
+                let mut seen: Vec<(String, ResultData, usize)> = Vec::new();
+                for v in &flat {
+                    let key = v.to_string();
+                    match seen.iter_mut().find(|(k, ..)| k == &key) {
+                        Some(entry) => entry.2 += 1,
+                        None => seen.push((key, v.clone(), 1)),
+                    }
+                }
+                let result: Vec<ResultData> = seen
+                    .into_iter()
+                    .filter(|(_, _, count)| !exactly_once || *count == 1)
+                    .map(|(_, v, _)| v)
+                    .collect();
+                Ok(ResultData::List(result))
+            }
+            "SORT" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let sort_index = match args.get(1) {
+                    Some(e) => self.to_f64(&self.evaluate_ast(e, context, row, deps, scope)?).unwrap_or(1.0) as usize,
+                    None => 1,
+                };
+                let sort_order = match args.get(2) {
+                    Some(e) => self.to_f64(&self.evaluate_ast(e, context, row, deps, scope)?).unwrap_or(1.0),
+                    None => 1.0,
+                };
+                let col_idx = sort_index.saturating_sub(1).min(cols.saturating_sub(1));
+                let mut row_indices: Vec<usize> = (0..rows).collect();
+                row_indices.sort_by(|&a, &b| {
+                    Self::sort_compare_blanks_last(&flat[a * cols + col_idx], &flat[b * cols + col_idx], sort_order)
+                });
+                let mut result = Vec::with_capacity(flat.len());
+                for r in row_indices {
+                    for c in 0..cols {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "SORTBY" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let by = self.eval_as_array(&args[1], context, row, deps, scope)?;
+                let order = match args.get(2) {
+                    Some(e) => self.to_f64(&self.evaluate_ast(e, context, row, deps, scope)?).unwrap_or(1.0),
+                    None => 1.0,
+                };
+                let mut row_indices: Vec<usize> = (0..rows).collect();
+                row_indices.sort_by(|&a, &b| {
+                    let va = by.get(a).cloned().unwrap_or(ResultData::None);
+                    let vb = by.get(b).cloned().unwrap_or(ResultData::None);
+                    Self::sort_compare_blanks_last(&va, &vb, order)
+                });
+                let mut result = Vec::with_capacity(flat.len());
+                for r in row_indices {
+                    for c in 0..cols {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "FILTER" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let include = self.eval_as_array(&args[1], context, row, deps, scope)?;
+                let mut result = Vec::new();
+                for r in 0..rows {
+                    let keep = include.get(r).map(|v| self.to_bool(v)).unwrap_or(false);
+                    if keep {
+                        for c in 0..cols {
+                            result.push(flat[r * cols + c].clone());
+                        }
+                    }
+                }
+                if result.is_empty() {
+                    match args.get(2) {
+                        Some(e) => Ok(self.evaluate_ast(e, context, row, deps, scope)?),
+                        None => Ok(ResultData::Error("#CALC!".to_string())),
+                    }
+                } else {
+                    Ok(ResultData::List(result))
+                }
+            }
+            "TRIMRANGE" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let is_blank = |v: &ResultData| matches!(v, ResultData::None) || matches!(v, ResultData::String(s) if s.is_empty());
+                let row_blank = |r: usize| (0..cols).all(|c| is_blank(&flat[r * cols + c]));
+                let col_blank = |c: usize| (0..rows).all(|r| is_blank(&flat[r * cols + c]));
+                let mut r_start = 0;
+                while r_start < rows && row_blank(r_start) {
+                    r_start += 1;
+                }
+                let mut r_end = rows;
+                while r_end > r_start && row_blank(r_end - 1) {
+                    r_end -= 1;
+                }
+                let mut c_start = 0;
+                while c_start < cols && col_blank(c_start) {
+                    c_start += 1;
+                }
+                let mut c_end = cols;
+                while c_end > c_start && col_blank(c_end - 1) {
+                    c_end -= 1;
+                }
+                let mut result = Vec::new();
+                for r in r_start..r_end {
+                    for c in c_start..c_end {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn evaluate_function(
         &self,
         name: &str,
@@ -1609,6 +3012,16 @@ impl Sheet {
         let mut upper_name = name.to_uppercase();
         if upper_name.starts_with("_XLFN.") {
             upper_name = upper_name["_XLFN.".len()..].to_string();
+        }
+        // Real Excel's OOXML writer additionally nests some dynamic-array
+        // worksheet functions (UNIQUE, SORT, FILTER, ...) under a second
+        // `_xlws.` prefix inside `_xlfn.` -- e.g. `_xlfn._xlws.SORT`, not
+        // just `_xlfn.SORT`. Without stripping it too, the un-stripped
+        // name never matches any dispatch arm here -- confirmed as a real
+        // mismatch by checking real Excel's own OOXML export for these
+        // functions directly.
+        if upper_name.starts_with("_XLWS.") {
+            upper_name = upper_name["_XLWS.".len()..].to_string();
         }
 
         if upper_name == "LET" {
@@ -1780,6 +3193,72 @@ impl Sheet {
                     }
                     Ok(val) => return Ok(val),
                 }
+            }
+
+            if upper_name == "CHOOSE" {
+                if args.len() < 2 {
+                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                        "CHOOSE requires at least 2 arguments".to_string(),
+                    )));
+                }
+                let idx_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                if let ResultData::Error(_) = idx_val {
+                    return Ok(idx_val);
+                }
+                let idx = match self.to_f64(&idx_val) {
+                    Some(f) => f.round() as isize,
+                    None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                };
+                let choices = &args[1..];
+                if idx >= 1 && (idx as usize) <= choices.len() {
+                    return self.evaluate_ast(&choices[(idx - 1) as usize], context, row, deps, scope);
+                } else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+            }
+
+            if upper_name == "LAMBDA" {
+                // A bare, uninvoked LAMBDA (not nested as another
+                // function's argument, e.g. `=LAMBDA(x, x*2)` alone in a
+                // cell) has nothing to apply it to -- the parser doesn't
+                // support the `LAMBDA(...)(args)` immediate-invocation
+                // syntax (that would need the grammar to allow calling an
+                // arbitrary sub-expression, not just a bare identifier),
+                // so this mirrors Excel's #CALC! for an unusable lambda.
+                return Ok(ResultData::Error("#CALC!".to_string()));
+            }
+
+            if matches!(upper_name.as_str(), "MAP" | "BYROW" | "BYCOL" | "REDUCE" | "SCAN" | "MAKEARRAY") {
+                return self.evaluate_lambda_function(upper_name.as_str(), args, context, row, deps, scope);
+            }
+
+            if upper_name == "ISOMITTED" {
+                // Best-effort: every lambda invocation path here
+                // (MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY) always supplies
+                // exactly as many argument values as the lambda declares
+                // parameters, so a declared parameter is never actually
+                // left unbound -- this can only ever observe "not found
+                // in scope at all", which is the honest limitation to
+                // report rather than silently guessing.
+                let is_omitted = match args.first() {
+                    Some(Expr::Identifier(name)) => scope.get(name).is_none(),
+                    _ => false,
+                };
+                return Ok(ResultData::Boolean(is_omitted));
+            }
+
+            if matches!(
+                upper_name.as_str(),
+                "ROW" | "ROWS" | "COLUMN" | "COLUMNS" | "AREAS" | "ISREF" | "FORMULATEXT" | "ISFORMULA" | "INDIRECT" | "OFFSET" | "SHEET" | "SHEETS" | "CELL" | "INFO"
+            ) {
+                return self.evaluate_range_info_function(upper_name.as_str(), args, context, row, deps, scope);
+            }
+
+            if matches!(
+                upper_name.as_str(),
+                "TRANSPOSE" | "HSTACK" | "VSTACK" | "CHOOSEROWS" | "CHOOSECOLS" | "DROP" | "EXPAND" | "TAKE" | "TOCOL" | "TOROW" | "WRAPROWS" | "WRAPCOLS" | "UNIQUE" | "SORT" | "SORTBY" | "FILTER" | "TRIMRANGE"
+            ) {
+                return self.evaluate_array_reshape_function(upper_name.as_str(), args, context, row, deps, scope);
             }
 
             if upper_name == "ISERROR" {
@@ -3542,13 +5021,23 @@ impl Sheet {
                     let text = evaluated_args.first().map(|v| v.to_string()).unwrap_or_default();
                     match crate::core::extended_fn::encodeurl(&text) { Ok(s) => Ok(ResultData::String(s)), Err(e) => Ok(ResultData::Error(e)) }
                 }
-                "CELL" | "INFO" | "ISFORMULA" | "ISOMITTED" | "ISREF" | "SHEET" | "SHEETS" | "STOCKHISTORY" | "BYCOL" | "BYROW" | "LAMBDA" | "MAKEARRAY" | "MAP" | "REDUCE" | "SCAN" => {
+                "STOCKHISTORY" => {
                     Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
                 }
                 "DAVERAGE" | "DCOUNT" | "DCOUNTA" | "DGET" | "DMAX" | "DMIN" | "DPRODUCT" | "DSTDEV" | "DSTDEVP" | "DSUM" | "DVAR" | "DVARP" => {
-                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                    self.evaluate_database_function(upper_name.as_str(), args, &evaluated_args, context)
                 }
-                "AREAS" | "CHOOSECOLS" | "CHOOSEROWS" | "COLUMN" | "COLUMNS" | "DROP" | "EXPAND" | "FILTER" | "FORMULATEXT" | "GETPIVOTDATA" | "GROUPBY" | "HSTACK" | "HYPERLINK" | "IMAGE" | "INDIRECT" | "LOOKUP" | "OFFSET" | "PIVOTBY" | "ROW" | "ROWS" | "RTD" | "SORT" | "SORTBY" | "TAKE" | "TOCOL" | "TOROW" | "TRANSPOSE" | "TRIMRANGE" | "UNIQUE" | "VSTACK" | "WRAPCOLS" | "WRAPROWS" | "XMATCH" => {
+                "HYPERLINK" => {
+                    // No clickable-hyperlink concept in this engine --
+                    // returns the display value a formula-based consumer
+                    // would see: friendly_name if given, else the raw
+                    // link_location text.
+                    match evaluated_args.get(1) {
+                        Some(friendly) => Ok(friendly.clone()),
+                        None => Ok(evaluated_args.first().cloned().unwrap_or(ResultData::Error("#VALUE!".to_string()))),
+                    }
+                }
+                "GETPIVOTDATA" | "GROUPBY" | "IMAGE" | "PIVOTBY" | "RTD" => {
                     Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
                 }
                 "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER" | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" | "FILTERXML" | "WEBSERVICE" => {
@@ -3907,10 +5396,18 @@ impl Sheet {
                 }
                 "INDEX" => {
                     if evaluated_args.len() == 2 {
-                        if let ResultData::List(list) = &evaluated_args[0] {
+                        if let ResultData::List(raw) = &evaluated_args[0] {
+                            let (list, _) = Self::flatten_row_major(raw.clone());
                             let idx = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as isize;
                             let len = list.len() as isize;
-                            let real_idx = if idx < 0 { len + idx } else { idx };
+                            // 1-based like every other INDEX form -- found
+                            // via the differential fuzzer (LAMBDA/MAP/
+                            // BYROW testing was the first thing to ever
+                            // exercise this 2-arg path; the standalone
+                            // INDEX fuzz generator only ever used the
+                            // 3-arg row/col form) that this returned the
+                            // element one past the requested position.
+                            let real_idx = if idx < 0 { len + idx } else { idx - 1 };
                             if real_idx >= 0 && real_idx < len {
                                 Ok(list[real_idx as usize].clone())
                             } else {
@@ -3923,12 +5420,19 @@ impl Sheet {
                         let row_num = self.to_f64(&evaluated_args[1]).unwrap_or(1.0) as isize;
                         let col_num = self.to_f64(&evaluated_args[2]).unwrap_or(1.0) as isize;
 
-                        if let ResultData::List(list) = &evaluated_args[0] {
-                            let num_cols = match &args[0] {
-                                Expr::RangeRef {
-                                    start_col, end_col, ..
-                                } => (end_col - start_col + 1) as isize,
-                                _ => 1,
+                        if let ResultData::List(raw) = &evaluated_args[0] {
+                            let (list, nested_cols) = Self::flatten_row_major(raw.clone());
+                            let num_cols = match nested_cols {
+                                Some(c) => c as isize,
+                                None => match &args[0] {
+                                    Expr::RangeRef {
+                                        start_col, end_col, ..
+                                    } => (end_col - start_col + 1) as isize,
+                                    Expr::FunctionCall { name, args: fargs } => self
+                                        .function_call_cols(name, fargs, context, row, deps, scope)
+                                        .unwrap_or(1) as isize,
+                                    _ => 1,
+                                },
                             };
                             let r_idx = row_num - 1;
                             let c_idx = col_num - 1;
@@ -4356,6 +5860,80 @@ impl Sheet {
                         }
                     } else {
                         Ok(ResultData::Error("#N/A".to_string()))
+                    }
+                }
+                "LOOKUP" => {
+                    if evaluated_args.len() < 2 {
+                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                            "LOOKUP requires at least 2 arguments".to_string(),
+                        )));
+                    }
+                    let lookup_val = &evaluated_args[0];
+                    let lookup_vec: Vec<ResultData> = match &evaluated_args[1] {
+                        ResultData::List(l) => l.clone(),
+                        other => vec![other.clone()],
+                    };
+                    let result_vec: Vec<ResultData> = match evaluated_args.get(2) {
+                        Some(ResultData::List(l)) => l.clone(),
+                        Some(other) => vec![other.clone()],
+                        None => lookup_vec.clone(),
+                    };
+                    let lookup_f = self.to_f64(lookup_val);
+                    let mut match_idx: Option<usize> = None;
+                    for (idx, item) in lookup_vec.iter().enumerate() {
+                        let is_match = match lookup_f {
+                            Some(lf) => self.to_f64(item).map(|f| f <= lf).unwrap_or(false),
+                            None => item.to_string() <= lookup_val.to_string(),
+                        };
+                        if is_match {
+                            match_idx = Some(idx);
+                        } else {
+                            break;
+                        }
+                    }
+                    match match_idx {
+                        Some(idx) => Ok(result_vec.get(idx).cloned().unwrap_or(ResultData::Error("#N/A".to_string()))),
+                        None => Ok(ResultData::Error("#N/A".to_string())),
+                    }
+                }
+                "XMATCH" => {
+                    if evaluated_args.len() < 2 {
+                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                            "XMATCH requires at least 2 arguments".to_string(),
+                        )));
+                    }
+                    let lookup_val = &evaluated_args[0];
+                    let arr: Vec<ResultData> = match &evaluated_args[1] {
+                        ResultData::List(l) => l.clone(),
+                        other => vec![other.clone()],
+                    };
+                    // search_mode (a 4th argument) isn't supported beyond
+                    // the default forward linear search, nor is wildcard
+                    // match_mode (2).
+                    let match_mode = evaluated_args.get(2).and_then(|v| self.to_f64(v)).unwrap_or(0.0) as isize;
+                    let found = match match_mode {
+                        -1 | 1 => {
+                            let lf = self.to_f64(lookup_val).unwrap_or(0.0);
+                            let mut best: Option<(usize, f64)> = None;
+                            for (i, item) in arr.iter().enumerate() {
+                                if let Some(f) = self.to_f64(item) {
+                                    let candidate = if match_mode == -1 { f <= lf } else { f >= lf };
+                                    let better = match best {
+                                        Some((_, bf)) => if match_mode == -1 { f > bf } else { f < bf },
+                                        None => true,
+                                    };
+                                    if candidate && better {
+                                        best = Some((i, f));
+                                    }
+                                }
+                            }
+                            best.map(|(i, _)| i)
+                        }
+                        _ => arr.iter().position(|item| item.to_string() == lookup_val.to_string()),
+                    };
+                    match found {
+                        Some(i) => Ok(ResultData::Float((i + 1) as f64)),
+                        None => Ok(ResultData::Error("#N/A".to_string())),
                     }
                 }
                 "VLOOKUP" => {
@@ -4965,6 +6543,281 @@ impl Sheet {
                     let nper = self.to_f64_arg(evaluated_args.get(2), "ISPMT")?;
                     let pv = self.to_f64_arg(evaluated_args.get(3), "ISPMT")?;
                     Ok(ResultData::Float(finance::ispmt(rate, per, nper, pv)))
+                }
+                "COUPDAYBS" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPDAYBS")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPDAYBS")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPDAYBS")?;
+                    let basis = self.opt_f64(&evaluated_args, 3, 0.0);
+                    Ok(ResultData::Float(finance::coupdaybs(settlement, maturity, frequency, basis)))
+                }
+                "COUPDAYS" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPDAYS")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPDAYS")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPDAYS")?;
+                    let basis = self.opt_f64(&evaluated_args, 3, 0.0);
+                    Ok(ResultData::Float(finance::coupdays(settlement, maturity, frequency, basis)))
+                }
+                "COUPDAYSNC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPDAYSNC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPDAYSNC")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPDAYSNC")?;
+                    let basis = self.opt_f64(&evaluated_args, 3, 0.0);
+                    Ok(ResultData::Float(finance::coupdaysnc(settlement, maturity, frequency, basis)))
+                }
+                "COUPNCD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPNCD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPNCD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPNCD")?;
+                    Ok(ResultData::Float(finance::coupncd(settlement, maturity, frequency)))
+                }
+                "COUPNUM" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPNUM")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPNUM")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPNUM")?;
+                    Ok(ResultData::Float(finance::coupnum(settlement, maturity, frequency)))
+                }
+                "COUPPCD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPPCD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPPCD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPPCD")?;
+                    Ok(ResultData::Float(finance::couppcd(settlement, maturity, frequency)))
+                }
+                "PRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "PRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "PRICE")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(2), "PRICE")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(3), "PRICE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(4), "PRICE")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(5), "PRICE")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    Ok(ResultData::Float(finance::price(settlement, maturity, rate, yld, redemption, frequency, basis)))
+                }
+                "YIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "YIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "YIELD")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(2), "YIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(3), "YIELD")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(4), "YIELD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(5), "YIELD")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    match finance::yield_(settlement, maturity, rate, pr, redemption, frequency, basis) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "DURATION" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "DURATION")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "DURATION")?;
+                    let coupon = self.to_f64_arg(evaluated_args.get(2), "DURATION")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(3), "DURATION")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(4), "DURATION")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::duration(settlement, maturity, coupon, yld, frequency, basis)))
+                }
+                "MDURATION" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "MDURATION")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "MDURATION")?;
+                    let coupon = self.to_f64_arg(evaluated_args.get(2), "MDURATION")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(3), "MDURATION")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(4), "MDURATION")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::mduration(settlement, maturity, coupon, yld, frequency, basis)))
+                }
+                "DISC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "DISC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "DISC")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(2), "DISC")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "DISC")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::disc(settlement, maturity, pr, redemption, basis)))
+                }
+                "PRICEDISC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "PRICEDISC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "PRICEDISC")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(2), "PRICEDISC")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "PRICEDISC")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::pricedisc(settlement, maturity, discount, redemption, basis)))
+                }
+                "YIELDDISC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "YIELDDISC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "YIELDDISC")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(2), "YIELDDISC")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "YIELDDISC")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::yielddisc(settlement, maturity, pr, redemption, basis)))
+                }
+                "PRICEMAT" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "PRICEMAT")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "PRICEMAT")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "PRICEMAT")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "PRICEMAT")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(4), "PRICEMAT")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::pricemat(settlement, maturity, issue, rate, yld, basis)))
+                }
+                "YIELDMAT" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "YIELDMAT")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "YIELDMAT")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "YIELDMAT")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "YIELDMAT")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(4), "YIELDMAT")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::yieldmat(settlement, maturity, issue, rate, pr, basis)))
+                }
+                "RECEIVED" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "RECEIVED")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "RECEIVED")?;
+                    let investment = self.to_f64_arg(evaluated_args.get(2), "RECEIVED")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(3), "RECEIVED")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::received(settlement, maturity, investment, discount, basis)))
+                }
+                "INTRATE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "INTRATE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "INTRATE")?;
+                    let investment = self.to_f64_arg(evaluated_args.get(2), "INTRATE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "INTRATE")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::intrate(settlement, maturity, investment, redemption, basis)))
+                }
+                "TBILLPRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "TBILLPRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "TBILLPRICE")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(2), "TBILLPRICE")?;
+                    Ok(ResultData::Float(finance::tbillprice(settlement, maturity, discount)))
+                }
+                "TBILLYIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "TBILLYIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "TBILLYIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(2), "TBILLYIELD")?;
+                    Ok(ResultData::Float(finance::tbillyield(settlement, maturity, pr)))
+                }
+                "TBILLEQ" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "TBILLEQ")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "TBILLEQ")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(2), "TBILLEQ")?;
+                    match finance::tbilleq(settlement, maturity, discount) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "ACCRINTM" => {
+                    let issue = self.to_f64_arg(evaluated_args.first(), "ACCRINTM")?;
+                    let settlement = self.to_f64_arg(evaluated_args.get(1), "ACCRINTM")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(2), "ACCRINTM")?;
+                    let par = self.to_f64_arg(evaluated_args.get(3), "ACCRINTM")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    res_to_rd(finance::accrintm(issue, settlement, rate, par, basis))
+                }
+                "ACCRINT" => {
+                    let issue = self.to_f64_arg(evaluated_args.first(), "ACCRINT")?;
+                    let first_interest = self.to_f64_arg(evaluated_args.get(1), "ACCRINT")?;
+                    let settlement = self.to_f64_arg(evaluated_args.get(2), "ACCRINT")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "ACCRINT")?;
+                    let par = self.to_f64_arg(evaluated_args.get(4), "ACCRINT")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(5), "ACCRINT")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    let calc_method = evaluated_args.get(7).map(|v| self.to_bool(v)).unwrap_or(true);
+                    Ok(ResultData::Float(finance::accrint(
+                        issue, first_interest, settlement, rate, par, frequency, basis, calc_method,
+                    )))
+                }
+                "AMORLINC" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "AMORLINC")?;
+                    let date_purchased = self.to_f64_arg(evaluated_args.get(1), "AMORLINC")?;
+                    let first_period = self.to_f64_arg(evaluated_args.get(2), "AMORLINC")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(3), "AMORLINC")?;
+                    let period = self.to_f64_arg(evaluated_args.get(4), "AMORLINC")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(5), "AMORLINC")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    res_to_rd(finance::amorlinc(cost, date_purchased, first_period, salvage, period, rate, basis))
+                }
+                "AMORDEGRC" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "AMORDEGRC")?;
+                    let date_purchased = self.to_f64_arg(evaluated_args.get(1), "AMORDEGRC")?;
+                    let first_period = self.to_f64_arg(evaluated_args.get(2), "AMORDEGRC")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(3), "AMORDEGRC")?;
+                    let period = self.to_f64_arg(evaluated_args.get(4), "AMORDEGRC")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(5), "AMORDEGRC")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    res_to_rd(finance::amordegrc(cost, date_purchased, first_period, salvage, period, rate, basis))
+                }
+                "ODDFPRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDFPRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDFPRICE")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "ODDFPRICE")?;
+                    let first_coupon = self.to_f64_arg(evaluated_args.get(3), "ODDFPRICE")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(4), "ODDFPRICE")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(5), "ODDFPRICE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(6), "ODDFPRICE")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(7), "ODDFPRICE")?;
+                    let basis = self.opt_f64(&evaluated_args, 8, 0.0);
+                    if settlement <= issue {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::oddfprice(settlement, maturity, issue, first_coupon, rate, yld, redemption, frequency, basis)))
+                }
+                "ODDFYIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDFYIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDFYIELD")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "ODDFYIELD")?;
+                    let first_coupon = self.to_f64_arg(evaluated_args.get(3), "ODDFYIELD")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(4), "ODDFYIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(5), "ODDFYIELD")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(6), "ODDFYIELD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(7), "ODDFYIELD")?;
+                    let basis = self.opt_f64(&evaluated_args, 8, 0.0);
+                    if settlement <= issue {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    match finance::oddfyield(settlement, maturity, issue, first_coupon, rate, pr, redemption, frequency, basis) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "ODDLPRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDLPRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDLPRICE")?;
+                    let last_interest = self.to_f64_arg(evaluated_args.get(2), "ODDLPRICE")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "ODDLPRICE")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(4), "ODDLPRICE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(5), "ODDLPRICE")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(6), "ODDLPRICE")?;
+                    let basis = self.opt_f64(&evaluated_args, 7, 0.0);
+                    if settlement <= last_interest {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::oddlprice(settlement, maturity, last_interest, rate, yld, redemption, frequency, basis)))
+                }
+                "ODDLYIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDLYIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDLYIELD")?;
+                    let last_interest = self.to_f64_arg(evaluated_args.get(2), "ODDLYIELD")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "ODDLYIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(4), "ODDLYIELD")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(5), "ODDLYIELD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(6), "ODDLYIELD")?;
+                    let basis = self.opt_f64(&evaluated_args, 7, 0.0);
+                    if settlement <= last_interest {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::oddlyield(settlement, maturity, last_interest, rate, pr, redemption, frequency, basis)))
+                }
+                "EUROCONVERT" => {
+                    let number = self.to_f64_arg(evaluated_args.first(), "EUROCONVERT")?;
+                    let source = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let target = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let full_precision = evaluated_args.get(3).map(|v| self.to_bool(v)).unwrap_or(false);
+                    let triangulation_precision = evaluated_args.get(4).and_then(|v| self.to_f64(v));
+                    res_to_rd(finance::euroconvert(number, &source, &target, full_precision, triangulation_precision))
                 }
                 _ => Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
                     "Unknown function: {}",
