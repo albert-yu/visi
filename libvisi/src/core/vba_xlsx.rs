@@ -225,12 +225,11 @@ fn parse_sheet_code_names(workbook_xml: &str) -> HashMap<String, String> {
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                 let local = e.name().local_name().into_inner();
-                if local == b"sheet" {
-                    if let (Some(name), Some(code_name)) =
+                if local == b"sheet"
+                    && let (Some(name), Some(code_name)) =
                         (get_attr(&e, b"name"), get_attr(&e, b"codeName"))
-                    {
-                        map.insert(name, code_name);
-                    }
+                {
+                    map.insert(name, code_name);
                 }
             }
             _ => {}

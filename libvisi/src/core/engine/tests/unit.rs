@@ -697,7 +697,7 @@ fn test_context_from_tables() {
     let sheets = vec![table1, table2];
     let mut context = Context::new();
     for sheet in &sheets {
-        context.add_table(sheet.name.clone(), &sheet);
+        context.add_table(sheet.name.clone(), sheet);
     }
 
     assert!(context.sheets.contains_key("table_1"));
@@ -715,7 +715,9 @@ fn test_builtin_math_functions() {
     assert_eq!(get_int_val(&result), Some(5));
 
     let (result, _) = sheet.eval("=abs(-3.14)", None).unwrap();
-    assert_eq!(get_float_val(&result), Some(3.14));
+    #[allow(clippy::approx_constant)]
+    let expected = 3.14; // ABS(-3.14), not an approximation of PI
+    assert_eq!(get_float_val(&result), Some(expected));
 
     let (result, _) = sheet.eval("=sqrt(16)", None).unwrap();
     assert_eq!(get_float_val(&result), Some(4.0));
@@ -749,14 +751,14 @@ fn test_builtin_math_functions() {
 
     let (result, _) = sheet.eval("=rand()", None).unwrap();
     if let ResultData::Float(val) = result {
-        assert!(val >= 0.0 && val < 1.0);
+        assert!((0.0..1.0).contains(&val));
     } else {
         panic!("Expected RAND to return a Float, got {:?}", result);
     }
 
     let (result, _) = sheet.eval("=randbetween(5, 10)", None).unwrap();
     if let ResultData::Integer(val) = result {
-        assert!(val >= 5 && val <= 10);
+        assert!((5..=10).contains(&val));
     } else {
         panic!(
             "Expected RANDBETWEEN to return an Integer, got {:?}",

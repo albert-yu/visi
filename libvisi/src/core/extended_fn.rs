@@ -44,13 +44,7 @@ pub fn n_fn(val: &ResultData) -> f64 {
     match val {
         ResultData::Float(f) => *f,
         ResultData::Integer(i) => *i as f64,
-        ResultData::Boolean(b) => {
-            if *b {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        ResultData::Boolean(b) if *b => 1.0,
         _ => 0.0,
     }
 }
@@ -77,10 +71,10 @@ pub fn xor_fn(bools: &[bool]) -> bool {
 }
 
 pub fn ifna(val: ResultData, alt: ResultData) -> ResultData {
-    if let ResultData::Error(ref e) = val {
-        if e == "#N/A" {
-            return alt;
-        }
+    if let ResultData::Error(ref e) = val
+        && e == "#N/A"
+    {
+        return alt;
     }
     val
 }

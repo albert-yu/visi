@@ -427,7 +427,7 @@ fn test_fuzz_multiplication_division_expression() {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                assert!(col_let >= 'A' && col_let <= 'E');
+                assert!(('A'..='E').contains(&col_let));
             }
         }
     }

@@ -21,36 +21,29 @@ pub enum ResultData {
     Error(String),
 }
 
-impl ResultData {
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for ResultData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResultData::None => "".to_string(),
-            ResultData::Boolean(b) => {
-                if *b {
-                    "TRUE".to_string()
-                } else {
-                    "FALSE".to_string()
-                }
-            }
-            ResultData::Integer(i) => format!("{}", i),
-            ResultData::Float(f) => format_excel_number(*f),
-            ResultData::String(s) => s.clone(),
+            ResultData::None => write!(f, ""),
+            ResultData::Boolean(b) => write!(f, "{}", if *b { "TRUE" } else { "FALSE" }),
+            ResultData::Integer(i) => write!(f, "{}", i),
+            ResultData::Float(fl) => write!(f, "{}", format_excel_number(*fl)),
+            ResultData::String(s) => write!(f, "{}", s),
             ResultData::List(l) => {
                 let items: Vec<String> = l.iter().map(|i| i.to_string()).collect();
-                format!("[{}]", items.join(", "))
+                write!(f, "[{}]", items.join(", "))
             }
             ResultData::Dict(d) => {
-                let items: Vec<String> = d
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k.to_string(), v.to_string()))
-                    .collect();
-                format!("{{ {} }}", items.join(", "))
+                let items: Vec<String> = d.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+                write!(f, "{{ {} }}", items.join(", "))
             }
-            ResultData::Plot { .. } => "[Plot]".to_string(),
-            ResultData::Error(e) => format!("Error: {}", e),
+            ResultData::Plot { .. } => write!(f, "[Plot]"),
+            ResultData::Error(e) => write!(f, "Error: {}", e),
         }
     }
+}
 
+impl ResultData {
     pub fn plot_cell_dims(&self) -> Option<(usize, usize)> {
         if let ResultData::Plot { points, .. } = self {
             if points.is_empty() {
@@ -120,7 +113,7 @@ pub fn format_excel_number(f: f64) -> String {
 
     let abs_f = f.abs();
 
-    if abs_f >= 1e11 || abs_f < 1e-5 {
+    if !(1e-5..1e11).contains(&abs_f) {
         let exp = abs_f.log10().floor() as i32;
         let mantissa = f / 10.0f64.powi(exp);
         let factor = 10.0f64.powi(14);

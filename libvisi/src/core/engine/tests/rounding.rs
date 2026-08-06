@@ -336,7 +336,7 @@ fn test_fuzz_abs_cell_reference() {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                assert!(col_let >= 'A' && col_let <= 'E');
+                assert!(('A'..='E').contains(&col_let));
             }
         }
     }
@@ -439,7 +439,7 @@ fn test_fuzz_abs_subtraction_expression() {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b"A"[0] + c as u8) as char;
-                assert!(col_let >= 'A' && col_let <= 'E');
+                assert!(('A'..='E').contains(&col_let));
             }
         }
     }

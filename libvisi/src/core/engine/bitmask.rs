@@ -10,7 +10,7 @@ pub struct Bitmask {
 impl Bitmask {
     pub fn with_size(size: usize) -> Self {
         Self {
-            data: vec![0; (size + 7) / 8].into(),
+            data: vec![0; size.div_ceil(8)].into(),
             len: size,
         }
     }
@@ -68,7 +68,7 @@ impl Bitmask {
             self.set(i, next);
         }
         self.len -= 1;
-        let required_bytes = (self.len + 7) / 8;
+        let required_bytes = self.len.div_ceil(8);
         if self.data.len() > required_bytes {
             self.data.pop();
         }
@@ -95,6 +95,6 @@ impl Bitmask {
             self.set(i - count, val);
         }
         self.len -= count;
-        self.data.truncate((self.len + 7) / 8);
+        self.data.truncate(self.len.div_ceil(8));
     }
 }

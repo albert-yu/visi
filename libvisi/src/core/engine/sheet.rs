@@ -270,10 +270,10 @@ impl Sheet {
             };
 
             // Write compiled cache
-            if let Some(col) = self.columns.get_mut(cell_ref.col) {
-                if cell_ref.row < col.compiled_src.len() {
-                    col.compiled_src[cell_ref.row] = compiled_to_cache.unwrap_or_default();
-                }
+            if let Some(col) = self.columns.get_mut(cell_ref.col)
+                && cell_ref.row < col.compiled_src.len()
+            {
+                col.compiled_src[cell_ref.row] = compiled_to_cache.unwrap_or_default();
             }
 
             // Update dependencies
@@ -300,21 +300,19 @@ impl Sheet {
             }
 
             // Update data
-            if let Some(col) = self.columns.get_mut(cell_ref.col) {
-                if cell_ref.row < col.data.len() {
-                    col.data.set(cell_ref.row, result.clone());
-                    updated_cells.insert(cell_ref);
-                }
+            if let Some(col) = self.columns.get_mut(cell_ref.col)
+                && cell_ref.row < col.data.len()
+            {
+                col.data.set(cell_ref.row, result.clone());
+                updated_cells.insert(cell_ref);
             }
             if let Some(comp_sheet) = tables_for_compilation
                 .iter_mut()
                 .find(|s| s.name == self.name)
+                && let Some(col) = comp_sheet.columns.get_mut(cell_ref.col)
+                && cell_ref.row < col.data.len()
             {
-                if let Some(col) = comp_sheet.columns.get_mut(cell_ref.col) {
-                    if cell_ref.row < col.data.len() {
-                        col.data.set(cell_ref.row, result);
-                    }
-                }
+                col.data.set(cell_ref.row, result);
             }
 
             // Propagate to dependents (Local only)
@@ -357,10 +355,10 @@ impl Sheet {
         if let Some(dependents) = self.dependencies.get(dep) {
             for dependent in dependents {
                 // Mark as dirty so commit will pick it up
-                if let Some(col) = self.columns.get_mut(dependent.col) {
-                    if !col.dirty_indices.contains(&dependent.row) {
-                        col.dirty_indices.push(dependent.row);
-                    }
+                if let Some(col) = self.columns.get_mut(dependent.col)
+                    && !col.dirty_indices.contains(&dependent.row)
+                {
+                    col.dirty_indices.push(dependent.row);
                 }
             }
         }
@@ -375,8 +373,8 @@ impl Sheet {
         if input.is_empty() {
             return Ok((ResultData::None, vec![]));
         }
-        if input.starts_with('=') {
-            self.eval_excel(&input[1..], context, row)
+        if let Some(formula) = input.strip_prefix('=') {
+            self.eval_excel(formula, context, row)
         } else {
             if let Ok(i) = input.parse::<i64>() {
                 Ok((ResultData::Integer(i), vec![]))
@@ -460,13 +458,13 @@ impl Sheet {
                 // define any explicit table.
                 let mut found: Option<(&Sheet, &crate::core::table::ExcelTable)> =
                     self.find_table(&ref_name).map(|t| (self, t));
-                if found.is_none() {
-                    if let Some(ctx) = context {
-                        for s in ctx.sheets.values() {
-                            if let Some(t) = s.find_table(&ref_name) {
-                                found = Some((s, t));
-                                break;
-                            }
+                if found.is_none()
+                    && let Some(ctx) = context
+                {
+                    for s in ctx.sheets.values() {
+                        if let Some(t) = s.find_table(&ref_name) {
+                            found = Some((s, t));
+                            break;
                         }
                     }
                 }
@@ -958,7 +956,7 @@ impl Sheet {
                 return a.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal);
             }
             (ResultData::None, ResultData::String(b)) => {
-                return "".cmp(&b.to_lowercase().as_str());
+                return "".cmp(b.to_lowercase().as_str());
             }
             (ResultData::String(a), ResultData::None) => {
                 return a.to_lowercase().as_str().cmp("");
@@ -1142,12 +1140,10 @@ impl Sheet {
                         return Some(err);
                     }
                 }
-                ResultData::String(_) => {
-                    if is_direct.get(i).copied().unwrap_or(false) {
-                        if self.to_f64(arg).is_none() {
-                            return Some(ResultData::Error("#VALUE!".to_string()));
-                        }
-                    }
+                ResultData::String(_)
+                    if is_direct.get(i).copied().unwrap_or(false) && self.to_f64(arg).is_none() =>
+                {
+                    return Some(ResultData::Error("#VALUE!".to_string()));
                 }
                 _ => {}
             }
@@ -1511,7 +1507,7 @@ impl Sheet {
 
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
         let crit_str = criteria.to_string();
-        if crit_str.starts_with('>') {
+        if let Some(rest) = crit_str.strip_prefix(">=") {
             // A numeric comparison can only ever be satisfied by a genuine
             // number -- confirmed against real Excel via the differential
             // fuzzer (fuzzing the new database D* functions): blank, text,
@@ -1521,31 +1517,34 @@ impl Sheet {
                 Some(f) => f,
                 None => return false,
             };
-            if crit_str.starts_with(">=") {
-                let crit_f = crit_str[2..].trim().parse::<f64>().unwrap_or(0.0);
-                val_f >= crit_f
-            } else {
-                let crit_f = crit_str[1..].trim().parse::<f64>().unwrap_or(0.0);
-                val_f > crit_f
-            }
-        } else if crit_str.starts_with('<') {
-            if crit_str.starts_with("<>") {
-                let remainder = crit_str[2..].trim().to_string();
-                return val.to_string() != remainder;
-            }
+            let crit_f = rest.trim().parse::<f64>().unwrap_or(0.0);
+            val_f >= crit_f
+        } else if let Some(rest) = crit_str.strip_prefix('>') {
             let val_f = match Self::range_numeric(val) {
                 Some(f) => f,
                 None => return false,
             };
-            if crit_str.starts_with("<=") {
-                let crit_f = crit_str[2..].trim().parse::<f64>().unwrap_or(0.0);
-                val_f <= crit_f
-            } else {
-                let crit_f = crit_str[1..].trim().parse::<f64>().unwrap_or(0.0);
-                val_f < crit_f
-            }
-        } else if crit_str.starts_with('=') {
-            let remainder = crit_str[1..].trim().to_string();
+            let crit_f = rest.trim().parse::<f64>().unwrap_or(0.0);
+            val_f > crit_f
+        } else if let Some(rest) = crit_str.strip_prefix("<>") {
+            let remainder = rest.trim().to_string();
+            val.to_string() != remainder
+        } else if let Some(rest) = crit_str.strip_prefix("<=") {
+            let val_f = match Self::range_numeric(val) {
+                Some(f) => f,
+                None => return false,
+            };
+            let crit_f = rest.trim().parse::<f64>().unwrap_or(0.0);
+            val_f <= crit_f
+        } else if let Some(rest) = crit_str.strip_prefix('<') {
+            let val_f = match Self::range_numeric(val) {
+                Some(f) => f,
+                None => return false,
+            };
+            let crit_f = rest.trim().parse::<f64>().unwrap_or(0.0);
+            val_f < crit_f
+        } else if let Some(rest) = crit_str.strip_prefix('=') {
+            let remainder = rest.trim().to_string();
             val.to_string() == remainder
         } else {
             val.to_string() == crit_str
@@ -1836,7 +1835,7 @@ impl Sheet {
     ) -> Result<ResultData, EngineError> {
         use crate::core::parser::Expr;
 
-        if args.is_empty() || args.len() % 2 == 0 {
+        if args.is_empty() || args.len().is_multiple_of(2) {
             // Needs one or more name/value pairs followed by a calculation,
             // i.e. an odd number of arguments overall.
             return Ok(ResultData::Error("#VALUE!".to_string()));
@@ -1907,6 +1906,7 @@ impl Sheet {
     /// the same length. `values` is borrowed rather than consumed so
     /// callers can reuse per-element storage across many invocations
     /// (e.g. MAP calling this once per array element).
+    #[allow(clippy::too_many_arguments)]
     fn invoke_lambda<'v>(
         &self,
         params: &[&str],
@@ -2041,7 +2041,7 @@ impl Sheet {
                 let (flat, cols) = self
                     .array_shape(args.first()?, context, row, deps, scope)
                     .ok()?;
-                Some((if cols == 0 { 0 } else { flat.len() / cols }).max(1))
+                Some((flat.len().checked_div(cols).unwrap_or(0)).max(1))
             }
             "HSTACK" => {
                 let mut total = 0usize;
@@ -2761,7 +2761,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
                 let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let mut result = Vec::with_capacity(flat.len());
                 for c in 0..cols {
                     for r in 0..rows {
@@ -2819,7 +2819,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let total = if func_name == "CHOOSEROWS" {
                     rows
                 } else {
@@ -2857,7 +2857,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
-                let num_rows = if cols == 0 { 0 } else { flat.len() / cols } as isize;
+                let num_rows = flat.len().checked_div(cols).unwrap_or(0) as isize;
                 let is_take = func_name == "TAKE";
                 let rows_n = self
                     .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
@@ -2892,7 +2892,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
-                let orig_rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let orig_rows = flat.len().checked_div(cols).unwrap_or(0);
                 let new_rows = self
                     .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
                     .unwrap_or(orig_rows as f64) as usize;
@@ -2926,7 +2926,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
                 let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let ignore = match args.get(1) {
                     Some(e) => self
                         .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
@@ -3028,7 +3028,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
                 let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let sort_index = match args.get(1) {
                     Some(e) => self
                         .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
@@ -3063,7 +3063,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let by = self.eval_as_array(&args[1], context, row, deps, scope)?;
                 let order = match args.get(2) {
                     Some(e) => self
@@ -3090,7 +3090,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let include = self.eval_as_array(&args[1], context, row, deps, scope)?;
                 let mut result = Vec::new();
                 for r in 0..rows {
@@ -3115,7 +3115,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
                 let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
-                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let is_blank = |v: &ResultData| {
                     matches!(v, ResultData::None)
                         || matches!(v, ResultData::String(s) if s.is_empty())
@@ -3200,38 +3200,37 @@ impl Sheet {
                     left,
                     right,
                 } = arg
+                    && let Expr::Identifier(name) = &**left
                 {
-                    if let Expr::Identifier(name) = &**left {
-                        let val = self.evaluate_ast(right, context, row, deps, scope)?;
-                        match name.to_lowercase().as_str() {
-                            "color" => {
-                                if let ResultData::List(list) = val {
-                                    for (i, v) in list.iter().take(4).enumerate() {
-                                        color[i] = self.to_f64(v).unwrap_or(color[i] as f64) as f32;
-                                    }
+                    let val = self.evaluate_ast(right, context, row, deps, scope)?;
+                    match name.to_lowercase().as_str() {
+                        "color" => {
+                            if let ResultData::List(list) = val {
+                                for (i, v) in list.iter().take(4).enumerate() {
+                                    color[i] = self.to_f64(v).unwrap_or(color[i] as f64) as f32;
                                 }
                             }
-                            "radius" => {
-                                radius = self.to_f64(&val).unwrap_or(radius as f64) as f32;
-                            }
-                            "type" => {
-                                if val.to_string() == "line" {
-                                    is_line = true;
-                                }
-                            }
-                            "title" => {
-                                title = Some(val.to_string());
-                            }
-                            "xlabel" => {
-                                xlabel = Some(val.to_string());
-                            }
-                            "ylabel" => {
-                                ylabel = Some(val.to_string());
-                            }
-                            _ => {}
                         }
-                        continue;
+                        "radius" => {
+                            radius = self.to_f64(&val).unwrap_or(radius as f64) as f32;
+                        }
+                        "type" => {
+                            if val.to_string() == "line" {
+                                is_line = true;
+                            }
+                        }
+                        "title" => {
+                            title = Some(val.to_string());
+                        }
+                        "xlabel" => {
+                            xlabel = Some(val.to_string());
+                        }
+                        "ylabel" => {
+                            ylabel = Some(val.to_string());
+                        }
+                        _ => {}
                     }
+                    continue;
                 }
 
                 let val = self.evaluate_ast(arg, context, row, deps, scope)?;
@@ -3285,10 +3284,8 @@ impl Sheet {
                         }
                         _ => {}
                     },
-                    4 => {
-                        if val.to_string() == "line" {
-                            is_line = true;
-                        }
+                    4 if val.to_string() == "line" => {
+                        is_line = true;
                     }
                     _ => {}
                 }
@@ -3527,10 +3524,9 @@ impl Sheet {
                 && upper_name != "ISERROR"
                 && upper_name != "ISNA"
                 && !uses_ordered_arg_error_check
+                && let Some(err) = Self::find_error_in_args(&evaluated_args)
             {
-                if let Some(err) = Self::find_error_in_args(&evaluated_args) {
-                    return Ok(err);
-                }
+                return Ok(err);
             }
 
             let res_to_rd = |res: Result<f64, String>| -> Result<ResultData, EngineError> {
@@ -3583,13 +3579,12 @@ impl Sheet {
                     let mut sum = 0.0;
                     let mut count = 0;
                     for (i, val) in range_list.iter().enumerate() {
-                        if self.match_criteria(val, criteria) {
-                            if let Some(target_val) = avg_range.get(i) {
-                                if let Some(f) = self.to_f64(target_val) {
-                                    sum += f;
-                                    count += 1;
-                                }
-                            }
+                        if self.match_criteria(val, criteria)
+                            && let Some(target_val) = avg_range.get(i)
+                            && let Some(f) = self.to_f64(target_val)
+                        {
+                            sum += f;
+                            count += 1;
                         }
                     }
                     if count == 0 {
@@ -3629,11 +3624,9 @@ impl Sheet {
                                 break;
                             }
                         }
-                        if all_match {
-                            if let Some(f) = self.to_f64(target_val) {
-                                sum += f;
-                                count += 1;
-                            }
+                        if all_match && let Some(f) = self.to_f64(target_val) {
+                            sum += f;
+                            count += 1;
                         }
                     }
                     if count == 0 {
@@ -4118,11 +4111,9 @@ impl Sheet {
                                 break;
                             }
                         }
-                        if all_match {
-                            if let Some(f) = self.to_f64(target_val) {
-                                max_val = max_val.max(f);
-                                found = true;
-                            }
+                        if all_match && let Some(f) = self.to_f64(target_val) {
+                            max_val = max_val.max(f);
+                            found = true;
                         }
                     }
                     if !found {
@@ -4183,11 +4174,9 @@ impl Sheet {
                                 break;
                             }
                         }
-                        if all_match {
-                            if let Some(f) = self.to_f64(target_val) {
-                                min_val = min_val.min(f);
-                                found = true;
-                            }
+                        if all_match && let Some(f) = self.to_f64(target_val) {
+                            min_val = min_val.min(f);
+                            found = true;
                         }
                     }
                     if !found {
@@ -6888,7 +6877,7 @@ impl Sheet {
                         let num_cols = match &args[1] {
                             Expr::RangeRef {
                                 start_col, end_col, ..
-                            } => (end_col - start_col + 1) as usize,
+                            } => end_col - start_col + 1,
                             _ => 1,
                         };
 
@@ -7004,10 +6993,8 @@ impl Sheet {
 
                     let mut sum = 0.0;
                     for idx in 0..range_list.len() {
-                        if idx < sum_list.len() {
-                            if self.match_criteria(&range_list[idx], criteria) {
-                                sum += self.to_f64(&sum_list[idx]).unwrap_or(0.0);
-                            }
+                        if idx < sum_list.len() && self.match_criteria(&range_list[idx], criteria) {
+                            sum += self.to_f64(&sum_list[idx]).unwrap_or(0.0);
                         }
                     }
                     Ok(ResultData::Float(sum))
@@ -7065,7 +7052,7 @@ impl Sheet {
                     let criteria = &evaluated_args[1];
                     let mut count = 0;
                     for val in range_list {
-                        if self.match_criteria(&val, criteria) {
+                        if self.match_criteria(val, criteria) {
                             count += 1;
                         }
                     }
@@ -7975,21 +7962,21 @@ impl Sheet {
     /// Directly sets the src of a cell and marks it dirty.
     pub fn set_cell_src(&mut self, row: usize, col: usize, src: String) {
         let table_clone = self.clone();
-        if let Some(column) = self.columns.get_mut(col) {
-            if row < column.src.len() {
-                column.src[row] = src.clone();
-                let compiled = crate::core::parser::compile_formula(&src, &[table_clone]);
-                column.compiled_src[row] = compiled;
-                column.mark_dirty(row);
+        if let Some(column) = self.columns.get_mut(col)
+            && row < column.src.len()
+        {
+            column.src[row] = src.clone();
+            let compiled = crate::core::parser::compile_formula(&src, &[table_clone]);
+            column.compiled_src[row] = compiled;
+            column.mark_dirty(row);
 
-                self.uncommitted_actions
-                    .push(crate::core::SheetAction::SetCellSrc {
-                        sheet_name: self.name.clone(),
-                        col,
-                        row,
-                        src,
-                    });
-            }
+            self.uncommitted_actions
+                .push(crate::core::SheetAction::SetCellSrc {
+                    sheet_name: self.name.clone(),
+                    col,
+                    row,
+                    src,
+                });
         }
     }
 

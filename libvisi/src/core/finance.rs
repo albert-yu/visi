@@ -359,10 +359,10 @@ fn count_sign_flips(values: &[f64]) -> usize {
     for &v in values {
         if v != 0.0 {
             let sign = v > 0.0;
-            if let Some(p) = prev_sign {
-                if sign != p {
-                    flips += 1;
-                }
+            if let Some(p) = prev_sign
+                && sign != p
+            {
+                flips += 1;
             }
             prev_sign = Some(sign);
         }
@@ -425,12 +425,13 @@ pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
     }
 
     let mut start_r = guess;
-    if guess == 0.0 && sum_v.abs() < 1e-9 && flips >= 2 {
-        if let Some(asymp_g) = xirr_asymptotic_guess(values, dates) {
-            if asymp_g > 0.0 {
-                start_r = asymp_g;
-            }
-        }
+    if guess == 0.0
+        && sum_v.abs() < 1e-9
+        && flips >= 2
+        && let Some(asymp_g) = xirr_asymptotic_guess(values, dates)
+        && asymp_g > 0.0
+    {
+        start_r = asymp_g;
     }
 
     let f = |r: f64| xnpv(r, values, dates);
@@ -438,21 +439,21 @@ pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
 
     let res = newton_raphson_bounded_df(f, Some(df), start_r, None, start_r >= 0.0);
 
-    let is_neg_when_pos_guess = guess >= 0.0 && res.map_or(false, |r| r < 0.0) && flips >= 2;
-    let is_trivial_zero = res.map_or(false, |r| r.abs() < 1e-5) && sum_v.abs() < 1e-9;
+    let is_neg_when_pos_guess = guess >= 0.0 && res.is_some_and(|r| r < 0.0) && flips >= 2;
+    let is_trivial_zero = res.is_some_and(|r| r.abs() < 1e-5) && sum_v.abs() < 1e-9;
 
-    if (res.is_none() || is_trivial_zero || is_neg_when_pos_guess) && guess >= 0.0 {
-        if let Some(asymp_g) = xirr_asymptotic_guess(values, dates) {
-            if asymp_g > 0.0 {
-                let res_asymp = newton_raphson_bounded_df(f, Some(df), asymp_g, None, true);
-                if res_asymp.is_some() {
-                    return res_asymp;
-                }
-            }
+    if (res.is_none() || is_trivial_zero || is_neg_when_pos_guess)
+        && guess >= 0.0
+        && let Some(asymp_g) = xirr_asymptotic_guess(values, dates)
+        && asymp_g > 0.0
+    {
+        let res_asymp = newton_raphson_bounded_df(f, Some(df), asymp_g, None, true);
+        if res_asymp.is_some() {
+            return res_asymp;
         }
     }
 
-    if guess < 0.0 && res.map_or(false, |r| r > 0.0) {
+    if guess < 0.0 && res.is_some_and(|r| r > 0.0) {
         return None;
     }
 
@@ -1104,6 +1105,7 @@ fn quasi_coupon_schedule(anchor: f64, lo: f64, hi: f64, frequency: f64) -> Vec<f
 /// reverse-engineerable from fuzzing within reasonable effort, so the fuzz
 /// generator restricts `ACCRINT` to basis 0/4 and this stays a documented,
 /// unverified best-effort for 1/2/3.
+#[allow(clippy::too_many_arguments)]
 pub fn accrint(
     issue: f64,
     first_interest: f64,
@@ -1242,6 +1244,7 @@ pub fn amordegrc(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn oddfprice(
     settlement: f64,
     maturity: f64,
@@ -1266,6 +1269,7 @@ pub fn oddfprice(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn oddfprice_from_yield(
     settlement: f64,
     maturity: f64,
@@ -1335,6 +1339,7 @@ fn oddfprice_from_yield(
     term1 + term2 + term3 - coupon * (a / e)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn oddfyield(
     settlement: f64,
     maturity: f64,
@@ -1381,6 +1386,7 @@ fn oddlprice_e(last_interest: f64, _maturity: f64, frequency: f64, basis: f64) -
 /// coupon period) -- real Excel's exact handling wasn't reverse-
 /// engineered within the fuzzer's reach, so the fuzz generator keeps the
 /// odd period shorter than one regular period.
+#[allow(clippy::too_many_arguments)]
 pub fn oddlprice(
     settlement: f64,
     maturity: f64,
@@ -1401,6 +1407,7 @@ pub fn oddlprice(
     numerator / (1.0 + (dsc / e) * (yld / frequency)) - coupon * (dcsl / e)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn oddlyield(
     settlement: f64,
     maturity: f64,

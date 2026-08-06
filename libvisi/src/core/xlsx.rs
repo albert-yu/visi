@@ -26,19 +26,19 @@ fn text_cell_src(s: &str) -> String {
     }
 }
 
+/// `(imported sheets, charts, pivot tables, VBA project)`.
+type ImportedXlsxData = (
+    Vec<ImportedSheet>,
+    Vec<crate::core::chart::Chart>,
+    Vec<crate::core::pivot::PivotTable>,
+    Option<crate::core::vba::VbaProject>,
+);
+
 pub fn import_xlsx_data(
     buffer: &[u8],
     existing_sheets: &[Sheet],
     mut progress_callback: impl FnMut(usize, usize, &str),
-) -> Result<
-    (
-        Vec<ImportedSheet>,
-        Vec<crate::core::chart::Chart>,
-        Vec<crate::core::pivot::PivotTable>,
-        Option<crate::core::vba::VbaProject>,
-    ),
-    String,
-> {
+) -> Result<ImportedXlsxData, String> {
     let start_total = Instant::now();
 
     let cursor = std::io::Cursor::new(buffer);
@@ -88,9 +88,12 @@ pub fn import_xlsx_data(
             // fast path further down only fires when `matches_exactly`
             // confirms there's no leading offset to account for.
             let ends = [range.end(), formula_range.as_ref().and_then(|fr| fr.end())];
-            let (mut rows, mut cols) = ends.into_iter().flatten().fold((0usize, 0usize), |acc, (r, c)| {
-                (acc.0.max(r as usize + 1), acc.1.max(c as usize + 1))
-            });
+            let (mut rows, mut cols) = ends
+                .into_iter()
+                .flatten()
+                .fold((0usize, 0usize), |acc, (r, c)| {
+                    (acc.0.max(r as usize + 1), acc.1.max(c as usize + 1))
+                });
 
             // Fallback for empty worksheets
             if rows == 0 || cols == 0 {
@@ -130,7 +133,7 @@ pub fn import_xlsx_data(
                 && cols == range_width
                 && formula_range
                     .as_ref()
-                    .map_or(true, |fr| fr.height() == rows && fr.width() == cols);
+                    .is_none_or(|fr| fr.height() == rows && fr.width() == cols);
 
             if matches_exactly {
                 let mut range_rows = range.rows();
@@ -210,28 +213,26 @@ pub fn import_xlsx_data(
                         };
                         columns[col_idx].data.set(row_idx, init_res);
 
-                        if let Some(ref f_range) = formula_range {
-                            if let Some(formula) = f_range.get_value((row_u32, col_u32)) {
-                                if !formula.is_empty() {
-                                    if matches!(cell_value, calamine::Data::Empty)
-                                        || matches!(cell_value, calamine::Data::String(s) if s.is_empty())
-                                    {
-                                        columns[col_idx]
-                                            .data
-                                            .set(row_idx, crate::core::engine::ResultData::None);
-                                    }
-                                    let cell_src = if formula.starts_with('=') {
-                                        formula.to_string()
-                                    } else {
-                                        format!("={}", formula)
-                                    };
-                                    max_cell_lens[col_idx] =
-                                        max_cell_lens[col_idx].max(cell_src.len());
-                                    columns[col_idx].src[row_idx] = cell_src;
-                                    columns[col_idx].dirty_indices.push(row_idx);
-                                    continue;
-                                }
+                        if let Some(ref f_range) = formula_range
+                            && let Some(formula) = f_range.get_value((row_u32, col_u32))
+                            && !formula.is_empty()
+                        {
+                            if matches!(cell_value, calamine::Data::Empty)
+                                || matches!(cell_value, calamine::Data::String(s) if s.is_empty())
+                            {
+                                columns[col_idx]
+                                    .data
+                                    .set(row_idx, crate::core::engine::ResultData::None);
                             }
+                            let cell_src = if formula.starts_with('=') {
+                                formula.to_string()
+                            } else {
+                                format!("={}", formula)
+                            };
+                            max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
+                            columns[col_idx].src[row_idx] = cell_src;
+                            columns[col_idx].dirty_indices.push(row_idx);
+                            continue;
                         }
 
                         let cell_src = match cell_value {
@@ -543,8 +544,8 @@ pub fn export_xlsx_data(
                 let col = &sheet.columns[col_idx];
                 for row_idx in 0..sheet.row_count() {
                     let cell_src = col.src.get(row_idx).cloned().unwrap_or_default();
-                    if cell_src.starts_with('=') {
-                        let mut formula = rust_xlsxwriter::Formula::new(&cell_src[1..]);
+                    if let Some(formula_src) = cell_src.strip_prefix('=') {
+                        let mut formula = rust_xlsxwriter::Formula::new(formula_src);
                         if let Some(res_data) = col.data.get(row_idx) {
                             match res_data {
                                 crate::core::engine::ResultData::None => {}
@@ -631,128 +632,128 @@ pub fn export_xlsx_data(
             .or_else(|| table_name_to_worksheet_name.values().next())
             .cloned();
 
-        if let Some(ws_name) = ws_name {
-            if let Ok(worksheet) = workbook.worksheet_from_name(&ws_name) {
-                let rx_chart_type = match chart.chart_type {
-                    crate::core::chart::ChartType::Column => rust_xlsxwriter::ChartType::Column,
-                    crate::core::chart::ChartType::Bar => rust_xlsxwriter::ChartType::Bar,
-                    crate::core::chart::ChartType::Line => rust_xlsxwriter::ChartType::Line,
-                    crate::core::chart::ChartType::Pie => rust_xlsxwriter::ChartType::Pie,
-                    crate::core::chart::ChartType::Scatter => rust_xlsxwriter::ChartType::Scatter,
-                    crate::core::chart::ChartType::Area => rust_xlsxwriter::ChartType::Area,
-                };
+        if let Some(ws_name) = ws_name
+            && let Ok(worksheet) = workbook.worksheet_from_name(&ws_name)
+        {
+            let rx_chart_type = match chart.chart_type {
+                crate::core::chart::ChartType::Column => rust_xlsxwriter::ChartType::Column,
+                crate::core::chart::ChartType::Bar => rust_xlsxwriter::ChartType::Bar,
+                crate::core::chart::ChartType::Line => rust_xlsxwriter::ChartType::Line,
+                crate::core::chart::ChartType::Pie => rust_xlsxwriter::ChartType::Pie,
+                crate::core::chart::ChartType::Scatter => rust_xlsxwriter::ChartType::Scatter,
+                crate::core::chart::ChartType::Area => rust_xlsxwriter::ChartType::Area,
+            };
 
-                let mut rx_chart = rust_xlsxwriter::Chart::new(rx_chart_type);
+            let mut rx_chart = rust_xlsxwriter::Chart::new(rx_chart_type);
 
-                let ast = crate::core::parser::parse_excel_formula(&chart.data_range);
-                match ast {
-                    Ok(crate::core::parser::Expr::CellRef { row, col, .. }) => {
-                        let col_letter = crate::core::parser::col_idx_to_letters(col);
-                        let values_range = format!(
-                            "{}!${}${}:${}${}",
-                            ws_name,
-                            col_letter,
-                            row + 1,
-                            col_letter,
-                            row + 1
-                        );
-                        rx_chart.add_series().set_values(&values_range);
-                    }
-                    Ok(crate::core::parser::Expr::RangeRef {
-                        start_row,
-                        start_col,
-                        end_row,
-                        end_col,
-                        ..
-                    }) => {
-                        let cols_count = end_col + 1 - start_col;
-                        if cols_count >= 2 {
-                            let categories_col = crate::core::parser::col_idx_to_letters(start_col);
-                            let values_col = crate::core::parser::col_idx_to_letters(start_col + 1);
-                            let (categories_range, values_range) = if end_row == usize::MAX {
-                                (
-                                    format!("{}!${}:${}", ws_name, categories_col, categories_col),
-                                    format!("{}!${}:${}", ws_name, values_col, values_col),
-                                )
-                            } else {
-                                (
-                                    format!(
-                                        "{}!${}${}:${}${}",
-                                        ws_name,
-                                        categories_col,
-                                        start_row + 1,
-                                        categories_col,
-                                        end_row + 1
-                                    ),
-                                    format!(
-                                        "{}!${}${}:${}${}",
-                                        ws_name,
-                                        values_col,
-                                        start_row + 1,
-                                        values_col,
-                                        end_row + 1
-                                    ),
-                                )
-                            };
-                            rx_chart
-                                .add_series()
-                                .set_categories(&categories_range)
-                                .set_values(&values_range);
+            let ast = crate::core::parser::parse_excel_formula(&chart.data_range);
+            match ast {
+                Ok(crate::core::parser::Expr::CellRef { row, col, .. }) => {
+                    let col_letter = crate::core::parser::col_idx_to_letters(col);
+                    let values_range = format!(
+                        "{}!${}${}:${}${}",
+                        ws_name,
+                        col_letter,
+                        row + 1,
+                        col_letter,
+                        row + 1
+                    );
+                    rx_chart.add_series().set_values(&values_range);
+                }
+                Ok(crate::core::parser::Expr::RangeRef {
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    ..
+                }) => {
+                    let cols_count = end_col + 1 - start_col;
+                    if cols_count >= 2 {
+                        let categories_col = crate::core::parser::col_idx_to_letters(start_col);
+                        let values_col = crate::core::parser::col_idx_to_letters(start_col + 1);
+                        let (categories_range, values_range) = if end_row == usize::MAX {
+                            (
+                                format!("{}!${}:${}", ws_name, categories_col, categories_col),
+                                format!("{}!${}:${}", ws_name, values_col, values_col),
+                            )
                         } else {
-                            let col_letter = crate::core::parser::col_idx_to_letters(start_col);
-                            let values_range = if end_row == usize::MAX {
-                                format!("{}!${}:${}", ws_name, col_letter, col_letter)
-                            } else {
+                            (
                                 format!(
                                     "{}!${}${}:${}${}",
                                     ws_name,
-                                    col_letter,
+                                    categories_col,
                                     start_row + 1,
-                                    col_letter,
+                                    categories_col,
                                     end_row + 1
-                                )
-                            };
-                            rx_chart.add_series().set_values(&values_range);
-                        }
-                    }
-                    _ => {
-                        rx_chart.add_series().set_values(&chart.data_range);
-                    }
-                }
-
-                if let Some(ref title) = chart.title {
-                    rx_chart.title().set_name(title);
-                }
-                // `xlabel`/`ylabel` mean "category axis label"/"value axis
-                // label" (matching parse_chart_xml's in_cat_ax/in_val_ax
-                // reading on import), not "screen x/y axis". For horizontal
-                // Bar charts, rust_xlsxwriter's x_axis()/y_axis() address
-                // the *visual* bottom/left axes, which are the value/category
-                // axes respectively -- the opposite of every other chart
-                // type here, where the category axis is drawn horizontally.
-                // Swap the setters here so xlabel always lands on <c:catAx>
-                // and ylabel on <c:valAx>, keeping export consistent with
-                // what import expects to read back.
-                let (x_axis_label, y_axis_label) =
-                    if chart.chart_type == crate::core::chart::ChartType::Bar {
-                        (chart.ylabel.as_ref(), chart.xlabel.as_ref())
+                                ),
+                                format!(
+                                    "{}!${}${}:${}${}",
+                                    ws_name,
+                                    values_col,
+                                    start_row + 1,
+                                    values_col,
+                                    end_row + 1
+                                ),
+                            )
+                        };
+                        rx_chart
+                            .add_series()
+                            .set_categories(&categories_range)
+                            .set_values(&values_range);
                     } else {
-                        (chart.xlabel.as_ref(), chart.ylabel.as_ref())
-                    };
-                if let Some(label) = x_axis_label {
-                    rx_chart.x_axis().set_name(label);
+                        let col_letter = crate::core::parser::col_idx_to_letters(start_col);
+                        let values_range = if end_row == usize::MAX {
+                            format!("{}!${}:${}", ws_name, col_letter, col_letter)
+                        } else {
+                            format!(
+                                "{}!${}${}:${}${}",
+                                ws_name,
+                                col_letter,
+                                start_row + 1,
+                                col_letter,
+                                end_row + 1
+                            )
+                        };
+                        rx_chart.add_series().set_values(&values_range);
+                    }
                 }
-                if let Some(label) = y_axis_label {
-                    rx_chart.y_axis().set_name(label);
+                _ => {
+                    rx_chart.add_series().set_values(&chart.data_range);
                 }
-                if !chart.show_legend {
-                    rx_chart.legend().set_hidden();
-                }
-
-                worksheet
-                    .insert_chart(chart.anchor_row as u32, chart.anchor_col as u16, &rx_chart)
-                    .map_err(|e| format!("Failed to insert Excel chart: {}", e))?;
             }
+
+            if let Some(ref title) = chart.title {
+                rx_chart.title().set_name(title);
+            }
+            // `xlabel`/`ylabel` mean "category axis label"/"value axis
+            // label" (matching parse_chart_xml's in_cat_ax/in_val_ax
+            // reading on import), not "screen x/y axis". For horizontal
+            // Bar charts, rust_xlsxwriter's x_axis()/y_axis() address
+            // the *visual* bottom/left axes, which are the value/category
+            // axes respectively -- the opposite of every other chart
+            // type here, where the category axis is drawn horizontally.
+            // Swap the setters here so xlabel always lands on <c:catAx>
+            // and ylabel on <c:valAx>, keeping export consistent with
+            // what import expects to read back.
+            let (x_axis_label, y_axis_label) =
+                if chart.chart_type == crate::core::chart::ChartType::Bar {
+                    (chart.ylabel.as_ref(), chart.xlabel.as_ref())
+                } else {
+                    (chart.xlabel.as_ref(), chart.ylabel.as_ref())
+                };
+            if let Some(label) = x_axis_label {
+                rx_chart.x_axis().set_name(label);
+            }
+            if let Some(label) = y_axis_label {
+                rx_chart.y_axis().set_name(label);
+            }
+            if !chart.show_legend {
+                rx_chart.legend().set_hidden();
+            }
+
+            worksheet
+                .insert_chart(chart.anchor_row as u32, chart.anchor_col as u16, &rx_chart)
+                .map_err(|e| format!("Failed to insert Excel chart: {}", e))?;
         }
     }
 
@@ -798,7 +799,7 @@ struct ParsedChartData {
 }
 
 fn get_filename(path: &str) -> String {
-    path.split('/').last().unwrap_or("").to_string()
+    path.split('/').next_back().unwrap_or("").to_string()
 }
 
 fn clean_excel_formula(f: &str) -> String {
@@ -868,29 +869,29 @@ fn parse_range(f: &str) -> Option<ParsedRange> {
 }
 
 fn combine_ranges(cat_f: &str, val_f: &str) -> String {
-    if let (Some(cat), Some(val)) = (parse_range(cat_f), parse_range(val_f)) {
-        if cat.sheet == val.sheet && cat.start_row == val.start_row && cat.end_row == val.end_row {
-            return format!(
-                "{}!{}{}:{}{}",
-                cat.sheet, cat.start_col, cat.start_row, val.end_col, val.end_row
-            );
-        }
+    if let (Some(cat), Some(val)) = (parse_range(cat_f), parse_range(val_f))
+        && cat.sheet == val.sheet
+        && cat.start_row == val.start_row
+        && cat.end_row == val.end_row
+    {
+        return format!(
+            "{}!{}{}:{}{}",
+            cat.sheet, cat.start_col, cat.start_row, val.end_col, val.end_row
+        );
     }
     clean_excel_formula(val_f)
 }
 
 pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option<String> {
-    for attr_res in e.attributes() {
-        if let Ok(attr) = attr_res {
-            let key = attr.key.as_ref();
-            let local_name = if let Some(pos) = key.iter().position(|&b| b == b':') {
-                &key[pos + 1..]
-            } else {
-                key
-            };
-            if local_name == name {
-                return String::from_utf8(attr.value.into_owned()).ok();
-            }
+    for attr in e.attributes().flatten() {
+        let key = attr.key.as_ref();
+        let local_name = if let Some(pos) = key.iter().position(|&b| b == b':') {
+            &key[pos + 1..]
+        } else {
+            key
+        };
+        if local_name == name {
+            return String::from_utf8(attr.value.into_owned()).ok();
         }
     }
     None
@@ -916,10 +917,10 @@ pub(crate) fn parse_workbook_sheets(xml: &str) -> std::collections::HashMap<Stri
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                 let local = e.name().local_name().into_inner();
-                if local == b"sheet" {
-                    if let (Some(name), Some(r_id)) = (get_attr(&e, b"name"), get_attr(&e, b"id")) {
-                        map.insert(r_id, name);
-                    }
+                if local == b"sheet"
+                    && let (Some(name), Some(r_id)) = (get_attr(&e, b"name"), get_attr(&e, b"id"))
+                {
+                    map.insert(r_id, name);
                 }
             }
             _ => {}
@@ -938,12 +939,11 @@ pub(crate) fn parse_workbook_rels(xml: &str) -> std::collections::HashMap<String
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                 let local = e.name().local_name().into_inner();
-                if local == b"Relationship" {
-                    if let (Some(r_id), Some(target)) =
+                if local == b"Relationship"
+                    && let (Some(r_id), Some(target)) =
                         (get_attr(&e, b"Id"), get_attr(&e, b"Target"))
-                    {
-                        map.insert(r_id, target);
-                    }
+                {
+                    map.insert(r_id, target);
                 }
             }
             _ => {}
@@ -962,15 +962,13 @@ fn parse_sheet_drawing_rels(xml: &str) -> Option<String> {
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                 let local = e.name().local_name().into_inner();
-                if local == b"Relationship" {
-                    if let Some(ty) = get_attr(&e, b"Type") {
-                        if ty.contains("relationships/drawing") {
-                            if let Some(target) = get_attr(&e, b"Target") {
-                                drawing_target = Some(get_filename(&target));
-                                break;
-                            }
-                        }
-                    }
+                if local == b"Relationship"
+                    && let Some(ty) = get_attr(&e, b"Type")
+                    && ty.contains("relationships/drawing")
+                    && let Some(target) = get_attr(&e, b"Target")
+                {
+                    drawing_target = Some(get_filename(&target));
+                    break;
                 }
             }
             _ => {}
@@ -989,16 +987,13 @@ fn parse_drawing_chart_rels(xml: &str) -> std::collections::HashMap<String, Stri
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
                 let local = e.name().local_name().into_inner();
-                if local == b"Relationship" {
-                    if let Some(ty) = get_attr(&e, b"Type") {
-                        if ty.contains("relationships/chart") {
-                            if let (Some(r_id), Some(target)) =
-                                (get_attr(&e, b"Id"), get_attr(&e, b"Target"))
-                            {
-                                map.insert(r_id, get_filename(&target));
-                            }
-                        }
-                    }
+                if local == b"Relationship"
+                    && let Some(ty) = get_attr(&e, b"Type")
+                    && ty.contains("relationships/chart")
+                    && let (Some(r_id), Some(target)) =
+                        (get_attr(&e, b"Id"), get_attr(&e, b"Target"))
+                {
+                    map.insert(r_id, get_filename(&target));
                 }
             }
             _ => {}
@@ -1038,19 +1033,19 @@ fn parse_drawings_xml(xml: &str) -> Vec<ParsedAnchor> {
                     in_from = true;
                 } else if local == b"to" {
                     in_to = true;
-                } else if local == b"chart" {
-                    if let Some(rid) = get_attr(&e, b"id") {
-                        chart_rid = rid;
-                    }
+                } else if local == b"chart"
+                    && let Some(rid) = get_attr(&e, b"id")
+                {
+                    chart_rid = rid;
                 }
                 current_tag = local.to_vec();
             }
             Ok(quick_xml::events::Event::Empty(e)) => {
                 let local = e.name().local_name().into_inner();
-                if local == b"chart" {
-                    if let Some(rid) = get_attr(&e, b"id") {
-                        chart_rid = rid;
-                    }
+                if local == b"chart"
+                    && let Some(rid) = get_attr(&e, b"id")
+                {
+                    chart_rid = rid;
                 }
             }
             Ok(quick_xml::events::Event::End(e)) => {
@@ -1193,13 +1188,13 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                 let local = e.name().local_name().into_inner();
                 if local == b"legend" {
                     show_legend = true;
-                } else if local == b"barDir" {
-                    if let Some(val) = get_attr(&e, b"val") {
-                        if val == "col" {
-                            chart_type = crate::core::chart::ChartType::Column;
-                        } else if val == "bar" {
-                            chart_type = crate::core::chart::ChartType::Bar;
-                        }
+                } else if local == b"barDir"
+                    && let Some(val) = get_attr(&e, b"val")
+                {
+                    if val == "col" {
+                        chart_type = crate::core::chart::ChartType::Column;
+                    } else if val == "bar" {
+                        chart_type = crate::core::chart::ChartType::Bar;
                     }
                 }
             }
@@ -1234,13 +1229,11 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                                     title = Some(val_str.to_string());
                                 }
                             }
-                        } else if in_ser {
-                            if current_tag == b"f" {
-                                if in_cat {
-                                    cat_f = val_str.to_string();
-                                } else if in_val {
-                                    val_f = val_str.to_string();
-                                }
+                        } else if in_ser && current_tag == b"f" {
+                            if in_cat {
+                                cat_f = val_str.to_string();
+                            } else if in_val {
+                                val_f = val_str.to_string();
                             }
                         }
                     }
@@ -1311,10 +1304,11 @@ pub(crate) fn get_zip_file_content(
 /// the authoritative source of truth for a table's position: prefer it over
 /// reconstructing bounds from calamine's `Table::data()` range, which is
 /// empty (no `start()`/`end()`) for a table with zero data rows.
-fn read_table_metadata_from_zip(
-    buffer: &[u8],
-    table_name: &str,
-) -> (bool, bool, Option<(usize, usize, usize, usize)>) {
+/// `(has_header_row, has_totals_row, bounds)` where `bounds` is 0-based
+/// `(start_row, start_col, end_row, end_col)`.
+type TableMetadata = (bool, bool, Option<(usize, usize, usize, usize)>);
+
+fn read_table_metadata_from_zip(buffer: &[u8], table_name: &str) -> TableMetadata {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(buffer)) else {
         return (true, false, None);
     };
@@ -1398,36 +1392,35 @@ fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String>
 
     for sheet_filename in sheet_file_to_name.keys() {
         let rels_path = format!("xl/worksheets/_rels/{}.rels", sheet_filename);
-        if let Some(rels_xml) = get_zip_file_content(&mut archive, &rels_path) {
-            if let Some(drawing_filename) = parse_sheet_drawing_rels(&rels_xml) {
-                let sheet_name = sheet_file_to_name.get(sheet_filename).unwrap().clone();
+        if let Some(rels_xml) = get_zip_file_content(&mut archive, &rels_path)
+            && let Some(drawing_filename) = parse_sheet_drawing_rels(&rels_xml)
+        {
+            let sheet_name = sheet_file_to_name.get(sheet_filename).unwrap().clone();
 
-                let drawing_rels_path = format!("xl/drawings/_rels/{}.rels", drawing_filename);
-                let chart_rid_to_filename = if let Some(drawing_rels_xml) =
-                    get_zip_file_content(&mut archive, &drawing_rels_path)
-                {
-                    parse_drawing_chart_rels(&drawing_rels_xml)
-                } else {
-                    std::collections::HashMap::new()
-                };
+            let drawing_rels_path = format!("xl/drawings/_rels/{}.rels", drawing_filename);
+            let chart_rid_to_filename = if let Some(drawing_rels_xml) =
+                get_zip_file_content(&mut archive, &drawing_rels_path)
+            {
+                parse_drawing_chart_rels(&drawing_rels_xml)
+            } else {
+                std::collections::HashMap::new()
+            };
 
-                let drawing_path = format!("xl/drawings/{}", drawing_filename);
-                if let Some(drawing_xml) = get_zip_file_content(&mut archive, &drawing_path) {
-                    let anchors = parse_drawings_xml(&drawing_xml);
+            let drawing_path = format!("xl/drawings/{}", drawing_filename);
+            if let Some(drawing_xml) = get_zip_file_content(&mut archive, &drawing_path) {
+                let anchors = parse_drawings_xml(&drawing_xml);
 
-                    for anchor in anchors {
-                        if let Some(chart_filename) = chart_rid_to_filename.get(&anchor.chart_rid) {
-                            let chart_path = format!("xl/charts/{}", chart_filename);
-                            if let Some(chart_xml) = get_zip_file_content(&mut archive, &chart_path)
-                            {
-                                if let Some(info) = parse_chart_xml(&chart_xml) {
-                                    parsed_charts.push(ParsedChartData {
-                                        sheet_name: sheet_name.clone(),
-                                        anchor,
-                                        info,
-                                    });
-                                }
-                            }
+                for anchor in anchors {
+                    if let Some(chart_filename) = chart_rid_to_filename.get(&anchor.chart_rid) {
+                        let chart_path = format!("xl/charts/{}", chart_filename);
+                        if let Some(chart_xml) = get_zip_file_content(&mut archive, &chart_path)
+                            && let Some(info) = parse_chart_xml(&chart_xml)
+                        {
+                            parsed_charts.push(ParsedChartData {
+                                sheet_name: sheet_name.clone(),
+                                anchor,
+                                info,
+                            });
                         }
                     }
                 }

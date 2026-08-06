@@ -146,12 +146,9 @@ pub fn dbcs(text: &str) -> Result<String, String> {
     Ok(res)
 }
 
-pub fn detectlanguage(text: &str) -> Result<String, String> {
-    if text.trim().is_empty() {
-        Ok("en".to_string())
-    } else {
-        Ok("en".to_string())
-    }
+pub fn detectlanguage(_text: &str) -> Result<String, String> {
+    // Real language detection isn't implemented; always report English.
+    Ok("en".to_string())
 }
 
 pub fn dollar(number: f64, decimals: Option<f64>) -> Result<String, String> {
@@ -165,7 +162,7 @@ pub fn dollar(number: f64, decimals: Option<f64>) -> Result<String, String> {
     let mut with_commas = String::new();
     let len = int_part.len();
     for (i, c) in int_part.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             with_commas.push(',');
         }
         with_commas.push(c);
@@ -230,7 +227,7 @@ pub fn fixed(
         let mut with_commas = String::new();
         let len = int_part.len();
         for (i, c) in int_part.chars().enumerate() {
-            if i > 0 && (len - i) % 3 == 0 {
+            if i > 0 && (len - i).is_multiple_of(3) {
                 with_commas.push(',');
             }
             with_commas.push(c);
@@ -329,7 +326,7 @@ pub fn search(find_text: &str, within_text: &str, start_num: Option<f64>) -> Res
     let search_slice: String = chars[start - 1..].iter().collect();
 
     // Simple wildcard handling for ? and *
-    let clean_find = lower_find.replace('?', "").replace('*', "");
+    let clean_find = lower_find.replace(['?', '*'], "");
     if clean_find.is_empty() {
         return Ok(start as f64);
     }

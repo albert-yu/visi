@@ -783,8 +783,8 @@ fn handle_table(args: TableArgs, quiet: bool) {
                     return;
                 }
                 println!(
-                    "{:<15} {:<15} {:<12} {:<8} {:<8} {}",
-                    "Name", "Sheet", "Range", "Header", "Totals", "Columns"
+                    "{:<15} {:<15} {:<12} {:<8} {:<8} Columns",
+                    "Name", "Sheet", "Range", "Header", "Totals"
                 );
                 println!("{}", "-".repeat(90));
                 for (sheet_name, t) in &tables {
@@ -1032,8 +1032,8 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
                     return;
                 }
                 println!(
-                    "{:<15} {:<20} {:<20} {:<20} {}",
-                    "Name", "Rows", "Columns", "Values", "Filters"
+                    "{:<15} {:<20} {:<20} {:<20} Filters",
+                    "Name", "Rows", "Columns", "Values"
                 );
                 println!("{}", "-".repeat(90));
                 for p in pivots {

@@ -63,7 +63,9 @@ fn test_rounding_and_integers() {
     assert!(matches!(r5, ResultData::Float(v) if (v + 1.0).abs() < 1e-6));
 
     let r6 = sheet.get_result_data(&CellRef::new(0, 5));
-    assert!(matches!(r6, ResultData::Float(v) if (v - 3.14).abs() < 1e-6));
+    #[allow(clippy::approx_constant)]
+    let expected = 3.14; // TRUNC(3.14159, 2), not an approximation of PI
+    assert!(matches!(r6, ResultData::Float(v) if (v - expected).abs() < 1e-6));
 }
 
 #[test]

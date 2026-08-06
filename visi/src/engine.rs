@@ -131,11 +131,11 @@ impl WorkbookManager {
                 .map_err(|e| format!("Failed to flush stdout: {}", e))?;
         } else {
             let path = Path::new(path_str);
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create parent directories: {}", e))?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create parent directories: {}", e))?;
             }
             fs::write(path_str, bytes)
                 .map_err(|e| format!("Failed to save file to '{}': {}", path_str, e))?;

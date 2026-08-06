@@ -426,7 +426,7 @@ fn test_fuzz_and_upper_power_comparison() {
     sheet.commit(None).unwrap();
     let target = sheet.get_result_data(&CellRef::new(9, 3));
     match target {
-        ResultData::Boolean(b) => assert_eq!(b, true),
+        ResultData::Boolean(b) => assert!(b),
         other => panic!("Expected Boolean(true), got {:?}", other),
     }
 }
@@ -481,7 +481,7 @@ fn test_fuzz_subtraction_string_formula_cell() {
             let res = sheet.get_result_data(&CellRef::new(r, c));
             if matches!(res, ResultData::Error(_)) {
                 let col_let = (b'A' + c as u8) as char;
-                assert!(col_let >= 'A' && col_let <= 'E');
+                assert!(('A'..='E').contains(&col_let));
             }
         }
     }

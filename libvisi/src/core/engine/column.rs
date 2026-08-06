@@ -35,6 +35,10 @@ impl ColumnData {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn push(&mut self, value: ResultData) {
         let index = self.len();
         self.insert(index, value);
@@ -283,7 +287,7 @@ impl DataColumn {
         let ColumnPosition { row, char_offset } = position;
         let index = row;
         if index < self.src.len() {
-            if self.src[index].len() == 0 {
+            if self.src[index].is_empty() {
                 self.src[index].push_str(input);
             } else {
                 self.src[index].insert_str(char_offset, input);

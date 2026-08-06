@@ -18,7 +18,7 @@ pub fn inv_normal_cdf(p: f64) -> Result<f64, String> {
         -3.969683028665376e+01,
         2.209460984245205e+02,
         -2.759285104469687e+02,
-        1.383577518672690e+02,
+        1.383_577_518_672_69e2,
         -3.066479806614716e+01,
         2.506628277459239e+00,
     ];
@@ -130,21 +130,21 @@ pub fn lgamma(x: f64) -> f64 {
     }
 
     let p = [
-        0.99999999999980993,
+        0.999_999_999_999_809_9,
         676.5203681218851,
         -1259.139216722289,
-        771.32342877765313,
-        -176.61502916214059,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
         12.507343278686905,
         -0.13857109526572012,
-        9.9843695780195716e-6,
+        9.984_369_578_019_572e-6,
         1.5056327351493116e-7,
     ];
 
     let z = x - 1.0;
     let mut sum = p[0];
-    for i in 1..p.len() {
-        sum += p[i] / (z + i as f64);
+    for (i, &pi) in p.iter().enumerate().skip(1) {
+        sum += pi / (z + i as f64);
     }
 
     let t = z + 7.5;
@@ -497,7 +497,7 @@ pub fn mode_mult(data: &[f64]) -> Result<Vec<f64>, String> {
 }
 
 pub fn trimmean(data: &[f64], percent: f64) -> Result<f64, String> {
-    if data.is_empty() || percent < 0.0 || percent >= 1.0 {
+    if data.is_empty() || !(0.0..1.0).contains(&percent) {
         return Err("#NUM!".to_string());
     }
     let mut sorted = data.to_vec();
@@ -672,7 +672,7 @@ pub fn rank_avg(number: f64, ref_data: &[f64], order: usize) -> Result<f64, Stri
 }
 
 pub fn percentile_inc(data: &[f64], k: f64) -> Result<f64, String> {
-    if data.is_empty() || k < 0.0 || k > 1.0 {
+    if data.is_empty() || !(0.0..=1.0).contains(&k) {
         return Err("#NUM!".to_string());
     }
     let mut sorted = data.to_vec();
@@ -1095,11 +1095,7 @@ pub fn binom_dist(
     probability_s: f64,
     cumulative: bool,
 ) -> Result<f64, String> {
-    if number_s < 0.0
-        || trials < 0.0
-        || number_s > trials
-        || probability_s < 0.0
-        || probability_s > 1.0
+    if number_s < 0.0 || trials < 0.0 || number_s > trials || !(0.0..=1.0).contains(&probability_s)
     {
         return Err("#NUM!".to_string());
     }
@@ -1143,7 +1139,7 @@ pub fn binom_dist_range(
 }
 
 pub fn binom_inv(trials: f64, probability_s: f64, alpha: f64) -> Result<f64, String> {
-    if trials < 0.0 || probability_s < 0.0 || probability_s > 1.0 || alpha < 0.0 || alpha > 1.0 {
+    if trials < 0.0 || !(0.0..=1.0).contains(&probability_s) || !(0.0..=1.0).contains(&alpha) {
         return Err("#NUM!".to_string());
     }
     let n = trials.floor() as usize;
@@ -1163,7 +1159,7 @@ pub fn negbinom_dist(
     probability_s: f64,
     cumulative: bool,
 ) -> Result<f64, String> {
-    if number_f < 0.0 || number_s < 1.0 || probability_s < 0.0 || probability_s > 1.0 {
+    if number_f < 0.0 || number_s < 1.0 || !(0.0..=1.0).contains(&probability_s) {
         return Err("#NUM!".to_string());
     }
     let k = number_f.floor();
@@ -1535,7 +1531,7 @@ pub fn prob(
 
     let mut sum = 0.0;
     for (&x, &p) in x_range.iter().zip(prob_range.iter()) {
-        if p < 0.0 || p > 1.0 {
+        if !(0.0..=1.0).contains(&p) {
             return Err("#NUM!".to_string());
         }
         if x >= lower_limit && x <= upper {

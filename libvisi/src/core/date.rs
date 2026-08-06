@@ -42,10 +42,11 @@ pub fn detect_case(s: &str) -> StringCase {
         StringCase::Lower
     } else {
         let mut chars = s.chars();
-        if let Some(first) = chars.next() {
-            if first.is_uppercase() && chars.all(|c| c.is_lowercase()) {
-                return StringCase::Title;
-            }
+        if let Some(first) = chars.next()
+            && first.is_uppercase()
+            && chars.all(|c| c.is_lowercase())
+        {
+            return StringCase::Title;
         }
         StringCase::Original
     }
@@ -297,10 +298,10 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                 // If one part is a word month, the other two must be digits
                 let mut digit_parts = Vec::new();
                 for (i, part) in parts.iter().enumerate() {
-                    if i != month_idx {
-                        if let Some(val) = parse_digits(part) {
-                            digit_parts.push((i, val, part.len()));
-                        }
+                    if i != month_idx
+                        && let Some(val) = parse_digits(part)
+                    {
+                        digit_parts.push((i, val, part.len()));
                     }
                 }
 
@@ -406,8 +407,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         let year = val0;
                         let month = val1 as u32;
                         let day = val2 as u32;
-                        if month >= 1
-                            && month <= 12
+                        if (1..=12).contains(&month)
                             && day >= 1
                             && day <= days_in_month(year, month)
                         {
@@ -436,8 +436,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         if val0 > 12 {
                             let day = val0 as u32;
                             let month = val1 as u32;
-                            if month >= 1
-                                && month <= 12
+                            if (1..=12).contains(&month)
                                 && day >= 1
                                 && day <= days_in_month(year, month)
                             {
@@ -453,8 +452,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                             // If val1 > 12, it must be MDY
                             let month = val0 as u32;
                             let day = val1 as u32;
-                            if month >= 1
-                                && month <= 12
+                            if (1..=12).contains(&month)
                                 && day >= 1
                                 && day <= days_in_month(year, month)
                             {
@@ -470,8 +468,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                             // Defaults to MDY (standard US locale)
                             let month = val0 as u32;
                             let day = val1 as u32;
-                            if month >= 1
-                                && month <= 12
+                            if (1..=12).contains(&month)
                                 && day >= 1
                                 && day <= days_in_month(year, month)
                             {
@@ -518,7 +515,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         } else {
                             digit_val
                         };
-                        if month >= 1 && month <= 12 {
+                        if (1..=12).contains(&month) {
                             if month_idx == 0 {
                                 return Some((
                                     SimpleDate {
@@ -594,7 +591,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                     if len1 == 4 {
                         let month = val0 as u32;
                         let year = val1;
-                        if month >= 1 && month <= 12 {
+                        if (1..=12).contains(&month) {
                             return Some((
                                 SimpleDate {
                                     year,
@@ -608,8 +605,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         // Option B: Month-Day (assumes DEFAULT_YEAR)
                         let month = val0 as u32;
                         let day = val1 as u32;
-                        if month >= 1
-                            && month <= 12
+                        if (1..=12).contains(&month)
                             && day >= 1
                             && day <= days_in_month(DEFAULT_YEAR, month)
                         {
@@ -626,7 +622,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         // Option C: Month-Year with a 2-digit year that isn't a
                         // valid day (e.g. "1-34" -> Jan 1934), matching Excel's
                         // fallback when the second part can't be a day.
-                        if month >= 1 && month <= 12 && len1 == 2 {
+                        if (1..=12).contains(&month) && len1 == 2 {
                             let year = if val1 < 30 { 2000 + val1 } else { 1900 + val1 };
                             return Some((
                                 SimpleDate {
@@ -829,10 +825,10 @@ pub fn format_date(date: SimpleDate, format: &DateFormat) -> String {
 pub fn try_fill_date(src: &str, offset: i32) -> Option<String> {
     let (date, format) = parse_date(src)?;
 
-    let is_month_based = match &format {
-        DateFormat::My { .. } | DateFormat::MmmY { .. } | DateFormat::YMmm { .. } => true,
-        _ => false,
-    };
+    let is_month_based = matches!(
+        &format,
+        DateFormat::My { .. } | DateFormat::MmmY { .. } | DateFormat::YMmm { .. }
+    );
 
     let new_date = if is_month_based {
         add_months(date, offset)
@@ -1050,10 +1046,10 @@ pub fn detect_date_pattern(vals: &[String], target_idx: usize) -> Option<String>
         formats.push(format);
     }
 
-    let is_month_based = match &formats[0] {
-        DateFormat::My { .. } | DateFormat::MmmY { .. } | DateFormat::YMmm { .. } => true,
-        _ => false,
-    };
+    let is_month_based = matches!(
+        &formats[0],
+        DateFormat::My { .. } | DateFormat::MmmY { .. } | DateFormat::YMmm { .. }
+    );
 
     let next_date = if is_month_based {
         let months: Vec<i32> = dates.iter().map(|d| date_to_months(*d)).collect();

@@ -245,7 +245,7 @@ pub fn trunc(x: f64, digits: Option<f64>) -> Result<f64, String> {
 pub fn base(number: f64, radix: f64, min_length: Option<f64>) -> Result<String, String> {
     let num = number.floor() as i64;
     let r = radix.floor() as u32;
-    if num < 0 || r < 2 || r > 36 {
+    if num < 0 || !(2..=36).contains(&r) {
         return Err("#NUM!".to_string());
     }
     let min_len = min_length.unwrap_or(0.0).floor() as usize;
@@ -277,7 +277,7 @@ pub fn base(number: f64, radix: f64, min_length: Option<f64>) -> Result<String, 
 
 pub fn decimal(text: &str, radix: f64) -> Result<f64, String> {
     let r = radix.floor() as u32;
-    if r < 2 || r > 36 {
+    if !(2..=36).contains(&r) {
         return Err("#NUM!".to_string());
     }
     let s = text.trim();
@@ -333,7 +333,7 @@ pub fn arabic(text: &str) -> Result<f64, String> {
 
 pub fn roman(number: f64, _form: Option<f64>) -> Result<String, String> {
     let n = number.floor() as i64;
-    if n < 1 || n > 3999 {
+    if !(1..=3999).contains(&n) {
         return Err("#VALUE!".to_string());
     }
 
@@ -402,7 +402,7 @@ pub fn combina(n: f64, k: f64) -> Result<f64, String> {
 
 pub fn fact(n: f64) -> Result<f64, String> {
     let ni = n.floor() as i64;
-    if ni < 0 || ni > 170 {
+    if !(0..=170).contains(&ni) {
         return Err("#NUM!".to_string());
     }
     let mut ans = 1.0;
@@ -414,7 +414,7 @@ pub fn fact(n: f64) -> Result<f64, String> {
 
 pub fn factdouble(n: f64) -> Result<f64, String> {
     let ni = n.floor() as i64;
-    if ni < -1 || ni > 300 {
+    if !(-1..=300).contains(&ni) {
         return Err("#NUM!".to_string());
     }
     if ni <= 0 {
@@ -548,8 +548,9 @@ pub fn mdeterm(matrix: &[Vec<f64>]) -> Result<f64, String> {
         let pivot_val = mat[i][i];
         for j in (i + 1)..n {
             let factor = mat[j][i] / pivot_val;
-            for k in (i + 1)..n {
-                mat[j][k] -= factor * mat[i][k];
+            let row_i = mat[i][i + 1..n].to_vec();
+            for (target, src) in mat[j][i + 1..n].iter_mut().zip(row_i.iter()) {
+                *target -= factor * src;
             }
         }
     }
@@ -586,15 +587,16 @@ pub fn minverse(matrix: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
         }
 
         let div = aug[i][i];
-        for j in 0..(2 * n) {
-            aug[i][j] /= div;
+        for val in aug[i].iter_mut() {
+            *val /= div;
         }
 
         for j in 0..n {
             if j != i {
                 let factor = aug[j][i];
-                for k in 0..(2 * n) {
-                    aug[j][k] -= factor * aug[i][k];
+                let row_i = aug[i].clone();
+                for (target, src) in aug[j].iter_mut().zip(row_i.iter()) {
+                    *target -= factor * src;
                 }
             }
         }
@@ -615,8 +617,8 @@ pub fn munit(dimension: f64) -> Result<Vec<Vec<f64>>, String> {
         return Err("#VALUE!".to_string());
     }
     let mut mat = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        mat[i][i] = 1.0;
+    for (i, row) in mat.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     Ok(mat)
 }
@@ -693,9 +695,9 @@ pub fn sequence(
     let st = step.unwrap_or(1.0);
 
     let mut grid = vec![vec![0.0; c]; r];
-    for i in 0..r {
-        for j in 0..c {
-            grid[i][j] = curr;
+    for row in grid.iter_mut() {
+        for val in row.iter_mut() {
+            *val = curr;
             curr += st;
         }
     }
@@ -723,10 +725,10 @@ pub fn randarray(
     let mut rng = rand::thread_rng();
     let mut grid = vec![vec![0.0; c]; r];
 
-    for i in 0..r {
-        for j in 0..c {
+    for row in grid.iter_mut() {
+        for cell in row.iter_mut() {
             let val = rng.gen_range(min_val..=max_val);
-            grid[i][j] = if is_whole { val.round() } else { val };
+            *cell = if is_whole { val.round() } else { val };
         }
     }
     Ok(grid)

@@ -509,108 +509,106 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
                     sheet = Some(t_name);
                     idx = j + 1;
                 }
-            } else if j < chars.len() && chars[j] == '[' {
-                if t_name != "iloc" && t_name != "get" {
-                    let mut k = j + 1;
-                    let mut quote = None;
-                    if k < chars.len() && (chars[k] == '"' || chars[k] == '\'') {
-                        quote = Some(chars[k]);
-                        k += 1;
-                    }
-                    let mut is_column = true;
-                    let mut has_chars = false;
-                    while k < chars.len() {
-                        if let Some(q) = quote {
-                            if chars[k] == q {
-                                break;
-                            }
-                        } else {
-                            if chars[k] == ']' {
-                                break;
-                            }
-                            if chars[k] == ':'
-                                || chars[k] == ','
-                                || chars[k] == '+'
-                                || chars[k] == '-'
-                                || chars[k] == '*'
-                                || chars[k] == '/'
-                            {
-                                is_column = false;
-                                break;
-                            }
+            } else if j < chars.len() && chars[j] == '[' && t_name != "iloc" && t_name != "get" {
+                let mut k = j + 1;
+                let mut quote = None;
+                if k < chars.len() && (chars[k] == '"' || chars[k] == '\'') {
+                    quote = Some(chars[k]);
+                    k += 1;
+                }
+                let mut is_column = true;
+                let mut has_chars = false;
+                while k < chars.len() {
+                    if let Some(q) = quote {
+                        if chars[k] == q {
+                            break;
                         }
-                        has_chars = true;
-                        k += 1;
+                    } else {
+                        if chars[k] == ']' {
+                            break;
+                        }
+                        if chars[k] == ':'
+                            || chars[k] == ','
+                            || chars[k] == '+'
+                            || chars[k] == '-'
+                            || chars[k] == '*'
+                            || chars[k] == '/'
+                        {
+                            is_column = false;
+                            break;
+                        }
                     }
-                    if is_column && has_chars {
-                        sheet = Some(t_name);
-                        idx = j;
-                    }
+                    has_chars = true;
+                    k += 1;
+                }
+                if is_column && has_chars {
+                    sheet = Some(t_name);
+                    idx = j;
                 }
             }
         }
     }
 
-    if idx < chars.len() && chars[idx] == '[' {
-        if let Some((column, is_this_row, section, next_idx)) =
+    if idx < chars.len()
+        && chars[idx] == '['
+        && let Some((column, is_this_row, section, next_idx)) =
             parse_structured_specifier(chars, idx)
-        {
-            return Some((
-                FoundRef::Structured {
-                    sheet,
-                    column,
-                    is_this_row,
-                    section,
-                },
-                next_idx,
-            ));
-        }
+    {
+        return Some((
+            FoundRef::Structured {
+                sheet,
+                column,
+                is_this_row,
+                section,
+            },
+            next_idx,
+        ));
     }
 
     // Try to parse column range ref like A:A or $A:$B
-    if let Some((start_col, start_col_abs, next_idx)) = parse_col_pattern(chars, idx) {
-        if next_idx < chars.len() && chars[next_idx] == ':' {
-            if let Some((end_col, end_col_abs, end_idx)) = parse_col_pattern(chars, next_idx + 1) {
-                return Some((
-                    FoundRef::Range {
-                        sheet: sheet.clone(),
-                        start_row: 0,
-                        start_col,
-                        end_row: usize::MAX,
-                        end_col,
-                        start_row_abs: true,
-                        start_col_abs,
-                        end_row_abs: true,
-                        end_col_abs,
-                    },
-                    end_idx,
-                ));
-            }
-        }
+    if let Some((start_col, start_col_abs, next_idx)) = parse_col_pattern(chars, idx)
+        && next_idx < chars.len()
+        && chars[next_idx] == ':'
+        && let Some((end_col, end_col_abs, end_idx)) = parse_col_pattern(chars, next_idx + 1)
+    {
+        return Some((
+            FoundRef::Range {
+                sheet: sheet.clone(),
+                start_row: 0,
+                start_col,
+                end_row: usize::MAX,
+                end_col,
+                start_row_abs: true,
+                start_col_abs,
+                end_row_abs: true,
+                end_col_abs,
+            },
+            end_idx,
+        ));
     }
 
     if let Some((start_row, start_col, start_row_abs, start_col_abs, next_idx)) =
         parse_cell_pattern(chars, idx)
     {
-        if next_idx < chars.len() && chars[next_idx] == ':' {
-            if let Some((end_row, end_col, end_row_abs, end_col_abs, end_idx)) =
+        if next_idx < chars.len()
+            && chars[next_idx] == ':'
+            && let Some((end_row, end_col, end_row_abs, end_col_abs, end_idx)) =
                 parse_cell_pattern(chars, next_idx + 1)
-            {
-                return Some((
-                    FoundRef::Range {
-                        sheet,
-                        start_row,
-                        start_col,
-                        end_row,
-                        end_col,
-                        start_row_abs,
-                        start_col_abs,
-                        end_row_abs,
-                        end_col_abs,
-                    },
-                    end_idx,
-                ));
-            }
+        {
+            return Some((
+                FoundRef::Range {
+                    sheet,
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    start_row_abs,
+                    start_col_abs,
+                    end_row_abs,
+                    end_col_abs,
+                },
+                end_idx,
+            ));
         }
 
         return Some((
@@ -1209,33 +1207,27 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
             continue;
         }
 
-        if c == '[' {
-            if let Some((column, is_this_row, section, next_i)) =
+        if c == '['
+            && let Some((column, is_this_row, section, next_i)) =
                 parse_structured_specifier(&chars, i)
-            {
-                let mut sheet = None;
-                if let Some(last_tok) = tokens.last() {
-                    match last_tok {
-                        EvalToken::Identifier(_) | EvalToken::String(_) => {
-                            let last = tokens.pop().unwrap();
-                            sheet = match last {
-                                EvalToken::Identifier(s) => Some(s),
-                                EvalToken::String(s) => Some(s),
-                                _ => unreachable!(),
-                            };
-                        }
-                        _ => {}
-                    }
-                }
-                tokens.push(EvalToken::StructuredRef {
-                    sheet,
-                    column,
-                    is_this_row,
-                    section,
-                });
-                i = next_i;
-                continue;
+        {
+            let mut sheet = None;
+            if let Some(EvalToken::Identifier(_) | EvalToken::String(_)) = tokens.last() {
+                let last = tokens.pop().unwrap();
+                sheet = match last {
+                    EvalToken::Identifier(s) => Some(s),
+                    EvalToken::String(s) => Some(s),
+                    _ => unreachable!(),
+                };
             }
+            tokens.push(EvalToken::StructuredRef {
+                sheet,
+                column,
+                is_this_row,
+                section,
+            });
+            i = next_i;
+            continue;
         }
 
         match c {
@@ -1830,35 +1822,35 @@ impl<'a> Parser<'a> {
                     });
                 }
 
-                if let Some((col, col_abs)) = parse_column_ref(&id_name) {
-                    if self.peek() == Some(&EvalToken::Colon) {
-                        self.next();
-                        let end_tok = self
-                            .next()
-                            .ok_or_else(|| "Expected column reference after `:`".to_string())?;
-                        let end_str = match end_tok {
-                            EvalToken::Identifier(s) => s.clone(),
-                            _ => {
-                                return Err(format!(
-                                    "Expected column reference after `:`, got {:?}",
-                                    end_tok
-                                ));
-                            }
-                        };
-                        let (e_col, e_col_abs) = parse_column_ref(&end_str)
-                            .ok_or_else(|| format!("Invalid end column: {}", end_str))?;
-                        return Ok(Expr::RangeRef {
-                            sheet: None,
-                            start_row: 0,
-                            start_col: col,
-                            end_row: usize::MAX,
-                            end_col: e_col,
-                            start_row_abs: true,
-                            start_col_abs: col_abs,
-                            end_row_abs: true,
-                            end_col_abs: e_col_abs,
-                        });
-                    }
+                if let Some((col, col_abs)) = parse_column_ref(&id_name)
+                    && self.peek() == Some(&EvalToken::Colon)
+                {
+                    self.next();
+                    let end_tok = self
+                        .next()
+                        .ok_or_else(|| "Expected column reference after `:`".to_string())?;
+                    let end_str = match end_tok {
+                        EvalToken::Identifier(s) => s.clone(),
+                        _ => {
+                            return Err(format!(
+                                "Expected column reference after `:`, got {:?}",
+                                end_tok
+                            ));
+                        }
+                    };
+                    let (e_col, e_col_abs) = parse_column_ref(&end_str)
+                        .ok_or_else(|| format!("Invalid end column: {}", end_str))?;
+                    return Ok(Expr::RangeRef {
+                        sheet: None,
+                        start_row: 0,
+                        start_col: col,
+                        end_row: usize::MAX,
+                        end_col: e_col,
+                        start_row_abs: true,
+                        start_col_abs: col_abs,
+                        end_row_abs: true,
+                        end_col_abs: e_col_abs,
+                    });
                 }
 
                 Ok(Expr::Identifier(id_name.clone()))
@@ -1871,8 +1863,8 @@ impl<'a> Parser<'a> {
             } => Ok(Expr::StructuredRef {
                 sheet: sheet.clone(),
                 column: column.clone(),
-                is_this_row: is_this_row,
-                section: section,
+                is_this_row,
+                section,
             }),
             _ => Err(format!("Unexpected token: {:?}", tok)),
         }

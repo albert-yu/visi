@@ -20,6 +20,7 @@ pub fn get_cell_display_val(sheet: &Sheet, row: usize, col: usize, raw: bool) ->
 }
 
 /// Render a cell range grid according to specified OutputFormat
+#[allow(clippy::too_many_arguments)]
 pub fn render_grid(
     sheet: &Sheet,
     min_row: usize,
@@ -158,11 +159,10 @@ fn render_ascii_table(
 }
 
 /// Render CSV / TSV delimited text
-fn render_delimited(matrix: &[Vec<String>], delimiter: &str, use_headers: bool) -> String {
+fn render_delimited(matrix: &[Vec<String>], delimiter: &str, _use_headers: bool) -> String {
     let mut out = String::new();
-    let start_idx = if use_headers { 0 } else { 0 };
 
-    for row in matrix.iter().skip(start_idx) {
+    for row in matrix.iter() {
         let escaped_cells: Vec<String> = row
             .iter()
             .map(|cell| {

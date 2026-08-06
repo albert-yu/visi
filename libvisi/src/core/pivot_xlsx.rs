@@ -120,18 +120,23 @@ fn build_axis_items_xml(
             .unwrap_or(0)
             .min(field_idxs.len() - 1);
         let mut first_diff = last_shown_depth;
-        for d in 0..=last_shown_depth {
+        for (d, prev) in prev_labels.iter().enumerate().take(last_shown_depth + 1) {
             let cur = item.labels.get(d).cloned().flatten();
-            if cur != prev_labels[d] {
+            if cur != *prev {
                 first_diff = d;
                 break;
             }
         }
         let mut x_entries = String::new();
-        for d in first_diff..=last_shown_depth {
+        for (d, &field_idx) in field_idxs
+            .iter()
+            .enumerate()
+            .take(last_shown_depth + 1)
+            .skip(first_diff)
+        {
             let cur = item.labels.get(d).cloned().flatten().unwrap_or_default();
             let items = field_items
-                .get(&field_idxs[d])
+                .get(&field_idx)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
             let x_val = items.iter().position(|v| v == &cur).unwrap_or(0);
@@ -945,10 +950,10 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
                             field_has_subtotal_item.insert(pivot_field_idx as usize, false);
                         }
                     }
-                    b"item" if in_pivot_fields => {
-                        if get_attr(e, b"t").as_deref() == Some("default") {
-                            current_field_has_default = true;
-                        }
+                    b"item"
+                        if in_pivot_fields && get_attr(e, b"t").as_deref() == Some("default") =>
+                    {
+                        current_field_has_default = true;
                     }
                     _ => {}
                 }

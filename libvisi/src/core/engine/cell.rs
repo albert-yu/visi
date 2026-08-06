@@ -45,10 +45,7 @@ impl std::fmt::Display for CellRef {
         write!(
             f,
             "CELL({}{}, {}{})",
-            self.row_ref_type.to_string(),
-            self.row,
-            self.col_ref_type.to_string(),
-            self.col
+            self.row_ref_type, self.row, self.col_ref_type, self.col
         )
     }
 }
@@ -72,21 +69,11 @@ pub enum Dependency {
     RemoteColumn { sheet: String, col: usize },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TextCellRef {
     pub row: usize,
     pub col: usize,
     pub char_offset: usize,
-}
-
-impl Default for TextCellRef {
-    fn default() -> Self {
-        Self {
-            row: 0,
-            col: 0,
-            char_offset: 0,
-        }
-    }
 }
 
 #[derive(Debug)]
