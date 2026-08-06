@@ -3,7 +3,7 @@
 A tracking list of standard Microsoft Excel functions (as documented in Excel
 formula reference) and their implementation status in `libvisi`.
 
-Last updated: 2026-08-04
+Last updated: 2026-08-06
 
 ---
 
