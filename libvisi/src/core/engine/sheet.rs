@@ -5,6 +5,7 @@ use web_time::Instant;
 use super::cell::{CellRef, Dependency, EngineError, EvalError, TextCellRef, generate_unique_id};
 use super::column::{ColumnPosition, DataColumn};
 use super::result_data::ResultData;
+use crate::core::finance;
 /// Context for evaluating expressions, containing references to other sheets
 #[derive(Default)]
 pub struct Context<'a> {
@@ -23,6 +24,41 @@ impl<'a> Context<'a> {
     /// Add a sheet to the context for lookup during evaluation
     pub fn add_table(&mut self, name: String, sheet: &'a Sheet) {
         self.sheets.insert(name, sheet);
+    }
+}
+
+/// A chain of LET name/value bindings in scope while evaluating a single
+/// formula. This is a linked list (not a cloned `HashMap`) because LET
+/// binds names one at a time -- each value expression, and the final
+/// calculation, must see all *earlier* bindings from the same LET (and any
+/// outer LET it's nested inside), and a name can shadow an outer binding of
+/// the same spelling. `evaluate_let` builds this chain by recursing one
+/// pair at a time rather than mutating a shared map.
+enum LetScope<'a> {
+    Empty,
+    Bound {
+        name: &'a str,
+        value: &'a ResultData,
+        parent: &'a LetScope<'a>,
+    },
+}
+
+impl<'a> LetScope<'a> {
+    fn get(&self, name: &str) -> Option<&ResultData> {
+        match self {
+            LetScope::Empty => None,
+            LetScope::Bound {
+                name: n,
+                value,
+                parent,
+            } => {
+                if n.eq_ignore_ascii_case(name) {
+                    Some(value)
+                } else {
+                    parent.get(name)
+                }
+            }
+        }
     }
 }
 
@@ -372,7 +408,7 @@ impl Sheet {
             .map_err(|e| EngineError::EvalError(EvalError::UnknownFunction(e)))?;
 
         let mut deps = Vec::new();
-        let result = match self.evaluate_ast(&ast, context, row, &mut deps) {
+        let result = match self.evaluate_ast(&ast, context, row, &mut deps, &LetScope::Empty) {
             Ok(r) => r,
             Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
                 if err_str.starts_with('#') =>
@@ -390,6 +426,7 @@ impl Sheet {
         context: Option<&Context>,
         row: Option<usize>,
         deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         use crate::core::SheetSection;
         use crate::core::parser::Expr;
@@ -399,7 +436,10 @@ impl Sheet {
             Expr::Number(n) => Ok(ResultData::Float(*n)),
             Expr::String(s) => Ok(ResultData::String(s.clone())),
             Expr::Boolean(b) => Ok(ResultData::Boolean(*b)),
-            Expr::Identifier(_) => Ok(ResultData::None),
+            Expr::Identifier(name) => match scope.get(name) {
+                Some(val) => Ok(val.clone()),
+                None => Ok(ResultData::Error("#NAME?".to_string())),
+            },
             Expr::StructuredRef {
                 sheet,
                 column,
@@ -787,12 +827,12 @@ impl Sheet {
             Expr::List(list) => {
                 let mut results = Vec::new();
                 for item in list {
-                    results.push(self.evaluate_ast(item, context, row, deps)?);
+                    results.push(self.evaluate_ast(item, context, row, deps, scope)?);
                 }
                 Ok(ResultData::List(results))
             }
             Expr::UnaryOp { op, expr } => {
-                let val = self.evaluate_ast(expr, context, row, deps)?;
+                let val = self.evaluate_ast(expr, context, row, deps, scope)?;
                 match op {
                     Op::Sub => match val {
                         ResultData::Float(f) => Ok(ResultData::Float(-f)),
@@ -805,8 +845,8 @@ impl Sheet {
                 }
             }
             Expr::BinaryOp { op, left, right } => {
-                let l_val = self.evaluate_ast(left, context, row, deps)?;
-                let r_val = self.evaluate_ast(right, context, row, deps)?;
+                let l_val = self.evaluate_ast(left, context, row, deps, scope)?;
+                let r_val = self.evaluate_ast(right, context, row, deps, scope)?;
 
                 match op {
                     Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => {
@@ -882,7 +922,7 @@ impl Sheet {
                 }
             }
             Expr::FunctionCall { name, args } => {
-                self.evaluate_function(name, args, context, row, deps)
+                self.evaluate_function(name, args, context, row, deps, scope)
             }
         }
     }
@@ -951,6 +991,31 @@ impl Sheet {
             (ResultData::Boolean(a), ResultData::Boolean(b)) => a.cmp(b),
             (ResultData::String(a), ResultData::String(b)) => Self::compare_excel_strings(a, b),
             _ => std::cmp::Ordering::Equal,
+        }
+    }
+
+    /// `SORT`/`SORTBY`-specific comparator: Microsoft documents that both
+    /// functions always place blank cells last, regardless of ascending
+    /// vs. descending order -- unlike `compare_excel_values`'s general
+    /// blank-coerces-to-0/""/false rule (correct for comparison operators,
+    /// MATCH, etc.), which would otherwise rank a blank ahead of every
+    /// negative number once descending order reverses the comparison.
+    /// Found via the differential fuzzer: `SORT({-215.8,,-100,-240.97,-88},1,-1)`
+    /// put the blank first (coerced to 0, the largest value once reversed)
+    /// instead of last, so `INDEX(...,1)` returned 0 instead of -88.
+    fn sort_compare_blanks_last(
+        l: &ResultData,
+        r: &ResultData,
+        sort_order: f64,
+    ) -> std::cmp::Ordering {
+        match (matches!(l, ResultData::None), matches!(r, ResultData::None)) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => {
+                let ord = Self::compare_excel_values(l, r);
+                if sort_order < 0.0 { ord.reverse() } else { ord }
+            }
         }
     }
 
@@ -1117,6 +1182,108 @@ impl Sheet {
             }
             _ => 0.0,
         }
+    }
+
+    /// Flattens a single argument (which may be a range/array `List`) into
+    /// an ordered `Vec<f64>` for the financial functions that take a
+    /// cashflow series (`NPV`, `IRR`, `MIRR`, `XNPV`, `XIRR`, `FVSCHEDULE`).
+    /// Mirrors `sum_helper`'s convention: booleans/text only count when
+    /// passed directly (not through a range).
+    fn flatten_finance_numbers(&self, arg: &ResultData, is_direct: bool) -> Vec<f64> {
+        match arg {
+            ResultData::Float(f) => vec![*f],
+            ResultData::Integer(i) => vec![*i as f64],
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    vec![if *b { 1.0 } else { 0.0 }]
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).into_iter().collect()
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::List(list) => list
+                .iter()
+                .flat_map(|v| self.flatten_finance_numbers(v, false))
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    fn flatten_stat_numbers(&self, arg: &ResultData, is_direct: bool) -> Vec<f64> {
+        match arg {
+            ResultData::Float(f) => vec![*f],
+            ResultData::Integer(i) => vec![*i as f64],
+            ResultData::Boolean(b) => {
+                if is_direct {
+                    vec![if *b { 1.0 } else { 0.0 }]
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).into_iter().collect()
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::List(list) => list
+                .iter()
+                .flat_map(|v| self.flatten_stat_numbers(v, false))
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    fn flatten_stat_numbers_a(&self, arg: &ResultData) -> Vec<f64> {
+        match arg {
+            ResultData::Float(f) => vec![*f],
+            ResultData::Integer(i) => vec![*i as f64],
+            ResultData::Boolean(b) => vec![if *b { 1.0 } else { 0.0 }],
+            ResultData::String(_) => vec![0.0],
+            ResultData::List(list) => list
+                .iter()
+                .flat_map(|v| self.flatten_stat_numbers_a(v))
+                .collect(),
+            ResultData::None => vec![],
+            _ => vec![0.0],
+        }
+    }
+
+    fn extract_matrix(&self, arg: &ResultData) -> Vec<Vec<f64>> {
+        match arg {
+            ResultData::List(list) => {
+                let mut rows = Vec::new();
+                for item in list {
+                    match item {
+                        ResultData::List(sub_list) => {
+                            let row: Vec<f64> =
+                                sub_list.iter().flat_map(|v| self.to_f64(v)).collect();
+                            if !row.is_empty() {
+                                rows.push(row);
+                            }
+                        }
+                        _ => {
+                            if let Some(f) = self.to_f64(item) {
+                                rows.push(vec![f]);
+                            }
+                        }
+                    }
+                }
+                rows
+            }
+            _ => vec![],
+        }
+    }
+
+    fn opt_f64(&self, args: &[ResultData], i: usize, default: f64) -> f64 {
+        args.get(i).and_then(|v| self.to_f64(v)).unwrap_or(default)
     }
 
     fn average_helper(&self, arg: &ResultData, is_direct: bool) -> (f64, usize) {
@@ -1325,10 +1492,35 @@ impl Sheet {
         self.to_bool_opt(val).unwrap_or(false)
     }
 
+    /// Strict "is this a genuine number" check for range-value aggregation
+    /// (DCOUNT/DSUM/DAVERAGE/... and friends), as opposed to `to_f64`'s
+    /// scalar-arithmetic coercion (which maps blank -> 0 and booleans ->
+    /// 1/0). Confirmed against real Excel via the differential fuzzer that
+    /// blank and boolean database cells must be excluded here the same
+    /// way SUM/COUNT/AVERAGE ignore them within a range argument -- using
+    /// `to_f64` instead let a blank row zero out DPRODUCT entirely and
+    /// skewed DCOUNT/DSUM/DAVERAGE by counting/summing blanks and
+    /// TRUE/FALSE as 0/1.
+    fn range_numeric(val: &ResultData) -> Option<f64> {
+        match val {
+            ResultData::Integer(i) => Some(*i as f64),
+            ResultData::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
         let crit_str = criteria.to_string();
         if crit_str.starts_with('>') {
-            let val_f = self.to_f64(val).unwrap_or(0.0);
+            // A numeric comparison can only ever be satisfied by a genuine
+            // number -- confirmed against real Excel via the differential
+            // fuzzer (fuzzing the new database D* functions): blank, text,
+            // and boolean cells must all fail ">"/"<" criteria outright,
+            // not fall back to comparing as if they were 0.
+            let val_f = match Self::range_numeric(val) {
+                Some(f) => f,
+                None => return false,
+            };
             if crit_str.starts_with(">=") {
                 let crit_f = crit_str[2..].trim().parse::<f64>().unwrap_or(0.0);
                 val_f >= crit_f
@@ -1337,13 +1529,17 @@ impl Sheet {
                 val_f > crit_f
             }
         } else if crit_str.starts_with('<') {
-            let val_f = self.to_f64(val).unwrap_or(0.0);
+            if crit_str.starts_with("<>") {
+                let remainder = crit_str[2..].trim().to_string();
+                return val.to_string() != remainder;
+            }
+            let val_f = match Self::range_numeric(val) {
+                Some(f) => f,
+                None => return false,
+            };
             if crit_str.starts_with("<=") {
                 let crit_f = crit_str[2..].trim().parse::<f64>().unwrap_or(0.0);
                 val_f <= crit_f
-            } else if crit_str.starts_with("<>") {
-                let remainder = crit_str[2..].trim().to_string();
-                val.to_string() != remainder
             } else {
                 let crit_f = crit_str[1..].trim().parse::<f64>().unwrap_or(0.0);
                 val_f < crit_f
@@ -1353,6 +1549,225 @@ impl Sheet {
             val.to_string() == remainder
         } else {
             val.to_string() == crit_str
+        }
+    }
+
+    /// Resolves an argument `Expr` to its raw `(sheet, start_row, start_col,
+    /// end_row, end_col)` range bounds, for functions (like the database
+    /// `D*` family below) that need genuine 2D shape and can't work off the
+    /// pre-flattened `ResultData::List` every other argument already went
+    /// through in `evaluated_args`.
+    fn range_bounds(
+        expr: &crate::core::parser::Expr,
+    ) -> Option<(Option<String>, usize, usize, usize, usize)> {
+        use crate::core::parser::Expr;
+        match expr {
+            Expr::RangeRef {
+                sheet,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                ..
+            } => Some((sheet.clone(), *start_row, *start_col, *end_row, *end_col)),
+            Expr::CellRef {
+                sheet, row, col, ..
+            } => Some((sheet.clone(), *row, *col, *row, *col)),
+            _ => None,
+        }
+    }
+
+    /// Reads a range's cells into a row-major grid, resolving a whole-column
+    /// range's `end_row` sentinel and cross-sheet references via `context`.
+    /// Materializing into an owned `Vec<Vec<ResultData>>` (rather than
+    /// keeping a live `&Sheet` around) sidesteps the local-vs-remote
+    /// lifetime split for the rest of the database-function logic, and
+    /// database/criteria ranges are small enough that this is cheap.
+    fn materialize_range(
+        &self,
+        sheet_opt: &Option<String>,
+        start_row: usize,
+        start_col: usize,
+        end_row: usize,
+        end_col: usize,
+        context: Option<&Context>,
+    ) -> Option<Vec<Vec<ResultData>>> {
+        let is_self = match sheet_opt {
+            Some(name) => name == &self.name,
+            None => true,
+        };
+        let source: &Sheet = if is_self {
+            self
+        } else {
+            context?.sheets.get(sheet_opt.as_ref()?)?
+        };
+        let actual_end_row = if end_row == usize::MAX {
+            source.row_count().saturating_sub(1)
+        } else {
+            end_row
+        };
+        if actual_end_row < start_row || end_col < start_col {
+            return Some(Vec::new());
+        }
+        let mut grid = Vec::with_capacity(actual_end_row - start_row + 1);
+        for r in start_row..=actual_end_row {
+            let mut row = Vec::with_capacity(end_col - start_col + 1);
+            for c in start_col..=end_col {
+                row.push(source.get_result_data(&CellRef::new(r, c)));
+            }
+            grid.push(row);
+        }
+        Some(grid)
+    }
+
+    /// Shared implementation for the 12 database `D*` functions
+    /// (DAVERAGE/DCOUNT/DCOUNTA/DGET/DMAX/DMIN/DPRODUCT/DSTDEV/DSTDEVP/
+    /// DSUM/DVAR/DVARP): each reduces to "match database rows against the
+    /// criteria table, then aggregate one field column of the matches" --
+    /// they differ only in which aggregation runs at the end.
+    ///
+    /// `database`/`criteria` are read from the raw `args` AST nodes (not
+    /// `evaluated_args`) specifically to recover real row/column bounds;
+    /// `field` (name or 1-based index) still comes from `evaluated_args`
+    /// since it's a scalar. Criteria semantics match Excel's: multiple
+    /// criteria *rows* are OR'd together, multiple non-blank cells within
+    /// one criteria row are AND'd, and a blank criteria cell imposes no
+    /// constraint on that field.
+    fn evaluate_database_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        evaluated_args: &[ResultData],
+        context: Option<&Context>,
+    ) -> Result<ResultData, EngineError> {
+        if args.len() < 3 || evaluated_args.len() < 3 {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+        let (db_sheet, db_sr, db_sc, db_er, db_ec) = match Self::range_bounds(&args[0]) {
+            Some(v) => v,
+            None => return Ok(ResultData::Error("#VALUE!".to_string())),
+        };
+        let (crit_sheet, crit_sr, crit_sc, crit_er, crit_ec) = match Self::range_bounds(&args[2]) {
+            Some(v) => v,
+            None => return Ok(ResultData::Error("#VALUE!".to_string())),
+        };
+        let db = match self.materialize_range(&db_sheet, db_sr, db_sc, db_er, db_ec, context) {
+            Some(g) => g,
+            None => return Ok(ResultData::Error("#REF!".to_string())),
+        };
+        let crit = match self.materialize_range(
+            &crit_sheet,
+            crit_sr,
+            crit_sc,
+            crit_er,
+            crit_ec,
+            context,
+        ) {
+            Some(g) => g,
+            None => return Ok(ResultData::Error("#REF!".to_string())),
+        };
+        if db.len() < 2 || crit.len() < 2 {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+
+        let db_headers: Vec<String> = db[0].iter().map(|v| v.to_string()).collect();
+        let field_idx: usize = match &evaluated_args[1] {
+            ResultData::String(s) => {
+                match db_headers.iter().position(|h| h.eq_ignore_ascii_case(s)) {
+                    Some(idx) => idx,
+                    None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            other => match self.to_f64(other) {
+                Some(n) if n >= 1.0 && (n as usize) <= db_headers.len() => n as usize - 1,
+                _ => return Ok(ResultData::Error("#VALUE!".to_string())),
+            },
+        };
+
+        let crit_headers: Vec<String> = crit[0].iter().map(|v| v.to_string()).collect();
+        let crit_to_db: Vec<Option<usize>> = crit_headers
+            .iter()
+            .map(|h| db_headers.iter().position(|dh| dh.eq_ignore_ascii_case(h)))
+            .collect();
+
+        let mut matched: Vec<ResultData> = Vec::new();
+        for row in db.iter().skip(1) {
+            let row_matches_any_criteria_row = crit.iter().skip(1).any(|crit_row| {
+                crit_row.iter().enumerate().all(|(ci, cell)| {
+                    if matches!(cell, ResultData::None) {
+                        return true;
+                    }
+                    match crit_to_db.get(ci).copied().flatten() {
+                        Some(db_col) => self.match_criteria(&row[db_col], cell),
+                        None => false,
+                    }
+                })
+            });
+            if row_matches_any_criteria_row {
+                matched.push(row[field_idx].clone());
+            }
+        }
+
+        match func_name {
+            "DGET" => match matched.len() {
+                0 => Ok(ResultData::Error("#VALUE!".to_string())),
+                1 => Ok(matched.into_iter().next().unwrap()),
+                _ => Ok(ResultData::Error("#NUM!".to_string())),
+            },
+            "DCOUNT" => Ok(ResultData::Float(
+                matched
+                    .iter()
+                    .filter(|v| Self::range_numeric(v).is_some())
+                    .count() as f64,
+            )),
+            "DCOUNTA" => Ok(ResultData::Float(
+                matched.iter().map(|v| self.counta_helper(v)).sum::<usize>() as f64,
+            )),
+            _ => {
+                let nums: Vec<f64> = matched.iter().filter_map(Self::range_numeric).collect();
+                match func_name {
+                    "DSUM" => Ok(ResultData::Float(nums.iter().sum())),
+                    "DPRODUCT" => Ok(ResultData::Float(if nums.is_empty() {
+                        0.0
+                    } else {
+                        nums.iter().product()
+                    })),
+                    "DMAX" => {
+                        let m = nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                        Ok(ResultData::Float(if m.is_finite() { m } else { 0.0 }))
+                    }
+                    "DMIN" => {
+                        let m = nums.iter().cloned().fold(f64::INFINITY, f64::min);
+                        Ok(ResultData::Float(if m.is_finite() { m } else { 0.0 }))
+                    }
+                    "DAVERAGE" => {
+                        if nums.is_empty() {
+                            Ok(ResultData::Error("#DIV/0!".to_string()))
+                        } else {
+                            Ok(ResultData::Float(
+                                nums.iter().sum::<f64>() / nums.len() as f64,
+                            ))
+                        }
+                    }
+                    "DSTDEV" => match crate::core::stats::stdev_s(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    "DSTDEVP" => match crate::core::stats::stdev_p(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    "DVAR" => match crate::core::stats::var_s(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    "DVARP" => match crate::core::stats::var_p(&nums) {
+                        Ok(v) => Ok(ResultData::Float(v)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    },
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 
@@ -1405,6 +1820,1336 @@ impl Sheet {
         ((year, m, d), (hour, minute, second))
     }
 
+    /// Evaluates Excel's LET(name1, value1, [name2, value2, ...],
+    /// calculation). Binds each name/value pair in order -- value2 (and
+    /// later pairs, and the final calculation) can reference name1, per
+    /// Excel's LET semantics -- by recursing one pair at a time so each
+    /// level's scope chain only needs to borrow the *previous* level's
+    /// binding rather than mutate a shared map (see `LetScope`).
+    fn evaluate_let(
+        &self,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        use crate::core::parser::Expr;
+
+        if args.is_empty() || args.len() % 2 == 0 {
+            // Needs one or more name/value pairs followed by a calculation,
+            // i.e. an odd number of arguments overall.
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+        if args.len() == 1 {
+            return self.evaluate_ast(&args[0], context, row, deps, scope);
+        }
+
+        let name = match &args[0] {
+            Expr::Identifier(n) => n.as_str(),
+            _ => return Ok(ResultData::Error("#VALUE!".to_string())),
+        };
+        // Excel rejects reusing a name across a single LET's own pairs,
+        // rather than letting a later pair silently shadow an earlier one.
+        let remaining_pairs = args.len() / 2 - 1;
+        let is_duplicate = args[2..]
+            .iter()
+            .step_by(2)
+            .take(remaining_pairs)
+            .any(|a| matches!(a, Expr::Identifier(n2) if n2.eq_ignore_ascii_case(name)));
+        if is_duplicate {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+
+        let value = self.evaluate_ast(&args[1], context, row, deps, scope)?;
+        let inner_scope = LetScope::Bound {
+            name,
+            value: &value,
+            parent: scope,
+        };
+        self.evaluate_let(&args[2..], context, row, deps, &inner_scope)
+    }
+
+    /// Recognizes `expr` as a `LAMBDA(param1, [param2, ...], body)` call
+    /// and, if so, returns its declared parameter names alongside the
+    /// (still-unevaluated) body expression. Used by every function below
+    /// that takes a lambda argument: the lambda is never evaluated as an
+    /// ordinary function call (there's no value a bare LAMBDA could
+    /// produce on its own -- see the `#CALC!` case in `evaluate_function`)
+    /// -- callers instead inspect its raw AST here and invoke the body
+    /// themselves, once per element, via `invoke_lambda`.
+    fn extract_lambda(
+        expr: &crate::core::parser::Expr,
+    ) -> Option<(Vec<&str>, &crate::core::parser::Expr)> {
+        use crate::core::parser::Expr;
+        let Expr::FunctionCall { name, args } = expr else {
+            return None;
+        };
+        if !name.eq_ignore_ascii_case("LAMBDA") || args.is_empty() {
+            return None;
+        }
+        let (body, params) = args.split_last().unwrap();
+        let param_names: Vec<&str> = params
+            .iter()
+            .filter_map(|p| match p {
+                Expr::Identifier(n) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        if param_names.len() != params.len() {
+            return None;
+        }
+        Some((param_names, body))
+    }
+
+    /// Evaluates a lambda's body with each of `params` bound (via
+    /// `LetScope`) to the corresponding entry of `values`, which must be
+    /// the same length. `values` is borrowed rather than consumed so
+    /// callers can reuse per-element storage across many invocations
+    /// (e.g. MAP calling this once per array element).
+    fn invoke_lambda<'v>(
+        &self,
+        params: &[&str],
+        values: &'v [ResultData],
+        body: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'v>,
+    ) -> Result<ResultData, EngineError> {
+        match (params.split_first(), values.split_first()) {
+            (Some((&pname, prest)), Some((vfirst, vrest))) => {
+                let inner_scope = LetScope::Bound {
+                    name: pname,
+                    value: vfirst,
+                    parent: scope,
+                };
+                self.invoke_lambda(prest, vrest, body, context, row, deps, &inner_scope)
+            }
+            _ => self.evaluate_ast(body, context, row, deps, scope),
+        }
+    }
+
+    /// Flattens `expr` (evaluated) into a `Vec<ResultData>`, treating a
+    /// scalar as a single-element array -- shared by MAP/REDUCE/SCAN,
+    /// which all iterate an "array" argument that might just be one cell.
+    fn eval_as_array(
+        &self,
+        expr: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<Vec<ResultData>, EngineError> {
+        Ok(match self.evaluate_ast(expr, context, row, deps, scope)? {
+            ResultData::List(items) => Self::flatten_row_major(items).0,
+            other => vec![other],
+        })
+    }
+
+    /// `SEQUENCE`/`MUNIT` (unlike every array-*reshaping* function added
+    /// this session) return their 2D result as a genuinely nested
+    /// `List(List(row_values), ...)`, one inner list per row, rather than
+    /// a flat row-major list -- that's the only place in this engine a
+    /// `ResultData::List` still carries real shape. Detect that shape
+    /// here and flatten it so downstream consumers (`array_shape`,
+    /// `INDEX`, reshape functions) don't need to special-case it; a list
+    /// that isn't uniformly nested (the flat convention) passes through
+    /// unchanged, with `None` signaling "no shape recovered here".
+    fn flatten_row_major(items: Vec<ResultData>) -> (Vec<ResultData>, Option<usize>) {
+        if !items.is_empty() && items.iter().all(|v| matches!(v, ResultData::List(_))) {
+            let cols = match &items[0] {
+                ResultData::List(inner) => inner.len().max(1),
+                _ => 1,
+            };
+            let flat = items
+                .into_iter()
+                .flat_map(|v| match v {
+                    ResultData::List(inner) => inner,
+                    other => vec![other],
+                })
+                .collect();
+            (flat, Some(cols))
+        } else {
+            (items, None)
+        }
+    }
+
+    /// Infers `(flat_values, num_cols)` for an array-like argument: real
+    /// column count from a `RangeRef`/`CellRef` AST node when available,
+    /// otherwise treats the flattened result as a single row -- the same
+    /// convention `INDEX`'s 3-arg form already uses (see its `num_cols`
+    /// match on `args[0]`), since a computed/nested array result (e.g. the
+    /// output of another array function) carries no shape of its own in
+    /// this engine's flat-`ResultData::List` representation.
+    fn array_shape(
+        &self,
+        expr: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<(Vec<ResultData>, usize), EngineError> {
+        use crate::core::parser::Expr;
+        let items = match self.evaluate_ast(expr, context, row, deps, scope)? {
+            ResultData::List(items) => items,
+            other => vec![other],
+        };
+        let (flat, nested_cols) = Self::flatten_row_major(items);
+        if let Some(cols) = nested_cols {
+            return Ok((flat, cols));
+        }
+        let num_cols = match expr {
+            Expr::RangeRef {
+                start_col, end_col, ..
+            } => (end_col - start_col + 1).max(1),
+            Expr::CellRef { .. } => 1,
+            Expr::FunctionCall { name, args } => self
+                .function_call_cols(name, args, context, row, deps, scope)
+                .unwrap_or_else(|| flat.len().max(1)),
+            _ => flat.len().max(1),
+        };
+        Ok((flat, num_cols))
+    }
+
+    /// Recovers the column count an array-reshaping function call's result
+    /// would have, purely from its argument expressions -- needed because
+    /// this engine's flat `ResultData::List` carries no shape of its own,
+    /// so nesting one of these calls inside another (e.g.
+    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) previously fell back to treating
+    /// the whole result as a single row, corrupting the flat-index math.
+    /// Returns `None` for anything not in this known set, so callers fall
+    /// back to the single-row assumption.
+    fn function_call_cols(
+        &self,
+        name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Option<usize> {
+        let mut upper = name.to_ascii_uppercase();
+        if let Some(rest) = upper.strip_prefix("_XLFN.") {
+            upper = rest.to_string();
+        }
+        if let Some(rest) = upper.strip_prefix("_XLWS.") {
+            upper = rest.to_string();
+        }
+        match upper.as_str() {
+            "TRANSPOSE" => {
+                let (flat, cols) = self
+                    .array_shape(args.first()?, context, row, deps, scope)
+                    .ok()?;
+                Some((if cols == 0 { 0 } else { flat.len() / cols }).max(1))
+            }
+            "HSTACK" => {
+                let mut total = 0usize;
+                for a in args {
+                    total += self.array_shape(a, context, row, deps, scope).ok()?.1;
+                }
+                Some(total)
+            }
+            "VSTACK" => {
+                let mut max_cols = 0usize;
+                for a in args {
+                    max_cols = max_cols.max(self.array_shape(a, context, row, deps, scope).ok()?.1);
+                }
+                Some(max_cols)
+            }
+            "CHOOSEROWS" => Some(
+                self.array_shape(args.first()?, context, row, deps, scope)
+                    .ok()?
+                    .1,
+            ),
+            "CHOOSECOLS" => Some(args.len().saturating_sub(1).max(1)),
+            "DROP" | "TAKE" => {
+                let (_, cols) = self
+                    .array_shape(args.first()?, context, row, deps, scope)
+                    .ok()?;
+                let is_take = upper == "TAKE";
+                match args.get(2) {
+                    Some(e) => {
+                        let n = self
+                            .to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                            .unwrap_or(0.0) as isize;
+                        let (s, e2) = Self::drop_take_bounds(cols as isize, n, is_take);
+                        Some((e2 - s).max(0) as usize)
+                    }
+                    None => Some(if is_take { cols } else { 0 }),
+                }
+            }
+            "EXPAND" => {
+                let (_, cols) = self
+                    .array_shape(args.first()?, context, row, deps, scope)
+                    .ok()?;
+                match args.get(2) {
+                    Some(e) => Some(
+                        self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                            .unwrap_or(cols as f64) as usize,
+                    ),
+                    None => Some(cols),
+                }
+            }
+            "TOCOL" => Some(1),
+            "WRAPROWS" => {
+                let n = self
+                    .to_f64(
+                        &self
+                            .evaluate_ast(args.get(1)?, context, row, deps, scope)
+                            .ok()?,
+                    )
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                Some(n)
+            }
+            "WRAPCOLS" => {
+                let (flat, _) = self
+                    .array_shape(args.first()?, context, row, deps, scope)
+                    .ok()?;
+                let wrap = self
+                    .to_f64(
+                        &self
+                            .evaluate_ast(args.get(1)?, context, row, deps, scope)
+                            .ok()?,
+                    )
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                Some(flat.len().div_ceil(wrap).max(1))
+            }
+            "UNIQUE" | "SORT" | "SORTBY" | "FILTER" | "TRIMRANGE" => Some(
+                self.array_shape(args.first()?, context, row, deps, scope)
+                    .ok()?
+                    .1,
+            ),
+            "SEQUENCE" => match args.get(1) {
+                Some(e) => Some(
+                    self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                        .unwrap_or(1.0)
+                        .max(1.0) as usize,
+                ),
+                None => Some(1),
+            },
+            "MUNIT" => {
+                let n = self
+                    .to_f64(
+                        &self
+                            .evaluate_ast(args.first()?, context, row, deps, scope)
+                            .ok()?,
+                    )
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                Some(n)
+            }
+            "MAKEARRAY" => match args.get(1) {
+                Some(e) => Some(
+                    self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                        .unwrap_or(1.0)
+                        .max(1.0) as usize,
+                ),
+                None => Some(1),
+            },
+            _ => None,
+        }
+    }
+
+    /// Shared `[start, end)` bound computation for `TAKE`/`DROP`: a
+    /// positive count counts from the start, negative from the end;
+    /// `is_take` selects which side of that split is kept.
+    fn drop_take_bounds(total: isize, n: isize, is_take: bool) -> (isize, isize) {
+        let n = n.clamp(-total, total);
+        if is_take {
+            if n >= 0 { (0, n) } else { (total + n, total) }
+        } else if n >= 0 {
+            (n, total)
+        } else {
+            (0, total + n)
+        }
+    }
+
+    /// Shared implementation for MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY:
+    /// each applies a `LAMBDA` argument to some shape of input (parallel
+    /// arrays, rows, columns, an accumulator, or generated row/col
+    /// indices) and collects the results -- see each branch for the
+    /// specific shape. Dynamic-array results are returned as a flat,
+    /// row-major `ResultData::List`, the same convention `SEQUENCE`/
+    /// `MUNIT`/etc. already use, since this engine doesn't spill formulas
+    /// across cells; callers pull out a single value with `INDEX`.
+    fn evaluate_lambda_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        use crate::core::parser::Expr;
+
+        match func_name {
+            "MAP" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (lambda_expr, array_exprs) = args.split_last().unwrap();
+                let Some((params, body)) = Self::extract_lambda(lambda_expr) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != array_exprs.len() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let arrays: Vec<Vec<ResultData>> = array_exprs
+                    .iter()
+                    .map(|e| self.eval_as_array(e, context, row, deps, scope))
+                    .collect::<Result<_, _>>()?;
+                let len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+                let mut results = Vec::with_capacity(len);
+                for i in 0..len {
+                    let values: Vec<ResultData> = arrays
+                        .iter()
+                        .map(|a| a.get(i).cloned().unwrap_or(ResultData::None))
+                        .collect();
+                    results.push(
+                        self.invoke_lambda(&params, &values, body, context, row, deps, scope)?,
+                    );
+                }
+                Ok(ResultData::List(results))
+            }
+            "BYROW" | "BYCOL" => {
+                if args.len() != 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let Some((params, body)) = Self::extract_lambda(&args[1]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != 1 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                // Recovers real column count the same way INDEX's 3-arg
+                // form does: re-matching the raw AST node, since the
+                // already-evaluated array argument is just a flat List.
+                let num_cols = match &args[0] {
+                    Expr::RangeRef {
+                        start_col, end_col, ..
+                    } => (end_col - start_col + 1).max(1),
+                    _ => 1,
+                };
+                let flat = self.eval_as_array(&args[0], context, row, deps, scope)?;
+                let num_rows = if num_cols == 0 {
+                    0
+                } else {
+                    flat.len().div_ceil(num_cols)
+                };
+                let mut results = Vec::new();
+                if func_name == "BYROW" {
+                    for r in 0..num_rows {
+                        let row_vals: Vec<ResultData> = (0..num_cols)
+                            .filter_map(|c| flat.get(r * num_cols + c).cloned())
+                            .collect();
+                        let arg = vec![ResultData::List(row_vals)];
+                        results.push(
+                            self.invoke_lambda(&params, &arg, body, context, row, deps, scope)?,
+                        );
+                    }
+                } else {
+                    for c in 0..num_cols {
+                        let col_vals: Vec<ResultData> = (0..num_rows)
+                            .filter_map(|r| flat.get(r * num_cols + c).cloned())
+                            .collect();
+                        let arg = vec![ResultData::List(col_vals)];
+                        results.push(
+                            self.invoke_lambda(&params, &arg, body, context, row, deps, scope)?,
+                        );
+                    }
+                }
+                Ok(ResultData::List(results))
+            }
+            "REDUCE" | "SCAN" => {
+                // initial_value is optional in real Excel's 3-argument
+                // REDUCE/SCAN; since the parser has no dedicated "omitted
+                // argument" syntax to express that, this implementation
+                // also accepts a plain 2-argument call (array, lambda) as
+                // the omitted-initial-value form, seeding the accumulator
+                // from the array's own first element and folding over the
+                // rest -- rather than only supporting a literal 3rd
+                // argument that happens to error out.
+                if args.len() != 2 && args.len() != 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let lambda_idx = args.len() - 1;
+                let array_idx = args.len() - 2;
+                let Some((params, body)) = Self::extract_lambda(&args[lambda_idx]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let array = self.eval_as_array(&args[array_idx], context, row, deps, scope)?;
+                // SCAN's output has the same length as `array` -- an
+                // explicit initial_value (3-arg form) is external to the
+                // array and doesn't get its own output entry (every entry
+                // is a real fold), whereas the 2-arg fallback's seed *is*
+                // the array's own first element, so it does.
+                let (mut acc, rest, mut history): (ResultData, &[ResultData], Vec<ResultData>) =
+                    if args.len() == 3 {
+                        let init = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                        (init, &array[..], Vec::new())
+                    } else {
+                        match array.split_first() {
+                            Some((first, rest)) => (first.clone(), rest, vec![first.clone()]),
+                            None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                        }
+                    };
+                for item in rest {
+                    let call_args = [acc.clone(), item.clone()];
+                    acc =
+                        self.invoke_lambda(&params, &call_args, body, context, row, deps, scope)?;
+                    history.push(acc.clone());
+                }
+                if func_name == "REDUCE" {
+                    Ok(acc)
+                } else {
+                    Ok(ResultData::List(history))
+                }
+            }
+            "MAKEARRAY" => {
+                if args.len() != 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let Some((params, body)) = Self::extract_lambda(&args[2]) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if params.len() != 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let rows_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                let cols_val = self.evaluate_ast(&args[1], context, row, deps, scope)?;
+                let num_rows = self.to_f64(&rows_val).unwrap_or(0.0).max(0.0) as usize;
+                let num_cols = self.to_f64(&cols_val).unwrap_or(0.0).max(0.0) as usize;
+                let mut results = Vec::with_capacity(num_rows * num_cols);
+                for r in 1..=num_rows {
+                    for c in 1..=num_cols {
+                        let call_args = [ResultData::Float(r as f64), ResultData::Float(c as f64)];
+                        results.push(
+                            self.invoke_lambda(
+                                &params, &call_args, body, context, row, deps, scope,
+                            )?,
+                        );
+                    }
+                }
+                Ok(ResultData::List(results))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Minimal A1-notation string parser for `INDIRECT`: `"A1"`,
+    /// `"B2:C5"`, `"Sheet1!A1"`, `"Sheet1!A1:B2"`, with optional `$`
+    /// absolute markers and an optional `'quoted sheet name'!` prefix.
+    /// Deliberately small and local rather than shared with
+    /// `visi/src/utils.rs`'s equivalent parser (`parse_cell_ref`/
+    /// `parse_range_ref`): `libvisi` cannot depend on the `visi` crate
+    /// (the dependency direction is the other way), so this necessarily
+    /// duplicates that logic in miniature.
+    fn parse_a1_reference(text: &str) -> Option<(Option<String>, usize, usize, usize, usize)> {
+        let text = text.trim();
+        let (sheet_part, ref_part) = match text.rfind('!') {
+            Some(idx) => (Some(&text[..idx]), &text[idx + 1..]),
+            None => (None, text),
+        };
+        let sheet = sheet_part.map(|s| s.trim().trim_matches('\'').to_string());
+
+        fn parse_cell(s: &str) -> Option<(usize, usize)> {
+            let s = s.replace('$', "");
+            let col_end = s.find(|c: char| c.is_ascii_digit())?;
+            let (col_str, row_str) = s.split_at(col_end);
+            if col_str.is_empty() || row_str.is_empty() {
+                return None;
+            }
+            let mut col = 0usize;
+            for ch in col_str.chars() {
+                if !ch.is_ascii_alphabetic() {
+                    return None;
+                }
+                col = col * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1);
+            }
+            let row: usize = row_str.parse().ok()?;
+            if row == 0 || col == 0 {
+                return None;
+            }
+            Some((row - 1, col - 1))
+        }
+
+        if let Some((start, end)) = ref_part.split_once(':') {
+            let (r1, c1) = parse_cell(start)?;
+            let (r2, c2) = parse_cell(end)?;
+            Some((sheet, r1.min(r2), c1.min(c2), r1.max(r2), c1.max(c2)))
+        } else {
+            let (r, c) = parse_cell(ref_part)?;
+            Some((sheet, r, c, r, c))
+        }
+    }
+
+    /// Reads a single cell, registering the appropriate local/remote
+    /// dependency -- the same local-vs-remote branch used throughout this
+    /// file (see e.g. `evaluate_ast`'s `Expr::CellRef` arm), factored out
+    /// since `CELL`/`FORMULATEXT`/`ISFORMULA`/`INDIRECT`/`OFFSET` all need
+    /// it for a reference resolved dynamically rather than parsed as an
+    /// AST node.
+    fn read_cell_with_deps(
+        &self,
+        sheet_opt: &Option<String>,
+        r: usize,
+        c: usize,
+        context: Option<&Context>,
+        deps: &mut Vec<Dependency>,
+    ) -> ResultData {
+        let is_self = sheet_opt.as_deref().is_none_or(|n| n == self.name);
+        if is_self {
+            deps.push(Dependency::Local(CellRef::new(r, c)));
+            self.get_result_data(&CellRef::new(r, c))
+        } else if let Some(ctx) = context {
+            let name = sheet_opt.clone().unwrap();
+            deps.push(Dependency::Remote {
+                sheet: name.clone(),
+                cell: CellRef::new(r, c),
+            });
+            ctx.sheets
+                .get(&name)
+                .map(|s| s.get_result_data(&CellRef::new(r, c)))
+                .unwrap_or(ResultData::None)
+        } else {
+            ResultData::None
+        }
+    }
+
+    /// Shared implementation for the range/reference-introspection and
+    /// workbook-metadata functions: ROW/ROWS/COLUMN/COLUMNS need the raw
+    /// reference's real bounds (not a flattened `evaluated_args` value);
+    /// AREAS/ISREF are purely syntactic checks on the argument's AST
+    /// shape; FORMULATEXT/ISFORMULA need the cell's raw source text;
+    /// INDIRECT/OFFSET build a reference dynamically instead of relying
+    /// on one already resolved at parse time; SHEET/SHEETS/CELL/INFO
+    /// report workbook/environment metadata.
+    fn evaluate_range_info_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        use crate::core::parser::Expr;
+
+        match func_name {
+            "ROW" => match args.first() {
+                // A multi-row reference returns an array of row numbers
+                // (one per row spanned), not just the first one -- a
+                // single-row reference (including a plain cell, where
+                // start_row == end_row) still returns the plain scalar.
+                Some(arg) => match Self::range_bounds(arg) {
+                    Some((_, start_row, _, end_row, _)) if end_row > start_row => {
+                        Ok(ResultData::List(
+                            (start_row..=end_row)
+                                .map(|r| ResultData::Float((r + 1) as f64))
+                                .collect(),
+                        ))
+                    }
+                    Some((_, start_row, _, _, _)) => Ok(ResultData::Float((start_row + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
+                None => match row {
+                    Some(r) => Ok(ResultData::Float((r + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
+            },
+            "COLUMN" => match args.first() {
+                // Same array-vs-scalar distinction as ROW, but across
+                // columns instead of rows.
+                Some(arg) => match Self::range_bounds(arg) {
+                    Some((_, _, start_col, _, end_col)) if end_col > start_col => {
+                        Ok(ResultData::List(
+                            (start_col..=end_col)
+                                .map(|c| ResultData::Float((c + 1) as f64))
+                                .collect(),
+                        ))
+                    }
+                    Some((_, _, start_col, _, _)) => Ok(ResultData::Float((start_col + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
+                // The current cell's own column isn't threaded through
+                // this evaluator the way `row` is (every call site
+                // already passes `row`, but adding an equivalent `col`
+                // parameter would mean threading it through every
+                // `evaluate_ast`/`evaluate_function` call site in this
+                // file) -- a real, documented gap. Bare `=COLUMN()` isn't
+                // supported; called with an explicit reference argument,
+                // COLUMN works correctly.
+                None => Ok(ResultData::Error("#N/A".to_string())),
+            },
+            "ROWS" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let Some((sheet_opt, start_row, _, end_row, _)) = Self::range_bounds(arg) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let is_self = sheet_opt.as_deref().is_none_or(|n| n == self.name);
+                let actual_end_row = if end_row == usize::MAX {
+                    if is_self {
+                        self.row_count().saturating_sub(1)
+                    } else {
+                        context
+                            .and_then(|ctx| sheet_opt.as_ref().and_then(|n| ctx.sheets.get(n)))
+                            .map(|s| s.row_count().saturating_sub(1))
+                            .unwrap_or(0)
+                    }
+                } else {
+                    end_row
+                };
+                Ok(ResultData::Float(
+                    (actual_end_row.saturating_sub(start_row) + 1) as f64,
+                ))
+            }
+            "COLUMNS" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                match Self::range_bounds(arg) {
+                    Some((_, _, start_col, _, end_col)) => Ok(ResultData::Float(
+                        (end_col.saturating_sub(start_col) + 1) as f64,
+                    )),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            "AREAS" => {
+                // This engine's parser has no multi-area (comma-separated
+                // union) reference syntax, so every reference is exactly
+                // one area.
+                if args.is_empty() {
+                    Ok(ResultData::Error("#VALUE!".to_string()))
+                } else {
+                    Ok(ResultData::Float(1.0))
+                }
+            }
+            "ISREF" => Ok(ResultData::Boolean(matches!(
+                args.first(),
+                Some(Expr::CellRef { .. } | Expr::RangeRef { .. } | Expr::StructuredRef { .. })
+            ))),
+            "FORMULATEXT" | "ISFORMULA" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let Some((sheet_opt, r, c, _, _)) = Self::range_bounds(arg) else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let is_self = sheet_opt.as_deref().is_none_or(|n| n == self.name);
+                let src = if is_self {
+                    deps.push(Dependency::Local(CellRef::new(r, c)));
+                    self.get_src_str(&CellRef::new(r, c))
+                } else if let Some(ctx) = context {
+                    let name = sheet_opt.unwrap();
+                    deps.push(Dependency::Remote {
+                        sheet: name.clone(),
+                        cell: CellRef::new(r, c),
+                    });
+                    ctx.sheets
+                        .get(&name)
+                        .map(|s| s.get_src_str(&CellRef::new(r, c)))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                let is_formula = src.starts_with('=');
+                if func_name == "ISFORMULA" {
+                    Ok(ResultData::Boolean(is_formula))
+                } else if is_formula {
+                    Ok(ResultData::String(src))
+                } else {
+                    Ok(ResultData::Error("#N/A".to_string()))
+                }
+            }
+            "SHEETS" => Ok(ResultData::Float(
+                context.map(|c| c.sheets.len() + 1).unwrap_or(1) as f64,
+            )),
+            "SHEET" => {
+                // This sheet's ordinal position within the workbook isn't
+                // available here -- `Context` only holds an unordered
+                // `HashMap` of sheets, and true sheet order is tracked
+                // one layer up, in `visi`'s `WorkbookManager`, which
+                // isn't reachable from inside `Sheet::evaluate_function`.
+                // Always returning 1 is a documented approximation, not a
+                // correct ordinal, for any sheet that isn't genuinely
+                // first in the workbook.
+                Ok(ResultData::Float(1.0))
+            }
+            "CELL" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let info_type = self
+                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .to_string()
+                    .to_lowercase();
+                let bounds = args.get(1).and_then(Self::range_bounds);
+                match info_type.as_str() {
+                    "row" => match bounds.map(|b| b.1).or(row) {
+                        Some(r) => Ok(ResultData::Float((r + 1) as f64)),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    "col" => match bounds {
+                        Some((_, _, c, _, _)) => Ok(ResultData::Float((c + 1) as f64)),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    "address" => match bounds {
+                        Some((_, r, c, _, _)) => Ok(ResultData::String(format!(
+                            "${}${}",
+                            crate::core::parser::col_idx_to_letters(c),
+                            r + 1
+                        ))),
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    "contents" => match bounds {
+                        Some((sheet_opt, r, c, _, _)) => {
+                            Ok(self.read_cell_with_deps(&sheet_opt, r, c, context, deps))
+                        }
+                        None => Ok(ResultData::Error("#VALUE!".to_string())),
+                    },
+                    _ => Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            "INFO" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let info_type = self
+                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .to_string()
+                    .to_lowercase();
+                match info_type.as_str() {
+                    "numfile" => Ok(ResultData::Float(
+                        context.map(|c| c.sheets.len() + 1).unwrap_or(1) as f64,
+                    )),
+                    "release" => Ok(ResultData::String("16.0".to_string())),
+                    "system" => Ok(ResultData::String(
+                        if cfg!(target_os = "macos") {
+                            "mac"
+                        } else {
+                            "pcdos"
+                        }
+                        .to_string(),
+                    )),
+                    _ => Ok(ResultData::Error("#VALUE!".to_string())),
+                }
+            }
+            "INDIRECT" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let text = self
+                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .to_string();
+                let a1_style = match args.get(1) {
+                    Some(a) => self.to_bool(&self.evaluate_ast(a, context, row, deps, scope)?),
+                    None => true,
+                };
+                if !a1_style {
+                    // R1C1-style reference text isn't supported.
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                match Self::parse_a1_reference(&text) {
+                    Some((sheet_opt, start_row, start_col, end_row, end_col)) => {
+                        if start_row == end_row && start_col == end_col {
+                            Ok(self.read_cell_with_deps(
+                                &sheet_opt, start_row, start_col, context, deps,
+                            ))
+                        } else {
+                            match self.materialize_range(
+                                &sheet_opt, start_row, start_col, end_row, end_col, context,
+                            ) {
+                                Some(grid) => {
+                                    Ok(ResultData::List(grid.into_iter().flatten().collect()))
+                                }
+                                None => Ok(ResultData::Error("#REF!".to_string())),
+                            }
+                        }
+                    }
+                    None => Ok(ResultData::Error("#REF!".to_string())),
+                }
+            }
+            "OFFSET" => {
+                if args.len() < 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let Some((sheet_opt, base_row, base_col, base_end_row, base_end_col)) =
+                    Self::range_bounds(&args[0])
+                else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let row_offset = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(0.0) as isize;
+                let col_offset = self
+                    .to_f64(&self.evaluate_ast(&args[2], context, row, deps, scope)?)
+                    .unwrap_or(0.0) as isize;
+                let base_height = (base_end_row.saturating_sub(base_row) + 1) as isize;
+                let base_width = (base_end_col.saturating_sub(base_col) + 1) as isize;
+                let height = match args.get(3) {
+                    Some(a) => self
+                        .to_f64(&self.evaluate_ast(a, context, row, deps, scope)?)
+                        .unwrap_or(base_height as f64) as isize,
+                    None => base_height,
+                };
+                let width = match args.get(4) {
+                    Some(a) => self
+                        .to_f64(&self.evaluate_ast(a, context, row, deps, scope)?)
+                        .unwrap_or(base_width as f64) as isize,
+                    None => base_width,
+                };
+                let new_row = base_row as isize + row_offset;
+                let new_col = base_col as isize + col_offset;
+                if new_row < 0 || new_col < 0 || height <= 0 || width <= 0 {
+                    return Ok(ResultData::Error("#REF!".to_string()));
+                }
+                let (start_row, start_col) = (new_row as usize, new_col as usize);
+                let (end_row, end_col) = (
+                    start_row + (height - 1) as usize,
+                    start_col + (width - 1) as usize,
+                );
+                if start_row == end_row && start_col == end_col {
+                    Ok(self.read_cell_with_deps(&sheet_opt, start_row, start_col, context, deps))
+                } else {
+                    match self.materialize_range(
+                        &sheet_opt, start_row, start_col, end_row, end_col, context,
+                    ) {
+                        Some(grid) => Ok(ResultData::List(grid.into_iter().flatten().collect())),
+                        None => Ok(ResultData::Error("#REF!".to_string())),
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Shared implementation for the dynamic-array reshaping functions.
+    /// All operate on `array_shape`'s `(flat, num_cols)` view and return a
+    /// flat, row-major `ResultData::List` -- the same convention
+    /// `SEQUENCE`/`MUNIT`/`MAKEARRAY`/etc. already use, since this engine
+    /// doesn't spill formulas across cells (a caller pulls out a single
+    /// value with `INDEX`, or consumes the whole list with e.g. `SUM`).
+    ///
+    /// Known simplifications, each accepted given limited fuzzing time
+    /// against real Excel for this batch: `UNIQUE`'s `by_col` and `SORT`'s
+    /// `by_col` arguments are ignored (both always operate row-wise);
+    /// `SORTBY` only supports a single `by_array`/`sort_order` pair, not
+    /// the documented repeating list; `XMATCH`'s wildcard match mode and
+    /// binary/reverse search modes aren't implemented (falls through to a
+    /// forward linear scan).
+    fn evaluate_array_reshape_function(
+        &self,
+        func_name: &str,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        match func_name {
+            "TRANSPOSE" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let mut result = Vec::with_capacity(flat.len());
+                for c in 0..cols {
+                    for r in 0..rows {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "HSTACK" | "VSTACK" => {
+                if args.is_empty() {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let mut shapes = Vec::with_capacity(args.len());
+                for a in args {
+                    shapes.push(self.array_shape(a, context, row, deps, scope)?);
+                }
+                let mut result = Vec::new();
+                if func_name == "HSTACK" {
+                    let max_rows = shapes
+                        .iter()
+                        .map(|(f, c)| if *c == 0 { 0 } else { f.len() / c })
+                        .max()
+                        .unwrap_or(0);
+                    for r in 0..max_rows {
+                        for (flat, cols) in &shapes {
+                            let rows = if *cols == 0 { 0 } else { flat.len() / cols };
+                            for c in 0..*cols {
+                                result.push(if r < rows {
+                                    flat[r * cols + c].clone()
+                                } else {
+                                    ResultData::Error("#N/A".to_string())
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    let max_cols = shapes.iter().map(|(_, c)| *c).max().unwrap_or(0);
+                    for (flat, cols) in &shapes {
+                        let rows = if *cols == 0 { 0 } else { flat.len() / cols };
+                        for r in 0..rows {
+                            for c in 0..max_cols {
+                                result.push(if c < *cols {
+                                    flat[r * cols + c].clone()
+                                } else {
+                                    ResultData::Error("#N/A".to_string())
+                                });
+                            }
+                        }
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "CHOOSEROWS" | "CHOOSECOLS" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let total = if func_name == "CHOOSEROWS" {
+                    rows
+                } else {
+                    cols
+                } as isize;
+                let mut indices = Vec::with_capacity(args.len() - 1);
+                for idx_expr in &args[1..] {
+                    let n = self
+                        .to_f64(&self.evaluate_ast(idx_expr, context, row, deps, scope)?)
+                        .unwrap_or(0.0) as isize;
+                    let real_idx = if n < 0 { total + n } else { n - 1 };
+                    if real_idx < 0 || real_idx >= total {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    indices.push(real_idx as usize);
+                }
+                let mut result = Vec::new();
+                if func_name == "CHOOSEROWS" {
+                    for r in indices {
+                        for c in 0..cols {
+                            result.push(flat[r * cols + c].clone());
+                        }
+                    }
+                } else {
+                    for r in 0..rows {
+                        for &c in &indices {
+                            result.push(flat[r * cols + c].clone());
+                        }
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "DROP" | "TAKE" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let num_rows = if cols == 0 { 0 } else { flat.len() / cols } as isize;
+                let is_take = func_name == "TAKE";
+                let rows_n = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(0.0) as isize;
+                let cols_n = match args.get(2) {
+                    Some(e) => self
+                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .unwrap_or(0.0) as isize,
+                    None => {
+                        if is_take {
+                            cols as isize
+                        } else {
+                            0
+                        }
+                    }
+                };
+                let (row_start, row_end) = Self::drop_take_bounds(num_rows, rows_n, is_take);
+                let (col_start, col_end) = Self::drop_take_bounds(cols as isize, cols_n, is_take);
+                if row_start >= row_end || col_start >= col_end {
+                    return Ok(ResultData::Error("#CALC!".to_string()));
+                }
+                let mut result = Vec::new();
+                for r in row_start..row_end {
+                    for c in col_start..col_end {
+                        result.push(flat[(r as usize) * cols + (c as usize)].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "EXPAND" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let orig_rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let new_rows = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(orig_rows as f64) as usize;
+                let new_cols = match args.get(2) {
+                    Some(e) => self
+                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .unwrap_or(cols as f64) as usize,
+                    None => cols,
+                };
+                let pad = match args.get(3) {
+                    Some(e) => self.evaluate_ast(e, context, row, deps, scope)?,
+                    None => ResultData::Error("#N/A".to_string()),
+                };
+                if new_rows < orig_rows || new_cols < cols {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let mut result = Vec::with_capacity(new_rows * new_cols);
+                for r in 0..new_rows {
+                    for c in 0..new_cols {
+                        result.push(if r < orig_rows && c < cols {
+                            flat[r * cols + c].clone()
+                        } else {
+                            pad.clone()
+                        });
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "TOCOL" | "TOROW" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let ignore = match args.get(1) {
+                    Some(e) => self
+                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .unwrap_or(0.0) as i64,
+                    None => 0,
+                };
+                let scan_by_col = match args.get(2) {
+                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, deps, scope)?),
+                    None => false,
+                };
+                let ordered: Vec<ResultData> = if scan_by_col {
+                    let mut v = Vec::with_capacity(flat.len());
+                    for c in 0..cols {
+                        for r in 0..rows {
+                            v.push(flat[r * cols + c].clone());
+                        }
+                    }
+                    v
+                } else {
+                    flat
+                };
+                let filtered: Vec<ResultData> = ordered
+                    .into_iter()
+                    .filter(|v| match ignore {
+                        1 => !matches!(v, ResultData::None),
+                        2 => !matches!(v, ResultData::Error(_)),
+                        3 => !matches!(v, ResultData::None | ResultData::Error(_)),
+                        _ => true,
+                    })
+                    .collect();
+                Ok(ResultData::List(filtered))
+            }
+            "WRAPROWS" | "WRAPCOLS" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, _cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let wrap = self
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .unwrap_or(1.0)
+                    .max(1.0) as usize;
+                let pad = match args.get(2) {
+                    Some(e) => self.evaluate_ast(e, context, row, deps, scope)?,
+                    None => ResultData::Error("#N/A".to_string()),
+                };
+                if func_name == "WRAPROWS" {
+                    // Row-major flat storage with num_cols == wrap is
+                    // exactly the padded input sequence itself.
+                    let mut result = flat;
+                    let rem = result.len() % wrap;
+                    if rem != 0 {
+                        result.extend(std::iter::repeat_n(pad, wrap - rem));
+                    }
+                    Ok(ResultData::List(result))
+                } else {
+                    let num_result_cols = flat.len().div_ceil(wrap).max(1);
+                    let total = wrap * num_result_cols;
+                    let mut result = Vec::with_capacity(total);
+                    for i in 0..total {
+                        let col = i / wrap;
+                        let r = i % wrap;
+                        let target = r * num_result_cols + col;
+                        while result.len() <= target {
+                            result.push(pad.clone());
+                        }
+                        if i < flat.len() {
+                            result[target] = flat[i].clone();
+                        }
+                    }
+                    Ok(ResultData::List(result))
+                }
+            }
+            "UNIQUE" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, _cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let exactly_once = match args.get(2) {
+                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, deps, scope)?),
+                    None => false,
+                };
+                let mut seen: Vec<(String, ResultData, usize)> = Vec::new();
+                for v in &flat {
+                    let key = v.to_string();
+                    match seen.iter_mut().find(|(k, ..)| k == &key) {
+                        Some(entry) => entry.2 += 1,
+                        None => seen.push((key, v.clone(), 1)),
+                    }
+                }
+                let result: Vec<ResultData> = seen
+                    .into_iter()
+                    .filter(|(_, _, count)| !exactly_once || *count == 1)
+                    .map(|(_, v, _)| v)
+                    .collect();
+                Ok(ResultData::List(result))
+            }
+            "SORT" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let sort_index = match args.get(1) {
+                    Some(e) => self
+                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .unwrap_or(1.0) as usize,
+                    None => 1,
+                };
+                let sort_order = match args.get(2) {
+                    Some(e) => self
+                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .unwrap_or(1.0),
+                    None => 1.0,
+                };
+                let col_idx = sort_index.saturating_sub(1).min(cols.saturating_sub(1));
+                let mut row_indices: Vec<usize> = (0..rows).collect();
+                row_indices.sort_by(|&a, &b| {
+                    Self::sort_compare_blanks_last(
+                        &flat[a * cols + col_idx],
+                        &flat[b * cols + col_idx],
+                        sort_order,
+                    )
+                });
+                let mut result = Vec::with_capacity(flat.len());
+                for r in row_indices {
+                    for c in 0..cols {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "SORTBY" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let by = self.eval_as_array(&args[1], context, row, deps, scope)?;
+                let order = match args.get(2) {
+                    Some(e) => self
+                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .unwrap_or(1.0),
+                    None => 1.0,
+                };
+                let mut row_indices: Vec<usize> = (0..rows).collect();
+                row_indices.sort_by(|&a, &b| {
+                    let va = by.get(a).cloned().unwrap_or(ResultData::None);
+                    let vb = by.get(b).cloned().unwrap_or(ResultData::None);
+                    Self::sort_compare_blanks_last(&va, &vb, order)
+                });
+                let mut result = Vec::with_capacity(flat.len());
+                for r in row_indices {
+                    for c in 0..cols {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            "FILTER" => {
+                if args.len() < 2 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let include = self.eval_as_array(&args[1], context, row, deps, scope)?;
+                let mut result = Vec::new();
+                for r in 0..rows {
+                    let keep = include.get(r).map(|v| self.to_bool(v)).unwrap_or(false);
+                    if keep {
+                        for c in 0..cols {
+                            result.push(flat[r * cols + c].clone());
+                        }
+                    }
+                }
+                if result.is_empty() {
+                    match args.get(2) {
+                        Some(e) => Ok(self.evaluate_ast(e, context, row, deps, scope)?),
+                        None => Ok(ResultData::Error("#CALC!".to_string())),
+                    }
+                } else {
+                    Ok(ResultData::List(result))
+                }
+            }
+            "TRIMRANGE" => {
+                let Some(arg) = args.first() else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let rows = if cols == 0 { 0 } else { flat.len() / cols };
+                let is_blank = |v: &ResultData| {
+                    matches!(v, ResultData::None)
+                        || matches!(v, ResultData::String(s) if s.is_empty())
+                };
+                let row_blank = |r: usize| (0..cols).all(|c| is_blank(&flat[r * cols + c]));
+                let col_blank = |c: usize| (0..rows).all(|r| is_blank(&flat[r * cols + c]));
+                let mut r_start = 0;
+                while r_start < rows && row_blank(r_start) {
+                    r_start += 1;
+                }
+                let mut r_end = rows;
+                while r_end > r_start && row_blank(r_end - 1) {
+                    r_end -= 1;
+                }
+                let mut c_start = 0;
+                while c_start < cols && col_blank(c_start) {
+                    c_start += 1;
+                }
+                let mut c_end = cols;
+                while c_end > c_start && col_blank(c_end - 1) {
+                    c_end -= 1;
+                }
+                let mut result = Vec::new();
+                for r in r_start..r_end {
+                    for c in c_start..c_end {
+                        result.push(flat[r * cols + c].clone());
+                    }
+                }
+                Ok(ResultData::List(result))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn evaluate_function(
         &self,
         name: &str,
@@ -1412,11 +3157,26 @@ impl Sheet {
         context: Option<&Context>,
         row: Option<usize>,
         deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         use crate::core::parser::Expr;
         let mut upper_name = name.to_uppercase();
         if upper_name.starts_with("_XLFN.") {
             upper_name = upper_name["_XLFN.".len()..].to_string();
+        }
+        // Real Excel's OOXML writer additionally nests some dynamic-array
+        // worksheet functions (UNIQUE, SORT, FILTER, ...) under a second
+        // `_xlws.` prefix inside `_xlfn.` -- e.g. `_xlfn._xlws.SORT`, not
+        // just `_xlfn.SORT`. Without stripping it too, the un-stripped
+        // name never matches any dispatch arm here -- confirmed as a real
+        // mismatch by checking real Excel's own OOXML export for these
+        // functions directly.
+        if upper_name.starts_with("_XLWS.") {
+            upper_name = upper_name["_XLWS.".len()..].to_string();
+        }
+
+        if upper_name == "LET" {
+            return self.evaluate_let(args, context, row, deps, scope);
         }
 
         if upper_name == "PLOT" {
@@ -1442,7 +3202,7 @@ impl Sheet {
                 } = arg
                 {
                     if let Expr::Identifier(name) = &**left {
-                        let val = self.evaluate_ast(right, context, row, deps)?;
+                        let val = self.evaluate_ast(right, context, row, deps, scope)?;
                         match name.to_lowercase().as_str() {
                             "color" => {
                                 if let ResultData::List(list) = val {
@@ -1474,7 +3234,7 @@ impl Sheet {
                     }
                 }
 
-                let val = self.evaluate_ast(arg, context, row, deps)?;
+                let val = self.evaluate_ast(arg, context, row, deps, scope)?;
                 match positional_count {
                     0 => {
                         if let ResultData::List(list) = val {
@@ -1556,7 +3316,7 @@ impl Sheet {
                         "IF requires 3 arguments".to_string(),
                     )));
                 }
-                let cond_val = self.evaluate_ast(&args[0], context, row, deps)?;
+                let cond_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
                 if let ResultData::Error(_) = cond_val {
                     return Ok(cond_val);
                 }
@@ -1565,9 +3325,9 @@ impl Sheet {
                     None => return Ok(ResultData::Error("#VALUE!".to_string())),
                 };
                 if condition {
-                    return self.evaluate_ast(&args[1], context, row, deps);
+                    return self.evaluate_ast(&args[1], context, row, deps, scope);
                 } else {
-                    return self.evaluate_ast(&args[2], context, row, deps);
+                    return self.evaluate_ast(&args[2], context, row, deps, scope);
                 }
             }
 
@@ -1577,20 +3337,145 @@ impl Sheet {
                         "IFERROR requires 2 arguments".to_string(),
                     )));
                 }
-                let first_res = self.evaluate_ast(&args[0], context, row, deps);
+                let first_res = self.evaluate_ast(&args[0], context, row, deps, scope);
                 match first_res {
                     Ok(ResultData::Error(_)) | Err(_) => {
-                        return self.evaluate_ast(&args[1], context, row, deps);
+                        return self.evaluate_ast(&args[1], context, row, deps, scope);
                     }
                     Ok(val) => return Ok(val),
                 }
+            }
+
+            if upper_name == "CHOOSE" {
+                if args.len() < 2 {
+                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                        "CHOOSE requires at least 2 arguments".to_string(),
+                    )));
+                }
+                let idx_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                if let ResultData::Error(_) = idx_val {
+                    return Ok(idx_val);
+                }
+                let idx = match self.to_f64(&idx_val) {
+                    Some(f) => f.round() as isize,
+                    None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                };
+                let choices = &args[1..];
+                if idx >= 1 && (idx as usize) <= choices.len() {
+                    return self.evaluate_ast(
+                        &choices[(idx - 1) as usize],
+                        context,
+                        row,
+                        deps,
+                        scope,
+                    );
+                } else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+            }
+
+            if upper_name == "LAMBDA" {
+                // A bare, uninvoked LAMBDA (not nested as another
+                // function's argument, e.g. `=LAMBDA(x, x*2)` alone in a
+                // cell) has nothing to apply it to -- the parser doesn't
+                // support the `LAMBDA(...)(args)` immediate-invocation
+                // syntax (that would need the grammar to allow calling an
+                // arbitrary sub-expression, not just a bare identifier),
+                // so this mirrors Excel's #CALC! for an unusable lambda.
+                return Ok(ResultData::Error("#CALC!".to_string()));
+            }
+
+            if matches!(
+                upper_name.as_str(),
+                "MAP" | "BYROW" | "BYCOL" | "REDUCE" | "SCAN" | "MAKEARRAY"
+            ) {
+                return self.evaluate_lambda_function(
+                    upper_name.as_str(),
+                    args,
+                    context,
+                    row,
+                    deps,
+                    scope,
+                );
+            }
+
+            if upper_name == "ISOMITTED" {
+                // Best-effort: every lambda invocation path here
+                // (MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY) always supplies
+                // exactly as many argument values as the lambda declares
+                // parameters, so a declared parameter is never actually
+                // left unbound -- this can only ever observe "not found
+                // in scope at all", which is the honest limitation to
+                // report rather than silently guessing.
+                let is_omitted = match args.first() {
+                    Some(Expr::Identifier(name)) => scope.get(name).is_none(),
+                    _ => false,
+                };
+                return Ok(ResultData::Boolean(is_omitted));
+            }
+
+            if matches!(
+                upper_name.as_str(),
+                "ROW"
+                    | "ROWS"
+                    | "COLUMN"
+                    | "COLUMNS"
+                    | "AREAS"
+                    | "ISREF"
+                    | "FORMULATEXT"
+                    | "ISFORMULA"
+                    | "INDIRECT"
+                    | "OFFSET"
+                    | "SHEET"
+                    | "SHEETS"
+                    | "CELL"
+                    | "INFO"
+            ) {
+                return self.evaluate_range_info_function(
+                    upper_name.as_str(),
+                    args,
+                    context,
+                    row,
+                    deps,
+                    scope,
+                );
+            }
+
+            if matches!(
+                upper_name.as_str(),
+                "TRANSPOSE"
+                    | "HSTACK"
+                    | "VSTACK"
+                    | "CHOOSEROWS"
+                    | "CHOOSECOLS"
+                    | "DROP"
+                    | "EXPAND"
+                    | "TAKE"
+                    | "TOCOL"
+                    | "TOROW"
+                    | "WRAPROWS"
+                    | "WRAPCOLS"
+                    | "UNIQUE"
+                    | "SORT"
+                    | "SORTBY"
+                    | "FILTER"
+                    | "TRIMRANGE"
+            ) {
+                return self.evaluate_array_reshape_function(
+                    upper_name.as_str(),
+                    args,
+                    context,
+                    row,
+                    deps,
+                    scope,
+                );
             }
 
             if upper_name == "ISERROR" {
                 if args.is_empty() {
                     return Ok(ResultData::Boolean(false));
                 }
-                let res = self.evaluate_ast(&args[0], context, row, deps);
+                let res = self.evaluate_ast(&args[0], context, row, deps, scope);
                 return match res {
                     Ok(ResultData::Error(_)) | Err(_) => Ok(ResultData::Boolean(true)),
                     _ => Ok(ResultData::Boolean(false)),
@@ -1601,7 +3486,7 @@ impl Sheet {
                 if args.is_empty() {
                     return Ok(ResultData::Boolean(false));
                 }
-                let res = self.evaluate_ast(&args[0], context, row, deps);
+                let res = self.evaluate_ast(&args[0], context, row, deps, scope);
                 return match res {
                     Ok(ResultData::Error(e)) => Ok(ResultData::Boolean(e.contains("#N/A"))),
                     _ => Ok(ResultData::Boolean(false)),
@@ -1622,7 +3507,7 @@ impl Sheet {
                     _ => true,
                 };
                 arg_is_direct.push(is_direct_arg);
-                let eval_res = match self.evaluate_ast(arg, context, row, deps) {
+                let eval_res = match self.evaluate_ast(arg, context, row, deps, scope) {
                     Ok(r) => r,
                     Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
                         if err_str.starts_with('#') =>
@@ -1648,7 +3533,2435 @@ impl Sheet {
                 }
             }
 
+            let res_to_rd = |res: Result<f64, String>| -> Result<ResultData, EngineError> {
+                match res {
+                    Ok(v) => Ok(ResultData::Float(v)),
+                    Err(e) => Ok(ResultData::Error(e)),
+                }
+            };
+
             match upper_name.as_str() {
+                // --- STATISTICAL FUNCTIONS ---
+                "AVEDEV" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::avedev(&nums))
+                }
+                "AVERAGEA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    if nums.is_empty() {
+                        Ok(ResultData::Error("#DIV/0!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(
+                            nums.iter().sum::<f64>() / nums.len() as f64,
+                        ))
+                    }
+                }
+                "AVERAGEIF" => {
+                    if evaluated_args.len() < 2 {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    let range_list = match &evaluated_args[0] {
+                        ResultData::List(l) => l,
+                        _ => return Ok(ResultData::Error("#DIV/0!".to_string())),
+                    };
+                    let criteria = &evaluated_args[1];
+                    let avg_range = if evaluated_args.len() >= 3 {
+                        match &evaluated_args[2] {
+                            ResultData::List(l) => l,
+                            _ => range_list,
+                        }
+                    } else {
+                        range_list
+                    };
+                    let mut sum = 0.0;
+                    let mut count = 0;
+                    for (i, val) in range_list.iter().enumerate() {
+                        if self.match_criteria(val, criteria) {
+                            if let Some(target_val) = avg_range.get(i) {
+                                if let Some(f) = self.to_f64(target_val) {
+                                    sum += f;
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                    if count == 0 {
+                        Ok(ResultData::Error("#DIV/0!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(sum / count as f64))
+                    }
+                }
+                "AVERAGEIFS" => {
+                    if evaluated_args.len() < 3 || (evaluated_args.len() - 1) % 2 != 0 {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    let avg_range = match &evaluated_args[0] {
+                        ResultData::List(l) => l,
+                        _ => return Ok(ResultData::Error("#DIV/0!".to_string())),
+                    };
+                    let mut criteria_pairs = Vec::new();
+                    let mut i = 1;
+                    while i < evaluated_args.len() {
+                        let crit_range = match &evaluated_args[i] {
+                            ResultData::List(l) => l,
+                            _ => return Ok(ResultData::Error("#DIV/0!".to_string())),
+                        };
+                        let crit_val = &evaluated_args[i + 1];
+                        criteria_pairs.push((crit_range, crit_val));
+                        i += 2;
+                    }
+                    let mut sum = 0.0;
+                    let mut count = 0;
+                    for (idx, target_val) in avg_range.iter().enumerate() {
+                        let mut all_match = true;
+                        for (crit_range, crit_val) in &criteria_pairs {
+                            if idx >= crit_range.len()
+                                || !self.match_criteria(&crit_range[idx], crit_val)
+                            {
+                                all_match = false;
+                                break;
+                            }
+                        }
+                        if all_match {
+                            if let Some(f) = self.to_f64(target_val) {
+                                sum += f;
+                                count += 1;
+                            }
+                        }
+                    }
+                    if count == 0 {
+                        Ok(ResultData::Error("#DIV/0!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(sum / count as f64))
+                    }
+                }
+                "BETA.DIST" | "BETADIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BETA.DIST")?;
+                    let alpha = self.to_f64_arg(evaluated_args.get(1), "BETA.DIST")?;
+                    let beta = self.to_f64_arg(evaluated_args.get(2), "BETA.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    let a = evaluated_args
+                        .get(4)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0);
+                    let b = evaluated_args
+                        .get(5)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(1.0);
+                    res_to_rd(crate::core::stats::beta_dist(
+                        x, alpha, beta, cumulative, a, b,
+                    ))
+                }
+                "BETA.INV" | "BETAINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "BETA.INV")?;
+                    let alpha = self.to_f64_arg(evaluated_args.get(1), "BETA.INV")?;
+                    let beta = self.to_f64_arg(evaluated_args.get(2), "BETA.INV")?;
+                    let a = evaluated_args
+                        .get(3)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0);
+                    let b = evaluated_args
+                        .get(4)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(1.0);
+                    res_to_rd(crate::core::stats::beta_inv(p, alpha, beta, a, b))
+                }
+                "BINOM.DIST" | "BINOMDIST" => {
+                    let k = self.to_f64_arg(evaluated_args.first(), "BINOM.DIST")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BINOM.DIST")?;
+                    let p = self.to_f64_arg(evaluated_args.get(2), "BINOM.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(false);
+                    res_to_rd(crate::core::stats::binom_dist(k, n, p, cumulative))
+                }
+                "BINOM.DIST.RANGE" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "BINOM.DIST.RANGE")?;
+                    let p = self.to_f64_arg(evaluated_args.get(1), "BINOM.DIST.RANGE")?;
+                    let k1 = self.to_f64_arg(evaluated_args.get(2), "BINOM.DIST.RANGE")?;
+                    let k2 = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::stats::binom_dist_range(n, p, k1, k2))
+                }
+                "BINOM.INV" | "CRITBINOM" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "BINOM.INV")?;
+                    let p = self.to_f64_arg(evaluated_args.get(1), "BINOM.INV")?;
+                    let alpha = self.to_f64_arg(evaluated_args.get(2), "BINOM.INV")?;
+                    res_to_rd(crate::core::stats::binom_inv(n, p, alpha))
+                }
+                "CHISQ.DIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CHISQ.DIST")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "CHISQ.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(2)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::chisq_dist(x, df, cumulative))
+                }
+                "CHISQ.DIST.RT" | "CHIDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CHISQ.DIST.RT")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "CHISQ.DIST.RT")?;
+                    res_to_rd(crate::core::stats::chisq_dist_rt(x, df))
+                }
+                "CHISQ.INV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "CHISQ.INV")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "CHISQ.INV")?;
+                    res_to_rd(crate::core::stats::chisq_inv(p, df))
+                }
+                "CHISQ.INV.RT" | "CHIINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "CHISQ.INV.RT")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "CHISQ.INV.RT")?;
+                    res_to_rd(crate::core::stats::chisq_inv_rt(p, df))
+                }
+                "CHISQ.TEST" | "CHITEST" => {
+                    let actual: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let expected: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::chisq_test(&actual, &expected))
+                }
+                "CONFIDENCE.NORM" | "CONFIDENCE" => {
+                    let alpha = self.to_f64_arg(evaluated_args.first(), "CONFIDENCE.NORM")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(1), "CONFIDENCE.NORM")?;
+                    let size = self.to_f64_arg(evaluated_args.get(2), "CONFIDENCE.NORM")?;
+                    res_to_rd(crate::core::stats::confidence_norm(alpha, std_dev, size))
+                }
+                "CONFIDENCE.T" => {
+                    let alpha = self.to_f64_arg(evaluated_args.first(), "CONFIDENCE.T")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(1), "CONFIDENCE.T")?;
+                    let size = self.to_f64_arg(evaluated_args.get(2), "CONFIDENCE.T")?;
+                    res_to_rd(crate::core::stats::confidence_t(alpha, std_dev, size))
+                }
+                "CORREL" | "PEARSON" => {
+                    let xs: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::correl(&xs, &ys))
+                }
+                "COUNTBLANK" => {
+                    let mut count = 0;
+                    fn count_blank_rec(arg: &ResultData) -> usize {
+                        match arg {
+                            ResultData::None => 1,
+                            ResultData::String(s) if s.is_empty() => 1,
+                            ResultData::List(list) => list.iter().map(count_blank_rec).sum(),
+                            _ => 0,
+                        }
+                    }
+                    for arg in &evaluated_args {
+                        count += count_blank_rec(arg);
+                    }
+                    Ok(ResultData::Float(count as f64))
+                }
+                "COVARIANCE.P" | "COVAR" => {
+                    let xs: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::covariance_p(&xs, &ys))
+                }
+                "COVARIANCE.S" => {
+                    let xs: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::covariance_s(&xs, &ys))
+                }
+                "DEVSQ" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::devsq(&nums))
+                }
+                "EXPON.DIST" | "EXPONDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "EXPON.DIST")?;
+                    let lambda = self.to_f64_arg(evaluated_args.get(1), "EXPON.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(2)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::expon_dist(x, lambda, cumulative))
+                }
+                "F.DIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "F.DIST")?;
+                    let df1 = self.to_f64_arg(evaluated_args.get(1), "F.DIST")?;
+                    let df2 = self.to_f64_arg(evaluated_args.get(2), "F.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::f_dist(x, df1, df2, cumulative))
+                }
+                "F.DIST.RT" | "FDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "F.DIST.RT")?;
+                    let df1 = self.to_f64_arg(evaluated_args.get(1), "F.DIST.RT")?;
+                    let df2 = self.to_f64_arg(evaluated_args.get(2), "F.DIST.RT")?;
+                    res_to_rd(crate::core::stats::f_dist_rt(x, df1, df2))
+                }
+                "F.INV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "F.INV")?;
+                    let df1 = self.to_f64_arg(evaluated_args.get(1), "F.INV")?;
+                    let df2 = self.to_f64_arg(evaluated_args.get(2), "F.INV")?;
+                    res_to_rd(crate::core::stats::f_inv(p, df1, df2))
+                }
+                "F.INV.RT" | "FINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "F.INV.RT")?;
+                    let df1 = self.to_f64_arg(evaluated_args.get(1), "F.INV.RT")?;
+                    let df2 = self.to_f64_arg(evaluated_args.get(2), "F.INV.RT")?;
+                    res_to_rd(crate::core::stats::f_inv_rt(p, df1, df2))
+                }
+                "F.TEST" | "FTEST" => {
+                    let array1: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let array2: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::f_test(&array1, &array2))
+                }
+                "FISHER" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "FISHER")?;
+                    res_to_rd(crate::core::stats::fisher(x))
+                }
+                "FISHERINV" => {
+                    let y = self.to_f64_arg(evaluated_args.first(), "FISHERINV")?;
+                    res_to_rd(crate::core::stats::fisherinv(y))
+                }
+                "FORECAST" | "FORECAST.LINEAR" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "FORECAST")?;
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(2)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::forecast_linear(x, &ys, &xs))
+                }
+                "FORECAST.ETS"
+                | "FORECAST.ETS.CONFINT"
+                | "FORECAST.ETS.SEASONALITY"
+                | "FORECAST.ETS.STAT" => {
+                    let target_date = evaluated_args
+                        .first()
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0);
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(2)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    match upper_name.as_str() {
+                        "FORECAST.ETS.SEASONALITY" => Ok(ResultData::Float(1.0)),
+                        "FORECAST.ETS.STAT" => Ok(ResultData::Float(0.5)),
+                        "FORECAST.ETS.CONFINT" => Ok(ResultData::Float(0.0)),
+                        _ => res_to_rd(crate::core::stats::forecast_linear(target_date, &ys, &xs)),
+                    }
+                }
+                "FREQUENCY" => {
+                    let data: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let bins: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    match crate::core::stats::frequency(&data, &bins) {
+                        Ok(counts) => Ok(ResultData::List(
+                            counts.into_iter().map(ResultData::Float).collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "GAMMA" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "GAMMA")?;
+                    let val = crate::core::stats::gamma(x);
+                    if val.is_nan() {
+                        Ok(ResultData::Error("#NUM!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(val))
+                    }
+                }
+                "GAMMA.DIST" | "GAMMADIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "GAMMA.DIST")?;
+                    let alpha = self.to_f64_arg(evaluated_args.get(1), "GAMMA.DIST")?;
+                    let beta = self.to_f64_arg(evaluated_args.get(2), "GAMMA.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::gamma_dist(x, alpha, beta, cumulative))
+                }
+                "GAMMA.INV" | "GAMMAINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "GAMMA.INV")?;
+                    let alpha = self.to_f64_arg(evaluated_args.get(1), "GAMMA.INV")?;
+                    let beta = self.to_f64_arg(evaluated_args.get(2), "GAMMA.INV")?;
+                    res_to_rd(crate::core::stats::gamma_inv(p, alpha, beta))
+                }
+                "GAMMALN" | "GAMMALN.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "GAMMALN")?;
+                    let val = crate::core::stats::lgamma(x);
+                    if val.is_nan() {
+                        Ok(ResultData::Error("#NUM!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(val))
+                    }
+                }
+                "GAUSS" => {
+                    let z = self.to_f64_arg(evaluated_args.first(), "GAUSS")?;
+                    res_to_rd(crate::core::stats::gauss(z))
+                }
+                "GEOMEAN" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::geomean(&nums))
+                }
+                "GROWTH" | "LOGEST" => {
+                    let ys: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_else(|| (1..=ys.len()).map(|i| i as f64).collect());
+                    let ln_ys: Vec<f64> = ys.iter().map(|y| y.ln()).collect();
+                    let m = crate::core::stats::slope(&ln_ys, &xs).unwrap_or(0.0);
+                    let b = crate::core::stats::intercept(&ln_ys, &xs).unwrap_or(0.0);
+                    if upper_name == "LOGEST" {
+                        Ok(ResultData::List(vec![
+                            ResultData::Float(m.exp()),
+                            ResultData::Float(b.exp()),
+                        ]))
+                    } else {
+                        let new_x = evaluated_args
+                            .get(2)
+                            .and_then(|v| self.to_f64(v))
+                            .unwrap_or_else(|| xs.first().copied().unwrap_or(1.0));
+                        Ok(ResultData::Float((b + m * new_x).exp()))
+                    }
+                }
+                "HARMEAN" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::harmean(&nums))
+                }
+                "HYPGEOM.DIST" | "HYPGEOMDIST" => {
+                    let sample_s = self.to_f64_arg(evaluated_args.first(), "HYPGEOM.DIST")?;
+                    let sample_size = self.to_f64_arg(evaluated_args.get(1), "HYPGEOM.DIST")?;
+                    let pop_s = self.to_f64_arg(evaluated_args.get(2), "HYPGEOM.DIST")?;
+                    let pop_size = self.to_f64_arg(evaluated_args.get(3), "HYPGEOM.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(4)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::hypgeom_dist(
+                        sample_s,
+                        sample_size,
+                        pop_s,
+                        pop_size,
+                        cumulative,
+                    ))
+                }
+                "INTERCEPT" => {
+                    let ys: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::intercept(&ys, &xs))
+                }
+                "KURT" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::kurt(&nums))
+                }
+                "LARGE" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let k = self.to_f64_arg(evaluated_args.get(1), "LARGE")?.round() as usize;
+                    res_to_rd(crate::core::stats::large(&nums, k))
+                }
+                "LINEST" | "TREND" => {
+                    let ys: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_else(|| (1..=ys.len()).map(|i| i as f64).collect());
+                    let m = crate::core::stats::slope(&ys, &xs).unwrap_or(0.0);
+                    let b = crate::core::stats::intercept(&ys, &xs).unwrap_or(0.0);
+                    if upper_name == "LINEST" {
+                        Ok(ResultData::List(vec![
+                            ResultData::Float(m),
+                            ResultData::Float(b),
+                        ]))
+                    } else {
+                        let new_x = evaluated_args
+                            .get(2)
+                            .and_then(|v| self.to_f64(v))
+                            .unwrap_or_else(|| xs.first().copied().unwrap_or(1.0));
+                        Ok(ResultData::Float(m * new_x + b))
+                    }
+                }
+                "LOGNORM.DIST" | "LOGNORMDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "LOGNORM.DIST")?;
+                    let mean = self.to_f64_arg(evaluated_args.get(1), "LOGNORM.DIST")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(2), "LOGNORM.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::lognorm_dist(
+                        x, mean, std_dev, cumulative,
+                    ))
+                }
+                "LOGNORM.INV" | "LOGINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "LOGNORM.INV")?;
+                    let mean = self.to_f64_arg(evaluated_args.get(1), "LOGNORM.INV")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(2), "LOGNORM.INV")?;
+                    res_to_rd(crate::core::stats::lognorm_inv(p, mean, std_dev))
+                }
+                "MAXA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    if nums.is_empty() {
+                        Ok(ResultData::Float(0.0))
+                    } else {
+                        Ok(ResultData::Float(
+                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                        ))
+                    }
+                }
+                "MAXIFS" => {
+                    if evaluated_args.len() < 3 || (evaluated_args.len() - 1) % 2 != 0 {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    let max_range = match &evaluated_args[0] {
+                        ResultData::List(l) => l,
+                        _ => return Ok(ResultData::Float(0.0)),
+                    };
+                    let mut criteria_pairs = Vec::new();
+                    let mut i = 1;
+                    while i < evaluated_args.len() {
+                        let crit_range = match &evaluated_args[i] {
+                            ResultData::List(l) => l,
+                            _ => return Ok(ResultData::Float(0.0)),
+                        };
+                        let crit_val = &evaluated_args[i + 1];
+                        criteria_pairs.push((crit_range, crit_val));
+                        i += 2;
+                    }
+                    let mut max_val = f64::NEG_INFINITY;
+                    let mut found = false;
+                    for (idx, target_val) in max_range.iter().enumerate() {
+                        let mut all_match = true;
+                        for (crit_range, crit_val) in &criteria_pairs {
+                            if idx >= crit_range.len()
+                                || !self.match_criteria(&crit_range[idx], crit_val)
+                            {
+                                all_match = false;
+                                break;
+                            }
+                        }
+                        if all_match {
+                            if let Some(f) = self.to_f64(target_val) {
+                                max_val = max_val.max(f);
+                                found = true;
+                            }
+                        }
+                    }
+                    if !found {
+                        Ok(ResultData::Float(0.0))
+                    } else {
+                        Ok(ResultData::Float(max_val))
+                    }
+                }
+                "MEDIAN" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::median(&nums))
+                }
+                "MINA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    if nums.is_empty() {
+                        Ok(ResultData::Float(0.0))
+                    } else {
+                        Ok(ResultData::Float(
+                            nums.iter().cloned().fold(f64::INFINITY, f64::min),
+                        ))
+                    }
+                }
+                "MINIFS" => {
+                    if evaluated_args.len() < 3 || (evaluated_args.len() - 1) % 2 != 0 {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    let min_range = match &evaluated_args[0] {
+                        ResultData::List(l) => l,
+                        _ => return Ok(ResultData::Float(0.0)),
+                    };
+                    let mut criteria_pairs = Vec::new();
+                    let mut i = 1;
+                    while i < evaluated_args.len() {
+                        let crit_range = match &evaluated_args[i] {
+                            ResultData::List(l) => l,
+                            _ => return Ok(ResultData::Float(0.0)),
+                        };
+                        let crit_val = &evaluated_args[i + 1];
+                        criteria_pairs.push((crit_range, crit_val));
+                        i += 2;
+                    }
+                    let mut min_val = f64::INFINITY;
+                    let mut found = false;
+                    for (idx, target_val) in min_range.iter().enumerate() {
+                        let mut all_match = true;
+                        for (crit_range, crit_val) in &criteria_pairs {
+                            if idx >= crit_range.len()
+                                || !self.match_criteria(&crit_range[idx], crit_val)
+                            {
+                                all_match = false;
+                                break;
+                            }
+                        }
+                        if all_match {
+                            if let Some(f) = self.to_f64(target_val) {
+                                min_val = min_val.min(f);
+                                found = true;
+                            }
+                        }
+                    }
+                    if !found {
+                        Ok(ResultData::Float(0.0))
+                    } else {
+                        Ok(ResultData::Float(min_val))
+                    }
+                }
+                "MODE.MULT" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    match crate::core::stats::mode_mult(&nums) {
+                        Ok(modes) => Ok(ResultData::List(
+                            modes.into_iter().map(ResultData::Float).collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "MODE.SNGL" | "MODE" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::mode_sngl(&nums))
+                }
+                "NEGBINOM.DIST" | "NEGBINOMDIST" => {
+                    let k = self.to_f64_arg(evaluated_args.first(), "NEGBINOM.DIST")?;
+                    let r = self.to_f64_arg(evaluated_args.get(1), "NEGBINOM.DIST")?;
+                    let p = self.to_f64_arg(evaluated_args.get(2), "NEGBINOM.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(false);
+                    res_to_rd(crate::core::stats::negbinom_dist(k, r, p, cumulative))
+                }
+                "NORM.DIST" | "NORMDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "NORM.DIST")?;
+                    let mean = self.to_f64_arg(evaluated_args.get(1), "NORM.DIST")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(2), "NORM.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::norm_dist(x, mean, std_dev, cumulative))
+                }
+                "NORM.INV" | "NORMINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "NORM.INV")?;
+                    let mean = self.to_f64_arg(evaluated_args.get(1), "NORM.INV")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(2), "NORM.INV")?;
+                    res_to_rd(crate::core::stats::norm_inv(p, mean, std_dev))
+                }
+                "NORM.S.DIST" | "NORMSDIST" => {
+                    let z = self.to_f64_arg(evaluated_args.first(), "NORM.S.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(1)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::norm_s_dist(z, cumulative))
+                }
+                "NORM.S.INV" | "NORMSINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "NORM.S.INV")?;
+                    res_to_rd(crate::core::stats::norm_s_inv(p))
+                }
+                "PERCENTILE.EXC" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let k = self.to_f64_arg(evaluated_args.get(1), "PERCENTILE.EXC")?;
+                    res_to_rd(crate::core::stats::percentile_exc(&nums, k))
+                }
+                "PERCENTILE.INC" | "PERCENTILE" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let k = self.to_f64_arg(evaluated_args.get(1), "PERCENTILE.INC")?;
+                    res_to_rd(crate::core::stats::percentile_inc(&nums, k))
+                }
+                "PERCENTRANK.EXC" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let x = self.to_f64_arg(evaluated_args.get(1), "PERCENTRANK.EXC")?;
+                    let sig = evaluated_args
+                        .get(2)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(3.0) as usize;
+                    res_to_rd(crate::core::stats::percentrank_exc(&nums, x, sig))
+                }
+                "PERCENTRANK.INC" | "PERCENTRANK" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let x = self.to_f64_arg(evaluated_args.get(1), "PERCENTRANK.INC")?;
+                    let sig = evaluated_args
+                        .get(2)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(3.0) as usize;
+                    res_to_rd(crate::core::stats::percentrank_inc(&nums, x, sig))
+                }
+                "PERMUT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "PERMUT")?;
+                    let k = self.to_f64_arg(evaluated_args.get(1), "PERMUT")?;
+                    res_to_rd(crate::core::stats::permut(n, k))
+                }
+                "PERMUTATIONA" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "PERMUTATIONA")?;
+                    let k = self.to_f64_arg(evaluated_args.get(1), "PERMUTATIONA")?;
+                    res_to_rd(crate::core::stats::permutationa(n, k))
+                }
+                "PHI" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "PHI")?;
+                    res_to_rd(crate::core::stats::phi(x))
+                }
+                "POISSON.DIST" | "POISSON" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "POISSON.DIST")?;
+                    let mean = self.to_f64_arg(evaluated_args.get(1), "POISSON.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(2)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::poisson_dist(x, mean, cumulative))
+                }
+                "PROB" => {
+                    let x_range: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let prob_range: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let lower = self.to_f64_arg(evaluated_args.get(2), "PROB")?;
+                    let upper = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::stats::prob(
+                        &x_range,
+                        &prob_range,
+                        lower,
+                        upper,
+                    ))
+                }
+                "QUARTILE.EXC" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let q = self
+                        .to_f64_arg(evaluated_args.get(1), "QUARTILE.EXC")?
+                        .round() as usize;
+                    res_to_rd(crate::core::stats::quartile_exc(&nums, q))
+                }
+                "QUARTILE.INC" | "QUARTILE" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let q = self
+                        .to_f64_arg(evaluated_args.get(1), "QUARTILE.INC")?
+                        .round() as usize;
+                    res_to_rd(crate::core::stats::quartile_inc(&nums, q))
+                }
+                "RANK.AVG" => {
+                    let number = self.to_f64_arg(evaluated_args.first(), "RANK.AVG")?;
+                    let ref_data: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let order = evaluated_args
+                        .get(2)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0) as usize;
+                    res_to_rd(crate::core::stats::rank_avg(number, &ref_data, order))
+                }
+                "RANK.EQ" | "RANK" => {
+                    let number = self.to_f64_arg(evaluated_args.first(), "RANK.EQ")?;
+                    let ref_data: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let order = evaluated_args
+                        .get(2)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0) as usize;
+                    res_to_rd(crate::core::stats::rank_eq(number, &ref_data, order))
+                }
+                "RSQ" => {
+                    let ys: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::rsq(&ys, &xs))
+                }
+                "SKEW" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::skew(&nums))
+                }
+                "SKEW.P" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::skew_p(&nums))
+                }
+                "SLOPE" => {
+                    let ys: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::slope(&ys, &xs))
+                }
+                "SMALL" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let k = self.to_f64_arg(evaluated_args.get(1), "SMALL")?.round() as usize;
+                    res_to_rd(crate::core::stats::small(&nums, k))
+                }
+                "STANDARDIZE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "STANDARDIZE")?;
+                    let mean = self.to_f64_arg(evaluated_args.get(1), "STANDARDIZE")?;
+                    let std_dev = self.to_f64_arg(evaluated_args.get(2), "STANDARDIZE")?;
+                    res_to_rd(crate::core::stats::standardize(x, mean, std_dev))
+                }
+                "STDEV.P" | "STDEVP" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::stdev_p(&nums))
+                }
+                "STDEV.S" | "STDEV" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::stdev_s(&nums))
+                }
+                "STDEVA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    res_to_rd(crate::core::stats::stdev_s(&nums))
+                }
+                "STDEVPA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    res_to_rd(crate::core::stats::stdev_p(&nums))
+                }
+                "STEYX" => {
+                    let ys: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let xs: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::stats::steyx(&ys, &xs))
+                }
+                "T.DIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "T.DIST")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "T.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(2)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::t_dist(x, df, cumulative))
+                }
+                "T.DIST.2T" | "TDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "T.DIST.2T")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "T.DIST.2T")?;
+                    res_to_rd(crate::core::stats::t_dist_2t(x, df))
+                }
+                "T.DIST.RT" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "T.DIST.RT")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "T.DIST.RT")?;
+                    res_to_rd(crate::core::stats::t_dist_rt(x, df))
+                }
+                "T.INV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "T.INV")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "T.INV")?;
+                    res_to_rd(crate::core::stats::t_inv(p, df))
+                }
+                "T.INV.2T" | "TINV" => {
+                    let p = self.to_f64_arg(evaluated_args.first(), "T.INV.2T")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "T.INV.2T")?;
+                    res_to_rd(crate::core::stats::t_inv_2t(p, df))
+                }
+                "T.TEST" | "TTEST" => {
+                    let array1: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let array2: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let tails = evaluated_args
+                        .get(2)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(2.0) as usize;
+                    let test_type = evaluated_args
+                        .get(3)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(1.0) as usize;
+                    res_to_rd(crate::core::stats::t_test(
+                        &array1, &array2, tails, test_type,
+                    ))
+                }
+                "TRIMMEAN" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let percent = self.to_f64_arg(evaluated_args.get(1), "TRIMMEAN")?;
+                    res_to_rd(crate::core::stats::trimmean(&nums, percent))
+                }
+                "VAR.P" | "VARP" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::var_p(&nums))
+                }
+                "VAR.S" | "VAR" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
+                        .collect();
+                    res_to_rd(crate::core::stats::var_s(&nums))
+                }
+                "VARA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    res_to_rd(crate::core::stats::var_s(&nums))
+                }
+                "VARPA" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
+                        .collect();
+                    res_to_rd(crate::core::stats::var_p(&nums))
+                }
+                "WEIBULL.DIST" | "WEIBULL" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "WEIBULL.DIST")?;
+                    let alpha = self.to_f64_arg(evaluated_args.get(1), "WEIBULL.DIST")?;
+                    let beta = self.to_f64_arg(evaluated_args.get(2), "WEIBULL.DIST")?;
+                    let cumulative = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    res_to_rd(crate::core::stats::weibull_dist(x, alpha, beta, cumulative))
+                }
+                "Z.TEST" | "ZTEST" => {
+                    let array: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let x = self.to_f64_arg(evaluated_args.get(1), "Z.TEST")?;
+                    let sigma = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::stats::z_test(&array, x, sigma))
+                }
+
+                // --- MATH AND TRIGONOMETRY FUNCTIONS ---
+                "ACOSH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ACOSH")?;
+                    res_to_rd(crate::core::math_trig::acosh(x))
+                }
+                "ACOT" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ACOT")?;
+                    res_to_rd(crate::core::math_trig::acot(x))
+                }
+                "ACOTH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ACOTH")?;
+                    res_to_rd(crate::core::math_trig::acoth(x))
+                }
+                "AGGREGATE" | "SUBTOTAL" => {
+                    let fn_num = self
+                        .to_f64_arg(evaluated_args.first(), "AGGREGATE")?
+                        .round() as usize;
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .skip(1)
+                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    match fn_num % 100 {
+                        1 => res_to_rd(if nums.is_empty() {
+                            Err("#DIV/0!".to_string())
+                        } else {
+                            Ok(nums.iter().sum::<f64>() / nums.len() as f64)
+                        }),
+                        2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
+                        4 => Ok(ResultData::Float(
+                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                        )),
+                        5 => Ok(ResultData::Float(
+                            nums.iter().cloned().fold(f64::INFINITY, f64::min),
+                        )),
+                        6 => Ok(ResultData::Float(nums.iter().product())),
+                        7 => res_to_rd(crate::core::stats::stdev_s(&nums)),
+                        8 => res_to_rd(crate::core::stats::stdev_p(&nums)),
+                        9 => Ok(ResultData::Float(nums.iter().sum())),
+                        10 => res_to_rd(crate::core::stats::var_s(&nums)),
+                        11 => res_to_rd(crate::core::stats::var_p(&nums)),
+                        12 => res_to_rd(crate::core::stats::median(&nums)),
+                        _ => Ok(ResultData::Float(nums.iter().sum())),
+                    }
+                }
+                "ARABIC" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::arabic(&text))
+                }
+                "ASINH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ASINH")?;
+                    res_to_rd(crate::core::math_trig::asinh(x))
+                }
+                "ATAN2" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ATAN2")?;
+                    let y = self.to_f64_arg(evaluated_args.get(1), "ATAN2")?;
+                    res_to_rd(crate::core::math_trig::atan2(x, y))
+                }
+                "ATANH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ATANH")?;
+                    res_to_rd(crate::core::math_trig::atanh(x))
+                }
+                "BASE" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "BASE")?;
+                    let radix = self.to_f64_arg(evaluated_args.get(1), "BASE")?;
+                    let min_len = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    match crate::core::math_trig::base(num, radix, min_len) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "CEILING.MATH" | "CEILING.PRECISE" | "ISO.CEILING" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CEILING.MATH")?;
+                    let sig = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let mode = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::ceiling_math(x, sig, mode))
+                }
+                "COMBIN" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "COMBIN")?;
+                    let k = self.to_f64_arg(evaluated_args.get(1), "COMBIN")?;
+                    res_to_rd(crate::core::math_trig::combin(n, k))
+                }
+                "COMBINA" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "COMBINA")?;
+                    let k = self.to_f64_arg(evaluated_args.get(1), "COMBINA")?;
+                    res_to_rd(crate::core::math_trig::combina(n, k))
+                }
+                "COSH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "COSH")?;
+                    res_to_rd(crate::core::math_trig::cosh(x))
+                }
+                "COT" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "COT")?;
+                    res_to_rd(crate::core::math_trig::cot(x))
+                }
+                "COTH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "COTH")?;
+                    res_to_rd(crate::core::math_trig::coth(x))
+                }
+                "CSC" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CSC")?;
+                    res_to_rd(crate::core::math_trig::csc(x))
+                }
+                "CSCH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "CSCH")?;
+                    res_to_rd(crate::core::math_trig::csch(x))
+                }
+                "DECIMAL" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let radix = self.to_f64_arg(evaluated_args.get(1), "DECIMAL")?;
+                    res_to_rd(crate::core::math_trig::decimal(&text, radix))
+                }
+                "DEGREES" => {
+                    let rad = self.to_f64_arg(evaluated_args.first(), "DEGREES")?;
+                    res_to_rd(crate::core::math_trig::degrees(rad))
+                }
+                "EVEN" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "EVEN")?;
+                    res_to_rd(crate::core::math_trig::even(x))
+                }
+                "FACT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "FACT")?;
+                    res_to_rd(crate::core::math_trig::fact(n))
+                }
+                "FACTDOUBLE" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "FACTDOUBLE")?;
+                    res_to_rd(crate::core::math_trig::factdouble(n))
+                }
+                "FLOOR.MATH" | "FLOOR.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "FLOOR.MATH")?;
+                    let sig = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let mode = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::floor_math(x, sig, mode))
+                }
+                "GCD" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    res_to_rd(crate::core::math_trig::gcd(&nums))
+                }
+                "LCM" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    res_to_rd(crate::core::math_trig::lcm(&nums))
+                }
+                "LOG" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
+                    let base = evaluated_args
+                        .get(1)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(10.0);
+                    if num <= 0.0 || base <= 0.0 || base == 1.0 {
+                        Ok(ResultData::Error("#NUM!".to_string()))
+                    } else {
+                        Ok(ResultData::Float(num.log(base)))
+                    }
+                }
+                "MDETERM" => {
+                    let matrix = evaluated_args
+                        .first()
+                        .map(|arg| self.extract_matrix(arg))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::mdeterm(&matrix))
+                }
+                "MINVERSE" => {
+                    let matrix = evaluated_args
+                        .first()
+                        .map(|arg| self.extract_matrix(arg))
+                        .unwrap_or_default();
+                    match crate::core::math_trig::minverse(&matrix) {
+                        Ok(inv) => Ok(ResultData::List(
+                            inv.into_iter()
+                                .map(|row| {
+                                    ResultData::List(
+                                        row.into_iter().map(ResultData::Float).collect(),
+                                    )
+                                })
+                                .collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "MROUND" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "MROUND")?;
+                    let mult = self.to_f64_arg(evaluated_args.get(1), "MROUND")?;
+                    res_to_rd(crate::core::math_trig::mround(x, mult))
+                }
+                "MULTINOMIAL" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    res_to_rd(crate::core::math_trig::multinomial(&nums))
+                }
+                "MUNIT" => {
+                    let dim = self.to_f64_arg(evaluated_args.first(), "MUNIT")?;
+                    match crate::core::math_trig::munit(dim) {
+                        Ok(mat) => Ok(ResultData::List(
+                            mat.into_iter()
+                                .map(|row| {
+                                    ResultData::List(
+                                        row.into_iter().map(ResultData::Float).collect(),
+                                    )
+                                })
+                                .collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "ODD" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ODD")?;
+                    res_to_rd(crate::core::math_trig::odd(x))
+                }
+                "PERCENTOF" => {
+                    let data_val = self.to_f64_arg(evaluated_args.first(), "PERCENTOF")?;
+                    let target_val = self.to_f64_arg(evaluated_args.get(1), "PERCENTOF")?;
+                    res_to_rd(crate::core::math_trig::percentof(data_val, target_val))
+                }
+                "PI" => Ok(ResultData::Float(std::f64::consts::PI)),
+                "POWER" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "POWER")?;
+                    let p = self.to_f64_arg(evaluated_args.get(1), "POWER")?;
+                    res_to_rd(crate::core::math_trig::power(num, p))
+                }
+                "QUOTIENT" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "QUOTIENT")?;
+                    let den = self.to_f64_arg(evaluated_args.get(1), "QUOTIENT")?;
+                    res_to_rd(crate::core::math_trig::quotient(num, den))
+                }
+                "RADIANS" => {
+                    let deg = self.to_f64_arg(evaluated_args.first(), "RADIANS")?;
+                    res_to_rd(crate::core::math_trig::radians(deg))
+                }
+                "RANDARRAY" => {
+                    let rows = evaluated_args.first().and_then(|v| self.to_f64(v));
+                    let cols = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let min = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    let max = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    let whole = evaluated_args.get(4).map(|v| self.to_bool(v));
+                    match crate::core::math_trig::randarray(rows, cols, min, max, whole) {
+                        Ok(grid) => Ok(ResultData::List(
+                            grid.into_iter()
+                                .map(|row| {
+                                    ResultData::List(
+                                        row.into_iter().map(ResultData::Float).collect(),
+                                    )
+                                })
+                                .collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "ROMAN" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "ROMAN")?;
+                    let form = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::math_trig::roman(num, form) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "SEC" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SEC")?;
+                    res_to_rd(crate::core::math_trig::sec(x))
+                }
+                "SECH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SECH")?;
+                    res_to_rd(crate::core::math_trig::sech(x))
+                }
+                "SEQUENCE" => {
+                    let rows = self.to_f64_arg(evaluated_args.first(), "SEQUENCE")?;
+                    let cols = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let start = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    let step = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    match crate::core::math_trig::sequence(rows, cols, start, step) {
+                        Ok(grid) => Ok(ResultData::List(
+                            grid.into_iter()
+                                .map(|row| {
+                                    ResultData::List(
+                                        row.into_iter().map(ResultData::Float).collect(),
+                                    )
+                                })
+                                .collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "SERIESSUM" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SERIESSUM")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "SERIESSUM")?;
+                    let m = self.to_f64_arg(evaluated_args.get(2), "SERIESSUM")?;
+                    let coeffs: Vec<f64> = evaluated_args
+                        .get(3)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::seriessum(x, n, m, &coeffs))
+                }
+                "SIGN" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SIGN")?;
+                    res_to_rd(crate::core::math_trig::sign(x))
+                }
+                "SINH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SINH")?;
+                    res_to_rd(crate::core::math_trig::sinh(x))
+                }
+                "SQRTPI" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "SQRTPI")?;
+                    res_to_rd(crate::core::math_trig::sqrtpi(x))
+                }
+                "SUMPRODUCT" => {
+                    let arrays: Vec<Vec<f64>> = evaluated_args
+                        .iter()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    res_to_rd(crate::core::math_trig::sumproduct(&arrays))
+                }
+                "SUMSQ" => {
+                    let nums: Vec<f64> = evaluated_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    res_to_rd(crate::core::math_trig::sumsq(&nums))
+                }
+                "SUMX2MY2" => {
+                    let xs: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::sumx2my2(&xs, &ys))
+                }
+                "SUMX2PY2" => {
+                    let xs: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::sumx2py2(&xs, &ys))
+                }
+                "SUMXMY2" => {
+                    let xs: Vec<f64> = evaluated_args
+                        .first()
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    let ys: Vec<f64> = evaluated_args
+                        .get(1)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::math_trig::sumxmy2(&xs, &ys))
+                }
+                "TANH" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "TANH")?;
+                    res_to_rd(crate::core::math_trig::tanh(x))
+                }
+                "TRUNC" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "TRUNC")?;
+                    let digits = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::trunc(x, digits))
+                }
+
+                // --- TEXT FUNCTIONS ---
+                "ARRAYTOTEXT" => {
+                    let items: Vec<String> = evaluated_args
+                        .first()
+                        .map(|arg| {
+                            self.flatten_stat_numbers(arg, false)
+                                .iter()
+                                .map(|v| v.to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let fmt = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::text::arraytotext(&items, fmt) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "ASC" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::asc(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "BAHTTEXT" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "BAHTTEXT")?;
+                    match crate::core::text::bahttext(num) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "CHAR" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "CHAR")?;
+                    match crate::core::text::char_fn(num) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "CLEAN" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::clean(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "CODE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::text::code(&text))
+                }
+                "DBCS" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::dbcs(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "DETECTLANGUAGE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::detectlanguage(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "DOLLAR" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "DOLLAR")?;
+                    let dec = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::text::dollar(num, dec) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "EXACT" => {
+                    let t1 = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let t2 = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::exact(&t1, &t2) {
+                        Ok(b) => Ok(ResultData::Boolean(b)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "FIND" | "FINDB" => {
+                    let find_text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let within_text = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let start_num = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::text::find(&find_text, &within_text, start_num))
+                }
+                "FIXED" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "FIXED")?;
+                    let dec = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    let no_commas = evaluated_args.get(2).map(|v| self.to_bool(v));
+                    match crate::core::text::fixed(num, dec, no_commas) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "NUMBERVALUE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let dec = evaluated_args.get(1).map(|v| v.to_string());
+                    let grp = evaluated_args.get(2).map(|v| v.to_string());
+                    res_to_rd(crate::core::text::numbervalue(
+                        &text,
+                        dec.as_deref(),
+                        grp.as_deref(),
+                    ))
+                }
+                "PHONETIC" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::phonetic(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "REGEXEXTRACT" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let pat = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::regexextract(&text, &pat) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "REGEXREPLACE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let pat = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let rep = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::regexreplace(&text, &pat, &rep) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "REGEXTEST" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let pat = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::regextest(&text, &pat) {
+                        Ok(b) => Ok(ResultData::Boolean(b)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "REPLACE" | "REPLACEB" => {
+                    let old_text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let start_num = self.to_f64_arg(evaluated_args.get(1), "REPLACE")?;
+                    let num_chars = self.to_f64_arg(evaluated_args.get(2), "REPLACE")?;
+                    let new_text = evaluated_args
+                        .get(3)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::replace_fn(&old_text, start_num, num_chars, &new_text)
+                    {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "REPT" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let cnt = self.to_f64_arg(evaluated_args.get(1), "REPT")?;
+                    match crate::core::text::rept(&text, cnt) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "SEARCH" | "SEARCHB" => {
+                    let find_text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let within_text = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let start_num = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::text::search(
+                        &find_text,
+                        &within_text,
+                        start_num,
+                    ))
+                }
+                "SUBSTITUTE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let old_text = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let new_text = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let instance = evaluated_args.get(3).and_then(|v| self.to_f64(v));
+                    match crate::core::text::substitute(&text, &old_text, &new_text, instance) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "T" => {
+                    let is_str = matches!(evaluated_args.first(), Some(ResultData::String(_)));
+                    let val = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    Ok(ResultData::String(crate::core::text::t_fn(&val, is_str)))
+                }
+                "TEXT" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "TEXT")?;
+                    let fmt = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::text_fn(num, &fmt) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "TEXTAFTER" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let delim = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let instance = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    match crate::core::text::textafter(&text, &delim, instance) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "TEXTBEFORE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let delim = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let instance = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    match crate::core::text::textbefore(&text, &delim, instance) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "TEXTJOIN" => {
+                    let delim = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let ignore = evaluated_args
+                        .get(1)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    let texts: Vec<String> = evaluated_args
+                        .iter()
+                        .skip(2)
+                        .map(|v| v.to_string())
+                        .collect();
+                    match crate::core::text::textjoin(&delim, ignore, &texts) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "TEXTSPLIT" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let delim = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::textsplit(&text, &delim) {
+                        Ok(parts) => Ok(ResultData::List(
+                            parts.into_iter().map(ResultData::String).collect(),
+                        )),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "TRANSLATE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let from = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let to = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::translate(&text, &from, &to) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "UNICHAR" => {
+                    let num = self.to_f64_arg(evaluated_args.first(), "UNICHAR")?;
+                    match crate::core::text::unichar(num) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "UNICODE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::text::unicode(&text))
+                }
+                "VALUE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::text::value(&text))
+                }
+                "VALUETOTEXT" => {
+                    let val = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let fmt = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::text::valuetotext(&val, fmt) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "LEFTB" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let count = evaluated_args
+                        .get(1)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(1.0)
+                        .floor() as usize;
+                    let res: String = text.chars().take(count).collect();
+                    Ok(ResultData::String(res))
+                }
+                "RIGHTB" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let count = evaluated_args
+                        .get(1)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(1.0)
+                        .floor() as usize;
+                    let chars: Vec<char> = text.chars().collect();
+                    let skip = chars.len().saturating_sub(count);
+                    let res: String = chars.into_iter().skip(skip).collect();
+                    Ok(ResultData::String(res))
+                }
+                "LENB" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    Ok(ResultData::Float(text.len() as f64))
+                }
+                "MIDB" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let start = self.to_f64_arg(evaluated_args.get(1), "MIDB")?.floor() as usize;
+                    let count = self.to_f64_arg(evaluated_args.get(2), "MIDB")?.floor() as usize;
+                    if start < 1 {
+                        Ok(ResultData::Error("#VALUE!".to_string()))
+                    } else {
+                        let chars: Vec<char> = text.chars().collect();
+                        let start_idx = (start - 1).min(chars.len());
+                        let res: String = chars.into_iter().skip(start_idx).take(count).collect();
+                        Ok(ResultData::String(res))
+                    }
+                }
+
+                // --- DATE AND TIME FUNCTIONS ---
+                "DATE" => {
+                    let y = self.to_f64_arg(evaluated_args.first(), "DATE")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "DATE")?;
+                    let d = self.to_f64_arg(evaluated_args.get(2), "DATE")?;
+                    res_to_rd(crate::core::date_fn::date_fn(y, m, d))
+                }
+                "DATEDIF" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "DATEDIF")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "DATEDIF")?;
+                    let unit = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let (y1, m1, d1) = crate::core::date_fn::serial_to_ymd(s);
+                    let (y2, m2, d2) = crate::core::date_fn::serial_to_ymd(e);
+                    match unit.to_uppercase().as_str() {
+                        "Y" => Ok(ResultData::Float((y2 - y1) as f64)),
+                        "M" => Ok(ResultData::Float(((y2 - y1) * 12 + (m2 - m1)) as f64)),
+                        "D" => Ok(ResultData::Float(e - s)),
+                        "MD" => Ok(ResultData::Float((d2 - d1) as f64)),
+                        "YM" => Ok(ResultData::Float(((m2 - m1) % 12) as f64)),
+                        "YD" => Ok(ResultData::Float((e - s) % 365.0)),
+                        _ => Ok(ResultData::Float(e - s)),
+                    }
+                }
+                "DATEVALUE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::text::value(&text))
+                }
+                "DAY" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "DAY")?;
+                    res_to_rd(crate::core::date_fn::day_fn(s))
+                }
+                "DAYS" => {
+                    let e = self.to_f64_arg(evaluated_args.first(), "DAYS")?;
+                    let s = self.to_f64_arg(evaluated_args.get(1), "DAYS")?;
+                    res_to_rd(crate::core::date_fn::days(e, s))
+                }
+                "DAYS360" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "DAYS360")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "DAYS360")?;
+                    let method = evaluated_args.get(2).map(|v| self.to_bool(v));
+                    res_to_rd(crate::core::date_fn::days360(s, e, method))
+                }
+                "EDATE" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "EDATE")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "EDATE")?;
+                    res_to_rd(crate::core::date_fn::edate(s, m))
+                }
+                "EOMONTH" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "EOMONTH")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "EOMONTH")?;
+                    res_to_rd(crate::core::date_fn::eomonth(s, m))
+                }
+                "HOUR" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "HOUR")?;
+                    res_to_rd(crate::core::date_fn::hour_fn(s))
+                }
+                "ISOWEEKNUM" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "ISOWEEKNUM")?;
+                    res_to_rd(crate::core::date_fn::isoweeknum(s))
+                }
+                "MINUTE" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "MINUTE")?;
+                    res_to_rd(crate::core::date_fn::minute_fn(s))
+                }
+                "MONTH" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "MONTH")?;
+                    res_to_rd(crate::core::date_fn::month_fn(s))
+                }
+                "NETWORKDAYS" | "NETWORKDAYS.INTL" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "NETWORKDAYS")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "NETWORKDAYS")?;
+                    let holidays: Vec<f64> = evaluated_args
+                        .get(2)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::date_fn::networkdays(s, e, &holidays))
+                }
+                "SECOND" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "SECOND")?;
+                    res_to_rd(crate::core::date_fn::second_fn(s))
+                }
+                "TIME" => {
+                    let h = self.to_f64_arg(evaluated_args.first(), "TIME")?;
+                    let m = self.to_f64_arg(evaluated_args.get(1), "TIME")?;
+                    let s = self.to_f64_arg(evaluated_args.get(2), "TIME")?;
+                    res_to_rd(crate::core::date_fn::time_fn(h, m, s))
+                }
+                "TIMEVALUE" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::text::value(&text))
+                }
+                "WEEKDAY" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "WEEKDAY")?;
+                    let r_type = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::date_fn::weekday(s, r_type))
+                }
+                "WEEKNUM" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "WEEKNUM")?;
+                    let r_type = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::date_fn::weeknum(s, r_type))
+                }
+                "WORKDAY" | "WORKDAY.INTL" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "WORKDAY")?;
+                    let days = self.to_f64_arg(evaluated_args.get(1), "WORKDAY")?;
+                    let holidays: Vec<f64> = evaluated_args
+                        .get(2)
+                        .map(|arg| self.flatten_stat_numbers(arg, false))
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::date_fn::workday(s, days, &holidays))
+                }
+                "YEAR" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "YEAR")?;
+                    res_to_rd(crate::core::date_fn::year_fn(s))
+                }
+                "YEARFRAC" => {
+                    let s = self.to_f64_arg(evaluated_args.first(), "YEARFRAC")?;
+                    let e = self.to_f64_arg(evaluated_args.get(1), "YEARFRAC")?;
+                    let basis = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::date_fn::yearfrac(s, e, basis))
+                }
+
+                // --- ENGINEERING FUNCTIONS ---
+                "BESSELI" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELI")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELI")?;
+                    res_to_rd(crate::core::engineering::besseli(x, n))
+                }
+                "BESSELJ" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELJ")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELJ")?;
+                    res_to_rd(crate::core::engineering::besselj(x, n))
+                }
+                "BESSELK" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELK")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELK")?;
+                    res_to_rd(crate::core::engineering::besselk(x, n))
+                }
+                "BESSELY" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "BESSELY")?;
+                    let n = self.to_f64_arg(evaluated_args.get(1), "BESSELY")?;
+                    res_to_rd(crate::core::engineering::bessely(x, n))
+                }
+                "BIN2DEC" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::bin2dec(&t))
+                }
+                "BIN2HEX" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::bin2hex(&t, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "BIN2OCT" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::bin2oct(&t, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "BITAND" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "BITAND")?;
+                    let n2 = self.to_f64_arg(evaluated_args.get(1), "BITAND")?;
+                    res_to_rd(crate::core::engineering::bitand(n1, n2))
+                }
+                "BITLSHIFT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "BITLSHIFT")?;
+                    let s = self.to_f64_arg(evaluated_args.get(1), "BITLSHIFT")?;
+                    res_to_rd(crate::core::engineering::bitlshift(n, s))
+                }
+                "BITOR" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "BITOR")?;
+                    let n2 = self.to_f64_arg(evaluated_args.get(1), "BITOR")?;
+                    res_to_rd(crate::core::engineering::bitor(n1, n2))
+                }
+                "BITRSHIFT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "BITRSHIFT")?;
+                    let s = self.to_f64_arg(evaluated_args.get(1), "BITRSHIFT")?;
+                    res_to_rd(crate::core::engineering::bitrshift(n, s))
+                }
+                "BITXOR" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "BITXOR")?;
+                    let n2 = self.to_f64_arg(evaluated_args.get(1), "BITXOR")?;
+                    res_to_rd(crate::core::engineering::bitxor(n1, n2))
+                }
+                "COMPLEX" => {
+                    let r = self.to_f64_arg(evaluated_args.first(), "COMPLEX")?;
+                    let i = self.to_f64_arg(evaluated_args.get(1), "COMPLEX")?;
+                    let s = evaluated_args.get(2).map(|v| v.to_string());
+                    match crate::core::engineering::complex_fn(r, i, s.as_deref()) {
+                        Ok(res) => Ok(ResultData::String(res)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "CONVERT" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "CONVERT")?;
+                    let u1 = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let u2 = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::convert(val, &u1, &u2))
+                }
+                "DEC2BIN" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "DEC2BIN")?;
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::dec2bin(n, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "DEC2HEX" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "DEC2HEX")?;
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::dec2hex(n, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "DEC2OCT" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "DEC2OCT")?;
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::dec2oct(n, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "DELTA" => {
+                    let n1 = self.to_f64_arg(evaluated_args.first(), "DELTA")?;
+                    let n2 = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::engineering::delta(n1, n2))
+                }
+                "ERF" | "ERF.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ERF")?;
+                    res_to_rd(Ok(crate::core::stats::erf(x)))
+                }
+                "ERFC" | "ERFC.PRECISE" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "ERFC")?;
+                    res_to_rd(Ok(crate::core::stats::erfc(x)))
+                }
+                "GESTEP" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "GESTEP")?;
+                    let step = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::engineering::gestep(n, step))
+                }
+                "HEX2BIN" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::hex2bin(&t, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "HEX2DEC" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::hex2dec(&t))
+                }
+                "HEX2OCT" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::hex2oct(&t, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMABS" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imabs(&t))
+                }
+                "IMAGINARY" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imaginary(&t))
+                }
+                "IMARGUMENT" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imargument(&t))
+                }
+                "IMCONJUGATE" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::engineering::imconjugate(&t) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMDIV" => {
+                    let t1 = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let t2 = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::engineering::imdiv(&t1, &t2) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMPRODUCT" => {
+                    let strs: Vec<String> = evaluated_args.iter().map(|v| v.to_string()).collect();
+                    let refs: Vec<&str> = strs.iter().map(|s| s.as_str()).collect();
+                    match crate::core::engineering::improduct(&refs) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMREAL" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::imreal(&t))
+                }
+                "IMSUB" => {
+                    let t1 = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let t2 = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::engineering::imsub(&t1, &t2) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMSUM" => {
+                    let strs: Vec<String> = evaluated_args.iter().map(|v| v.to_string()).collect();
+                    let refs: Vec<&str> = strs.iter().map(|s| s.as_str()).collect();
+                    match crate::core::engineering::imsum(&refs) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "OCT2BIN" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::oct2bin(&t, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "OCT2DEC" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::engineering::oct2dec(&t))
+                }
+                "OCT2HEX" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let p = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    match crate::core::engineering::oct2hex(&t, p) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMCOS" | "IMCOSH" | "IMCOT" | "IMCSC" | "IMCSCH" | "IMEXP" | "IMLN"
+                | "IMLOG10" | "IMLOG2" | "IMPOWER" | "IMSEC" | "IMSECH" | "IMSIN" | "IMSINH"
+                | "IMSQRT" | "IMTAN" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    Ok(ResultData::String(t))
+                }
+
+                // --- INFORMATION & LOGICAL & DATABASE & LOOKUP & WEB & CUBE FUNCTIONS ---
+                "ERROR.TYPE" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    res_to_rd(crate::core::extended_fn::error_type(&t))
+                }
+                "ISERR" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Boolean(crate::core::extended_fn::iserr(&val)))
+                }
+                "ISEVEN" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "ISEVEN")?;
+                    Ok(ResultData::Boolean(crate::core::extended_fn::iseven(n)))
+                }
+                "ISLOGICAL" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Boolean(crate::core::extended_fn::islogical(
+                        &val,
+                    )))
+                }
+                "ISNONTEXT" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Boolean(crate::core::extended_fn::isnontext(
+                        &val,
+                    )))
+                }
+                "ISODD" => {
+                    let n = self.to_f64_arg(evaluated_args.first(), "ISODD")?;
+                    Ok(ResultData::Boolean(crate::core::extended_fn::isodd(n)))
+                }
+                "N" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Float(crate::core::extended_fn::n_fn(&val)))
+                }
+                "NA" => Ok(crate::core::extended_fn::na_fn()),
+                "TYPE" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    Ok(ResultData::Float(crate::core::extended_fn::type_fn(&val)))
+                }
+                "XOR" => {
+                    let bools: Vec<bool> = evaluated_args.iter().map(|v| self.to_bool(v)).collect();
+                    Ok(ResultData::Boolean(crate::core::extended_fn::xor_fn(
+                        &bools,
+                    )))
+                }
+                "IFNA" => {
+                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    let alt = evaluated_args.get(1).cloned().unwrap_or(ResultData::None);
+                    Ok(crate::core::extended_fn::ifna(val, alt))
+                }
+                "IFS" => {
+                    for chunk in evaluated_args.chunks(2) {
+                        if chunk.len() == 2 && self.to_bool(&chunk[0]) {
+                            return Ok(chunk[1].clone());
+                        }
+                    }
+                    Ok(ResultData::Error("#N/A".to_string()))
+                }
+                "SWITCH" => {
+                    if evaluated_args.is_empty() {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
+                    let expr = &evaluated_args[0];
+                    let rest = &evaluated_args[1..];
+                    let mut i = 0;
+                    while i + 1 < rest.len() {
+                        if expr.to_string() == rest[i].to_string() {
+                            return Ok(rest[i + 1].clone());
+                        }
+                        i += 2;
+                    }
+                    if i < rest.len() {
+                        Ok(rest[i].clone())
+                    } else {
+                        Ok(ResultData::Error("#N/A".to_string()))
+                    }
+                }
+                "ADDRESS" => {
+                    let r = self.to_f64_arg(evaluated_args.first(), "ADDRESS")?;
+                    let c = self.to_f64_arg(evaluated_args.get(1), "ADDRESS")?;
+                    let abs_n = evaluated_args.get(2).and_then(|v| self.to_f64(v));
+                    let a1 = evaluated_args.get(3).map(|v| self.to_bool(v));
+                    let s_name = evaluated_args.get(4).map(|v| v.to_string());
+                    match crate::core::extended_fn::address_fn(r, c, abs_n, a1, s_name.as_deref()) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "HLOOKUP" => {
+                    let lookup_val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
+                    let table: Vec<Vec<ResultData>> = evaluated_args
+                        .get(1)
+                        .map(|arg| {
+                            self.extract_matrix(arg)
+                                .into_iter()
+                                .map(|row| row.into_iter().map(ResultData::Float).collect())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let row_idx = self.to_f64_arg(evaluated_args.get(2), "HLOOKUP")?;
+                    let range_lookup = evaluated_args.get(3).map(|v| self.to_bool(v));
+                    Ok(crate::core::extended_fn::hlookup(
+                        &lookup_val,
+                        &table,
+                        row_idx,
+                        range_lookup,
+                    ))
+                }
+                "ENCODEURL" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::extended_fn::encodeurl(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "STOCKHISTORY" => Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None)),
+                "DAVERAGE" | "DCOUNT" | "DCOUNTA" | "DGET" | "DMAX" | "DMIN" | "DPRODUCT"
+                | "DSTDEV" | "DSTDEVP" | "DSUM" | "DVAR" | "DVARP" => self
+                    .evaluate_database_function(
+                        upper_name.as_str(),
+                        args,
+                        &evaluated_args,
+                        context,
+                    ),
+                "HYPERLINK" => {
+                    // No clickable-hyperlink concept in this engine --
+                    // returns the display value a formula-based consumer
+                    // would see: friendly_name if given, else the raw
+                    // link_location text.
+                    match evaluated_args.get(1) {
+                        Some(friendly) => Ok(friendly.clone()),
+                        None => Ok(evaluated_args
+                            .first()
+                            .cloned()
+                            .unwrap_or(ResultData::Error("#VALUE!".to_string()))),
+                    }
+                }
+                "GETPIVOTDATA" | "GROUPBY" | "IMAGE" | "PIVOTBY" | "RTD" => {
+                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+                "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER"
+                | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" | "FILTERXML" | "WEBSERVICE" => {
+                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+
                 "SUM" => {
                     if let Some(err) = self.check_arg_errors(&evaluated_args, &arg_is_direct) {
                         return Ok(err);
@@ -1781,8 +6094,8 @@ impl Sheet {
                     let val = self.to_f64_arg(evaluated_args.first(), "FLOOR")?;
                     Ok(ResultData::Float(val.floor()))
                 }
-                "CEIL" => {
-                    let val = self.to_f64_arg(evaluated_args.first(), "CEIL")?;
+                "CEILING" => {
+                    let val = self.to_f64_arg(evaluated_args.first(), "CEILING")?;
                     Ok(ResultData::Float(val.ceil()))
                 }
                 "LOG10" => {
@@ -2001,10 +6314,18 @@ impl Sheet {
                 }
                 "INDEX" => {
                     if evaluated_args.len() == 2 {
-                        if let ResultData::List(list) = &evaluated_args[0] {
+                        if let ResultData::List(raw) = &evaluated_args[0] {
+                            let (list, _) = Self::flatten_row_major(raw.clone());
                             let idx = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as isize;
                             let len = list.len() as isize;
-                            let real_idx = if idx < 0 { len + idx } else { idx };
+                            // 1-based like every other INDEX form -- found
+                            // via the differential fuzzer (LAMBDA/MAP/
+                            // BYROW testing was the first thing to ever
+                            // exercise this 2-arg path; the standalone
+                            // INDEX fuzz generator only ever used the
+                            // 3-arg row/col form) that this returned the
+                            // element one past the requested position.
+                            let real_idx = if idx < 0 { len + idx } else { idx - 1 };
                             if real_idx >= 0 && real_idx < len {
                                 Ok(list[real_idx as usize].clone())
                             } else {
@@ -2017,12 +6338,20 @@ impl Sheet {
                         let row_num = self.to_f64(&evaluated_args[1]).unwrap_or(1.0) as isize;
                         let col_num = self.to_f64(&evaluated_args[2]).unwrap_or(1.0) as isize;
 
-                        if let ResultData::List(list) = &evaluated_args[0] {
-                            let num_cols = match &args[0] {
-                                Expr::RangeRef {
-                                    start_col, end_col, ..
-                                } => (end_col - start_col + 1) as isize,
-                                _ => 1,
+                        if let ResultData::List(raw) = &evaluated_args[0] {
+                            let (list, nested_cols) = Self::flatten_row_major(raw.clone());
+                            let num_cols = match nested_cols {
+                                Some(c) => c as isize,
+                                None => match &args[0] {
+                                    Expr::RangeRef {
+                                        start_col, end_col, ..
+                                    } => (end_col - start_col + 1) as isize,
+                                    Expr::FunctionCall { name, args: fargs } => self
+                                        .function_call_cols(name, fargs, context, row, deps, scope)
+                                        .unwrap_or(1)
+                                        as isize,
+                                    _ => 1,
+                                },
                             };
                             let r_idx = row_num - 1;
                             let c_idx = col_num - 1;
@@ -2200,6 +6529,8 @@ impl Sheet {
                         Ok(ResultData::Boolean(res))
                     }
                 }
+                "TRUE" => Ok(ResultData::Boolean(true)),
+                "FALSE" => Ok(ResultData::Boolean(false)),
                 "NOT" => {
                     if let Some(err) = Self::find_error_in_args(&evaluated_args) {
                         return Ok(err);
@@ -2448,6 +6779,95 @@ impl Sheet {
                         }
                     } else {
                         Ok(ResultData::Error("#N/A".to_string()))
+                    }
+                }
+                "LOOKUP" => {
+                    if evaluated_args.len() < 2 {
+                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                            "LOOKUP requires at least 2 arguments".to_string(),
+                        )));
+                    }
+                    let lookup_val = &evaluated_args[0];
+                    let lookup_vec: Vec<ResultData> = match &evaluated_args[1] {
+                        ResultData::List(l) => l.clone(),
+                        other => vec![other.clone()],
+                    };
+                    let result_vec: Vec<ResultData> = match evaluated_args.get(2) {
+                        Some(ResultData::List(l)) => l.clone(),
+                        Some(other) => vec![other.clone()],
+                        None => lookup_vec.clone(),
+                    };
+                    let lookup_f = self.to_f64(lookup_val);
+                    let mut match_idx: Option<usize> = None;
+                    for (idx, item) in lookup_vec.iter().enumerate() {
+                        let is_match = match lookup_f {
+                            Some(lf) => self.to_f64(item).map(|f| f <= lf).unwrap_or(false),
+                            None => item.to_string() <= lookup_val.to_string(),
+                        };
+                        if is_match {
+                            match_idx = Some(idx);
+                        } else {
+                            break;
+                        }
+                    }
+                    match match_idx {
+                        Some(idx) => Ok(result_vec
+                            .get(idx)
+                            .cloned()
+                            .unwrap_or(ResultData::Error("#N/A".to_string()))),
+                        None => Ok(ResultData::Error("#N/A".to_string())),
+                    }
+                }
+                "XMATCH" => {
+                    if evaluated_args.len() < 2 {
+                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                            "XMATCH requires at least 2 arguments".to_string(),
+                        )));
+                    }
+                    let lookup_val = &evaluated_args[0];
+                    let arr: Vec<ResultData> = match &evaluated_args[1] {
+                        ResultData::List(l) => l.clone(),
+                        other => vec![other.clone()],
+                    };
+                    // search_mode (a 4th argument) isn't supported beyond
+                    // the default forward linear search, nor is wildcard
+                    // match_mode (2).
+                    let match_mode = evaluated_args
+                        .get(2)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0) as isize;
+                    let found = match match_mode {
+                        -1 | 1 => {
+                            let lf = self.to_f64(lookup_val).unwrap_or(0.0);
+                            let mut best: Option<(usize, f64)> = None;
+                            for (i, item) in arr.iter().enumerate() {
+                                if let Some(f) = self.to_f64(item) {
+                                    let candidate =
+                                        if match_mode == -1 { f <= lf } else { f >= lf };
+                                    let better = match best {
+                                        Some((_, bf)) => {
+                                            if match_mode == -1 {
+                                                f > bf
+                                            } else {
+                                                f < bf
+                                            }
+                                        }
+                                        None => true,
+                                    };
+                                    if candidate && better {
+                                        best = Some((i, f));
+                                    }
+                                }
+                            }
+                            best.map(|(i, _)| i)
+                        }
+                        _ => arr
+                            .iter()
+                            .position(|item| item.to_string() == lookup_val.to_string()),
+                    };
+                    match found {
+                        Some(i) => Ok(ResultData::Float((i + 1) as f64)),
+                        None => Ok(ResultData::Error("#N/A".to_string())),
                     }
                 }
                 "VLOOKUP" => {
@@ -2788,6 +7208,662 @@ impl Sheet {
                     } else {
                         Ok(ResultData::Error("#VALUE!".to_string()))
                     }
+                }
+                "PV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PV")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "PV")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(2), "PV")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::pv(
+                        rate, nper, pmt, fv, pmt_type,
+                    )))
+                }
+                "FV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "FV")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "FV")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(2), "FV")?;
+                    let pv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::fv(
+                        rate, nper, pmt, pv, pmt_type,
+                    )))
+                }
+                "PMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "PMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "PMT")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::pmt(
+                        rate, nper, pv, fv, pmt_type,
+                    )))
+                }
+                "NPER" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "NPER")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(1), "NPER")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "NPER")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    match finance::nper(rate, pmt, pv, fv, pmt_type) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "RATE" => {
+                    let nper = self.to_f64_arg(evaluated_args.first(), "RATE")?;
+                    let pmt = self.to_f64_arg(evaluated_args.get(1), "RATE")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "RATE")?;
+                    let fv = self.opt_f64(&evaluated_args, 3, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 4, 0.0);
+                    let guess = self.opt_f64(&evaluated_args, 5, 0.1);
+                    match finance::rate(nper, pmt, pv, fv, pmt_type, guess) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "IPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "IPMT")?;
+                    let per = self.to_f64_arg(evaluated_args.get(1), "IPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(2), "IPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(3), "IPMT")?;
+                    let fv = self.opt_f64(&evaluated_args, 4, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::ipmt(
+                        rate, per, nper, pv, fv, pmt_type,
+                    )))
+                }
+                "PPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PPMT")?;
+                    let per = self.to_f64_arg(evaluated_args.get(1), "PPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(2), "PPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(3), "PPMT")?;
+                    let fv = self.opt_f64(&evaluated_args, 4, 0.0);
+                    let pmt_type = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::ppmt(
+                        rate, per, nper, pv, fv, pmt_type,
+                    )))
+                }
+                "CUMIPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "CUMIPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "CUMIPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "CUMIPMT")?;
+                    let start = self.to_f64_arg(evaluated_args.get(3), "CUMIPMT")?;
+                    let end = self.to_f64_arg(evaluated_args.get(4), "CUMIPMT")?;
+                    let pmt_type = self.to_f64_arg(evaluated_args.get(5), "CUMIPMT")?;
+                    Ok(ResultData::Float(finance::cumipmt(
+                        rate, nper, pv, start, end, pmt_type,
+                    )))
+                }
+                "CUMPRINC" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "CUMPRINC")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(1), "CUMPRINC")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(2), "CUMPRINC")?;
+                    let start = self.to_f64_arg(evaluated_args.get(3), "CUMPRINC")?;
+                    let end = self.to_f64_arg(evaluated_args.get(4), "CUMPRINC")?;
+                    let pmt_type = self.to_f64_arg(evaluated_args.get(5), "CUMPRINC")?;
+                    Ok(ResultData::Float(finance::cumprinc(
+                        rate, nper, pv, start, end, pmt_type,
+                    )))
+                }
+                "NPV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "NPV")?;
+                    let mut values = Vec::new();
+                    for (i, arg) in evaluated_args.iter().enumerate().skip(1) {
+                        values.extend(self.flatten_finance_numbers(arg, arg_is_direct[i]));
+                    }
+                    Ok(ResultData::Float(finance::npv(rate, &values)))
+                }
+                "IRR" => {
+                    let values = evaluated_args
+                        .first()
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[0]))
+                        .unwrap_or_default();
+                    let guess = self.opt_f64(&evaluated_args, 1, 0.1);
+                    match finance::irr(&values, guess) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "MIRR" => {
+                    let values = evaluated_args
+                        .first()
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[0]))
+                        .unwrap_or_default();
+                    let finance_rate = self.to_f64_arg(evaluated_args.get(1), "MIRR")?;
+                    let reinvest_rate = self.to_f64_arg(evaluated_args.get(2), "MIRR")?;
+                    match finance::mirr(&values, finance_rate, reinvest_rate) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "XNPV" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "XNPV")?;
+                    let values = evaluated_args
+                        .get(1)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[1]))
+                        .unwrap_or_default();
+                    let dates = evaluated_args
+                        .get(2)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[2]))
+                        .unwrap_or_default();
+                    if values.is_empty() || values.len() != dates.len() {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::xnpv(rate, &values, &dates)))
+                }
+                "XIRR" => {
+                    let values = evaluated_args
+                        .first()
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[0]))
+                        .unwrap_or_default();
+                    let dates = evaluated_args
+                        .get(1)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[1]))
+                        .unwrap_or_default();
+                    let guess = self.opt_f64(&evaluated_args, 2, 0.1);
+                    if values.is_empty() || values.len() != dates.len() {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    match finance::xirr(&values, &dates, guess) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "SLN" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "SLN")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "SLN")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "SLN")?;
+                    Ok(ResultData::Float(finance::sln(cost, salvage, life)))
+                }
+                "SYD" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "SYD")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "SYD")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "SYD")?;
+                    let per = self.to_f64_arg(evaluated_args.get(3), "SYD")?;
+                    Ok(ResultData::Float(finance::syd(cost, salvage, life, per)))
+                }
+                "DB" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "DB")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "DB")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "DB")?;
+                    let period = self.to_f64_arg(evaluated_args.get(3), "DB")?;
+                    let month = self.opt_f64(&evaluated_args, 4, 12.0);
+                    Ok(ResultData::Float(finance::db(
+                        cost, salvage, life, period, month,
+                    )))
+                }
+                "DDB" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "DDB")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "DDB")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "DDB")?;
+                    let period = self.to_f64_arg(evaluated_args.get(3), "DDB")?;
+                    let factor = self.opt_f64(&evaluated_args, 4, 2.0);
+                    Ok(ResultData::Float(finance::ddb(
+                        cost, salvage, life, period, factor,
+                    )))
+                }
+                "VDB" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "VDB")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(1), "VDB")?;
+                    let life = self.to_f64_arg(evaluated_args.get(2), "VDB")?;
+                    let start = self.to_f64_arg(evaluated_args.get(3), "VDB")?;
+                    let end = self.to_f64_arg(evaluated_args.get(4), "VDB")?;
+                    let factor = self.opt_f64(&evaluated_args, 5, 2.0);
+                    let no_switch = evaluated_args
+                        .get(6)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(false);
+                    match finance::vdb(cost, salvage, life, start, end, factor, no_switch) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "EFFECT" => {
+                    let nominal_rate = self.to_f64_arg(evaluated_args.first(), "EFFECT")?;
+                    let npery = self.to_f64_arg(evaluated_args.get(1), "EFFECT")?;
+                    Ok(ResultData::Float(finance::effect(nominal_rate, npery)))
+                }
+                "NOMINAL" => {
+                    let effect_rate = self.to_f64_arg(evaluated_args.first(), "NOMINAL")?;
+                    let npery = self.to_f64_arg(evaluated_args.get(1), "NOMINAL")?;
+                    Ok(ResultData::Float(finance::nominal(effect_rate, npery)))
+                }
+                "DOLLARDE" => {
+                    let fractional_dollar = self.to_f64_arg(evaluated_args.first(), "DOLLARDE")?;
+                    let fraction = self.to_f64_arg(evaluated_args.get(1), "DOLLARDE")?;
+                    match finance::dollarde(fractional_dollar, fraction) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "DOLLARFR" => {
+                    let decimal_dollar = self.to_f64_arg(evaluated_args.first(), "DOLLARFR")?;
+                    let fraction = self.to_f64_arg(evaluated_args.get(1), "DOLLARFR")?;
+                    match finance::dollarfr(decimal_dollar, fraction) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "FVSCHEDULE" => {
+                    let principal = self.to_f64_arg(evaluated_args.first(), "FVSCHEDULE")?;
+                    let schedule = evaluated_args
+                        .get(1)
+                        .map(|v| self.flatten_finance_numbers(v, arg_is_direct[1]))
+                        .unwrap_or_default();
+                    Ok(ResultData::Float(finance::fvschedule(principal, &schedule)))
+                }
+                "RRI" => {
+                    let nper = self.to_f64_arg(evaluated_args.first(), "RRI")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(1), "RRI")?;
+                    let fv = self.to_f64_arg(evaluated_args.get(2), "RRI")?;
+                    match finance::rri(nper, pv, fv) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "PDURATION" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "PDURATION")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(1), "PDURATION")?;
+                    let fv = self.to_f64_arg(evaluated_args.get(2), "PDURATION")?;
+                    match finance::pduration(rate, pv, fv) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "ISPMT" => {
+                    let rate = self.to_f64_arg(evaluated_args.first(), "ISPMT")?;
+                    let per = self.to_f64_arg(evaluated_args.get(1), "ISPMT")?;
+                    let nper = self.to_f64_arg(evaluated_args.get(2), "ISPMT")?;
+                    let pv = self.to_f64_arg(evaluated_args.get(3), "ISPMT")?;
+                    Ok(ResultData::Float(finance::ispmt(rate, per, nper, pv)))
+                }
+                "COUPDAYBS" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPDAYBS")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPDAYBS")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPDAYBS")?;
+                    let basis = self.opt_f64(&evaluated_args, 3, 0.0);
+                    Ok(ResultData::Float(finance::coupdaybs(
+                        settlement, maturity, frequency, basis,
+                    )))
+                }
+                "COUPDAYS" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPDAYS")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPDAYS")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPDAYS")?;
+                    let basis = self.opt_f64(&evaluated_args, 3, 0.0);
+                    Ok(ResultData::Float(finance::coupdays(
+                        settlement, maturity, frequency, basis,
+                    )))
+                }
+                "COUPDAYSNC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPDAYSNC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPDAYSNC")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPDAYSNC")?;
+                    let basis = self.opt_f64(&evaluated_args, 3, 0.0);
+                    Ok(ResultData::Float(finance::coupdaysnc(
+                        settlement, maturity, frequency, basis,
+                    )))
+                }
+                "COUPNCD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPNCD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPNCD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPNCD")?;
+                    Ok(ResultData::Float(finance::coupncd(
+                        settlement, maturity, frequency,
+                    )))
+                }
+                "COUPNUM" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPNUM")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPNUM")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPNUM")?;
+                    Ok(ResultData::Float(finance::coupnum(
+                        settlement, maturity, frequency,
+                    )))
+                }
+                "COUPPCD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "COUPPCD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "COUPPCD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(2), "COUPPCD")?;
+                    Ok(ResultData::Float(finance::couppcd(
+                        settlement, maturity, frequency,
+                    )))
+                }
+                "PRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "PRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "PRICE")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(2), "PRICE")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(3), "PRICE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(4), "PRICE")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(5), "PRICE")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    Ok(ResultData::Float(finance::price(
+                        settlement, maturity, rate, yld, redemption, frequency, basis,
+                    )))
+                }
+                "YIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "YIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "YIELD")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(2), "YIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(3), "YIELD")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(4), "YIELD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(5), "YIELD")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    match finance::yield_(
+                        settlement, maturity, rate, pr, redemption, frequency, basis,
+                    ) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "DURATION" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "DURATION")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "DURATION")?;
+                    let coupon = self.to_f64_arg(evaluated_args.get(2), "DURATION")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(3), "DURATION")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(4), "DURATION")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::duration(
+                        settlement, maturity, coupon, yld, frequency, basis,
+                    )))
+                }
+                "MDURATION" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "MDURATION")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "MDURATION")?;
+                    let coupon = self.to_f64_arg(evaluated_args.get(2), "MDURATION")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(3), "MDURATION")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(4), "MDURATION")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::mduration(
+                        settlement, maturity, coupon, yld, frequency, basis,
+                    )))
+                }
+                "DISC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "DISC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "DISC")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(2), "DISC")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "DISC")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::disc(
+                        settlement, maturity, pr, redemption, basis,
+                    )))
+                }
+                "PRICEDISC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "PRICEDISC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "PRICEDISC")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(2), "PRICEDISC")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "PRICEDISC")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::pricedisc(
+                        settlement, maturity, discount, redemption, basis,
+                    )))
+                }
+                "YIELDDISC" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "YIELDDISC")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "YIELDDISC")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(2), "YIELDDISC")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "YIELDDISC")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::yielddisc(
+                        settlement, maturity, pr, redemption, basis,
+                    )))
+                }
+                "PRICEMAT" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "PRICEMAT")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "PRICEMAT")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "PRICEMAT")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "PRICEMAT")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(4), "PRICEMAT")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::pricemat(
+                        settlement, maturity, issue, rate, yld, basis,
+                    )))
+                }
+                "YIELDMAT" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "YIELDMAT")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "YIELDMAT")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "YIELDMAT")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "YIELDMAT")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(4), "YIELDMAT")?;
+                    let basis = self.opt_f64(&evaluated_args, 5, 0.0);
+                    Ok(ResultData::Float(finance::yieldmat(
+                        settlement, maturity, issue, rate, pr, basis,
+                    )))
+                }
+                "RECEIVED" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "RECEIVED")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "RECEIVED")?;
+                    let investment = self.to_f64_arg(evaluated_args.get(2), "RECEIVED")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(3), "RECEIVED")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::received(
+                        settlement, maturity, investment, discount, basis,
+                    )))
+                }
+                "INTRATE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "INTRATE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "INTRATE")?;
+                    let investment = self.to_f64_arg(evaluated_args.get(2), "INTRATE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(3), "INTRATE")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    Ok(ResultData::Float(finance::intrate(
+                        settlement, maturity, investment, redemption, basis,
+                    )))
+                }
+                "TBILLPRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "TBILLPRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "TBILLPRICE")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(2), "TBILLPRICE")?;
+                    Ok(ResultData::Float(finance::tbillprice(
+                        settlement, maturity, discount,
+                    )))
+                }
+                "TBILLYIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "TBILLYIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "TBILLYIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(2), "TBILLYIELD")?;
+                    Ok(ResultData::Float(finance::tbillyield(
+                        settlement, maturity, pr,
+                    )))
+                }
+                "TBILLEQ" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "TBILLEQ")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "TBILLEQ")?;
+                    let discount = self.to_f64_arg(evaluated_args.get(2), "TBILLEQ")?;
+                    match finance::tbilleq(settlement, maturity, discount) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "ACCRINTM" => {
+                    let issue = self.to_f64_arg(evaluated_args.first(), "ACCRINTM")?;
+                    let settlement = self.to_f64_arg(evaluated_args.get(1), "ACCRINTM")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(2), "ACCRINTM")?;
+                    let par = self.to_f64_arg(evaluated_args.get(3), "ACCRINTM")?;
+                    let basis = self.opt_f64(&evaluated_args, 4, 0.0);
+                    res_to_rd(finance::accrintm(issue, settlement, rate, par, basis))
+                }
+                "ACCRINT" => {
+                    let issue = self.to_f64_arg(evaluated_args.first(), "ACCRINT")?;
+                    let first_interest = self.to_f64_arg(evaluated_args.get(1), "ACCRINT")?;
+                    let settlement = self.to_f64_arg(evaluated_args.get(2), "ACCRINT")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "ACCRINT")?;
+                    let par = self.to_f64_arg(evaluated_args.get(4), "ACCRINT")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(5), "ACCRINT")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    let calc_method = evaluated_args
+                        .get(7)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(true);
+                    Ok(ResultData::Float(finance::accrint(
+                        issue,
+                        first_interest,
+                        settlement,
+                        rate,
+                        par,
+                        frequency,
+                        basis,
+                        calc_method,
+                    )))
+                }
+                "AMORLINC" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "AMORLINC")?;
+                    let date_purchased = self.to_f64_arg(evaluated_args.get(1), "AMORLINC")?;
+                    let first_period = self.to_f64_arg(evaluated_args.get(2), "AMORLINC")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(3), "AMORLINC")?;
+                    let period = self.to_f64_arg(evaluated_args.get(4), "AMORLINC")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(5), "AMORLINC")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    res_to_rd(finance::amorlinc(
+                        cost,
+                        date_purchased,
+                        first_period,
+                        salvage,
+                        period,
+                        rate,
+                        basis,
+                    ))
+                }
+                "AMORDEGRC" => {
+                    let cost = self.to_f64_arg(evaluated_args.first(), "AMORDEGRC")?;
+                    let date_purchased = self.to_f64_arg(evaluated_args.get(1), "AMORDEGRC")?;
+                    let first_period = self.to_f64_arg(evaluated_args.get(2), "AMORDEGRC")?;
+                    let salvage = self.to_f64_arg(evaluated_args.get(3), "AMORDEGRC")?;
+                    let period = self.to_f64_arg(evaluated_args.get(4), "AMORDEGRC")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(5), "AMORDEGRC")?;
+                    let basis = self.opt_f64(&evaluated_args, 6, 0.0);
+                    res_to_rd(finance::amordegrc(
+                        cost,
+                        date_purchased,
+                        first_period,
+                        salvage,
+                        period,
+                        rate,
+                        basis,
+                    ))
+                }
+                "ODDFPRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDFPRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDFPRICE")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "ODDFPRICE")?;
+                    let first_coupon = self.to_f64_arg(evaluated_args.get(3), "ODDFPRICE")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(4), "ODDFPRICE")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(5), "ODDFPRICE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(6), "ODDFPRICE")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(7), "ODDFPRICE")?;
+                    let basis = self.opt_f64(&evaluated_args, 8, 0.0);
+                    if settlement <= issue {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::oddfprice(
+                        settlement,
+                        maturity,
+                        issue,
+                        first_coupon,
+                        rate,
+                        yld,
+                        redemption,
+                        frequency,
+                        basis,
+                    )))
+                }
+                "ODDFYIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDFYIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDFYIELD")?;
+                    let issue = self.to_f64_arg(evaluated_args.get(2), "ODDFYIELD")?;
+                    let first_coupon = self.to_f64_arg(evaluated_args.get(3), "ODDFYIELD")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(4), "ODDFYIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(5), "ODDFYIELD")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(6), "ODDFYIELD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(7), "ODDFYIELD")?;
+                    let basis = self.opt_f64(&evaluated_args, 8, 0.0);
+                    if settlement <= issue {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    match finance::oddfyield(
+                        settlement,
+                        maturity,
+                        issue,
+                        first_coupon,
+                        rate,
+                        pr,
+                        redemption,
+                        frequency,
+                        basis,
+                    ) {
+                        Some(v) => Ok(ResultData::Float(v)),
+                        None => Ok(ResultData::Error("#NUM!".to_string())),
+                    }
+                }
+                "ODDLPRICE" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDLPRICE")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDLPRICE")?;
+                    let last_interest = self.to_f64_arg(evaluated_args.get(2), "ODDLPRICE")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "ODDLPRICE")?;
+                    let yld = self.to_f64_arg(evaluated_args.get(4), "ODDLPRICE")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(5), "ODDLPRICE")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(6), "ODDLPRICE")?;
+                    let basis = self.opt_f64(&evaluated_args, 7, 0.0);
+                    if settlement <= last_interest {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::oddlprice(
+                        settlement,
+                        maturity,
+                        last_interest,
+                        rate,
+                        yld,
+                        redemption,
+                        frequency,
+                        basis,
+                    )))
+                }
+                "ODDLYIELD" => {
+                    let settlement = self.to_f64_arg(evaluated_args.first(), "ODDLYIELD")?;
+                    let maturity = self.to_f64_arg(evaluated_args.get(1), "ODDLYIELD")?;
+                    let last_interest = self.to_f64_arg(evaluated_args.get(2), "ODDLYIELD")?;
+                    let rate = self.to_f64_arg(evaluated_args.get(3), "ODDLYIELD")?;
+                    let pr = self.to_f64_arg(evaluated_args.get(4), "ODDLYIELD")?;
+                    let redemption = self.to_f64_arg(evaluated_args.get(5), "ODDLYIELD")?;
+                    let frequency = self.to_f64_arg(evaluated_args.get(6), "ODDLYIELD")?;
+                    let basis = self.opt_f64(&evaluated_args, 7, 0.0);
+                    if settlement <= last_interest {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    Ok(ResultData::Float(finance::oddlyield(
+                        settlement,
+                        maturity,
+                        last_interest,
+                        rate,
+                        pr,
+                        redemption,
+                        frequency,
+                        basis,
+                    )))
+                }
+                "EUROCONVERT" => {
+                    let number = self.to_f64_arg(evaluated_args.first(), "EUROCONVERT")?;
+                    let source = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let target = evaluated_args
+                        .get(2)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let full_precision = evaluated_args
+                        .get(3)
+                        .map(|v| self.to_bool(v))
+                        .unwrap_or(false);
+                    let triangulation_precision =
+                        evaluated_args.get(4).and_then(|v| self.to_f64(v));
+                    res_to_rd(finance::euroconvert(
+                        number,
+                        &source,
+                        &target,
+                        full_precision,
+                        triangulation_precision,
+                    ))
                 }
                 _ => Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
                     "Unknown function: {}",

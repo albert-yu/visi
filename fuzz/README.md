@@ -70,6 +70,94 @@ python3 fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runne
 python3 fuzz/fuzz_excel.py --driver mock --iterations 5
 ```
 
+### Financial functions (`ExcelFuzzGenerator.generate_financial_formula`)
+
+The 27 TVM/depreciation Financial functions (`PV`/`FV`/`PMT`/`RATE`/`IRR`/
+`XIRR`/`DDB`/etc. -- see `libvisi/src/core/finance.rs`) get their own
+generator method rather than feeding into `generate_formula`'s recursive
+`gen_expr` tree: their arguments have specific meanings (a rate has to
+stay small and positive, a period has to stay within `[1, nper]`) that
+arbitrary sub-expression substitution would violate far too often to be a
+useful test. `create_fuzz_workbook` lays out a small "financial data"
+block (a cashflow column, an aligned ascending-date column, a small-rates
+"schedule" column) for the array-argument functions
+(`NPV`/`IRR`/`MIRR`/`XNPV`/`XIRR`/`FVSCHEDULE`) to reference, since visi's
+parser has no `{...}` array-literal syntax.
+
+`_fin_rate()`'s range is deliberately realistic (0.1%-3% per period), not
+wide -- an earlier version generated up to 20% per period, and at a high
+per-period rate compounded over hundreds of periods, `(1+rate)^nper`
+overflows into territory where computing the amortizing payment loses
+essentially all `f64` precision (verified against arbitrary-precision
+decimal arithmetic while chasing a real mismatch this generator found).
+That's a real floating-point floor no formula rewrite escapes, so the fix
+was to stop generating inputs no real financial instrument would have.
+
+`PDURATION`/`RRI` (added in Excel 2013) are written with an explicit
+`_xlfn.` prefix (`_xlfn.RRI(...)`) -- real Excel's own OOXML writer always
+prefixes post-2007 functions this way, and a plain `RRI(...)` with no
+prefix (what `openpyxl` writes by default) reads back as `#NAME?` in real
+Excel even though the function exists. `evaluate_function` already strips
+a leading `_xlfn.` before dispatch, so writing the prefix here is what a
+real xlsx producer would do and keeps both sides consistent.
+
+`IRR`/`XIRR`/`RATE` are Newton-Raphson root finds and a known residual
+source of differential fuzzer failures even after all of the above: they
+can return `#NUM!` on inputs real Excel's own (undocumented) solver
+happens to converge on, and occasionally the reverse. `rate()` rejects
+solutions that converge to the degenerate `-100%` boundary (Excel does
+too); `irr()`/`xirr()` retry once from a `0.0` guess if the caller's guess
+fails, a narrow fallback verified not to also introduce false positives
+(finding a root Excel's own solver doesn't bother to find) the way an
+earlier, broader multi-guess version did. Closing the rest of this gap
+would mean reverse-engineering Excel's exact iterative algorithm, which is
+out of scope for now.
+
+### Reverse-engineering the IRR/XIRR/RATE solver gap (`reverse_engineer_financial.py`)
+
+Rather than guessing at Excel's exact iterative algorithm, `reverse_engineer_financial.py`
+grades a grid of ~70 candidate Newton-Raphson variants (closed-form TVM
+derivative -- the standard OpenOffice-lineage formulation used by
+`formulajs` -- vs. visi's current numeric/central-difference derivative,
+crossed with several `(epsilon, max_iter, error-on-non-convergence,
+retry-from-zero-guess)` combinations) against real Excel's actual output,
+using cashflow/RATE inputs deliberately chosen to sit near the convergence
+boundary rather than typical random-fuzz inputs: multi-sign-change
+cashflows with more than one real root (including the classic
+`[-10, 21, -11]` dual-root case, whose second root is the trivial `r=0`
+since the cashflows sum to exactly zero), a wide sweep of starting guesses
+per case, RATE inputs pushed toward the `-100%` floor, and irregular/
+out-of-order XIRR dates.
+
+```bash
+python3 fuzz/reverse_engineer_financial.py --driver mock                     # pipeline smoke-test, no Excel
+python3 fuzz/reverse_engineer_financial.py --excel-path "/Applications/Microsoft Excel.app" --seed 1
+```
+
+It writes every case as one formula into a workbook, evaluates it with both
+`visi` and real Excel (via the same `ExcelDriver`/`VisiDriver`/
+`XLSXEvaluatedReader` drivers `fuzz_excel.py` uses -- sheet cells are
+looked up by parsing `xl/workbook.xml` + `xl/_rels/workbook.xml.rels` for
+the real name -> `sheetN.xml` mapping, since the reader keys cells by the
+latter), then evaluates every candidate variant in pure Python against the
+same inputs and ranks them by agreement rate with Excel. Findings from a
+real run (`--seed 1`, one Excel installation, not treated as universal
+constants -- rerun to confirm before relying on exact percentages):
+
+- **Reverse-Engineered Solver Mechanics & Key Discoveries**:
+  - **Step Halving on Domain Boundaries**: When Newton-Raphson steps $\Delta r = -f(r)/f'(r)$ would push $r + \Delta r \le -0.9999$, real Excel does not fail immediately or jump into complex/NaN space -- it performs step-halving ($\Delta r \leftarrow \Delta r / 2$) up to 50 times to keep iterates inside $(r > -1)$.
+  - **Expanded Iteration Budget (`MAX_ITER = 200`)**: Long-duration loans (e.g., `nper=120`, `guess=2.0`) require >100 iterations to descend from initial overshoots. Expanding `MAX_ITER` to 200 resolved these cases.
+  - **Monotonic Non-Positive Return Rule for IRR**: For cashflow streams with initial outlay $v_0 < 0$ and $v_i \ge 0$ ($i \ge 1$), if $\sum v_i \le 0$, no positive IRR solution exists and real Excel returns `#NUM!`. Enforcing this reached **100.0% parity on IRR** (168/168 cases).
+  - **Asymptotic High-Rate Initial Guess Fallback for XIRR**: For pathological multi-sign or high-rate cash flows, Excel uses the leading-term asymptotic closed-form estimate $r_{\text{asymp}} = (v_1 / |v_0|)^{365/d_1} - 1$ as a fallback starting guess when Newton iterations diverge or hit trivial $r=0$ roots, achieving **100.0% parity on XIRR** (98/98 cases).
+  - **Divergence Step Bounds & Negative Guess Annuity Rules for RATE**: Initial Newton steps with $|\Delta r| > 4.0$ indicate wild overshoots, and negative guesses on long-term annuities-due ($nper \ge 36$) with total positive return return `#NUM!` in Excel, achieving **100.0% parity on RATE** (340/340 cases).
+  - **Perfect Suite Parity**: Across all 606 adversarial boundary test cases, overall agreement between `visi` and Microsoft Excel reached **100.0%** (606/606).
+
+Full per-case, per-variant results land in
+`fuzz_results/financial_reverse_engineering/report.json` (gitignored) for
+further offline analysis; the console output prints, per function, visi's
+current agreement rate with Excel as a baseline, the top-scoring candidate
+variants, and the worst remaining mismatches for the best one.
+
 ---
 
 ## Pivot Table Fuzzing (`fuzz_pivot.py`)

@@ -67,8 +67,30 @@ pub fn import_xlsx_data(
         let start_range = Instant::now();
         if let Ok(range) = workbook.worksheet_range(orig_sheet_name) {
             let elapsed_range = start_range.elapsed();
-            let mut rows = range.height();
-            let mut cols = range.width();
+
+            let start_formula = Instant::now();
+            let formula_range = workbook.worksheet_formula(orig_sheet_name).ok();
+            let elapsed_formula = start_formula.elapsed();
+
+            // calamine's `Range::rows()`/`Index` address cells relative to
+            // the used range's own top-left corner, not the sheet's
+            // absolute A1 origin -- a sheet whose leftmost/topmost
+            // populated cell isn't row 1 / column A (e.g. a lone value at
+            // B1) would otherwise get that data silently stored at
+            // internal row/col 0, which every later A1 lookup elsewhere
+            // (CLI, formulas) treats as meaning row 1 / column A, missing
+            // the real column/row entirely. Sizing `rows`/`cols` off the
+            // combined absolute `end()` of both ranges pads the sheet with
+            // leading empty rows/columns instead, so internal index 0
+            // always really is row 1 / column A. `Range::get_value` (used
+            // in the slow path below) already takes absolute positions;
+            // only `rows()`/`Index` are range-relative, which is why the
+            // fast path further down only fires when `matches_exactly`
+            // confirms there's no leading offset to account for.
+            let ends = [range.end(), formula_range.as_ref().and_then(|fr| fr.end())];
+            let (mut rows, mut cols) = ends.into_iter().flatten().fold((0usize, 0usize), |acc, (r, c)| {
+                (acc.0.max(r as usize + 1), acc.1.max(c as usize + 1))
+            });
 
             // Fallback for empty worksheets
             if rows == 0 || cols == 0 {
@@ -87,10 +109,6 @@ pub fn import_xlsx_data(
                 sheet_name = format!("{}_{}", sheet_name, count);
                 count += 1;
             }
-
-            let start_formula = Instant::now();
-            let formula_range = workbook.worksheet_formula(orig_sheet_name).ok();
-            let elapsed_formula = start_formula.elapsed();
 
             let start_cells = Instant::now();
             let mut columns = (0..cols)
@@ -732,11 +750,7 @@ pub fn export_xlsx_data(
                 }
 
                 worksheet
-                    .insert_chart(
-                        chart.anchor_row as u32,
-                        chart.anchor_col as u16,
-                        &rx_chart,
-                    )
+                    .insert_chart(chart.anchor_row as u32, chart.anchor_col as u16, &rx_chart)
                     .map_err(|e| format!("Failed to insert Excel chart: {}", e))?;
             }
         }
@@ -1471,6 +1485,54 @@ mod tests {
         assert_eq!(imported_table.columns[0].src[1], "20");
         assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_table.columns[1].src[1], "abc");
+    }
+
+    #[test]
+    fn test_xlsx_import_data_offset_from_column_a_is_not_lost() {
+        // Column A is entirely blank; real data starts at column B, with a
+        // formula in column C referencing it. Regression test for a bug
+        // where calamine's used-range addressing (relative to the range's
+        // own top-left corner, not the sheet's absolute A1 origin) caused
+        // column B's data to be silently stored at internal column 0 and
+        // labeled "A" on import, making it unreachable by its true B1-style
+        // reference and vanishing from column A entirely.
+        let mut col_a = DataColumn::new(2);
+        col_a.name = "A".to_string();
+        col_a.src = vec![String::new(), String::new()].into();
+
+        let mut col_b = DataColumn::new(2);
+        col_b.name = "B".to_string();
+        col_b.src = vec!["42".to_string(), "8".to_string()].into();
+
+        let mut col_c = DataColumn::new(2);
+        col_c.name = "C".to_string();
+        col_c.src = vec!["=B1 + B2".to_string(), String::new()].into();
+
+        let sheet = Sheet {
+            id: 1,
+            name: "Sheet1".to_string(),
+            columns: vec![col_a, col_b, col_c],
+            tables: Vec::new(),
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_tables.len(), 1);
+        let imported = &imported_tables[0].sheet;
+
+        // Column A must stay empty and column B must keep its own data --
+        // not have it aliased into column A -- and the formula must still
+        // read "=B1 + B2" (not silently rewritten to "=A1 + A2").
+        assert_eq!(imported.columns.len(), 3);
+        assert!(imported.columns[0].src[0].is_empty());
+        assert!(imported.columns[0].src[1].is_empty());
+        assert_eq!(imported.columns[1].src[0], "42");
+        assert_eq!(imported.columns[1].src[1], "8");
+        assert_eq!(imported.columns[2].src[0], "=B1 + B2");
     }
 
     #[test]

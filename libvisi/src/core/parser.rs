@@ -1398,9 +1398,14 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
             }
 
             let upper = id_str.to_uppercase();
-            if upper == "TRUE" {
+            let mut lookahead = i;
+            while lookahead < chars.len() && chars[lookahead].is_whitespace() {
+                lookahead += 1;
+            }
+            let followed_by_paren = lookahead < chars.len() && chars[lookahead] == '(';
+            if upper == "TRUE" && !followed_by_paren {
                 tokens.push(EvalToken::Boolean(true));
-            } else if upper == "FALSE" {
+            } else if upper == "FALSE" && !followed_by_paren {
                 tokens.push(EvalToken::Boolean(false));
             } else {
                 tokens.push(EvalToken::Identifier(id_str));

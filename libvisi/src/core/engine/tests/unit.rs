@@ -84,12 +84,16 @@ fn test_excel_formula_evaluations() {
 
     test_floats("=LN(EXP(1))", 1.0).unwrap();
     test_floats("=LOG10(100)", 2.0).unwrap();
-    test_floats("=CEIL(4.2)", 5.0).unwrap();
+    test_floats("=CEILING(4.2)", 5.0).unwrap();
     test_floats("=FLOOR(4.8)", 4.0).unwrap();
     test_floats("=TAN(0)", 0.0).unwrap();
     test_floats("=ASIN(0)", 0.0).unwrap();
     test_floats("=ACOS(1)", 0.0).unwrap();
     test_floats("=ATAN(0)", 0.0).unwrap();
+
+    test_booleans("=TRUE()", true).unwrap();
+    test_booleans("=FALSE()", false).unwrap();
+    test_booleans("=AND(TRUE(), TRUE)", true).unwrap();
 
     let mut sheet = Sheet::new(SheetInit {
         name: Some("table_1".to_string()),
@@ -297,6 +301,76 @@ fn test_new_excel_formulas() {
     } else {
         panic!("Expected MMULT to return a list");
     }
+}
+
+fn approx_float(source: &str, expected: f64) {
+    let sheet = Sheet::new(SheetInit::default());
+    let (result, _) = sheet.eval(source, None).unwrap();
+    let f = get_float_val(&result).unwrap_or_else(|| panic!("{source} did not return a number"));
+    assert!((f - expected).abs() < 5e-3, "{source}: {f} != {expected}");
+}
+
+#[test]
+fn test_financial_functions() {
+    // These mirror the pure-math tests in `core::finance` but go through
+    // the parser/dispatch path end-to-end.
+    approx_float("=PMT(0.08/12, 10, 10000)", -1037.03);
+    approx_float("=FV(0.06/12, 10, -200, -500, 1)", 2581.40);
+    approx_float("=PV(0.08/12, 20*12, 500)", -59777.15);
+    approx_float("=NPER(0.12/12, -100, -1000, 10000, 1)", 59.6739);
+    approx_float(
+        "=IPMT(0.10/12, 1, 36, 8000000) + PPMT(0.10/12, 1, 36, 8000000)",
+        -258137.4976,
+    );
+    approx_float("=ISPMT(0.10/12, 1, 3*12, 8000000)", -64814.81481481482);
+    approx_float("=NPV(0.10, -10000, 3000, 4200, 6800)", 1188.44);
+    approx_float("=SLN(30000, 7500, 10)", 2250.0);
+    approx_float("=SYD(30000, 7500, 10, 1)", 4090.91);
+    approx_float("=DDB(2400, 300, 10, 1)", 480.0);
+    approx_float("=EFFECT(0.0525, 4)", 0.0535427302);
+    approx_float("=NOMINAL(0.0535427302, 4)", 0.0525);
+    approx_float("=DOLLARDE(1.02, 16)", 1.125);
+    approx_float("=DOLLARFR(1.125, 16)", 1.02);
+    approx_float("=RRI(10, 1000, 2000)", 0.0717735);
+    approx_float("=PDURATION(0.025, 2000, 2200)", 3.86045);
+    approx_float("=CUMIPMT(0.09/12, 30*12, 125000, 13, 24, 0)", -11135.23);
+    approx_float("=CUMPRINC(0.09/12, 30*12, 125000, 13, 24, 0)", -934.11);
+
+    // No `{...}` array-literal syntax in the parser, so exercise the
+    // range-argument financial functions (IRR/FVSCHEDULE/XNPV) against
+    // real cells instead of inline arrays.
+    let mut fin_sheet = Sheet::new(SheetInit {
+        name: Some("fin".to_string()),
+        rows: 6,
+        cols: 4,
+        ..Default::default()
+    });
+    for (i, v) in [-70000, 12000, 15000, 18000, 21000, 26000]
+        .iter()
+        .enumerate()
+    {
+        fin_sheet.set_cell_src(i, 0, v.to_string());
+    }
+    for (i, v) in [0.09, 0.11, 0.1].iter().enumerate() {
+        fin_sheet.set_cell_src(i, 1, v.to_string());
+    }
+    for (i, v) in [-10000, 2750, 4250, 3250, 2750].iter().enumerate() {
+        fin_sheet.set_cell_src(i, 2, v.to_string());
+    }
+    // Excel serials for 2008-01-01, 2008-03-01, 2008-10-30, 2009-02-15, 2009-04-01
+    for (i, v) in [39448, 39508, 39751, 39859, 39904].iter().enumerate() {
+        fin_sheet.set_cell_src(i, 3, v.to_string());
+    }
+    fin_sheet.commit(None).unwrap();
+
+    let (irr_res, _) = fin_sheet.eval("=IRR(A1:A6)", None).unwrap();
+    assert!((get_float_val(&irr_res).unwrap() - 0.0866).abs() < 5e-3);
+
+    let (fvs_res, _) = fin_sheet.eval("=FVSCHEDULE(1, B1:B3)", None).unwrap();
+    assert!((get_float_val(&fvs_res).unwrap() - 1.33089).abs() < 5e-3);
+
+    let (xnpv_res, _) = fin_sheet.eval("=XNPV(0.09, C1:C5, D1:D5)", None).unwrap();
+    assert!((get_float_val(&xnpv_res).unwrap() - 2086.65).abs() < 5e-2);
 }
 
 #[test]
@@ -655,7 +729,7 @@ fn test_builtin_math_functions() {
     let (result, _) = sheet.eval("=floor(3.9)", None).unwrap();
     assert_eq!(get_int_val(&result), Some(3));
 
-    let (result, _) = sheet.eval("=ceil(3.1)", None).unwrap();
+    let (result, _) = sheet.eval("=ceiling(3.1)", None).unwrap();
     assert_eq!(get_int_val(&result), Some(4));
 
     let (result, _) = sheet.eval("=round(3.7)", None).unwrap();

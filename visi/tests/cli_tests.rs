@@ -1,8 +1,8 @@
+use clap::Parser;
 use std::fs;
 use visi::cli::{ChartSubcommands, Cli, Commands, PivotSubcommands};
 use visi::engine::WorkbookManager;
 use visi::utils::{parse_cell_ref, parse_range_ref};
-use clap::Parser;
 
 #[test]
 fn test_chart_edit_parses_setters_and_clear_flags() {
@@ -546,7 +546,15 @@ fn test_workbook_chart_edit_and_round_trip() {
 
     // Clear the title in a second edit call.
     wb.edit_chart(
-        chart_id, None, None, None, Some(None), None, None, None, None,
+        chart_id,
+        None,
+        None,
+        None,
+        Some(None),
+        None,
+        None,
+        None,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -567,7 +575,10 @@ fn test_workbook_chart_edit_and_round_trip() {
     assert_eq!(reloaded_chart.title, None);
     assert_eq!(reloaded_chart.xlabel, Some("X".to_string()));
     assert!(!reloaded_chart.show_legend);
-    assert_eq!((reloaded_chart.anchor_row, reloaded_chart.anchor_col), (5, 2));
+    assert_eq!(
+        (reloaded_chart.anchor_row, reloaded_chart.anchor_col),
+        (5, 2)
+    );
 
     // Editing a nonexistent id must error.
     let mut wb2 = reloaded;
