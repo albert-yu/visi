@@ -144,8 +144,18 @@ add-ins, which has no meaning in this engine.
 implementation is a stub that just echoes an argument back rather than
 computing the real result)
 
-- **Cube / web service (9)**: CUBEKPIMEMBER, CUBEMEMBER, CUBEMEMBERPROPERTY,
-  CUBERANKEDMEMBER, CUBESET, CUBESETCOUNT, CUBEVALUE, FILTERXML, WEBSERVICE
+- **Cube (7)**: CUBEKPIMEMBER, CUBEMEMBER, CUBEMEMBERPROPERTY,
+  CUBERANKEDMEMBER, CUBESET, CUBESETCOUNT, CUBEVALUE — in real Excel these
+  all query a live OLAP (Analysis Services) connection using MDX tuple/set
+  expressions (e.g. `[Product].[Category].[Bikes]`); libvisi has no OLAP
+  connection concept and no MDX parser, so there's no local data these
+  formulas could compute a real result from. Genuinely implementing them
+  would mean inventing libvisi-specific semantics (e.g. treating the
+  `connection` argument as an `ExcelTable` name and member expressions as
+  column/value references) rather than matching real Excel/SSAS behavior —
+  a scope decision intentionally left unmade rather than guessed at. Left
+  as stubs; not attempted.
+- **Web service (2)**: FILTERXML, WEBSERVICE
 - **Pivot / grouping / external data (6)**: GETPIVOTDATA, GROUPBY, IMAGE,
   PIVOTBY, RTD, STOCKHISTORY — `GETPIVOTDATA`/`GROUPBY`/`PIVOTBY` need
   deeper pivot-table integration than a formula-level implementation
