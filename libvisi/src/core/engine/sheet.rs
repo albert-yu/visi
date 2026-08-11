@@ -11,6 +11,12 @@ use crate::core::finance;
 pub struct Context<'a> {
     /// Map of sheet names to sheet references for cross-sheet lookups
     pub sheets: HashMap<String, &'a Sheet>,
+    /// Every pivot table in the workbook, so `GETPIVOTDATA` can resolve a
+    /// rendered pivot's destination cell back to its definition. Pivot
+    /// tables are workbook-level (like `Context.sheets`' cross-sheet
+    /// lookups), not sheet-scoped, so this lives here rather than on
+    /// `Sheet` itself.
+    pub pivot_tables: &'a [crate::core::pivot::PivotTable],
 }
 
 impl<'a> Context<'a> {
@@ -18,6 +24,7 @@ impl<'a> Context<'a> {
     pub fn new() -> Self {
         Self {
             sheets: HashMap::new(),
+            pivot_tables: &[],
         }
     }
 
@@ -2732,6 +2739,81 @@ impl Sheet {
         }
     }
 
+    /// `GETPIVOTDATA(data_field, pivot_table_ref, [field, item]...)`.
+    /// `pivot_table_ref` must stay an unevaluated cell reference (not a
+    /// flattened value) so its sheet/row/col can be matched against
+    /// `context.pivot_tables`' rendered destination ranges -- the same
+    /// reason `ROW`/`OFFSET`/etc. go through `evaluate_range_info_function`
+    /// instead of the generic eagerly-evaluated-args path below.
+    fn evaluate_getpivotdata(
+        &self,
+        args: &[crate::core::parser::Expr],
+        context: Option<&Context>,
+        row: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        if args.len() < 2 || !(args.len() - 2).is_multiple_of(2) {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        }
+
+        let data_field = self
+            .evaluate_ast(&args[0], context, row, deps, scope)?
+            .to_string();
+
+        let (sheet_opt, target_row, target_col, _, _) = match Self::range_bounds(&args[1]) {
+            Some(bounds) => bounds,
+            None => return Ok(ResultData::Error("#REF!".to_string())),
+        };
+        // Registers the usual dependency on the referenced cell, mirroring
+        // how INDIRECT/OFFSET treat a dynamically resolved reference.
+        self.read_cell_with_deps(&sheet_opt, target_row, target_col, context, deps);
+
+        let sheet_id = match &sheet_opt {
+            None => self.id,
+            Some(name) if name == &self.name => self.id,
+            Some(name) => match context.and_then(|c| c.sheets.get(name)) {
+                Some(s) => s.id,
+                None => return Ok(ResultData::Error("#REF!".to_string())),
+            },
+        };
+
+        let pivot_tables = context.map(|c| c.pivot_tables).unwrap_or(&[]);
+        let pivot = match pivot_tables.iter().find(|p| {
+            p.dest_sheet_id == sheet_id
+                && p.last_output_end_row
+                    .is_some_and(|end| target_row >= p.dest_row && target_row <= end)
+                && p.last_output_end_col
+                    .is_some_and(|end| target_col >= p.dest_col && target_col <= end)
+        }) {
+            Some(p) => p,
+            None => return Ok(ResultData::Error("#REF!".to_string())),
+        };
+
+        let mut criteria: Vec<(String, String)> = Vec::new();
+        let mut i = 2;
+        while i < args.len() {
+            let field = self
+                .evaluate_ast(&args[i], context, row, deps, scope)?
+                .to_string();
+            let item = self
+                .evaluate_ast(&args[i + 1], context, row, deps, scope)?
+                .to_string();
+            criteria.push((field, item));
+            i += 2;
+        }
+
+        let mut sheet_refs: Vec<&Sheet> = context
+            .map(|c| c.sheets.values().copied().collect())
+            .unwrap_or_default();
+        sheet_refs.push(self);
+
+        match crate::core::pivot::getpivotdata(&sheet_refs, pivot, &data_field, &criteria) {
+            Ok(v) => Ok(v),
+            Err(e) => Ok(ResultData::Error(e)),
+        }
+    }
+
     /// Shared implementation for the dynamic-array reshaping functions.
     /// All operate on `array_shape`'s `(flat, num_cols)` view and return a
     /// flat, row-major `ResultData::List` -- the same convention
@@ -3466,6 +3548,10 @@ impl Sheet {
                     deps,
                     scope,
                 );
+            }
+
+            if upper_name == "GETPIVOTDATA" {
+                return self.evaluate_getpivotdata(args, context, row, deps, scope);
             }
 
             if upper_name == "ISERROR" {
@@ -4971,6 +5057,16 @@ impl Sheet {
                         Err(e) => Ok(ResultData::Error(e)),
                     }
                 }
+                "JIS" => {
+                    let text = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::text::jis(&text) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
                 "BAHTTEXT" => {
                     let num = self.to_f64_arg(evaluated_args.first(), "BAHTTEXT")?;
                     match crate::core::text::bahttext(num) {
@@ -5921,7 +6017,14 @@ impl Sheet {
                         Err(e) => Ok(ResultData::Error(e)),
                     }
                 }
-                "STOCKHISTORY" => Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None)),
+                // Both need a live external data source this engine has no
+                // access to (Microsoft's undocumented stock-data cloud
+                // service for STOCKHISTORY; a registered Windows COM
+                // IRtdServer for RTD) -- #N/A matches what real Excel shows
+                // once that connection is unavailable, rather than the
+                // misleading echo-the-last-argument placeholder these used
+                // to fall through to.
+                "STOCKHISTORY" | "RTD" => Ok(ResultData::Error("#N/A".to_string())),
                 "DAVERAGE" | "DCOUNT" | "DCOUNTA" | "DGET" | "DMAX" | "DMIN" | "DPRODUCT"
                 | "DSTDEV" | "DSTDEVP" | "DSUM" | "DVAR" | "DVARP" => self
                     .evaluate_database_function(
@@ -5943,12 +6046,26 @@ impl Sheet {
                             .unwrap_or(ResultData::Error("#VALUE!".to_string()))),
                     }
                 }
-                "GETPIVOTDATA" | "GROUPBY" | "IMAGE" | "PIVOTBY" | "RTD" => {
+                "GROUPBY" | "IMAGE" | "PIVOTBY" => {
                     Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
                 }
                 "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER"
-                | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" | "FILTERXML" | "WEBSERVICE" => {
+                | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" | "WEBSERVICE" => {
                     Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
+                }
+                "FILTERXML" => {
+                    let xml = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let xpath = evaluated_args
+                        .get(1)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    match crate::core::xml::filterxml(&xml, &xpath) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
                 }
 
                 "SUM" => {

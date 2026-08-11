@@ -20,6 +20,7 @@ pub mod vba;
 pub mod vba_synth;
 pub mod vba_xlsx;
 pub mod xlsx;
+pub mod xml;
 
 pub use actions::SheetAction;
 pub use engine::{

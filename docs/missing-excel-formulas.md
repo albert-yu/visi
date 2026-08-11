@@ -3,15 +3,15 @@
 A tracking list of standard Microsoft Excel functions (as documented in Excel
 formula reference) and their implementation status in `libvisi`.
 
-Last updated: 2026-08-06
+Last updated: 2026-08-11
 
 ---
 
 ## Summary
 
 - Microsoft-documented functions: **522**
-- Genuinely implemented in libvisi: **465**
-- Missing or non-functional: **57**
+- Genuinely implemented in libvisi: **507**
+- Missing or non-functional: **15**
 
 libvisi implements `PLOT`, `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
 `STR` — these are engine-specific extensions, not Excel functions, so they
@@ -28,8 +28,24 @@ aren't counted above in either total.
   functions as implemented that are either dispatched to a placeholder that
   just echoes back an argument (see "Recognized but not functional" below)
   or aren't dispatched at all (`CHOOSE`, since fixed). Both classes have
-  been moved out of "Implemented" in that revision; this revision moves the
-  now-genuinely-implemented ones back in (see below).
+  been moved out of "Implemented" in that revision; a later revision moved
+  the now-genuinely-implemented ones back in.
+- **The previous revision's "~39 unaccounted-for" functions are now
+  identified.** Diffing this file's "Implemented" list against Microsoft's
+  own alphabetical function list turned up exactly 39 names. 38 of them
+  are the pre-2010 "compatibility" aliases of functions already
+  implemented under their modern dotted names (`BETADIST`, `BETAINV`,
+  `BINOMDIST`, `CHIDIST`, `CHIINV`, `CHITEST`, `CONFIDENCE`, `COVAR`,
+  `CRITBINOM`, `EXPONDIST`, `FDIST`, `FINV`, `FTEST`, `GAMMADIST`,
+  `GAMMAINV`, `HYPGEOMDIST`, `LOGINV`, `LOGNORMDIST`, `MODE`,
+  `NEGBINOMDIST`, `NORMDIST`, `NORMINV`, `NORMSDIST`, `NORMSINV`,
+  `PERCENTILE`, `PERCENTRANK`, `POISSON`, `QUARTILE`, `RANK`, `STDEV`,
+  `STDEVP`, `TDIST`, `TINV`, `TTEST`, `VAR`, `VARP`, `WEIBULL`, `ZTEST`) —
+  verified directly against `libvisi/src/core/engine/sheet.rs`: every one
+  is already an alias on the same match arm as its modern name (e.g.
+  `"BETA.DIST" | "BETADIST" => { ... }`). These were simply missing from
+  this file's own "Implemented" list, not missing from libvisi. The 39th,
+  `JIS`, was a genuine gap (see below) and has since been implemented.
 - `SHEET()` is a known, documented approximation: it always returns `1`,
   since this engine has no notion of a sheet's true ordinal position within
   the workbook. Bare `COLUMN()`/`ROW()` (no argument, meaning "the current
@@ -53,72 +69,86 @@ aren't counted above in either total.
   deliberately excludes them since real Excel's versions depend on
   Microsoft's cloud translation/language-detection services and aren't
   comparable to a local implementation.
-- The 57 "missing or non-functional" total is derived as 522 minus the
-  verified 465 implemented; only 17 of those 57 are individually named
-  below. The remaining ~39 were already unaccounted for in a much earlier
-  revision's own numbers and weren't independently re-derived here for
-  lack of a master function list to diff against.
+- `GETPIVOTDATA` recomputes its pivot table's grid fresh on every
+  evaluation (no caching) via `core/pivot.rs::getpivotdata`, and resolves
+  its `pivot_table_ref` argument by scanning `Context.pivot_tables` for
+  whichever pivot table's rendered destination range contains that cell —
+  it does not take the pivot table by name. Row/column criteria that don't
+  specify every field down to the innermost one match that branch's
+  subtotal group (matching real Excel); an unresolvable field, item, or
+  data-field name is `#REF!`/`#VALUE!`, also matching real Excel.
+- `RTD` and `STOCKHISTORY` always return `#N/A` — this matches what real
+  Excel itself shows once its equivalent live connection (a registered
+  Windows COM `IRtdServer`, Microsoft's stock-data cloud service) is
+  unavailable, rather than the misleading echo-the-last-argument
+  placeholder these used to fall through to. Neither has a real local
+  implementation; see "Recognized but not functional" below for why.
 
-## Implemented (465)
+## Implemented (507)
 
 ABS, ACCRINT, ACCRINTM, ACOS, ACOSH, ACOT, ACOTH, ADDRESS, AGGREGATE,
 AMORDEGRC, AMORLINC, AND, ARABIC, AREAS, ARRAYTOTEXT, ASC, ASIN, ASINH,
 ATAN, ATAN2, ATANH, AVEDEV, AVERAGE, AVERAGEA, AVERAGEIF, AVERAGEIFS,
-BAHTTEXT, BASE, BESSELI, BESSELJ, BESSELK, BESSELY, BETA.DIST, BETA.INV,
-BIN2DEC, BIN2HEX, BIN2OCT, BINOM.DIST, BINOM.DIST.RANGE, BINOM.INV, BITAND,
-BITLSHIFT, BITOR, BITRSHIFT, BITXOR, BYCOL, BYROW, CEILING, CEILING.MATH,
-CEILING.PRECISE, CELL, CHAR, CHISQ.DIST, CHISQ.DIST.RT, CHISQ.INV,
-CHISQ.INV.RT, CHISQ.TEST, CHOOSE, CHOOSECOLS, CHOOSEROWS, CLEAN, CODE,
-COLUMN, COLUMNS, COMBIN, COMBINA, COMPLEX, CONCAT, CONCATENATE,
+BAHTTEXT, BASE, BESSELI, BESSELJ, BESSELK, BESSELY, BETA.DIST, BETADIST,
+BETA.INV, BETAINV, BIN2DEC, BIN2HEX, BIN2OCT, BINOM.DIST, BINOMDIST,
+BINOM.DIST.RANGE, BINOM.INV, BITAND, BITLSHIFT, BITOR, BITRSHIFT, BITXOR,
+BYCOL, BYROW, CEILING, CEILING.MATH, CEILING.PRECISE, CELL, CHAR,
+CHISQ.DIST, CHIDIST, CHISQ.DIST.RT, CHISQ.INV, CHIINV, CHISQ.INV.RT,
+CHISQ.TEST, CHITEST, CHOOSE, CHOOSECOLS, CHOOSEROWS, CLEAN, CODE, COLUMN,
+COLUMNS, COMBIN, COMBINA, COMPLEX, CONCAT, CONCATENATE, CONFIDENCE,
 CONFIDENCE.NORM, CONFIDENCE.T, CONVERT, CORREL, COS, COSH, COT, COTH,
 COUNT, COUNTA, COUNTBLANK, COUNTIF, COUNTIFS, COUPDAYBS, COUPDAYS,
-COUPDAYSNC, COUPNCD, COUPNUM, COUPPCD, COVARIANCE.P, COVARIANCE.S, CSC,
-CSCH, CUMIPMT, CUMPRINC, DATE, DATEDIF, DATEVALUE, DAVERAGE, DAY, DAYS,
-DAYS360, DB, DBCS, DCOUNT, DCOUNTA, DEC2BIN, DEC2HEX, DEC2OCT, DECIMAL, DDB,
-DEGREES, DELTA, DETECTLANGUAGE, DEVSQ, DGET, DISC, DMAX, DMIN, DOLLAR,
-DOLLARDE, DOLLARFR, DPRODUCT, DROP, DSTDEV, DSTDEVP, DSUM, DURATION, DVAR,
-DVARP, EDATE, EFFECT, ENCODEURL, EOMONTH, ERF, ERF.PRECISE, ERFC,
-ERFC.PRECISE, ERROR.TYPE, EUROCONVERT, EXACT, EVEN, EXP, EXPAND,
-EXPON.DIST, F.DIST, F.DIST.RT, F.INV, F.INV.RT, F.TEST, FACT, FACTDOUBLE,
-FALSE, FILTER, FIND, FINDB, FISHER, FISHERINV, FIXED, FLOOR, FLOOR.MATH,
-FLOOR.PRECISE, FORECAST, FORECAST.ETS, FORECAST.ETS.CONFINT,
-FORECAST.ETS.SEASONALITY, FORECAST.ETS.STAT, FORECAST.LINEAR, FORMULATEXT,
-FREQUENCY, FV, FVSCHEDULE, GAMMA, GAMMA.DIST, GAMMA.INV, GAMMALN,
-GAMMALN.PRECISE, GAUSS, GCD, GEOMEAN, GESTEP, GROWTH, HARMEAN, HEX2BIN,
-HEX2DEC, HEX2OCT, HLOOKUP, HOUR, HSTACK, HYPERLINK, HYPGEOM.DIST, IF,
-IFERROR, IFNA, IFS, IMABS, IMAGINARY, IMARGUMENT, IMCONJUGATE, IMCOS,
-IMCOSH, IMCOT, IMCSC, IMCSCH, IMDIV, IMEXP, IMLN, IMLOG10, IMLOG2, IMPOWER,
-IMPRODUCT, IMREAL, IMSEC, IMSECH, IMSIN, IMSINH, IMSQRT, IMSUB, IMSUM,
-IMTAN, INDEX, INDIRECT, INFO, INT, INTERCEPT, INTRATE, IPMT, IRR,
-IS.CEILING, ISBLANK, ISERR, ISEVEN, ISERROR, ISFORMULA, ISLOGICAL,
-ISOMITTED, ISNA, ISNONTEXT, ISNUMBER, ISO.CEILING, ISODD, ISPMT, ISREF,
-ISOWEEKNUM, ISTEXT, KURT, LAMBDA, LARGE, LCM, LEFT, LEFTB, LEN, LENB, LET,
-LINEST, LN, LOG, LOG10, LOGEST, LOGNORM.DIST, LOGNORM.INV, LOOKUP, LOWER,
-MAKEARRAY, MAP, MATCH, MAX, MAXA, MAXIFS, MDETERM, MDURATION, MEDIAN, MID,
-MIDB, MIN, MINA, MINIFS, MINVERSE, MIRR, MINUTE, MMULT, MOD, MODE.MULT,
-MODE.SNGL, MONTH, MROUND, MULTINOMIAL, MUNIT, N, NA, NEGBINOM.DIST,
-NETWORKDAYS, NETWORKDAYS.INTL, NOMINAL, NORM.DIST, NORM.INV, NORM.S.DIST,
-NORM.S.INV, NOT, NOW, NPER, NPV, NUMBERVALUE, OCT2BIN, OCT2DEC, OCT2HEX,
-ODD, ODDFPRICE, ODDFYIELD, ODDLPRICE, ODDLYIELD, OFFSET, OR, PEARSON,
-PDURATION, PERCENTILE.EXC, PERCENTILE.INC, PERCENTOF, PERCENTRANK.EXC,
-PERCENTRANK.INC, PERMUT, PERMUTATIONA, PHI, PHONETIC, PI, PMT,
+COUPDAYSNC, COUPNCD, COUPNUM, COUPPCD, COVAR, COVARIANCE.P, COVARIANCE.S,
+CRITBINOM, CSC, CSCH, CUMIPMT, CUMPRINC, DATE, DATEDIF, DATEVALUE,
+DAVERAGE, DAY, DAYS, DAYS360, DB, DBCS, DCOUNT, DCOUNTA, DEC2BIN, DEC2HEX,
+DEC2OCT, DECIMAL, DDB, DEGREES, DELTA, DETECTLANGUAGE, DEVSQ, DGET, DISC,
+DMAX, DMIN, DOLLAR, DOLLARDE, DOLLARFR, DPRODUCT, DROP, DSTDEV, DSTDEVP,
+DSUM, DURATION, DVAR, DVARP, EDATE, EFFECT, ENCODEURL, EOMONTH, ERF,
+ERF.PRECISE, ERFC, ERFC.PRECISE, ERROR.TYPE, EUROCONVERT, EXACT, EVEN, EXP,
+EXPAND, EXPON.DIST, EXPONDIST, F.DIST, FDIST, F.DIST.RT, F.INV, FINV,
+F.INV.RT, F.TEST, FTEST, FACT, FACTDOUBLE, FALSE, FILTER, FILTERXML, FIND,
+FINDB, FISHER, FISHERINV, FIXED, FLOOR, FLOOR.MATH, FLOOR.PRECISE,
+FORECAST, FORECAST.ETS, FORECAST.ETS.CONFINT, FORECAST.ETS.SEASONALITY,
+FORECAST.ETS.STAT, FORECAST.LINEAR, FORMULATEXT, FREQUENCY, FV, FVSCHEDULE,
+GAMMA, GAMMA.DIST, GAMMADIST, GAMMA.INV, GAMMAINV, GAMMALN,
+GAMMALN.PRECISE, GAUSS, GCD, GEOMEAN, GESTEP, GETPIVOTDATA, GROWTH,
+HARMEAN, HEX2BIN, HEX2DEC, HEX2OCT, HLOOKUP, HOUR, HSTACK, HYPERLINK,
+HYPGEOM.DIST, HYPGEOMDIST, IF, IFERROR, IFNA, IFS, IMABS, IMAGINARY,
+IMARGUMENT, IMCONJUGATE, IMCOS, IMCOSH, IMCOT, IMCSC, IMCSCH, IMDIV, IMEXP,
+IMLN, IMLOG10, IMLOG2, IMPOWER, IMPRODUCT, IMREAL, IMSEC, IMSECH, IMSIN,
+IMSINH, IMSQRT, IMSUB, IMSUM, IMTAN, INDEX, INDIRECT, INFO, INT, INTERCEPT,
+INTRATE, IPMT, IRR, IS.CEILING, ISBLANK, ISERR, ISEVEN, ISERROR, ISFORMULA,
+ISLOGICAL, ISOMITTED, ISNA, ISNONTEXT, ISNUMBER, ISO.CEILING, ISODD, ISPMT,
+ISREF, ISOWEEKNUM, ISTEXT, JIS, KURT, LAMBDA, LARGE, LCM, LEFT, LEFTB, LEN,
+LENB, LET, LINEST, LN, LOG, LOG10, LOGEST, LOGINV, LOGNORM.DIST,
+LOGNORMDIST, LOGNORM.INV, LOOKUP, LOWER, MAKEARRAY, MAP, MATCH, MAX, MAXA,
+MAXIFS, MDETERM, MDURATION, MEDIAN, MID, MIDB, MIN, MINA, MINIFS, MINVERSE,
+MIRR, MINUTE, MMULT, MOD, MODE, MODE.MULT, MODE.SNGL, MONTH, MROUND,
+MULTINOMIAL, MUNIT, N, NA, NEGBINOM.DIST, NEGBINOMDIST, NETWORKDAYS,
+NETWORKDAYS.INTL, NOMINAL, NORM.DIST, NORMDIST, NORM.INV, NORMINV,
+NORM.S.DIST, NORMSDIST, NORM.S.INV, NORMSINV, NOT, NOW, NPER, NPV,
+NUMBERVALUE, OCT2BIN, OCT2DEC, OCT2HEX, ODD, ODDFPRICE, ODDFYIELD,
+ODDLPRICE, ODDLYIELD, OFFSET, OR, PEARSON, PDURATION, PERCENTILE,
+PERCENTILE.EXC, PERCENTILE.INC, PERCENTOF, PERCENTRANK, PERCENTRANK.EXC,
+PERCENTRANK.INC, PERMUT, PERMUTATIONA, PHI, PHONETIC, PI, PMT, POISSON,
 POISSON.DIST, POWER, PPMT, PRICE, PRICEDISC, PRICEMAT, PROB, PRODUCT,
-PROPER, PV, QUOTIENT, QUARTILE.EXC, QUARTILE.INC, RADIANS, RAND, RANDARRAY,
-RANDBETWEEN, RANK.AVG, RANK.EQ, RATE, RECEIVED, REDUCE, REGEXEXTRACT,
-REGEXREPLACE, REGEXTEST, REPLACE, REPLACEB, REPT, RIGHT, RIGHTB, ROMAN,
-ROUND, ROUNDDOWN, ROUNDUP, ROW, ROWS, RRI, RSQ, SCAN, SEARCH, SEARCHB, SEC,
-SECOND, SECH, SEQUENCE, SERIESSUM, SHEETS, SIGN, SIN, SINH, SKEW, SKEW.P,
-SLN, SLOPE, SMALL, SORT, SORTBY, SQRT, SQRTPI, STANDARDIZE, STDEV.P,
-STDEV.S, STDEVA, STDEVPA, STEYX, SUBSTITUTE, SUBTOTAL, SUM, SUMIF, SUMIFS,
-SUMPRODUCT, SUMSQ, SUMX2MY2, SUMX2PY2, SUMXMY2, SWITCH, SYD, T, TAKE,
-T.DIST, T.DIST.2T, T.DIST.RT, T.INV, T.INV.2T, T.TEST, TAN, TANH, TBILLEQ,
-TBILLPRICE, TBILLYIELD, TEXT, TEXTAFTER, TEXTBEFORE, TEXTJOIN, TEXTSPLIT,
-TIME, TIMEVALUE, TOCOL, TODAY, TOROW, TRANSLATE, TRANSPOSE, TREND,
-TRIMMEAN, TRIM, TRIMRANGE, TRUNC, TRUE, TYPE, UNICHAR, UNICODE, UNIQUE,
-UPPER, VALUE, VALUETOTEXT, VAR.P, VAR.S, VARA, VARPA, VDB, VLOOKUP, VSTACK,
-WEIBULL.DIST, WEEKDAY, WEEKNUM, WORKDAY, WORKDAY.INTL, WRAPCOLS, WRAPROWS,
-XIRR, XLOOKUP, XMATCH, XNPV, XOR, YEAR, YEARFRAC, YIELD, YIELDDISC,
-YIELDMAT, Z.TEST
+PROPER, PV, QUARTILE, QUOTIENT, QUARTILE.EXC, QUARTILE.INC, RADIANS, RAND,
+RANDARRAY, RANDBETWEEN, RANK, RANK.AVG, RANK.EQ, RATE, RECEIVED, REDUCE,
+REGEXEXTRACT, REGEXREPLACE, REGEXTEST, REPLACE, REPLACEB, REPT, RIGHT,
+RIGHTB, ROMAN, ROUND, ROUNDDOWN, ROUNDUP, ROW, ROWS, RRI, RSQ, SCAN,
+SEARCH, SEARCHB, SEC, SECOND, SECH, SEQUENCE, SERIESSUM, SHEET, SHEETS,
+SIGN, SIN, SINH, SKEW, SKEW.P, SLN, SLOPE, SMALL, SORT, SORTBY, SQRT,
+SQRTPI, STANDARDIZE, STDEV, STDEV.P, STDEV.S, STDEVA, STDEVP, STDEVPA,
+STEYX, SUBSTITUTE, SUBTOTAL, SUM, SUMIF, SUMIFS, SUMPRODUCT, SUMSQ,
+SUMX2MY2, SUMX2PY2, SUMXMY2, SWITCH, SYD, T, TAKE, T.DIST, TDIST,
+T.DIST.2T, T.DIST.RT, T.INV, TINV, T.INV.2T, T.TEST, TTEST, TAN, TANH,
+TBILLEQ, TBILLPRICE, TBILLYIELD, TEXT, TEXTAFTER, TEXTBEFORE, TEXTJOIN,
+TEXTSPLIT, TIME, TIMEVALUE, TOCOL, TODAY, TOROW, TRANSLATE, TRANSPOSE,
+TREND, TRIMMEAN, TRIM, TRIMRANGE, TRUNC, TRUE, TYPE, UNICHAR, UNICODE,
+UNIQUE, UPPER, VALUE, VALUETOTEXT, VAR, VAR.P, VAR.S, VARA, VARP, VARPA,
+VDB, VLOOKUP, VSTACK, WEIBULL, WEIBULL.DIST, WEEKDAY, WEEKNUM, WORKDAY,
+WORKDAY.INTL, WRAPCOLS, WRAPROWS, XIRR, XLOOKUP, XMATCH, XNPV, XOR, YEAR,
+YEARFRAC, YIELD, YIELDDISC, YIELDMAT, Z.TEST, ZTEST
 
 ## Missing, by category
 
@@ -132,17 +162,19 @@ implemented (`ACCRINT`, `ACCRINTM`, `AMORDEGRC`, `AMORLINC`, `COUPDAYBS`,
 `TBILLPRICE`, `TBILLYIELD`, `YIELD`, `YIELDDISC`, `YIELDMAT`) — see
 `libvisi/src/core/finance.rs`.
 
-### Add-in / legacy (2/3 missing)
+### Add-in / legacy (2 — intentionally unsupported, not missing work)
 
-CALL, REGISTER.ID
+CALL, REGISTER.ID — neither is dispatched at all, so calling either
+already falls through to the generic "unknown function" error (`#NAME?`),
+which is exactly what real Excel does when the XLL/DLL add-in that defines
+them isn't loaded. These invoke arbitrary native add-in code; there is no
+meaningful local implementation, and current behavior already matches
+Excel's own (add-in-less) behavior. (`EUROCONVERT` is implemented — see
+`core/finance.rs`.)
 
-`EUROCONVERT` is now implemented (fixed historical ECB triangulation rates
-— see `core/finance.rs`); `CALL`/`REGISTER.ID` invoke external DLL/XLL
-add-ins, which has no meaning in this engine.
-
-### Recognized but not functional (17 — parsed and dispatched, but the
+### Recognized but not functional (13 — parsed and dispatched, but the
 implementation is a stub that just echoes an argument back rather than
-computing the real result)
+computing the real result, or reports the data source as unavailable)
 
 - **Cube (7)**: CUBEKPIMEMBER, CUBEMEMBER, CUBEMEMBERPROPERTY,
   CUBERANKEDMEMBER, CUBESET, CUBESETCOUNT, CUBEVALUE — in real Excel these
@@ -155,23 +187,43 @@ computing the real result)
   column/value references) rather than matching real Excel/SSAS behavior —
   a scope decision intentionally left unmade rather than guessed at. Left
   as stubs; not attempted.
-- **Web service (2)**: FILTERXML, WEBSERVICE
-- **Pivot / grouping / external data (6)**: GETPIVOTDATA, GROUPBY, IMAGE,
-  PIVOTBY, RTD, STOCKHISTORY — `GETPIVOTDATA`/`GROUPBY`/`PIVOTBY` need
-  deeper pivot-table integration than a formula-level implementation
-  affords; `RTD`/`STOCKHISTORY` need a live external data source; `IMAGE`
-  needs image-object support this engine's cell model doesn't have.
+- **Web service (1)**: WEBSERVICE — needs a blocking HTTP client, which
+  conflicts with `libvisi/core`'s "no IO assumptions, wasm-targetable"
+  rule; would need a non-default Cargo feature gating an HTTP dependency
+  rather than an unconditional one. Not attempted. (`FILTERXML` is now
+  implemented locally — see `core/xml.rs` — since XPath-over-a-literal-
+  string needs no network access.)
+- **External/live data (2)**: RTD, STOCKHISTORY — `RTD` needs a registered
+  Windows COM `IRtdServer`, which is the one genuinely Windows-COM-only
+  case in this whole list; `STOCKHISTORY` is backed by Microsoft's
+  internal "Data Types" cloud service with no public, unauthenticated REST
+  API. Neither is implementable without either a Windows-only COM client
+  or reverse-engineering an undocumented, likely-authenticated Microsoft
+  service. Both now return `#N/A` (matching real Excel's own display once
+  its equivalent live connection is unavailable) rather than echoing an
+  argument back.
+- **Pivot / grouping / image (3)**: GROUPBY, PIVOTBY, IMAGE — `GROUPBY` and
+  `PIVOTBY` take raw array arguments rather than an existing `PivotTable`
+  object, so they'd need new array-level grouping/aggregation logic (unlike
+  `GETPIVOTDATA`, now implemented — see below); `IMAGE` needs a new
+  `ResultData` variant plus real xlsx image-embedding support that doesn't
+  exist yet for any result type (not even the existing `Plot` variant is
+  embedded as a real xlsx image on export).
+
+`GETPIVOTDATA` is now genuinely implemented
+(`core/pivot.rs::getpivotdata`, dispatched via
+`Sheet::evaluate_getpivotdata`) — see the Caveats section above.
 
 Everything else previously listed here — all 12 `D*` database functions,
 all of `AREAS`, `CHOOSECOLS`, `CHOOSEROWS`, `COLUMN`, `COLUMNS`, `DROP`,
 `EXPAND`, `FILTER`, `FORMULATEXT`, `HSTACK`, `HYPERLINK`, `INDIRECT`,
 `LOOKUP`, `OFFSET`, `ROW`, `ROWS`, `SORT`, `SORTBY`, `TAKE`, `TOCOL`,
 `TOROW`, `TRANSPOSE`, `TRIMRANGE`, `UNIQUE`, `VSTACK`, `WRAPCOLS`,
-`WRAPROWS`, `XMATCH`, and all of `CELL`, `INFO`, `ISFORMULA`, `ISOMITTED`,
-`ISREF`, `SHEETS`, `BYCOL`, `BYROW`, `LAMBDA`, `MAKEARRAY`, `MAP`,
-`REDUCE`, `SCAN` — is now genuinely implemented (see the "Caveats" section
-above for `SHEET`'s approximation and `TRANSPOSE`'s fuzz-harness
-limitation, both counted as implemented here).
+`WRAPROWS`, `XMATCH`, `GETPIVOTDATA`, and all of `CELL`, `INFO`,
+`ISFORMULA`, `ISOMITTED`, `ISREF`, `SHEETS`, `BYCOL`, `BYROW`, `LAMBDA`,
+`MAKEARRAY`, `MAP`, `REDUCE`, `SCAN` — is now genuinely implemented (see
+the "Caveats" section above for `SHEET`'s approximation and `TRANSPOSE`'s
+fuzz-harness limitation, both counted as implemented here).
 
 ### Not dispatched at all (0)
 

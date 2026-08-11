@@ -493,6 +493,79 @@ fn test_workbook_pivot_crud_and_computation() {
 }
 
 #[test]
+fn test_getpivotdata_formula_resolves_against_rendered_pivot() {
+    use libvisi::core::{PivotAggregation, PivotArea};
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_getpivotdata.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    let data = [
+        ["Region", "Product", "Amount"],
+        ["East", "Widget", "10"],
+        ["East", "Gadget", "5"],
+        ["West", "Widget", "30"],
+        ["West", "Gadget", "40"],
+    ];
+    for (r, row) in data.iter().enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            wb.set_cell(0, r, c, v.to_string());
+        }
+    }
+    wb.evaluate().unwrap();
+    wb.add_table(None, "Sales", 0, 0, 4, 2, true, false)
+        .unwrap();
+
+    // Destination anchored at column E (0-based col 4): "Row Labels" header
+    // at row 0, East/West/Grand Total rows follow, values land in column F.
+    wb.add_pivot_table_from_table("SalesPivot", "Sales", None, 0, 4, true, true)
+        .unwrap();
+    wb.add_pivot_field("SalesPivot", PivotArea::Row, "Region", None)
+        .unwrap();
+    wb.add_pivot_field(
+        "SalesPivot",
+        PivotArea::Value,
+        "Amount",
+        Some(PivotAggregation::Sum),
+    )
+    .unwrap();
+
+    // A formula elsewhere on the sheet, pointing at a cell inside the
+    // pivot's rendered output (F2, the East row's value cell), should
+    // resolve GETPIVOTDATA against the same pivot table without needing
+    // its name.
+    wb.set_cell(
+        0,
+        0,
+        8,
+        "=GETPIVOTDATA(\"Amount\", F2, \"Region\", \"East\")".to_string(),
+    );
+    wb.set_cell(0, 1, 8, "=GETPIVOTDATA(\"Amount\", F2)".to_string());
+    wb.set_cell(
+        0,
+        2,
+        8,
+        "=GETPIVOTDATA(\"Amount\", F2, \"Region\", \"North\")".to_string(),
+    );
+    wb.evaluate().unwrap();
+
+    let east = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 8));
+    assert_eq!(east.to_string(), "15");
+
+    // No field/item criteria at all means the grand total.
+    let grand_total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(1, 8));
+    assert_eq!(grand_total.to_string(), "85");
+
+    // An item that doesn't exist in the pivot is a #REF! error, matching
+    // real Excel's GETPIVOTDATA.
+    let bad_item = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(2, 8));
+    assert!(matches!(bad_item, libvisi::core::ResultData::Error(ref e) if e == "#REF!"));
+
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
 fn test_workbook_chart_edit_and_round_trip() {
     use libvisi::core::chart::ChartType;
 

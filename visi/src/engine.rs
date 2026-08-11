@@ -167,6 +167,7 @@ impl WorkbookManager {
                 for s in right_tail.iter() {
                     context.add_table(s.name.clone(), s);
                 }
+                context.pivot_tables = &self.pivot_tables;
 
                 let _ = target_sheet.commit(Some(&context));
             }
@@ -1024,7 +1025,8 @@ impl WorkbookManager {
         let grid: Option<PivotGrid> = if pivot.value_fields.is_empty() {
             None
         } else {
-            Some(compute_pivot(&self.sheets, &pivot)?)
+            let sheet_refs: Vec<&Sheet> = self.sheets.iter().collect();
+            Some(compute_pivot(&sheet_refs, &pivot)?)
         };
 
         // Clear the previously rendered area first, since a refresh can

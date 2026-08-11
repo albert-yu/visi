@@ -1265,3 +1265,19 @@ fn test_xmatch_supports_next_smaller_and_larger_modes() {
     let (next_smaller, _) = sheet.eval("=XMATCH(25,A1:A5,-1)", None).unwrap();
     assert_float_close(&next_smaller, 2.0, 1e-9);
 }
+
+#[test]
+fn test_stockhistory_and_rtd_report_unavailable_data_source() {
+    // Neither has a local data source this engine can serve (a live
+    // Microsoft stock-data cloud connection, a registered Windows COM RTD
+    // server) -- #N/A matches real Excel's own display once its
+    // equivalent live connection is unavailable.
+    assert!(matches!(
+        eval1("=STOCKHISTORY(\"MSFT\",\"2024-01-01\",\"2024-01-31\")"),
+        ResultData::Error(ref e) if e == "#N/A"
+    ));
+    assert!(matches!(
+        eval1("=RTD(\"prog.id\",\"server\",\"topic\")"),
+        ResultData::Error(ref e) if e == "#N/A"
+    ));
+}

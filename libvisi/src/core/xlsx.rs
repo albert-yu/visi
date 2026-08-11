@@ -1980,9 +1980,7 @@ mod tests {
         // Recomputing from the reimported definition should reproduce the
         // same aggregation (East=15, West=70, Grand Total=85).
         let reimported_sheet = &imported_tables[0].sheet;
-        let grid =
-            crate::core::pivot::compute_pivot(std::slice::from_ref(reimported_sheet), reimported)
-                .unwrap();
+        let grid = crate::core::pivot::compute_pivot(&[reimported_sheet], reimported).unwrap();
         assert_eq!(grid.body_rows.len(), 3);
     }
 

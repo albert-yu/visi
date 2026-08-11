@@ -30,6 +30,25 @@ pub fn asc(text: &str) -> Result<String, String> {
     Ok(res)
 }
 
+pub fn jis(text: &str) -> Result<String, String> {
+    let mut res = String::new();
+    for c in text.chars() {
+        let code = c as u32;
+        if (0x0021..=0x007E).contains(&code) {
+            if let Some(ch) = char::from_u32(code + 0xfee0) {
+                res.push(ch);
+            } else {
+                res.push(c);
+            }
+        } else if c == ' ' {
+            res.push('\u{3000}');
+        } else {
+            res.push(c);
+        }
+    }
+    Ok(res)
+}
+
 pub fn bahttext(number: f64) -> Result<String, String> {
     if number.is_nan() || number.is_infinite() {
         return Err("#VALUE!".to_string());
