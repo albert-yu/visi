@@ -85,6 +85,30 @@ fn test_currency_and_formatting_functions() {
 }
 
 #[test]
+fn test_regex_functions_use_real_regex_not_literal_substring() {
+    let grid = [[
+        "=REGEXEXTRACT(\"order-12345\", \"[0-9]+\")",
+        "=REGEXREPLACE(\"order-12345\", \"[0-9]+\", \"X\")",
+        "=REGEXTEST(\"order-12345\", \"[0-9]+\")",
+        "=REGEXTEST(\"order-abcde\", \"[0-9]+\")",
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 0));
+    assert!(matches!(r1, ResultData::String(ref s) if s == "12345"));
+
+    let r2 = sheet.get_result_data(&CellRef::new(0, 1));
+    assert!(matches!(r2, ResultData::String(ref s) if s == "order-X"));
+
+    let r3 = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(matches!(r3, ResultData::Boolean(true)));
+
+    let r4 = sheet.get_result_data(&CellRef::new(0, 3));
+    assert!(matches!(r4, ResultData::Boolean(false)));
+}
+
+#[test]
 fn test_jis_is_inverse_of_asc() {
     let grid = [["=ASC(JIS(\"AB 1\"))", "=JIS(\"AB\")"]];
     let mut sheet = create_sheet(&grid);
