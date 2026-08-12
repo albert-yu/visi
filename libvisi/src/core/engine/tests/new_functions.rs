@@ -1375,6 +1375,36 @@ fn test_date_functions_match_documented_excel_examples() {
 }
 
 #[test]
+fn test_besselk_bessely_match_known_reference_values() {
+    // Regression for #26: BESSELK/BESSELY used to alias BESSELI/BESSELJ
+    // directly, which is a distinct-function bug, not an imprecision --
+    // K_n/Y_n diverge as x -> 0 while I_n/J_n stay finite there. Expected
+    // values are well-known constants (Abramowitz & Stegun tables).
+    assert_float_close(&eval1("=BESSELK(1,0)"), 0.4210244382, 1e-8);
+    assert_float_close(&eval1("=BESSELK(1,1)"), 0.6019072301, 1e-8);
+    assert_float_close(&eval1("=BESSELY(1,0)"), 0.0882569642, 1e-8);
+    assert_float_close(&eval1("=BESSELY(1,1)"), -0.7812128213, 1e-8);
+    // Sanity check the still-correct BESSELI/BESSELJ weren't disturbed.
+    assert_float_close(&eval1("=BESSELI(1,0)"), 1.2660658778, 1e-8);
+    assert_float_close(&eval1("=BESSELJ(1,0)"), 0.7651976866, 1e-8);
+}
+
+#[test]
+fn test_complex_number_functions_round_trip() {
+    assert_eq!(eval1("=COMPLEX(3,4)").to_string(), "3+4i");
+    assert_float_close(&eval1("=IMABS(\"3+4i\")"), 5.0, 1e-9);
+    assert_float_close(&eval1("=IMREAL(\"3+4i\")"), 3.0, 1e-9);
+    assert_float_close(&eval1("=IMAGINARY(\"3+4i\")"), 4.0, 1e-9);
+    assert_eq!(eval1("=IMCONJUGATE(\"3+4i\")").to_string(), "3-4i");
+    assert_eq!(eval1("=IMSUM(\"3+4i\",\"1-2i\")").to_string(), "4+2i");
+    assert_eq!(eval1("=IMSUB(\"3+4i\",\"1-2i\")").to_string(), "2+6i");
+    // (3+4i)(1-2i) = 3-6i+4i-8i^2 = 3-2i+8 = 11-2i
+    assert_eq!(eval1("=IMPRODUCT(\"3+4i\",\"1-2i\")").to_string(), "11-2i");
+    // (3+4i)/(1-2i) = (3+4i)(1+2i)/5 = (3+6i+4i-8)/5 = (-5+10i)/5 = -1+2i
+    assert_eq!(eval1("=IMDIV(\"3+4i\",\"1-2i\")").to_string(), "-1+2i");
+}
+
+#[test]
 fn test_stockhistory_and_rtd_report_unavailable_data_source() {
     // Neither has a local data source this engine can serve (a live
     // Microsoft stock-data cloud connection, a registered Windows COM RTD
