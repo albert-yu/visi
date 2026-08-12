@@ -149,12 +149,12 @@ class ExcelFuzzGenerator:
         "PERCENTILE", "PERCENTILE.INC", "PERCENTILE.EXC",
         # QUARTILE.EXC excluded: visi's exclusive-quartile interpolation
         # rejects some quart/sample-size combinations Excel accepts (see
-        # "docs/excel-discrepancies.md" section 9). QUARTILE.INC and the PERCENTILE.* family
+        # "docs/excel-discrepancies.md" section 10). QUARTILE.INC and the PERCENTILE.* family
         # agree and stay fuzzed.
         "QUARTILE", "QUARTILE.INC",
         "PERCENTRANK", "PERCENTRANK.INC", "PERCENTRANK.EXC",
         # FREQUENCY excluded: its bins_array coercion for non-numeric bins
-        # is not understood (see "docs/excel-discrepancies.md" section 11).
+        # is not understood (see "docs/excel-discrepancies.md" section 12).
         "RANK", "RANK.EQ", "RANK.AVG", "TRIMMEAN", "MODE.MULT",
     ]
     LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
@@ -305,7 +305,7 @@ class ExcelFuzzGenerator:
         # demonstrably exists (the same call returns a rate when handed a
         # guess near it), so the comparison asserts whether Excel's
         # iteration converged from its default 0.1 rather than anything
-        # about correctness. See "docs/excel-discrepancies.md" section 10.
+        # about correctness. See "docs/excel-discrepancies.md" section 11.
         "PV", "FV", "PMT", "NPER", "IPMT", "PPMT", "CUMIPMT",
         "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
         "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "DOLLARDE", "DOLLARFR",
@@ -319,7 +319,7 @@ class ExcelFuzzGenerator:
         "ODDLPRICE", "ODDLYIELD",
     ]
     # AMORDEGRC, ODDFPRICE and ODDFYIELD are excluded as known visi gaps --
-    # see "docs/excel-discrepancies.md" sections 6 and 7. AMORDEGRC's coefficient brackets and
+    # see "docs/excel-discrepancies.md" sections 7 and 8. AMORDEGRC's coefficient brackets and
     # end-of-life switch to straight line aren't fully reverse-engineered,
     # and Excel rejects odd-first-coupon orderings (returning #NUM!) that
     # visi accepts. The regular-coupon bond functions above are unaffected
@@ -663,7 +663,7 @@ class ExcelFuzzGenerator:
             # day-28 issue in *any* month can land on 28 February and turn
             # the whole quasi-coupon schedule end-of-month -- which is the
             # case ACCRINT is known to get wrong. See
-            # "docs/excel-discrepancies.md" section 8.
+            # "docs/excel-discrepancies.md" section 9.
             d = 27
         return f"DATE({y}, {m}, {d})"
 
@@ -926,7 +926,7 @@ class ExcelFuzzGenerator:
             # Restricted to basis 0/4 (30/360) -- see the doc comment on
             # finance::accrint for why bases 1/2/3 aren't fuzzed here.
             # February month-end issue dates are excluded as a known gap;
-            # see "docs/excel-discrepancies.md" section 8.
+            # see "docs/excel-discrepancies.md" section 9.
             issue = self._fin_date(avoid_february_month_end=True)
             freq = bond_freq()
             months = 12 // freq
@@ -1382,7 +1382,7 @@ class ExcelFuzzGenerator:
         if fn == "DATEDIF":
             # "YD" is excluded: Excel's is internally inconsistent and no
             # candidate rule fits more than 5 of 8 probed data points (see
-            # "docs/excel-discrepancies.md" section 5). The other units agree.
+            # "docs/excel-discrepancies.md" section 6). The other units agree.
             s1, s2 = serial(40000, 43000), serial(43001, 46000)
             unit = random.choice(["Y", "M", "D", "MD", "YM"])
             return f'=DATEDIF({s1}, {s2}, "{unit}")'
@@ -2341,7 +2341,7 @@ class DifferentialComparator:
         # *different* error, visi and Excel sometimes surface different
         # ones -- which error wins depends on Excel's internal evaluation
         # order and differs per operator and per function. That is a
-        # documented divergence ("docs/excel-discrepancies.md" section 12),
+        # documented divergence ("docs/excel-discrepancies.md" section 13),
         # and by default a disagreement where *both* engines errored is
         # counted separately rather than as a failure.
         #
@@ -2530,7 +2530,7 @@ def main():
         help=(
             "Count a disagreement where both engines errored but with different "
             "error classes as a failure. Off by default -- see "
-            "docs/excel-discrepancies.md section 12."
+            "docs/excel-discrepancies.md section 13."
         ),
     )
     args = parser.parse_args()

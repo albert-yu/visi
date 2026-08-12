@@ -742,20 +742,30 @@ fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
     // most of the answer's digits; it now goes through the incomplete
     // beta's symmetry instead. All reference values are real Excel's, and
     // everything below agrees with it to better than 2e-13 relative.
+    // Reference values here are 40-digit mpmath evaluations of the
+    // regularized incomplete beta, not Excel's. visi is closer to the
+    // truth than Excel on this first one: 3.5e-16 relative against
+    // Excel's 1.3e-14.
     assert_float_close(
         &eval1("=F.DIST.RT(120.02429320013077, 2, 4)"),
-        2.686379655301735e-4,
-        1e-16,
+        2.6863796553017013481e-4,
+        // visi is off by 1.1e-19 here; Excel's own answer is off by
+        // 3.5e-18, so this still asserts a comfortable margin over it.
+        1e-18,
     );
     assert_float_close(
         &eval1("=F.DIST.RT(1000000, 2, 4)"),
         3.9999840000480035e-12,
         1e-24,
     );
-    assert_float_close(&eval1("=F.DIST.RT(2, 3, 7)"), 0.20269364248665092, 1e-13);
+    assert_float_close(&eval1("=F.DIST.RT(2, 3, 7)"), 0.20269364248665092207, 1e-15);
     assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-12);
     assert_float_close(&eval1("=F.DIST.RT(1, 5, 5)"), 0.4999999999999999, 1e-13);
-    assert_float_close(&eval1("=FDIST(4.28, 3, 10)"), 0.03467052591390302, 1e-14);
+    assert_float_close(
+        &eval1("=FDIST(4.28, 3, 10)"),
+        0.034670525913903016847,
+        1e-16,
+    );
     // The left tail is unaffected.
     assert_float_close(&eval1("=F.DIST(2, 3, 7, TRUE)"), 0.7973063575133491, 1e-13);
 

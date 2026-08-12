@@ -300,7 +300,13 @@ pub fn incbeta(a: f64, b: f64, x: f64) -> f64 {
         let del = d * c;
         h *= del;
 
-        if (del - 1.0).abs() < 1e-15 {
+        // Machine epsilon rather than the textbook 1e-15: that threshold
+        // leaves about 1e-15 relative error, which is exactly the size of
+        // the disagreements this was producing in the 15th significant
+        // digit (FTEST over one fuzzed pair came out 0.941716332833876
+        // where the true value is 0.94171633283387507 and Excel prints
+        // 0.941716332833875).
+        if (del - 1.0).abs() < f64::EPSILON {
             break;
         }
     }

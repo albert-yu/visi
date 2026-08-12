@@ -78,7 +78,36 @@ costs roughly one cell per few hundred iterations, and the same generator
 range is what exercises the number-to-text formatting rules that *did* turn up
 real bugs.
 
-## 4. FORECAST.ETS.SEASONALITY — *No stable answer*
+## 4. Rounding ties in the incomplete beta — *No stable answer*
+
+The F and t distributions are computed from a continued-fraction
+incomplete beta, accurate to a few ULP. That is enough to agree with Excel
+on the value, but not always on the 15th digit Excel *prints*, because
+some inputs land almost exactly on a rounding tie:
+
+```
+FTEST over one fuzzed pair
+  true value  0.94171633283387507291   (40-digit mpmath)
+  Excel       0.941716332833875
+  visi        0.941716332833876
+```
+
+The true value sits **0.7 ULP** above the point where the 15th digit flips
+from 5 to 6. Rounding it the way Excel does requires better-than-ULP
+accuracy, which no double-precision implementation can promise, so this
+particular input has no answer an independent engine can reliably
+reproduce.
+
+Not excluded, because it is rare (roughly one cell per 60 iterations) and
+indistinguishable at generation time from the ordinary cases the same
+functions cover. Worth checking rather than assuming, though: visi's
+incomplete beta is now within a few ULP throughout, and on
+`F.DIST.RT(120.02429320013077, 2, 4)` it is **37x closer to the true value
+than Excel** (3.5e-16 relative against 1.3e-14) — so a disagreement here
+is at least as likely to be Excel's error as visi's. Arbitrate with
+`mpmath` before changing anything.
+
+## 5. FORECAST.ETS.SEASONALITY — *No stable answer*
 
 Excel's automatic season-length detection does not report the series' true
 period, and its answer turns on the *arrangement* of the seasonal offsets
@@ -108,7 +137,7 @@ digits, so `FORECAST.ETS.STAT` types **1-3** (the fitted parameters) are
 excluded too. Types 4-8 (MASE/SMAPE/MAE/RMSE/step) are well-defined and are
 fuzzed.
 
-## 5. DATEDIF `"YD"` — *No stable answer*
+## 6. DATEDIF `"YD"` — *No stable answer*
 
 Excel's `"YD"` is internally inconsistent. Tested against 8 real-Excel data
 points, no candidate rule fits:
@@ -125,7 +154,7 @@ keeps the defensible definition — days since the most recent anniversary of
 the start date — and `"YD"` is excluded from the harness. The other units
 (`"Y"`, `"M"`, `"D"`, `"MD"`, `"YM"`) agree with Excel and stay fuzzed.
 
-## 6. Odd-coupon bond functions — *visi gap*
+## 7. Odd-coupon bond functions — *visi gap*
 
 `ODDFPRICE` and `ODDFYIELD` disagree on odd-first-coupon configurations where
 Excel returns `#NUM!` and visi computes a value, e.g.
@@ -140,7 +169,7 @@ accepts. The exact admissibility condition has not been pinned down. Both are
 excluded pending that work; the regular-coupon functions (`PRICE`, `YIELD`,
 `COUPDAYBS`, `COUPNCD`, `COUPPCD`, `COUPNUM`, …) agree and stay fuzzed.
 
-## 7. AMORDEGRC — *visi gap*
+## 8. AMORDEGRC — *visi gap*
 
 The French declining-balance depreciation still disagrees on some schedules,
 sometimes by one unit and sometimes substantially:
@@ -155,7 +184,7 @@ off-by-one cases), but the coefficient brackets and the switch to straight
 line at the end of life are not fully reverse-engineered. Excluded pending
 that work.
 
-## 8. ACCRINT from a February month-end — *visi gap*
+## 9. ACCRINT from a February month-end — *visi gap*
 
 With an issue date on a February month-end, ACCRINT accrues slightly less
 than Excel does:
@@ -189,7 +218,7 @@ function and its `YEARFRAC` basis 0 use genuinely different 30/360 rules
 `YEARFRAC(...) * 360` is 720), verified over twelve date pairs and
 covered by `test_days360_and_yearfrac_use_different_thirty_360_rules`.
 
-## 9. QUARTILE.EXC — *visi gap*
+## 10. QUARTILE.EXC — *visi gap*
 
 ```
 QUARTILE.EXC(F1:G5, 3)   visi #NUM!   Excel 53
@@ -199,7 +228,7 @@ visi's exclusive-quartile interpolation rejects some quart/sample-size
 combinations Excel accepts. `QUARTILE.INC` and the `PERCENTILE.*` family
 agree.
 
-## 10. RATE — *No stable answer*
+## 11. RATE — *No stable answer*
 
 Excel's `RATE` iterates from its `guess` (default 0.1) and gives up with
 `#NUM!` on series where a root demonstrably exists — handed a guess near that
@@ -222,7 +251,7 @@ Excluded because "did the other engine's iteration happen to converge from
 0.1" is not a property worth asserting. `IRR`, `XIRR`, `MIRR`, `NPV` and the
 rest of the TVM family stay fuzzed.
 
-## 11. FREQUENCY with non-numeric bins — *visi gap*
+## 12. FREQUENCY with non-numeric bins — *visi gap*
 
 When `bins_array` contains blanks, booleans or text, visi and Excel disagree
 on both the bucket contents and the *length* of the result. visi drops
@@ -241,7 +270,7 @@ An all-numeric `bins_array` agrees, including the non-obvious part that Excel
 sorts the bins internally but reports each count back at that bin's original
 position — that is covered by a regression test.
 
-## 12. Error-class precedence in composed expressions — *tolerated by the comparator*
+## 13. Error-class precedence in composed expressions — *tolerated by the comparator*
 
 When several sub-expressions of one formula each produce a *different* error,
 visi and Excel sometimes surface different ones:
