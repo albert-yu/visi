@@ -1297,7 +1297,11 @@ pub fn chisq_dist_rt(x: f64, df: f64) -> Result<f64, String> {
     if x < 0.0 || df < 1.0 {
         return Err("#NUM!".to_string());
     }
-    Ok(1.0 - chisq_dist(x, df, true)?)
+    // The upper incomplete gamma directly, not `1 - CDF`. For a large
+    // statistic the CDF is within an ULP of 1 and the subtraction
+    // underflows to exactly 0 -- CHITEST over a series with one large
+    // term returned 0 where real Excel resolves 6.4e-103.
+    Ok(regularized_gamma_q(df / 2.0, x / 2.0))
 }
 
 pub fn chisq_inv(p: f64, df: f64) -> Result<f64, String> {
@@ -1311,7 +1315,13 @@ pub fn chisq_inv_rt(p: f64, df: f64) -> Result<f64, String> {
     chisq_inv(1.0 - p, df)
 }
 
-pub fn chisq_test(actual: &[f64], expected: &[f64]) -> Result<f64, String> {
+/// `categories` is the number of cells the two ranges originally held,
+/// which is not the same as `actual.len()`: the caller has already dropped
+/// pairs where either side was non-numeric, but Excel takes the degrees of
+/// freedom from the *original* dimensions. With one text cell in a 2-cell
+/// pair, one pair survives and Excel still evaluates against df = 1 rather
+/// than the df = 0 the survivor count would give.
+pub fn chisq_test(actual: &[f64], expected: &[f64], categories: usize) -> Result<f64, String> {
     if actual.len() != expected.len() || actual.is_empty() {
         return Err("#N/A".to_string());
     }
@@ -1338,7 +1348,7 @@ pub fn chisq_test(actual: &[f64], expected: &[f64]) -> Result<f64, String> {
     if chi2 < 0.0 {
         return Err("#NUM!".to_string());
     }
-    let df = (actual.len() - 1) as f64;
+    let df = (categories.max(1) - 1) as f64;
     chisq_dist_rt(chi2, df)
 }
 

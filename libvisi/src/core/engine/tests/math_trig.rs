@@ -565,3 +565,123 @@ fn test_days360_and_yearfrac_use_different_thirty_360_rules() {
         );
     }
 }
+
+#[test]
+fn test_oddlprice_treats_a_month_end_coupon_date_as_the_30th() {
+    // On basis 0 the two ODDLPRICE spans that *end at a coupon date* --
+    // the quasi-coupon period length and last-interest-to-maturity -- pull
+    // a month-end end date back to the 30th, February's included. The
+    // spans ending at the settlement date use the plain NASD count, so the
+    // same date pair counts differently depending on its role.
+    //
+    // Every expected value is real Excel's. The pairs below were chosen to
+    // separate the rule from the plain European one: a leap-year 28 Feb is
+    // *not* a month end and must not be adjusted, while 29 Feb is.
+    let cases: [(&str, &str, &str, f64, f64); 8] = [
+        // last_interest, settlement, maturity, basis, expected
+        (
+            "DATE(2017,12,27)",
+            "DATE(2018,1,4)",
+            "DATE(2018,2,28)",
+            0.0,
+            100.40414916157073,
+        ),
+        (
+            "DATE(2017,12,27)",
+            "DATE(2018,1,4)",
+            "DATE(2018,1,31)",
+            0.0,
+            100.17445487014778,
+        ),
+        (
+            "DATE(2017,12,27)",
+            "DATE(2018,1,4)",
+            "DATE(2018,3,31)",
+            0.0,
+            100.59075984089594,
+        ),
+        // 2016 is a leap year: 28 Feb is not the month end, 29 Feb is.
+        (
+            "DATE(2015,12,27)",
+            "DATE(2016,1,4)",
+            "DATE(2016,2,28)",
+            0.0,
+            100.37619967431928,
+        ),
+        (
+            "DATE(2015,12,27)",
+            "DATE(2016,1,4)",
+            "DATE(2016,2,29)",
+            0.0,
+            100.39711327585337,
+        ),
+        // A month-end *last_interest* shortens the quasi-coupon period.
+        (
+            "DATE(2018,2,28)",
+            "DATE(2018,3,10)",
+            "DATE(2018,4,30)",
+            0.0,
+            100.35615901837147,
+        ),
+        // Basis 4 stays the plain European count -- 29 Feb is not adjusted
+        // there, which is what makes it differ from basis 0 above.
+        (
+            "DATE(2015,12,27)",
+            "DATE(2016,1,4)",
+            "DATE(2016,2,29)",
+            4.0,
+            100.38313951056004,
+        ),
+        (
+            "DATE(2015,12,27)",
+            "DATE(2016,1,4)",
+            "DATE(2016,1,31)",
+            4.0,
+            100.18148895627503,
+        ),
+    ];
+    for (last_interest, settlement, maturity, basis, expected) in cases {
+        let got = num(&format!(
+            "=ODDLPRICE({settlement}, {maturity}, {last_interest}, 0.0505, 0.0253, 100, 4, {basis})"
+        ));
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "ODDLPRICE(li={last_interest}, mat={maturity}, basis={basis}) \
+             expected {expected}, got {got}"
+        );
+    }
+}
+
+#[test]
+fn test_mod_reports_num_once_the_quotient_stops_being_meaningful() {
+    // Excel gives up on MOD once the quotient is large enough that
+    // `n - d * INT(n / d)` is noise, rather than returning a number built
+    // out of it. The cutoff is on the *quotient*: MOD over a huge dividend
+    // is fine as long as the divisor is huge too.
+    //
+    // All expected values are real Excel's.
+    for src in [
+        "=MOD(POWER(28, 31), 3)",
+        "=MOD(10000000000000, 3)",
+        "=MOD(-1000000000000000, 3)",
+    ] {
+        match eval_one(src) {
+            ResultData::Error(e) => assert_eq!(e, "#NUM!", "for {src}"),
+            other => panic!("expected #NUM! for {src}, got {other:?}"),
+        }
+    }
+    assert_eq!(num("=MOD(1000000000000, 3)"), 1.0);
+    assert_eq!(num("=MOD(1000000000000000, 10000000)"), 0.0);
+    assert_eq!(num("=MOD(1000000000000000, 1000000)"), 0.0);
+    // 2^40 * 3 is inside the limit, 2^41 * 3 is past it.
+    assert_eq!(num("=MOD(3298534883328, 3)"), 0.0);
+    match eval_one("=MOD(6597069766656, 3)") {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+    // Ordinary MOD is untouched, including its sign convention.
+    assert_eq!(num("=MOD(10, 3)"), 1.0);
+    assert_eq!(num("=MOD(-10, 3)"), 2.0);
+    assert_eq!(num("=MOD(10, -3)"), -2.0);
+    assert_eq!(num("=MOD(TRUE, 2)"), 1.0);
+}

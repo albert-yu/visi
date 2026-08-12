@@ -1438,7 +1438,7 @@ impl Sheet {
             // boolean still reports #N/A, so it can't be folded into the
             // general non-numeric handling (all three confirmed against
             // real Excel with CORREL against a 4-cell range).
-            if matches!(scalar, ResultData::None) {
+            if Self::is_empty_scalar_operand(arg) {
                 return Err("#VALUE!".to_string());
             }
         }
@@ -1734,6 +1734,27 @@ impl Sheet {
     /// the `.and_then(to_f64).unwrap_or(default)` shape used in places
     /// conflates the two, so e.g. `LOG(3.14, "E")` quietly computed
     /// base-10 instead of erroring.
+    /// True when an argument is a *single-cell* operand that is empty.
+    ///
+    /// Excel treats that as a missing operand and answers #VALUE!, rather
+    /// than as a one-element array of nothing. The distinction is
+    /// specifically about a single cell: `SUMPRODUCT(<one blank cell>)` is
+    /// #VALUE! while `SUMPRODUCT(<two blank cells>)` is 0, and
+    /// `SUMPRODUCT(-50, <blank>)` is #VALUE! too. Same for MULTINOMIAL and
+    /// the paired statistical functions.
+    ///
+    /// A one-cell range evaluates to a one-element `List` rather than a
+    /// bare scalar, so both spellings have to be unwrapped. Note this is
+    /// about blankness only -- a one-cell operand holding text or a
+    /// boolean behaves differently again.
+    fn is_empty_scalar_operand(arg: &ResultData) -> bool {
+        let scalar = match arg {
+            ResultData::List(items) if items.len() == 1 => &items[0],
+            other => other,
+        };
+        matches!(scalar, ResultData::None)
+    }
+
     /// True when the first argument is a boolean and the function is one
     /// of the few that refuse them.
     ///
@@ -4515,7 +4536,13 @@ impl Sheet {
                             Ok(v) => v,
                             Err(e) => return Ok(ResultData::Error(e)),
                         };
-                    res_to_rd(crate::core::stats::chisq_test(&actual, &expected))
+                    // Degrees of freedom come from the raw range size, not
+                    // from how many pairs survived the filtering above.
+                    res_to_rd(crate::core::stats::chisq_test(
+                        &actual,
+                        &expected,
+                        a_raw.len(),
+                    ))
                 }
                 "CONFIDENCE.NORM" | "CONFIDENCE" => {
                     let alpha = self.to_f64_arg(evaluated_args.first(), "CONFIDENCE.NORM")?;
@@ -5774,9 +5801,14 @@ impl Sheet {
                 "MULTINOMIAL" => {
                     // Like GCD/LCM, MULTINOMIAL rejects a non-numeric cell
                     // outright (#VALUE!) instead of skipping it the way
-                    // SUM does -- a blank still counts as 0.
+                    // SUM does -- a blank inside a range still counts as 0.
                     let mut nums = Vec::new();
                     for arg in &evaluated_args {
+                        // ... but a lone blank *cell* is a missing operand.
+                        // See SUMPRODUCT.
+                        if Self::is_empty_scalar_operand(arg) {
+                            return Ok(ResultData::Error("#VALUE!".to_string()));
+                        }
                         match self.flatten_strict_numbers(arg) {
                             Ok(v) => nums.extend(v),
                             Err(e) => return Ok(ResultData::Error(e)),
@@ -5968,6 +6000,12 @@ impl Sheet {
                     let mut arrays: Vec<Vec<f64>> = Vec::new();
                     let mut first_err = None;
                     for arg in &evaluated_args {
+                        // A single blank cell is a missing operand, not an
+                        // empty array: SUMPRODUCT over one blank cell is
+                        // #VALUE! where over two it is 0.
+                        if Self::is_empty_scalar_operand(arg) {
+                            return Ok(ResultData::Error("#VALUE!".to_string()));
+                        }
                         let mut slots = Vec::new();
                         self.flatten_positional(arg, &mut slots, &mut first_err);
                         arrays.push(slots.into_iter().map(|v| v.unwrap_or(0.0)).collect());
@@ -7943,7 +7981,28 @@ impl Sheet {
                     if d == 0.0 {
                         return Ok(ResultData::Error("#DIV/0!".to_string()));
                     }
-                    let val = n - d * (n / d).floor();
+                    // Excel gives up once the quotient gets large enough
+                    // that `n - d * INT(n / d)` stops being meaningful, and
+                    // reports #NUM! rather than a number built out of noise
+                    // -- MOD(28^31, 3) is #NUM! there, while visi used to
+                    // answer 0 from a value 28^31 cannot represent anyway.
+                    //
+                    // The cutoff is on the quotient, not on either operand
+                    // (MOD(1E15, 1E7) is fine, MOD(1E13, 3) is not), and is
+                    // identical for different divisors. Bisected against
+                    // real Excel to between 1.024 and 1.026 times 2^40; the
+                    // exact constant isn't a round number and isn't worth
+                    // more probes, so this uses 2^40. That is very slightly
+                    // conservative -- inside that 0.2%-wide band visi
+                    // reports #NUM! a little before Excel does -- but it is
+                    // right everywhere else, which is where the quotients
+                    // that actually turn up land.
+                    const MOD_QUOTIENT_LIMIT: f64 = 1_099_511_627_776.0; // 2^40
+                    let quotient = n / d;
+                    if !quotient.is_finite() || quotient.abs() > MOD_QUOTIENT_LIMIT {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
+                    let val = n - d * quotient.floor();
                     Ok(ResultData::Float(val))
                 }
                 "TODAY" => {

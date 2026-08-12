@@ -540,7 +540,7 @@ fn test_chitest_single_category_is_not_available() {
         "{got:?}"
     );
     // Two categories still compute.
-    assert!(crate::core::stats::chisq_test(&[10.0, 20.0], &[10.0, 20.0]).is_ok());
+    assert!(crate::core::stats::chisq_test(&[10.0, 20.0], &[10.0, 20.0], 2).is_ok());
 }
 
 // ---------------------------------------------------------------------
@@ -743,4 +743,68 @@ fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
     assert_float_close(&eval1("=FISHERINV(1000)"), 1.0, 1e-15);
     assert_float_close(&eval1("=FISHERINV(-1000)"), -1.0, 1e-15);
     assert_float_close(&eval1("=FISHERINV(0.5)"), 0.46211715726000974, 1e-15);
+}
+
+#[test]
+fn test_chitest_takes_degrees_of_freedom_from_the_raw_range_size() {
+    // CHITEST drops pairs where either side is non-numeric, but takes the
+    // degrees of freedom from the ranges' *original* size. With one text
+    // cell in a two-cell pair, one pair survives and Excel still evaluates
+    // against df = 1 -- using the survivor count would give df = 0 and
+    // #NUM!, which is what visi used to return.
+    //
+    // Reference values are real Excel's. The second also exercises the
+    // right tail: computing it as 1 - CDF underflowed to exactly 0.
+    let mut sheet = create_sheet(&[
+        ["-70", "=\"zz\"", "8.6291", "309.431", "3", "4"],
+        [
+            "=CHITEST(A1:B1, C1:D1)",
+            "=CHITEST(A1:C1, D1:F1)",
+            "=CHITEST(A1:A1, C1:C1)",
+            "",
+            "",
+            "",
+        ],
+    ]);
+    sheet.commit(None).unwrap();
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 0)),
+        7.81883827261815e-158,
+        1e-170,
+    );
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 1)),
+        6.38808797549415e-103,
+        1e-115,
+    );
+    // A single category leaves no degrees of freedom at all.
+    match sheet.get_result_data(&CellRef::new(1, 2)) {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_a_lone_blank_cell_is_a_missing_operand() {
+    // Excel distinguishes one blank cell from an array of blanks:
+    //   SUMPRODUCT(<one blank cell>)   = #VALUE!   (missing operand)
+    //   SUMPRODUCT(<two blank cells>)  = 0
+    //   SUMPRODUCT(-50, <blank>)       = #VALUE!
+    //   SUMPRODUCT(<one text cell>)    = 0         (text is not blank)
+    // Same for MULTINOMIAL. Z50/Z51 are empty in a fresh sheet.
+    for src in [
+        "=SUMPRODUCT(Z50:Z50)",
+        "=SUMPRODUCT(-50, Z50)",
+        "=MULTINOMIAL(Z50:Z50)",
+    ] {
+        match eval1(src) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
+            other => panic!("expected #VALUE! for {src}, got {other:?}"),
+        }
+    }
+    assert_float_close(&eval1("=SUMPRODUCT(Z50:Z51)"), 0.0, 1e-12);
+
+    let mut sheet = create_sheet(&[["=\"abc\"", "=SUMPRODUCT(A1:A1)"]]);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 0.0, 1e-12);
 }

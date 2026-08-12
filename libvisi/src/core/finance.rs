@@ -1421,10 +1421,22 @@ pub fn oddfyield(
 /// period immediately preceding `maturity`, which an earlier version used
 /// and which only coincidentally matched when both periods happened to
 /// have the same calendar length.
+/// Day count for an ODDLPRICE/ODDLYIELD span whose end date is a **coupon
+/// date** rather than the settlement date. On basis 0 those spans pull a
+/// month-end end date back to the 30th; every other basis just uses its
+/// ordinary count. See `date_fn::days_30_360_coupon_end`.
+fn coupon_end_days(start: f64, end: f64, basis: f64) -> f64 {
+    if basis as i64 == 0 {
+        date_fn::days_30_360_coupon_end(start, end)
+    } else {
+        basis_days_between(start, end, basis)
+    }
+}
+
 fn oddlprice_e(last_interest: f64, _maturity: f64, frequency: f64, basis: f64) -> f64 {
     let months = 12.0 / frequency;
     let next_regular = date_fn::edate(last_interest, months).unwrap_or(last_interest);
-    basis_days_between(last_interest, next_regular, basis)
+    coupon_end_days(last_interest, next_regular, basis)
 }
 
 /// Like `ODDFPRICE`/`ODDFYIELD`, this is a documented gap for a "long" odd
@@ -1444,7 +1456,7 @@ pub fn oddlprice(
     basis: f64,
 ) -> f64 {
     let e = oddlprice_e(last_interest, maturity, frequency, basis);
-    let dcnl = basis_days_between(last_interest, maturity, basis);
+    let dcnl = coupon_end_days(last_interest, maturity, basis);
     let dcsl = basis_days_between(last_interest, settlement, basis);
     let dsc = basis_days_between(settlement, maturity, basis);
     let coupon = 100.0 * rate / frequency;
@@ -1465,7 +1477,7 @@ pub fn oddlyield(
     basis: f64,
 ) -> f64 {
     let e = oddlprice_e(last_interest, maturity, frequency, basis);
-    let dcnl = basis_days_between(last_interest, maturity, basis);
+    let dcnl = coupon_end_days(last_interest, maturity, basis);
     let dcsl = basis_days_between(last_interest, settlement, basis);
     let dsc = basis_days_between(settlement, maturity, basis);
     let coupon = 100.0 * rate / frequency;
