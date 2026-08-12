@@ -17,6 +17,12 @@ pub struct Context<'a> {
     /// lookups), not sheet-scoped, so this lives here rather than on
     /// `Sheet` itself.
     pub pivot_tables: &'a [crate::core::pivot::PivotTable],
+    /// Sheet names in true workbook order, so `SHEET()` can report a real
+    /// ordinal. `sheets` is an unordered `HashMap`, which is why this is
+    /// tracked separately rather than derived from it -- true order only
+    /// exists one layer up, in `visi`'s `WorkbookManager::sheets` (a
+    /// `Vec`), which populates this when building the context.
+    pub sheet_order: Vec<String>,
 }
 
 impl<'a> Context<'a> {
@@ -25,6 +31,7 @@ impl<'a> Context<'a> {
         Self {
             sheets: HashMap::new(),
             pivot_tables: &[],
+            sheet_order: Vec::new(),
         }
     }
 
@@ -2598,15 +2605,43 @@ impl Sheet {
                 context.map(|c| c.sheets.len() + 1).unwrap_or(1) as f64,
             )),
             "SHEET" => {
-                // This sheet's ordinal position within the workbook isn't
-                // available here -- `Context` only holds an unordered
-                // `HashMap` of sheets, and true sheet order is tracked
-                // one layer up, in `visi`'s `WorkbookManager`, which
-                // isn't reachable from inside `Sheet::evaluate_function`.
-                // Always returning 1 is a documented approximation, not a
-                // correct ordinal, for any sheet that isn't genuinely
-                // first in the workbook.
-                Ok(ResultData::Float(1.0))
+                // With no argument, report this sheet's own ordinal. With
+                // a reference argument, report the *referenced* sheet's
+                // ordinal (a bare reference with no explicit sheet, e.g.
+                // `SHEET(A1)`, means this sheet). Excel also accepts a
+                // plain text sheet name, e.g. `SHEET("Sheet2")`.
+                let sheet_name = match args.first() {
+                    None => Some(self.name.clone()),
+                    Some(arg) => match Self::range_bounds(arg) {
+                        Some((sheet_opt, ..)) => {
+                            Some(sheet_opt.unwrap_or_else(|| self.name.clone()))
+                        }
+                        None => self
+                            .evaluate_ast(arg, context, row, col, deps, scope)
+                            .ok()
+                            .map(|v| v.to_string()),
+                    },
+                };
+
+                match sheet_name {
+                    Some(name) => {
+                        let ordinal = context
+                            .and_then(|c| {
+                                c.sheet_order
+                                    .iter()
+                                    .position(|n| n.eq_ignore_ascii_case(&name))
+                            })
+                            .map(|i| i + 1)
+                            // No context (standalone eval outside a
+                            // WorkbookManager pass) or the name wasn't
+                            // found in workbook order: 1 is the same
+                            // approximation this used unconditionally
+                            // before.
+                            .unwrap_or(1);
+                        Ok(ResultData::Float(ordinal as f64))
+                    }
+                    None => Ok(ResultData::Error("#N/A".to_string())),
+                }
             }
             "CELL" => {
                 if args.is_empty() {

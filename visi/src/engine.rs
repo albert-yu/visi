@@ -154,6 +154,11 @@ impl WorkbookManager {
             sheet.mark_all_dirty();
         }
 
+        // `self.sheets` is the one place true workbook order exists --
+        // `Context.sheets` is an unordered `HashMap` -- so `SHEET()` needs
+        // this collected once up front rather than derived from a context.
+        let sheet_order: Vec<String> = self.sheets.iter().map(|s| s.name.clone()).collect();
+
         // 2. Multi-pass evaluation to resolve cross-sheet formula dependencies
         for _pass in 0..3 {
             for i in 0..self.sheets.len() {
@@ -168,6 +173,7 @@ impl WorkbookManager {
                     context.add_table(s.name.clone(), s);
                 }
                 context.pivot_tables = &self.pivot_tables;
+                context.sheet_order = sheet_order.clone();
 
                 let _ = target_sheet.commit(Some(&context));
             }

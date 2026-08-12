@@ -976,6 +976,63 @@ fn test_sheets_counts_context_sheets() {
 }
 
 #[test]
+fn test_sheet_reports_real_workbook_ordinal() {
+    // Regression for #26: SHEET() always returned 1 regardless of true
+    // position, since `Context.sheets` is an unordered `HashMap` and
+    // nothing threaded real order down from `WorkbookManager::sheets` (a
+    // `Vec`, where order is genuine) into `Sheet::evaluate_function`.
+    let table1 = Sheet::new(SheetInit {
+        id: None,
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 2,
+    });
+    let table2 = Sheet::new(SheetInit {
+        id: None,
+        name: Some("table_2".to_string()),
+        rows: 2,
+        cols: 2,
+    });
+    let table3 = Sheet::new(SheetInit {
+        id: None,
+        name: Some("table_3".to_string()),
+        rows: 2,
+        cols: 2,
+    });
+    let sheets = [table1, table2, table3];
+
+    let mut context = Context::new();
+    for sheet in &sheets {
+        context.add_table(sheet.name.clone(), sheet);
+    }
+    context.sheet_order = sheets.iter().map(|s| s.name.clone()).collect();
+
+    let (r1, _) = sheets[0].eval("=SHEET()", Some(&context)).unwrap();
+    assert_float_close(&r1, 1.0, 1e-9);
+    let (r2, _) = sheets[1].eval("=SHEET()", Some(&context)).unwrap();
+    assert_float_close(&r2, 2.0, 1e-9);
+    let (r3, _) = sheets[2].eval("=SHEET()", Some(&context)).unwrap();
+    assert_float_close(&r3, 3.0, 1e-9);
+
+    // A reference into another sheet reports *that* sheet's ordinal, not
+    // the formula's own.
+    let (r4, _) = sheets[0]
+        .eval("=SHEET(table_3!A1)", Some(&context))
+        .unwrap();
+    assert_float_close(&r4, 3.0, 1e-9);
+
+    // A plain text sheet name is also accepted, same as real Excel.
+    let (r5, _) = sheets[0]
+        .eval("=SHEET(\"table_2\")", Some(&context))
+        .unwrap();
+    assert_float_close(&r5, 2.0, 1e-9);
+
+    // No context at all (standalone eval outside a WorkbookManager pass)
+    // keeps the old documented fallback of 1.
+    assert!(matches!(eval1("=SHEET()"), ResultData::Float(f) if f == 1.0));
+}
+
+#[test]
 fn test_indirect_resolves_cell_and_range_text() {
     let grid: [[&str; 2]; 3] = [
         ["10", "=INDIRECT(\"A1\")"],

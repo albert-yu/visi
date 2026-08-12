@@ -864,6 +864,52 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
 }
 
 #[test]
+fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
+    // Regression for #26: SHEET() always returned 1 regardless of true
+    // position, since the Context WorkbookManager::evaluate builds didn't
+    // carry real sheet order (self.sheets is a Vec, but Context.sheets is
+    // an unordered HashMap). Exercised through WorkbookManager::evaluate
+    // itself, not just a hand-built Context, since that's the actual
+    // production code path that populates it.
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+    wb.add_sheet("Third").unwrap();
+
+    wb.sheets[0].set_cell_src(0, 0, "=SHEET()".to_string());
+    wb.sheets[2].set_cell_src(0, 0, "=SHEET()".to_string());
+    // A cross-sheet reference from sheet 1 reports the *referenced*
+    // sheet's ordinal.
+    wb.sheets[0].set_cell_src(0, 1, "=SHEET(Third!A1)".to_string());
+
+    wb.evaluate().unwrap();
+
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .to_string(),
+        "1"
+    );
+    assert_eq!(
+        wb.sheets[2]
+            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .to_string(),
+        "3"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 1))
+            .to_string(),
+        "3"
+    );
+}
+
+#[test]
 fn test_coordinate_parsing() {
     let (sheet, row, col) = parse_cell_ref("Sheet2!D10").unwrap();
     assert_eq!(sheet, Some("Sheet2".to_string()));
