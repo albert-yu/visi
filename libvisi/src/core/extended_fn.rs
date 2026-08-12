@@ -28,11 +28,16 @@ pub fn iserr(val: &ResultData) -> bool {
     }
 }
 
+/// Parity in f64 rather than through an i64 cast, which saturates at
+/// i64::MAX (an odd number) for anything past ~9.2e18 and so answered
+/// ISEVEN(19^24) = FALSE. Excel works from the double it actually holds:
+/// 19^24 is odd mathematically, but its f64 is 4898762930960846690858...,
+/// a multiple of a large power of two, and Excel says TRUE.
 pub fn iseven(number: f64) -> bool {
-    (number.floor() as i64) % 2 == 0
+    (number.floor() / 2.0).fract() == 0.0
 }
 pub fn isodd(number: f64) -> bool {
-    (number.floor() as i64) % 2 != 0
+    !iseven(number)
 }
 pub fn islogical(val: &ResultData) -> bool {
     matches!(val, ResultData::Boolean(_))

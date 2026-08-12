@@ -1646,10 +1646,11 @@ pub fn prob(
     let upper = upper_limit.unwrap_or(lower_limit);
 
     let mut sum = 0.0;
+    // Excel checks only that the probabilities sum to 1; it does *not*
+    // reject an individual one outside [0, 1]. PROB({1,2}, {1.5,-0.5}, 0,
+    // 3) is 1 in real Excel, and rejecting the negative there turned a
+    // pairwise-excluded range that legitimately summed to 1 into #NUM!.
     for (&x, &p) in x_range.iter().zip(prob_range.iter()) {
-        if !(0.0..=1.0).contains(&p) {
-            return Err("#NUM!".to_string());
-        }
         if x >= lower_limit && x <= upper {
             sum += p;
         }

@@ -728,3 +728,65 @@ fn test_coupdaysnc_and_acoth_precision() {
     );
     assert!((num("=ACOTH(2)") - 0.5493061443340549).abs() < 1e-16);
 }
+
+#[test]
+fn test_iseven_and_isodd_past_the_i64_range() {
+    // Parity is decided in f64, not through an i64 cast: that cast
+    // saturates at i64::MAX (odd) for anything past ~9.2e18, so
+    // ISEVEN(19^24) came out FALSE. Excel works from the double it holds --
+    // 19^24 is odd mathematically, but its f64 is a multiple of a large
+    // power of two, and Excel answers TRUE.
+    assert!(matches!(
+        eval_one("=ISEVEN(INT(19^24))"),
+        ResultData::Boolean(true)
+    ));
+    assert!(matches!(
+        eval_one("=ISODD(INT(19^24))"),
+        ResultData::Boolean(false)
+    ));
+    // Ordinary parity is unchanged, including negatives and truncation.
+    for (src, want) in [
+        ("=ISEVEN(4)", true),
+        ("=ISEVEN(3)", false),
+        ("=ISEVEN(-4)", true),
+        ("=ISEVEN(0)", true),
+        ("=ISEVEN(2.5)", true),
+        ("=ISODD(3)", true),
+        ("=ISODD(4)", false),
+        ("=ISODD(-3)", true),
+    ] {
+        match eval_one(src) {
+            ResultData::Boolean(b) => assert_eq!(b, want, "for {src}"),
+            other => panic!("expected a boolean for {src}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_prob_checks_only_that_the_probabilities_sum_to_one() {
+    // Excel does not reject an individual probability outside [0, 1] --
+    // only the total matters. PROB({1,2}, {1.5,-0.5}, 0, 3) is 1 in real
+    // Excel, and rejecting the negative turned a pairwise-excluded range
+    // that legitimately summed to 1 into #NUM!.
+    let mut sheet = create_sheet(&[
+        ["1", "0.5", "1.5", "=PROB(A1:A2, B1:B2, 0, 3)"],
+        ["2", "0.5", "-0.5", "=PROB(A1:A2, C1:C2, 0, 3)"],
+        ["", "", "", "=PROB(A1:A2, A1:A2, 0, 3)"],
+    ]);
+    sheet.commit(None).unwrap();
+    assert_eq!(num_of(&sheet.get_result_data(&CellRef::new(0, 3))), 1.0);
+    assert_eq!(num_of(&sheet.get_result_data(&CellRef::new(1, 3))), 1.0);
+    // A total that is not 1 is still #NUM!.
+    match sheet.get_result_data(&CellRef::new(2, 3)) {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+fn num_of(r: &ResultData) -> f64 {
+    match r {
+        ResultData::Float(f) => *f,
+        ResultData::Integer(i) => *i as f64,
+        other => panic!("expected a number, got {other:?}"),
+    }
+}
