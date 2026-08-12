@@ -1199,7 +1199,9 @@ fn test_structured_reference_whole_row_no_column() {
     sheet.commit(None).unwrap();
 
     // `[@]` (this row, no column) spans every column of the current row.
-    let (res, _) = sheet.eval_with_row("=SUM([@])", None, Some(0)).unwrap();
+    let (res, _) = sheet
+        .eval_with_row("=SUM([@])", None, Some(0), None)
+        .unwrap();
     assert_eq!(get_float_val(&res), Some(15.0));
 }
 

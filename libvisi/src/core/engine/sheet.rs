@@ -262,11 +262,15 @@ impl Sheet {
                         crate::core::parser::compile_formula(src, &tables_for_compilation);
                     let eval_src =
                         crate::core::parser::serialize_formula(&compiled, &tables_for_compilation);
-                    let (res, deps) =
-                        match self.eval_with_row(&eval_src, context, Some(cell_ref.row)) {
-                            Ok(r) => r,
-                            Err(e) => (ResultData::Error(e.to_string()), vec![]),
-                        };
+                    let (res, deps) = match self.eval_with_row(
+                        &eval_src,
+                        context,
+                        Some(cell_ref.row),
+                        Some(cell_ref.col),
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => (ResultData::Error(e.to_string()), vec![]),
+                    };
                     let final_res = if let ResultData::None = res {
                         ResultData::Float(0.0)
                     } else {
@@ -376,12 +380,13 @@ impl Sheet {
         input: &str,
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
     ) -> Result<(ResultData, Vec<Dependency>), EngineError> {
         if input.is_empty() {
             return Ok((ResultData::None, vec![]));
         }
         if let Some(formula) = input.strip_prefix('=') {
-            self.eval_excel(formula, context, row)
+            self.eval_excel(formula, context, row, col)
         } else {
             if let Ok(i) = input.parse::<i64>() {
                 Ok((ResultData::Integer(i), vec![]))
@@ -400,7 +405,7 @@ impl Sheet {
         input: &str,
         context: Option<&Context>,
     ) -> Result<(ResultData, Vec<Dependency>), EngineError> {
-        self.eval_with_row(input, context, None)
+        self.eval_with_row(input, context, None, None)
     }
 
     fn eval_excel(
@@ -408,12 +413,13 @@ impl Sheet {
         code: &str,
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
     ) -> Result<(ResultData, Vec<Dependency>), EngineError> {
         let ast = crate::core::parser::parse_excel_formula(code)
             .map_err(|e| EngineError::EvalError(EvalError::UnknownFunction(e)))?;
 
         let mut deps = Vec::new();
-        let result = match self.evaluate_ast(&ast, context, row, &mut deps, &LetScope::Empty) {
+        let result = match self.evaluate_ast(&ast, context, row, col, &mut deps, &LetScope::Empty) {
             Ok(r) => r,
             Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
                 if err_str.starts_with('#') =>
@@ -430,6 +436,7 @@ impl Sheet {
         ast: &crate::core::parser::Expr,
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -832,12 +839,12 @@ impl Sheet {
             Expr::List(list) => {
                 let mut results = Vec::new();
                 for item in list {
-                    results.push(self.evaluate_ast(item, context, row, deps, scope)?);
+                    results.push(self.evaluate_ast(item, context, row, col, deps, scope)?);
                 }
                 Ok(ResultData::List(results))
             }
             Expr::UnaryOp { op, expr } => {
-                let val = self.evaluate_ast(expr, context, row, deps, scope)?;
+                let val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
                 match op {
                     Op::Sub => match val {
                         ResultData::Float(f) => Ok(ResultData::Float(-f)),
@@ -850,8 +857,8 @@ impl Sheet {
                 }
             }
             Expr::BinaryOp { op, left, right } => {
-                let l_val = self.evaluate_ast(left, context, row, deps, scope)?;
-                let r_val = self.evaluate_ast(right, context, row, deps, scope)?;
+                let l_val = self.evaluate_ast(left, context, row, col, deps, scope)?;
+                let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
 
                 match op {
                     Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => {
@@ -927,7 +934,7 @@ impl Sheet {
                 }
             }
             Expr::FunctionCall { name, args } => {
-                self.evaluate_function(name, args, context, row, deps, scope)
+                self.evaluate_function(name, args, context, row, col, deps, scope)
             }
         }
     }
@@ -1837,6 +1844,7 @@ impl Sheet {
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -1848,7 +1856,7 @@ impl Sheet {
             return Ok(ResultData::Error("#VALUE!".to_string()));
         }
         if args.len() == 1 {
-            return self.evaluate_ast(&args[0], context, row, deps, scope);
+            return self.evaluate_ast(&args[0], context, row, col, deps, scope);
         }
 
         let name = match &args[0] {
@@ -1867,13 +1875,13 @@ impl Sheet {
             return Ok(ResultData::Error("#VALUE!".to_string()));
         }
 
-        let value = self.evaluate_ast(&args[1], context, row, deps, scope)?;
+        let value = self.evaluate_ast(&args[1], context, row, col, deps, scope)?;
         let inner_scope = LetScope::Bound {
             name,
             value: &value,
             parent: scope,
         };
-        self.evaluate_let(&args[2..], context, row, deps, &inner_scope)
+        self.evaluate_let(&args[2..], context, row, col, deps, &inner_scope)
     }
 
     /// Recognizes `expr` as a `LAMBDA(param1, [param2, ...], body)` call
@@ -1921,6 +1929,7 @@ impl Sheet {
         body: &crate::core::parser::Expr,
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'v>,
     ) -> Result<ResultData, EngineError> {
@@ -1931,9 +1940,9 @@ impl Sheet {
                     value: vfirst,
                     parent: scope,
                 };
-                self.invoke_lambda(prest, vrest, body, context, row, deps, &inner_scope)
+                self.invoke_lambda(prest, vrest, body, context, row, col, deps, &inner_scope)
             }
-            _ => self.evaluate_ast(body, context, row, deps, scope),
+            _ => self.evaluate_ast(body, context, row, col, deps, scope),
         }
     }
 
@@ -1945,13 +1954,16 @@ impl Sheet {
         expr: &crate::core::parser::Expr,
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<Vec<ResultData>, EngineError> {
-        Ok(match self.evaluate_ast(expr, context, row, deps, scope)? {
-            ResultData::List(items) => Self::flatten_row_major(items).0,
-            other => vec![other],
-        })
+        Ok(
+            match self.evaluate_ast(expr, context, row, col, deps, scope)? {
+                ResultData::List(items) => Self::flatten_row_major(items).0,
+                other => vec![other],
+            },
+        )
     }
 
     /// `SEQUENCE`/`MUNIT` (unlike every array-*reshaping* function added
@@ -1994,11 +2006,12 @@ impl Sheet {
         expr: &crate::core::parser::Expr,
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<(Vec<ResultData>, usize), EngineError> {
         use crate::core::parser::Expr;
-        let items = match self.evaluate_ast(expr, context, row, deps, scope)? {
+        let items = match self.evaluate_ast(expr, context, row, col, deps, scope)? {
             ResultData::List(items) => items,
             other => vec![other],
         };
@@ -2012,7 +2025,7 @@ impl Sheet {
             } => (end_col - start_col + 1).max(1),
             Expr::CellRef { .. } => 1,
             Expr::FunctionCall { name, args } => self
-                .function_call_cols(name, args, context, row, deps, scope)
+                .function_call_cols(name, args, context, row, col, deps, scope)
                 .unwrap_or_else(|| flat.len().max(1)),
             _ => flat.len().max(1),
         };
@@ -2027,12 +2040,14 @@ impl Sheet {
     /// the whole result as a single row, corrupting the flat-index math.
     /// Returns `None` for anything not in this known set, so callers fall
     /// back to the single-row assumption.
+    #[allow(clippy::too_many_arguments)]
     fn function_call_cols(
         &self,
         name: &str,
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Option<usize> {
@@ -2046,39 +2061,40 @@ impl Sheet {
         match upper.as_str() {
             "TRANSPOSE" => {
                 let (flat, cols) = self
-                    .array_shape(args.first()?, context, row, deps, scope)
+                    .array_shape(args.first()?, context, row, col, deps, scope)
                     .ok()?;
                 Some((flat.len().checked_div(cols).unwrap_or(0)).max(1))
             }
             "HSTACK" => {
                 let mut total = 0usize;
                 for a in args {
-                    total += self.array_shape(a, context, row, deps, scope).ok()?.1;
+                    total += self.array_shape(a, context, row, col, deps, scope).ok()?.1;
                 }
                 Some(total)
             }
             "VSTACK" => {
                 let mut max_cols = 0usize;
                 for a in args {
-                    max_cols = max_cols.max(self.array_shape(a, context, row, deps, scope).ok()?.1);
+                    max_cols =
+                        max_cols.max(self.array_shape(a, context, row, col, deps, scope).ok()?.1);
                 }
                 Some(max_cols)
             }
             "CHOOSEROWS" => Some(
-                self.array_shape(args.first()?, context, row, deps, scope)
+                self.array_shape(args.first()?, context, row, col, deps, scope)
                     .ok()?
                     .1,
             ),
             "CHOOSECOLS" => Some(args.len().saturating_sub(1).max(1)),
             "DROP" | "TAKE" => {
                 let (_, cols) = self
-                    .array_shape(args.first()?, context, row, deps, scope)
+                    .array_shape(args.first()?, context, row, col, deps, scope)
                     .ok()?;
                 let is_take = upper == "TAKE";
                 match args.get(2) {
                     Some(e) => {
                         let n = self
-                            .to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                            .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope).ok()?)
                             .unwrap_or(0.0) as isize;
                         let (s, e2) = Self::drop_take_bounds(cols as isize, n, is_take);
                         Some((e2 - s).max(0) as usize)
@@ -2088,11 +2104,11 @@ impl Sheet {
             }
             "EXPAND" => {
                 let (_, cols) = self
-                    .array_shape(args.first()?, context, row, deps, scope)
+                    .array_shape(args.first()?, context, row, col, deps, scope)
                     .ok()?;
                 match args.get(2) {
                     Some(e) => Some(
-                        self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                        self.to_f64(&self.evaluate_ast(e, context, row, col, deps, scope).ok()?)
                             .unwrap_or(cols as f64) as usize,
                     ),
                     None => Some(cols),
@@ -2103,7 +2119,7 @@ impl Sheet {
                 let n = self
                     .to_f64(
                         &self
-                            .evaluate_ast(args.get(1)?, context, row, deps, scope)
+                            .evaluate_ast(args.get(1)?, context, row, col, deps, scope)
                             .ok()?,
                     )
                     .unwrap_or(1.0)
@@ -2112,12 +2128,12 @@ impl Sheet {
             }
             "WRAPCOLS" => {
                 let (flat, _) = self
-                    .array_shape(args.first()?, context, row, deps, scope)
+                    .array_shape(args.first()?, context, row, col, deps, scope)
                     .ok()?;
                 let wrap = self
                     .to_f64(
                         &self
-                            .evaluate_ast(args.get(1)?, context, row, deps, scope)
+                            .evaluate_ast(args.get(1)?, context, row, col, deps, scope)
                             .ok()?,
                     )
                     .unwrap_or(1.0)
@@ -2125,13 +2141,13 @@ impl Sheet {
                 Some(flat.len().div_ceil(wrap).max(1))
             }
             "UNIQUE" | "SORT" | "SORTBY" | "FILTER" | "TRIMRANGE" => Some(
-                self.array_shape(args.first()?, context, row, deps, scope)
+                self.array_shape(args.first()?, context, row, col, deps, scope)
                     .ok()?
                     .1,
             ),
             "SEQUENCE" => match args.get(1) {
                 Some(e) => Some(
-                    self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                    self.to_f64(&self.evaluate_ast(e, context, row, col, deps, scope).ok()?)
                         .unwrap_or(1.0)
                         .max(1.0) as usize,
                 ),
@@ -2141,7 +2157,7 @@ impl Sheet {
                 let n = self
                     .to_f64(
                         &self
-                            .evaluate_ast(args.first()?, context, row, deps, scope)
+                            .evaluate_ast(args.first()?, context, row, col, deps, scope)
                             .ok()?,
                     )
                     .unwrap_or(1.0)
@@ -2150,7 +2166,7 @@ impl Sheet {
             }
             "MAKEARRAY" => match args.get(1) {
                 Some(e) => Some(
-                    self.to_f64(&self.evaluate_ast(e, context, row, deps, scope).ok()?)
+                    self.to_f64(&self.evaluate_ast(e, context, row, col, deps, scope).ok()?)
                         .unwrap_or(1.0)
                         .max(1.0) as usize,
                 ),
@@ -2182,12 +2198,14 @@ impl Sheet {
     /// row-major `ResultData::List`, the same convention `SEQUENCE`/
     /// `MUNIT`/etc. already use, since this engine doesn't spill formulas
     /// across cells; callers pull out a single value with `INDEX`.
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_lambda_function(
         &self,
         func_name: &str,
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -2207,7 +2225,7 @@ impl Sheet {
                 }
                 let arrays: Vec<Vec<ResultData>> = array_exprs
                     .iter()
-                    .map(|e| self.eval_as_array(e, context, row, deps, scope))
+                    .map(|e| self.eval_as_array(e, context, row, col, deps, scope))
                     .collect::<Result<_, _>>()?;
                 let len = arrays.iter().map(|a| a.len()).max().unwrap_or(0);
                 let mut results = Vec::with_capacity(len);
@@ -2217,7 +2235,7 @@ impl Sheet {
                         .map(|a| a.get(i).cloned().unwrap_or(ResultData::None))
                         .collect();
                     results.push(
-                        self.invoke_lambda(&params, &values, body, context, row, deps, scope)?,
+                        self.invoke_lambda(&params, &values, body, context, row, col, deps, scope)?,
                     );
                 }
                 Ok(ResultData::List(results))
@@ -2241,7 +2259,7 @@ impl Sheet {
                     } => (end_col - start_col + 1).max(1),
                     _ => 1,
                 };
-                let flat = self.eval_as_array(&args[0], context, row, deps, scope)?;
+                let flat = self.eval_as_array(&args[0], context, row, col, deps, scope)?;
                 let num_rows = if num_cols == 0 {
                     0
                 } else {
@@ -2255,7 +2273,9 @@ impl Sheet {
                             .collect();
                         let arg = vec![ResultData::List(row_vals)];
                         results.push(
-                            self.invoke_lambda(&params, &arg, body, context, row, deps, scope)?,
+                            self.invoke_lambda(
+                                &params, &arg, body, context, row, col, deps, scope,
+                            )?,
                         );
                     }
                 } else {
@@ -2265,7 +2285,9 @@ impl Sheet {
                             .collect();
                         let arg = vec![ResultData::List(col_vals)];
                         results.push(
-                            self.invoke_lambda(&params, &arg, body, context, row, deps, scope)?,
+                            self.invoke_lambda(
+                                &params, &arg, body, context, row, col, deps, scope,
+                            )?,
                         );
                     }
                 }
@@ -2291,7 +2313,7 @@ impl Sheet {
                 if params.len() != 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let array = self.eval_as_array(&args[array_idx], context, row, deps, scope)?;
+                let array = self.eval_as_array(&args[array_idx], context, row, col, deps, scope)?;
                 // SCAN's output has the same length as `array` -- an
                 // explicit initial_value (3-arg form) is external to the
                 // array and doesn't get its own output entry (every entry
@@ -2299,7 +2321,7 @@ impl Sheet {
                 // the array's own first element, so it does.
                 let (mut acc, rest, mut history): (ResultData, &[ResultData], Vec<ResultData>) =
                     if args.len() == 3 {
-                        let init = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                        let init = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
                         (init, &array[..], Vec::new())
                     } else {
                         match array.split_first() {
@@ -2309,8 +2331,8 @@ impl Sheet {
                     };
                 for item in rest {
                     let call_args = [acc.clone(), item.clone()];
-                    acc =
-                        self.invoke_lambda(&params, &call_args, body, context, row, deps, scope)?;
+                    acc = self
+                        .invoke_lambda(&params, &call_args, body, context, row, col, deps, scope)?;
                     history.push(acc.clone());
                 }
                 if func_name == "REDUCE" {
@@ -2329,19 +2351,17 @@ impl Sheet {
                 if params.len() != 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let rows_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
-                let cols_val = self.evaluate_ast(&args[1], context, row, deps, scope)?;
+                let rows_val = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
+                let cols_val = self.evaluate_ast(&args[1], context, row, col, deps, scope)?;
                 let num_rows = self.to_f64(&rows_val).unwrap_or(0.0).max(0.0) as usize;
                 let num_cols = self.to_f64(&cols_val).unwrap_or(0.0).max(0.0) as usize;
                 let mut results = Vec::with_capacity(num_rows * num_cols);
                 for r in 1..=num_rows {
                     for c in 1..=num_cols {
                         let call_args = [ResultData::Float(r as f64), ResultData::Float(c as f64)];
-                        results.push(
-                            self.invoke_lambda(
-                                &params, &call_args, body, context, row, deps, scope,
-                            )?,
-                        );
+                        results.push(self.invoke_lambda(
+                            &params, &call_args, body, context, row, col, deps, scope,
+                        )?);
                     }
                 }
                 Ok(ResultData::List(results))
@@ -2438,12 +2458,14 @@ impl Sheet {
     /// INDIRECT/OFFSET build a reference dynamically instead of relying
     /// on one already resolved at parse time; SHEET/SHEETS/CELL/INFO
     /// report workbook/environment metadata.
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_range_info_function(
         &self,
         func_name: &str,
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -2485,15 +2507,10 @@ impl Sheet {
                     Some((_, _, start_col, _, _)) => Ok(ResultData::Float((start_col + 1) as f64)),
                     None => Ok(ResultData::Error("#VALUE!".to_string())),
                 },
-                // The current cell's own column isn't threaded through
-                // this evaluator the way `row` is (every call site
-                // already passes `row`, but adding an equivalent `col`
-                // parameter would mean threading it through every
-                // `evaluate_ast`/`evaluate_function` call site in this
-                // file) -- a real, documented gap. Bare `=COLUMN()` isn't
-                // supported; called with an explicit reference argument,
-                // COLUMN works correctly.
-                None => Ok(ResultData::Error("#N/A".to_string())),
+                None => match col {
+                    Some(c) => Ok(ResultData::Float((c + 1) as f64)),
+                    None => Ok(ResultData::Error("#VALUE!".to_string())),
+                },
             },
             "ROWS" => {
                 let Some(arg) = args.first() else {
@@ -2596,7 +2613,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let info_type = self
-                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .evaluate_ast(&args[0], context, row, col, deps, scope)?
                     .to_string()
                     .to_lowercase();
                 let bounds = args.get(1).and_then(Self::range_bounds);
@@ -2631,7 +2648,7 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let info_type = self
-                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .evaluate_ast(&args[0], context, row, col, deps, scope)?
                     .to_string()
                     .to_lowercase();
                 match info_type.as_str() {
@@ -2655,10 +2672,10 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let text = self
-                    .evaluate_ast(&args[0], context, row, deps, scope)?
+                    .evaluate_ast(&args[0], context, row, col, deps, scope)?
                     .to_string();
                 let a1_style = match args.get(1) {
-                    Some(a) => self.to_bool(&self.evaluate_ast(a, context, row, deps, scope)?),
+                    Some(a) => self.to_bool(&self.evaluate_ast(a, context, row, col, deps, scope)?),
                     None => true,
                 };
                 if !a1_style {
@@ -2695,22 +2712,22 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
                 let row_offset = self
-                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, col, deps, scope)?)
                     .unwrap_or(0.0) as isize;
                 let col_offset = self
-                    .to_f64(&self.evaluate_ast(&args[2], context, row, deps, scope)?)
+                    .to_f64(&self.evaluate_ast(&args[2], context, row, col, deps, scope)?)
                     .unwrap_or(0.0) as isize;
                 let base_height = (base_end_row.saturating_sub(base_row) + 1) as isize;
                 let base_width = (base_end_col.saturating_sub(base_col) + 1) as isize;
                 let height = match args.get(3) {
                     Some(a) => self
-                        .to_f64(&self.evaluate_ast(a, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(a, context, row, col, deps, scope)?)
                         .unwrap_or(base_height as f64) as isize,
                     None => base_height,
                 };
                 let width = match args.get(4) {
                     Some(a) => self
-                        .to_f64(&self.evaluate_ast(a, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(a, context, row, col, deps, scope)?)
                         .unwrap_or(base_width as f64) as isize,
                     None => base_width,
                 };
@@ -2750,6 +2767,7 @@ impl Sheet {
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -2758,7 +2776,7 @@ impl Sheet {
         }
 
         let data_field = self
-            .evaluate_ast(&args[0], context, row, deps, scope)?
+            .evaluate_ast(&args[0], context, row, col, deps, scope)?
             .to_string();
 
         let (sheet_opt, target_row, target_col, _, _) = match Self::range_bounds(&args[1]) {
@@ -2794,10 +2812,10 @@ impl Sheet {
         let mut i = 2;
         while i < args.len() {
             let field = self
-                .evaluate_ast(&args[i], context, row, deps, scope)?
+                .evaluate_ast(&args[i], context, row, col, deps, scope)?
                 .to_string();
             let item = self
-                .evaluate_ast(&args[i + 1], context, row, deps, scope)?
+                .evaluate_ast(&args[i + 1], context, row, col, deps, scope)?
                 .to_string();
             criteria.push((field, item));
             i += 2;
@@ -2828,12 +2846,14 @@ impl Sheet {
     /// the documented repeating list; `XMATCH`'s wildcard match mode and
     /// binary/reverse search modes aren't implemented (falls through to a
     /// forward linear scan).
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_array_reshape_function(
         &self,
         func_name: &str,
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -2842,7 +2862,7 @@ impl Sheet {
                 let Some(arg) = args.first() else {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
-                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(arg, context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let mut result = Vec::with_capacity(flat.len());
                 for c in 0..cols {
@@ -2858,7 +2878,7 @@ impl Sheet {
                 }
                 let mut shapes = Vec::with_capacity(args.len());
                 for a in args {
-                    shapes.push(self.array_shape(a, context, row, deps, scope)?);
+                    shapes.push(self.array_shape(a, context, row, col, deps, scope)?);
                 }
                 let mut result = Vec::new();
                 if func_name == "HSTACK" {
@@ -2900,7 +2920,7 @@ impl Sheet {
                 if args.len() < 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(&args[0], context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let total = if func_name == "CHOOSEROWS" {
                     rows
@@ -2910,7 +2930,7 @@ impl Sheet {
                 let mut indices = Vec::with_capacity(args.len() - 1);
                 for idx_expr in &args[1..] {
                     let n = self
-                        .to_f64(&self.evaluate_ast(idx_expr, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(idx_expr, context, row, col, deps, scope)?)
                         .unwrap_or(0.0) as isize;
                     let real_idx = if n < 0 { total + n } else { n - 1 };
                     if real_idx < 0 || real_idx >= total {
@@ -2938,15 +2958,15 @@ impl Sheet {
                 if args.len() < 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(&args[0], context, row, col, deps, scope)?;
                 let num_rows = flat.len().checked_div(cols).unwrap_or(0) as isize;
                 let is_take = func_name == "TAKE";
                 let rows_n = self
-                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, col, deps, scope)?)
                     .unwrap_or(0.0) as isize;
                 let cols_n = match args.get(2) {
                     Some(e) => self
-                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope)?)
                         .unwrap_or(0.0) as isize,
                     None => {
                         if is_take {
@@ -2973,19 +2993,19 @@ impl Sheet {
                 if args.len() < 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(&args[0], context, row, col, deps, scope)?;
                 let orig_rows = flat.len().checked_div(cols).unwrap_or(0);
                 let new_rows = self
-                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, col, deps, scope)?)
                     .unwrap_or(orig_rows as f64) as usize;
                 let new_cols = match args.get(2) {
                     Some(e) => self
-                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope)?)
                         .unwrap_or(cols as f64) as usize,
                     None => cols,
                 };
                 let pad = match args.get(3) {
-                    Some(e) => self.evaluate_ast(e, context, row, deps, scope)?,
+                    Some(e) => self.evaluate_ast(e, context, row, col, deps, scope)?,
                     None => ResultData::Error("#N/A".to_string()),
                 };
                 if new_rows < orig_rows || new_cols < cols {
@@ -3007,16 +3027,16 @@ impl Sheet {
                 let Some(arg) = args.first() else {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
-                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(arg, context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let ignore = match args.get(1) {
                     Some(e) => self
-                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope)?)
                         .unwrap_or(0.0) as i64,
                     None => 0,
                 };
                 let scan_by_col = match args.get(2) {
-                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, deps, scope)?),
+                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, col, deps, scope)?),
                     None => false,
                 };
                 let ordered: Vec<ResultData> = if scan_by_col {
@@ -3045,13 +3065,13 @@ impl Sheet {
                 if args.len() < 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let (flat, _cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let (flat, _cols) = self.array_shape(&args[0], context, row, col, deps, scope)?;
                 let wrap = self
-                    .to_f64(&self.evaluate_ast(&args[1], context, row, deps, scope)?)
+                    .to_f64(&self.evaluate_ast(&args[1], context, row, col, deps, scope)?)
                     .unwrap_or(1.0)
                     .max(1.0) as usize;
                 let pad = match args.get(2) {
-                    Some(e) => self.evaluate_ast(e, context, row, deps, scope)?,
+                    Some(e) => self.evaluate_ast(e, context, row, col, deps, scope)?,
                     None => ResultData::Error("#N/A".to_string()),
                 };
                 if func_name == "WRAPROWS" {
@@ -3085,9 +3105,9 @@ impl Sheet {
                 let Some(arg) = args.first() else {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
-                let (flat, _cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let (flat, _cols) = self.array_shape(arg, context, row, col, deps, scope)?;
                 let exactly_once = match args.get(2) {
-                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, deps, scope)?),
+                    Some(e) => self.to_bool(&self.evaluate_ast(e, context, row, col, deps, scope)?),
                     None => false,
                 };
                 let mut seen: Vec<(String, ResultData, usize)> = Vec::new();
@@ -3109,17 +3129,17 @@ impl Sheet {
                 let Some(arg) = args.first() else {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
-                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(arg, context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let sort_index = match args.get(1) {
                     Some(e) => self
-                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope)?)
                         .unwrap_or(1.0) as usize,
                     None => 1,
                 };
                 let sort_order = match args.get(2) {
                     Some(e) => self
-                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope)?)
                         .unwrap_or(1.0),
                     None => 1.0,
                 };
@@ -3144,12 +3164,12 @@ impl Sheet {
                 if args.len() < 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(&args[0], context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
-                let by = self.eval_as_array(&args[1], context, row, deps, scope)?;
+                let by = self.eval_as_array(&args[1], context, row, col, deps, scope)?;
                 let order = match args.get(2) {
                     Some(e) => self
-                        .to_f64(&self.evaluate_ast(e, context, row, deps, scope)?)
+                        .to_f64(&self.evaluate_ast(e, context, row, col, deps, scope)?)
                         .unwrap_or(1.0),
                     None => 1.0,
                 };
@@ -3171,9 +3191,9 @@ impl Sheet {
                 if args.len() < 2 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                let (flat, cols) = self.array_shape(&args[0], context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(&args[0], context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
-                let include = self.eval_as_array(&args[1], context, row, deps, scope)?;
+                let include = self.eval_as_array(&args[1], context, row, col, deps, scope)?;
                 let mut result = Vec::new();
                 for r in 0..rows {
                     let keep = include.get(r).map(|v| self.to_bool(v)).unwrap_or(false);
@@ -3185,7 +3205,7 @@ impl Sheet {
                 }
                 if result.is_empty() {
                     match args.get(2) {
-                        Some(e) => Ok(self.evaluate_ast(e, context, row, deps, scope)?),
+                        Some(e) => Ok(self.evaluate_ast(e, context, row, col, deps, scope)?),
                         None => Ok(ResultData::Error("#CALC!".to_string())),
                     }
                 } else {
@@ -3196,7 +3216,7 @@ impl Sheet {
                 let Some(arg) = args.first() else {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 };
-                let (flat, cols) = self.array_shape(arg, context, row, deps, scope)?;
+                let (flat, cols) = self.array_shape(arg, context, row, col, deps, scope)?;
                 let rows = flat.len().checked_div(cols).unwrap_or(0);
                 let is_blank = |v: &ResultData| {
                     matches!(v, ResultData::None)
@@ -3232,12 +3252,14 @@ impl Sheet {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_function(
         &self,
         name: &str,
         args: &[crate::core::parser::Expr],
         context: Option<&Context>,
         row: Option<usize>,
+        col: Option<usize>,
         deps: &mut Vec<Dependency>,
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
@@ -3258,7 +3280,7 @@ impl Sheet {
         }
 
         if upper_name == "LET" {
-            return self.evaluate_let(args, context, row, deps, scope);
+            return self.evaluate_let(args, context, row, col, deps, scope);
         }
 
         if upper_name == "PLOT" {
@@ -3284,7 +3306,7 @@ impl Sheet {
                 } = arg
                     && let Expr::Identifier(name) = &**left
                 {
-                    let val = self.evaluate_ast(right, context, row, deps, scope)?;
+                    let val = self.evaluate_ast(right, context, row, col, deps, scope)?;
                     match name.to_lowercase().as_str() {
                         "color" => {
                             if let ResultData::List(list) = val {
@@ -3315,7 +3337,7 @@ impl Sheet {
                     continue;
                 }
 
-                let val = self.evaluate_ast(arg, context, row, deps, scope)?;
+                let val = self.evaluate_ast(arg, context, row, col, deps, scope)?;
                 match positional_count {
                     0 => {
                         if let ResultData::List(list) = val {
@@ -3395,7 +3417,7 @@ impl Sheet {
                         "IF requires 3 arguments".to_string(),
                     )));
                 }
-                let cond_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                let cond_val = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
                 if let ResultData::Error(_) = cond_val {
                     return Ok(cond_val);
                 }
@@ -3404,9 +3426,9 @@ impl Sheet {
                     None => return Ok(ResultData::Error("#VALUE!".to_string())),
                 };
                 if condition {
-                    return self.evaluate_ast(&args[1], context, row, deps, scope);
+                    return self.evaluate_ast(&args[1], context, row, col, deps, scope);
                 } else {
-                    return self.evaluate_ast(&args[2], context, row, deps, scope);
+                    return self.evaluate_ast(&args[2], context, row, col, deps, scope);
                 }
             }
 
@@ -3416,10 +3438,10 @@ impl Sheet {
                         "IFERROR requires 2 arguments".to_string(),
                     )));
                 }
-                let first_res = self.evaluate_ast(&args[0], context, row, deps, scope);
+                let first_res = self.evaluate_ast(&args[0], context, row, col, deps, scope);
                 match first_res {
                     Ok(ResultData::Error(_)) | Err(_) => {
-                        return self.evaluate_ast(&args[1], context, row, deps, scope);
+                        return self.evaluate_ast(&args[1], context, row, col, deps, scope);
                     }
                     Ok(val) => return Ok(val),
                 }
@@ -3431,7 +3453,7 @@ impl Sheet {
                         "CHOOSE requires at least 2 arguments".to_string(),
                     )));
                 }
-                let idx_val = self.evaluate_ast(&args[0], context, row, deps, scope)?;
+                let idx_val = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
                 if let ResultData::Error(_) = idx_val {
                     return Ok(idx_val);
                 }
@@ -3445,6 +3467,7 @@ impl Sheet {
                         &choices[(idx - 1) as usize],
                         context,
                         row,
+                        col,
                         deps,
                         scope,
                     );
@@ -3473,6 +3496,7 @@ impl Sheet {
                     args,
                     context,
                     row,
+                    col,
                     deps,
                     scope,
                 );
@@ -3515,6 +3539,7 @@ impl Sheet {
                     args,
                     context,
                     row,
+                    col,
                     deps,
                     scope,
                 );
@@ -3545,20 +3570,21 @@ impl Sheet {
                     args,
                     context,
                     row,
+                    col,
                     deps,
                     scope,
                 );
             }
 
             if upper_name == "GETPIVOTDATA" {
-                return self.evaluate_getpivotdata(args, context, row, deps, scope);
+                return self.evaluate_getpivotdata(args, context, row, col, deps, scope);
             }
 
             if upper_name == "ISERROR" {
                 if args.is_empty() {
                     return Ok(ResultData::Boolean(false));
                 }
-                let res = self.evaluate_ast(&args[0], context, row, deps, scope);
+                let res = self.evaluate_ast(&args[0], context, row, col, deps, scope);
                 return match res {
                     Ok(ResultData::Error(_)) | Err(_) => Ok(ResultData::Boolean(true)),
                     _ => Ok(ResultData::Boolean(false)),
@@ -3569,7 +3595,7 @@ impl Sheet {
                 if args.is_empty() {
                     return Ok(ResultData::Boolean(false));
                 }
-                let res = self.evaluate_ast(&args[0], context, row, deps, scope);
+                let res = self.evaluate_ast(&args[0], context, row, col, deps, scope);
                 return match res {
                     Ok(ResultData::Error(e)) => Ok(ResultData::Boolean(e.contains("#N/A"))),
                     _ => Ok(ResultData::Boolean(false)),
@@ -3590,7 +3616,7 @@ impl Sheet {
                     _ => true,
                 };
                 arg_is_direct.push(is_direct_arg);
-                let eval_res = match self.evaluate_ast(arg, context, row, deps, scope) {
+                let eval_res = match self.evaluate_ast(arg, context, row, col, deps, scope) {
                     Ok(r) => r,
                     Err(EngineError::EvalError(EvalError::UnknownFunction(err_str)))
                         if err_str.starts_with('#') =>
@@ -6453,7 +6479,9 @@ impl Sheet {
                                         start_col, end_col, ..
                                     } => (end_col - start_col + 1) as isize,
                                     Expr::FunctionCall { name, args: fargs } => self
-                                        .function_call_cols(name, fargs, context, row, deps, scope)
+                                        .function_call_cols(
+                                            name, fargs, context, row, col, deps, scope,
+                                        )
                                         .unwrap_or(1)
                                         as isize,
                                     _ => 1,

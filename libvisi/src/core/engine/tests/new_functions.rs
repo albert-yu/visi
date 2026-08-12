@@ -1267,6 +1267,20 @@ fn test_xmatch_supports_next_smaller_and_larger_modes() {
 }
 
 #[test]
+fn test_bare_row_and_column_report_current_cell_position() {
+    // No-arg ROW()/COLUMN() report the position of the cell the formula
+    // itself lives in -- distinct from the reference-argument form, which
+    // reports the referenced range instead (already covered elsewhere).
+    let grid: [[&str; 3]; 2] = [["=ROW()", "=COLUMN()", "x"], ["x", "x", "=ROW()+COLUMN()"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 0)), 1.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 2.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 2)), 5.0, 1e-9);
+}
+
+#[test]
 fn test_stockhistory_and_rtd_report_unavailable_data_source() {
     // Neither has a local data source this engine can serve (a live
     // Microsoft stock-data cloud connection, a registered Windows COM RTD
