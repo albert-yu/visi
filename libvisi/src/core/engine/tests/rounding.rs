@@ -1975,3 +1975,54 @@ fn test_fuzz_rounddown_unevaluated_formula_dependency() {
         other => panic!("Expected Float(1296.0), got {:?}", other),
     }
 }
+
+#[test]
+fn test_scientific_notation_respects_the_twenty_character_budget() {
+    use crate::core::engine::result_data::format_excel_number;
+
+    // Excel's display budget is 20 characters, and in scientific notation
+    // the exponent is charged against it -- a three-digit exponent leaves
+    // one fewer mantissa digit than a two-digit one. Both of these are
+    // exactly 20 characters wide, and both are real Excel's rendering.
+    assert_eq!(
+        format_excel_number(2.277577478736661e-171),
+        "2.2775774787367E-171"
+    );
+    assert_eq!(format_excel_number(1.0 / 3e20), "3.33333333333333E-21");
+
+    // The mantissa used to be fixed at 15 significant digits regardless of
+    // the exponent width, which made the first of these 21 characters.
+    assert!(format_excel_number(2.277577478736661e-171).len() <= 20);
+    assert!(format_excel_number(-2.277577478736661e-171).len() <= 21); // plus the sign
+}
+
+#[test]
+fn test_number_to_text_keeps_only_excels_fifteen_significant_digits() {
+    use crate::core::engine::result_data::format_excel_number;
+
+    // 43^11 is 929293739471223048 as an f64; Excel shows 15 significant
+    // digits and zeroes the rest. The old formatter emitted the f64's own
+    // digits here, which leaked precision Excel never displays.
+    assert_eq!(format_excel_number(43f64.powi(11)), "929293739471223000");
+    assert_eq!(
+        format_excel_number(-(43f64.powi(11))),
+        "-929293739471223000"
+    );
+
+    // The sign is not charged against the 20-character budget: real Excel
+    // writes this at a full 15 significant digits despite the minus.
+    assert_eq!(
+        format_excel_number(-2.05237592634038e-10),
+        "-2.05237592634038E-10"
+    );
+
+    // Unchanged neighbours.
+    assert_eq!(format_excel_number(1e19), "10000000000000000000");
+    assert_eq!(format_excel_number(1e20), "1E+20");
+    assert_eq!(format_excel_number(976121418126.432), "976121418126.432");
+    assert_eq!(format_excel_number(-1.0 / 3.0), "-0.333333333333333");
+    assert_eq!(
+        format_excel_number(std::f64::consts::PI),
+        "3.14159265358979"
+    );
+}

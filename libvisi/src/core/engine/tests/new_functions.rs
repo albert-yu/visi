@@ -211,6 +211,21 @@ fn test_disc_basis1_year_length_has_two_regimes() {
         0.0922348484848485,
         1e-9,
     );
+
+    // The two 366 cases above are "wholly inside a leap year" and "spans
+    // 29 February". A short period that merely *ends* in a leap year,
+    // before the leap day, takes 365 -- taking the end year's leap-ness
+    // alone got these wrong.
+    assert_float_close(
+        &eval1("=PRICEDISC(DATE(2023,8,5), EDATE(DATE(2023,8,5),5), 0.0226, 100, 1)"),
+        99.05265753424658,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=YEARFRAC(DATE(2015,2,15), DATE(2016,2,13), 1)"),
+        0.994520547945205,
+        1e-12,
+    );
 }
 
 #[test]

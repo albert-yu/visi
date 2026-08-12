@@ -335,6 +335,20 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
             d2 = 30;
         }
     } else {
+        // US (NASD) method. What separates it from the European method is
+        // the end-of-February handling below -- without it the two agree on
+        // every date pair that does not land on a February month-end, which
+        // is why omitting it looked correct for a long time.
+        //
+        // The order matters: the "both ends are February month-ends" rule
+        // has to be tested while d1 still holds the real day, before d1 is
+        // pulled to the 30th.
+        if m1 == 2 && d1 == days_in_month(y1, m1) {
+            if m2 == 2 && d2 == days_in_month(y2, m2) {
+                d2 = 30;
+            }
+            d1 = 30;
+        }
         if d1 == 31 {
             d1 = 30;
         }
@@ -525,9 +539,35 @@ pub fn actual_actual_year_days(start: f64, end: f64) -> f64 {
     let d1 = start.min(end);
     let d2 = start.max(end);
     if d2 - d1 <= 366.0 {
-        let (y, _, _) = serial_to_ymd(d2);
-        let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
-        return if leap { 366.0 } else { 365.0 };
+        // Within a single year the denominator is 366 when either the
+        // period actually contains a 29 February, or the whole period
+        // lies inside one leap year; otherwise 365. Taking the *end*
+        // year's leap-ness alone (what this used to do) is wrong for a
+        // short period that ends in a leap year before the leap day.
+        //
+        // Four real-Excel data points pin all three branches down:
+        //   2016-06-01 -> 2016-09-01  366  (wholly inside leap 2016)
+        //   2027-12-26 -> 2028-03-26  366  (spans 29 Feb 2028)
+        //   2023-08-05 -> 2024-01-05  365  (ends in a leap year, before
+        //                                   the leap day)
+        //   2015-02-15 -> 2016-02-13  365  (same, and YEARFRAC there is
+        //                                   363/365 = 0.994520547945205
+        //                                   to the last digit)
+        let (y1, _, _) = serial_to_ymd(d1);
+        let (y2, _, _) = serial_to_ymd(d2);
+        let is_leap = |y: i32| (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        let wholly_inside_leap_year = y1 == y2 && is_leap(y1);
+        let contains_leap_day = (y1..=y2).any(|y| {
+            is_leap(y) && {
+                let feb29 = ymd_to_serial(y, 2, 29);
+                feb29 >= d1 && feb29 <= d2
+            }
+        });
+        return if wholly_inside_leap_year || contains_leap_day {
+            366.0
+        } else {
+            365.0
+        };
     }
     let (y1, _, _) = serial_to_ymd(d1);
     let (y2, _, _) = serial_to_ymd(d2);

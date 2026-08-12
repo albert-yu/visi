@@ -550,7 +550,12 @@ pub fn multinomial(nums: &[f64]) -> Result<f64, String> {
 }
 
 pub fn power(number: f64, p: f64) -> Result<f64, String> {
-    if number == 0.0 && p < 0.0 {
+    if number == 0.0 && p == 0.0 {
+        // Excel declines to pick a value for 0^0: both POWER(0, 0) and
+        // 0^0 are #NUM!. The `^` operator already did this; POWER was
+        // returning 1, so POWER(<blank>, <blank>) silently became 1.
+        Err("#NUM!".to_string())
+    } else if number == 0.0 && p < 0.0 {
         Err("#DIV/0!".to_string())
     } else if number < 0.0 && p.floor() != p {
         Err("#NUM!".to_string())

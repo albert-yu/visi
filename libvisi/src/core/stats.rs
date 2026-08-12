@@ -593,7 +593,10 @@ pub fn skew(data: &[f64]) -> Result<f64, String> {
 
 pub fn skew_p(data: &[f64]) -> Result<f64, String> {
     let n = data.len();
-    if n < 1 {
+    // Skewness needs at least three observations; Excel reports #DIV/0!
+    // below that for both SKEW and SKEW.P (confirmed directly -- two
+    // values give #DIV/0!, three compute).
+    if n < 3 {
         return Err("#DIV/0!".to_string());
     }
     let sigma = stdev_p(data)?;
@@ -1327,18 +1330,26 @@ pub fn chisq_test(actual: &[f64], expected: &[f64]) -> Result<f64, String> {
     }
     let mut chi2 = 0.0;
     for (&o, &e) in actual.iter().zip(expected.iter()) {
-        // A negative expected frequency is out of the distribution's
-        // domain (#NUM!); an expected frequency of exactly zero is the
-        // division itself failing (#DIV/0!). Both confirmed against real
-        // Excel -- lumping them together as #DIV/0! got the negative case
-        // wrong.
-        if e < 0.0 {
-            return Err("#NUM!".to_string());
-        }
+        // An expected frequency of exactly zero is the division itself
+        // failing, so that is #DIV/0! and is checked here.
+        //
+        // A *negative* expected frequency is not rejected per element,
+        // which is the non-obvious part. Excel just divides by it, letting
+        // that term push the statistic down, and only reports #NUM! if the
+        // total comes out negative -- so whether a negative expected value
+        // is an error depends on the other terms:
+        //
+        //   CHITEST({1,2,3}, {5,-4,3})              = #NUM!   (chi2 = -5.8)
+        //   CHITEST({-478.8,352.51,8.5}, {38,8.5,-75}) = 0    (chi2 ~ 20859)
+        //
+        // Rejecting `e < 0` up front got the second case wrong.
         if e == 0.0 {
             return Err("#DIV/0!".to_string());
         }
         chi2 += (o - e) * (o - e) / e;
+    }
+    if chi2 < 0.0 {
+        return Err("#NUM!".to_string());
     }
     let df = (actual.len() - 1) as f64;
     chisq_dist_rt(chi2, df)

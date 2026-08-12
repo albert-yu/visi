@@ -397,3 +397,95 @@ fn test_roman_concise_forms_match_excel() {
         );
     }
 }
+
+fn eval_one(source: &str) -> ResultData {
+    let sheet = Sheet::new(SheetInit::default());
+    sheet.eval(source, None).unwrap().0
+}
+
+fn num(source: &str) -> f64 {
+    match eval_one(source) {
+        ResultData::Float(f) => f,
+        ResultData::Integer(i) => i as f64,
+        other => panic!("expected a number for {source}, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_days360_us_method_pulls_february_month_ends_to_the_30th() {
+    // Serial 40602 is 2011-02-28, a February month-end; 42543 is
+    // 2016-06-24. The US (NASD) method moves that start day to the 30th
+    // and so counts two days fewer than the European method. Real Excel:
+    //   DAYS360(40602, 42543, FALSE) = 1912   (also the default)
+    //   DAYS360(40602, 42543, TRUE)  = 1914
+    // Before the February rule was implemented both spellings returned
+    // 1914, because the two methods only diverge on a month-end February.
+    assert_eq!(num("=DAYS360(40602, 42543, FALSE)"), 1912.0);
+    assert_eq!(num("=DAYS360(40602, 42543)"), 1912.0);
+    assert_eq!(num("=DAYS360(40602, 42543, TRUE)"), 1914.0);
+}
+
+#[test]
+fn test_supplied_blank_argument_is_zero_not_the_default() {
+    // An *omitted* optional argument takes its default; an argument that
+    // is supplied but blank is 0. Real Excel draws the line sharply:
+    //   LOG(100)        = 2         base defaults to 10
+    //   LOG(100, blank) = #NUM!     base is 0
+    //   LOG(1, blank)   = #NUM!     still #NUM!, not 0
+    //   MROUND(10, blank) = 0
+    // Z90 is empty in a fresh sheet.
+    assert_eq!(num("=LOG(100)"), 2.0);
+    assert_eq!(num("=MROUND(10, Z90)"), 0.0);
+    for src in ["=LOG(100, Z90)", "=LOG(1, Z90)"] {
+        match eval_one(src) {
+            ResultData::Error(e) => assert_eq!(e, "#NUM!", "for {src}"),
+            other => panic!("expected #NUM! for {src}, got {other:?}"),
+        }
+    }
+    // Base 1 stays #DIV/0! rather than #NUM! -- log(n)/log(1) divides by 0.
+    match eval_one("=LOG(1, 1)") {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_power_of_zero_to_the_zero_is_num_error() {
+    // Excel declines to pick a value for 0^0 -- both spellings are #NUM!.
+    // The `^` operator already did this; the POWER function returned 1,
+    // so POWER(<blank>, <blank>) quietly evaluated to 1 and turned
+    // OR(POWER(blank, blank) > 0, ...) into TRUE where Excel says #NUM!.
+    for src in ["=POWER(0, 0)", "=0^0", "=POWER(Y90, Y91)"] {
+        match eval_one(src) {
+            ResultData::Error(e) => assert_eq!(e, "#NUM!", "for {src}"),
+            other => panic!("expected #NUM! for {src}, got {other:?}"),
+        }
+    }
+    // The neighbouring domain rules are unchanged.
+    assert_eq!(num("=POWER(0, 2)"), 0.0);
+    assert_eq!(num("=POWER(2, 0)"), 1.0);
+    match eval_one("=POWER(0, -1)") {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_sumproduct_treats_non_numeric_entries_as_zero() {
+    // Real Excel: SUMPRODUCT(2, "abc") = 0 and SUMPRODUCT(A1:B1, A2:B2)
+    // with a text cell in the second array = 3. Non-numeric entries count
+    // as zero *and keep their slot*, so the arrays stay the same length
+    // and the remaining terms still line up. Dropping them instead made
+    // the first case #VALUE! -- one array of length 1 against one of
+    // length 0 -- which then showed up as TYPE(...) = 16 rather than 1.
+    assert_eq!(num("=SUMPRODUCT(2, \"abc\")"), 0.0);
+    assert_eq!(num("=TYPE(SUMPRODUCT(2, \"abc\"))"), 1.0);
+
+    let mut sheet = create_sheet(&[["1", "2", "=SUMPRODUCT(A1:B1, A2:B2)"], ["3", "=\"x\"", ""]]);
+    sheet.commit(None).unwrap();
+    match sheet.get_result_data(&CellRef::new(0, 2)) {
+        ResultData::Float(f) => assert!((f - 3.0).abs() < 1e-9, "got {f}"),
+        ResultData::Integer(i) => assert_eq!(i, 3),
+        other => panic!("expected 3, got {other:?}"),
+    }
+}

@@ -542,3 +542,123 @@ fn test_chitest_single_category_is_not_available() {
     // Two categories still compute.
     assert!(crate::core::stats::chisq_test(&[10.0, 20.0], &[10.0, 20.0]).is_ok());
 }
+
+// ---------------------------------------------------------------------
+// Direct-argument text coercion in the statistical family.
+//
+// All values below are from real Excel 16.111.3. The rule splits on how
+// the text arrived: supplied directly as an argument it is coerced (and
+// is an error if it will not coerce), while text reached through a
+// reference is skipped. Getting this wrong is quiet rather than loud --
+// DEVSQ("abc", 3, 4, 5) used to answer 2, the spread of the remaining
+// three numbers, instead of #VALUE!.
+// ---------------------------------------------------------------------
+
+fn assert_err(source: &str, expected: &str) {
+    match eval1(source) {
+        ResultData::Error(e) => assert_eq!(e, expected, "for {source}"),
+        other => panic!("expected {expected} for {source}, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_direct_numeric_text_is_coerced_by_stat_family() {
+    assert_float_close(&eval1("=SUM(\"12\", 3, 4, 5)"), 24.0, 1e-9);
+    assert_float_close(&eval1("=AVERAGE(\"12\", 3, 4, 5)"), 6.0, 1e-9);
+    assert_float_close(&eval1("=DEVSQ(\"12\", 3, 4, 5)"), 50.0, 1e-9);
+    assert_float_close(&eval1("=STDEV(\"12\", 3, 4, 5)"), 4.08248290463863, 1e-12);
+    assert_float_close(&eval1("=VAR(\"12\", 3, 4, 5)"), 16.666666666666668, 1e-12);
+    assert_float_close(&eval1("=MEDIAN(\"12\", 3, 4, 5)"), 4.5, 1e-9);
+    assert_float_close(&eval1("=SUMSQ(\"12\", 3, 4, 5)"), 194.0, 1e-9);
+    assert_float_close(
+        &eval1("=GEOMEAN(\"12\", 3, 4, 5)"),
+        5.180040128222703,
+        1e-12,
+    );
+    assert_float_close(&eval1("=AVEDEV(\"12\", 3, 4, 5)"), 3.0, 1e-9);
+    assert_float_close(&eval1("=SKEW(\"12\", 3, 4, 5)"), 1.7636326148038874, 1e-12);
+    assert_float_close(&eval1("=KURT(\"12\", 3, 4, 5)"), 3.2279999999999944, 1e-12);
+}
+
+#[test]
+fn test_direct_uncoercible_text_is_value_error_in_stat_family() {
+    for f in [
+        "SUM", "AVERAGE", "DEVSQ", "STDEV", "VAR", "MEDIAN", "MAX", "MIN", "PRODUCT", "SUMSQ",
+        "GEOMEAN", "AVEDEV", "SKEW", "KURT",
+    ] {
+        assert_err(&format!("={f}(\"abc\", 3, 4, 5)"), "#VALUE!");
+    }
+}
+
+#[test]
+fn test_count_never_errors_on_text() {
+    // COUNT is the deliberate exception: numeric text typed directly
+    // counts, uncoercible text is simply not counted, and neither is an
+    // error. Both values are real Excel's.
+    assert_float_close(&eval1("=COUNT(\"12\", 3, 4, 5)"), 4.0, 1e-9);
+    assert_float_close(&eval1("=COUNT(\"abc\", 3, 4, 5)"), 3.0, 1e-9);
+}
+
+#[test]
+fn test_averagea_family_direct_vs_referenced_text() {
+    // Real Excel, with A1 holding the *text* "12":
+    //   AVERAGEA("12", 3) = 7.5   direct text is coerced
+    //   AVERAGEA(A1, 3)   = 1.5   text in a reference counts as 0
+    //   AVERAGEA("abc", 3)= #VALUE!
+    //   AVERAGEA(TRUE, 3) = 2
+    assert_float_close(&eval1("=AVERAGEA(\"12\", 3)"), 7.5, 1e-9);
+    assert_float_close(&eval1("=AVERAGEA(TRUE, 3)"), 2.0, 1e-9);
+    assert_float_close(&eval1("=MAXA(\"12\", 3)"), 12.0, 1e-9);
+    assert_err("=AVERAGEA(\"abc\", 3)", "#VALUE!");
+
+    let mut sheet = create_sheet(&[["=\"12\"", "=AVERAGEA(A1, 3)"]]);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 1.5, 1e-9);
+}
+
+#[test]
+fn test_erf_family_coerces_numeric_text_but_rejects_booleans() {
+    // Real Excel: ERF("1") and ERF(" 1 ") are both 0.8427007929497149,
+    // ERF("-39") is -1, while ERF(TRUE), ERF(FALSE) and ERF("abc") are
+    // all #VALUE!. A blank argument is 0, so ERF(<blank>) is 0.
+    assert_float_close(&eval1("=ERF(\"1\")"), 0.8427007929497149, 1e-15);
+    assert_float_close(&eval1("=ERF(\" 1 \")"), 0.8427007929497149, 1e-15);
+    assert_float_close(&eval1("=ERF(\"-39\")"), -1.0, 1e-15);
+    assert_float_close(&eval1("=ERFC(\"1\")"), 0.15729920705028513, 1e-15);
+    assert_err("=ERF(TRUE)", "#VALUE!");
+    assert_err("=ERF(FALSE)", "#VALUE!");
+    assert_err("=ERFC(TRUE)", "#VALUE!");
+    assert_err("=ERF(\"abc\")", "#VALUE!");
+}
+
+#[test]
+fn test_chitest_rejects_only_a_negative_total_not_negative_expected_values() {
+    // A negative *expected* frequency is not an error on its own. Excel
+    // divides by it and lets that term pull the statistic down, reporting
+    // #NUM! only if the total comes out negative -- so an identical
+    // negative expected value is fine in one series and fatal in another.
+    // All three values are real Excel's.
+    //
+    //   A1:C1 = 1, 2, 3        A2:C2 = 5, -4, 3   -> chi2 = -5.8  -> #NUM!
+    //   A3:C3 = -478.8, 352.51, 8.5
+    //   A4:C4 = 38, 8.5, -75                      -> chi2 ~ 20859 -> 0
+    let mut sheet = create_sheet(&[
+        ["1", "2", "3", "=CHITEST(A1:C1, A2:C2)"],
+        ["5", "-4", "3", "=CHITEST(A3:C3, A4:C4)"],
+        ["-478.8", "352.51", "8.5", "=CHITEST(A1:C1, A5:C5)"],
+        ["38", "8.5", "-75", ""],
+        ["5", "0", "3", ""],
+    ]);
+    sheet.commit(None).unwrap();
+
+    match sheet.get_result_data(&CellRef::new(0, 3)) {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!", "negative statistic is #NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 3)), 0.0, 1e-12);
+    // An expected frequency of exactly zero is the division failing.
+    match sheet.get_result_data(&CellRef::new(2, 3)) {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "zero expected is #DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}

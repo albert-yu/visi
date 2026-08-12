@@ -111,12 +111,23 @@ pub fn format_excel_number(f: f64) -> String {
         return "#NUM!".to_string();
     }
 
-    let abs_f = f.abs();
-    let exp = abs_f.log10().floor() as i32;
+    // Excel displays 15 significant digits and no more. Everything below
+    // works from the *rounded* scientific form rather than from the f64
+    // directly, so digits past that precision are dropped instead of
+    // leaking out: (-43)^11 is 21611482313284248 in f64, but Excel writes
+    // 21611482313284200.
+    let sci = format!("{:.14e}", f);
+    let (mantissa, exp_str) = sci.split_once('e').expect("{:e} always emits an exponent");
+    let exp: i32 = exp_str.parse().expect("{:e} emits an integer exponent");
+    let sign = if f < 0.0 { "-" } else { "" };
+    let digits: String = mantissa.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits = digits.trim_end_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
 
     // Excel keeps plain decimal notation for as long as the decimal
-    // rendering (at 15 significant digits, trailing zeros trimmed) stays
-    // within 20 characters, and only then falls back to scientific.
+    // rendering stays within 20 characters, and only then falls back to
+    // scientific. The minus sign is *not* charged against that budget --
+    // real Excel writes -2.05237592634038E-10, which is 21 characters.
     //
     // That is a much wider decimal range than the magnitude cutoffs this
     // used to apply (1e-5 .. 1e11), which turned e.g. 976121418126.432 --
@@ -125,54 +136,55 @@ pub fn format_excel_number(f: f64) -> String {
     // characters) while 1e20 (21) goes scientific, and 0.000001207666770903
     // renders in full (20) while 0.00000120766677090395 (22) goes
     // scientific.
-    let significant = {
-        // Digits actually needed, once 15-significant-digit rounding has
-        // trimmed whatever trailing zeros it produces.
-        let mantissa = format!("{:.*e}", 14, abs_f);
-        let digits = mantissa
-            .split('e')
-            .next()
-            .unwrap_or("")
-            .replace('.', "")
-            .trim_end_matches('0')
-            .len();
-        digits.max(1)
-    };
     let decimal_len = if exp >= 0 {
         let int_digits = (exp + 1) as usize;
-        let frac_digits = significant.saturating_sub(int_digits);
+        let frac_digits = digits.len().saturating_sub(int_digits);
         int_digits + usize::from(frac_digits > 0) + frac_digits
     } else {
         // "0." + leading zeros + significant digits
-        2 + (-exp - 1) as usize + significant
+        2 + (-exp - 1) as usize + digits.len()
     };
 
-    if decimal_len > 20 {
-        let mantissa = f / 10.0f64.powi(exp);
-        let factor = 10.0f64.powi(14);
-        let rounded_mantissa = (mantissa * factor).round() / factor;
-        let mut s = format!("{:.14}", rounded_mantissa);
-        if s.contains('.') {
-            while s.ends_with('0') {
-                s.pop();
+    if decimal_len <= 20 {
+        if exp >= 0 {
+            let int_digits = (exp + 1) as usize;
+            let mut out = String::from(sign);
+            if digits.len() <= int_digits {
+                out.push_str(digits);
+                out.push_str(&"0".repeat(int_digits - digits.len()));
+            } else {
+                out.push_str(&digits[..int_digits]);
+                out.push('.');
+                out.push_str(&digits[int_digits..]);
             }
-            if s.ends_with('.') {
-                s.pop();
-            }
+            out
+        } else {
+            format!("{}0.{}{}", sign, "0".repeat((-exp - 1) as usize), digits)
         }
-        format!("{}E{:+03}", s, exp)
     } else {
-        let decimals = (14 - exp).clamp(0, 19) as usize;
-        let formatted = format!("{:.1$}", f, decimals);
-        let mut trimmed = formatted;
-        if trimmed.contains('.') {
-            while trimmed.ends_with('0') {
-                trimmed.pop();
+        // The 20-character budget applies to the scientific rendering too,
+        // and the exponent is charged against it: a three-digit exponent
+        // leaves one fewer mantissa digit than a two-digit one. Real Excel
+        // writes PHI(28) as "2.2775774787367E-171" (13 fractional digits)
+        // and CSCH(-23) as "-2.05237592634038E-10" (14), both 20 characters
+        // once the sign is set aside.
+        let suffix_len = format!("E{:+03}", exp).len();
+        let frac_digits = 18usize.saturating_sub(suffix_len).min(14);
+
+        // Re-rounding can carry into the exponent (9.99e5 -> 1.0e6), so
+        // take the exponent from this rendering rather than the earlier one.
+        let sci = format!("{:.*e}", frac_digits, f);
+        let (mantissa, exp_str) = sci.split_once('e').expect("{:e} always emits an exponent");
+        let exp: i32 = exp_str.parse().expect("{:e} emits an integer exponent");
+        let mut mantissa = mantissa.to_string();
+        if mantissa.contains('.') {
+            while mantissa.ends_with('0') {
+                mantissa.pop();
             }
-            if trimmed.ends_with('.') {
-                trimmed.pop();
+            if mantissa.ends_with('.') {
+                mantissa.pop();
             }
         }
-        trimmed
+        format!("{}E{:+03}", mantissa, exp)
     }
 }

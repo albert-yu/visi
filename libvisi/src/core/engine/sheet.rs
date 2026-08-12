@@ -1419,7 +1419,16 @@ impl Sheet {
         // Both confirmed against real Excel, and consistently across
         // CORREL/SLOPE/STEYX/SUMX2PY2.
         for arg in [x_arg, y_arg].into_iter().flatten() {
-            if let ResultData::Error(e) = arg {
+            // A one-cell *range* evaluates to a one-element List rather
+            // than a bare scalar, so both spellings have to be unwrapped
+            // here -- matching only the bare form let
+            // `STEYX(H6:H6, F2:H2)` report the shape mismatch (#N/A)
+            // instead of the error sitting in H6.
+            let scalar = match arg {
+                ResultData::List(items) if items.len() == 1 => &items[0],
+                other => other,
+            };
+            if let ResultData::Error(e) = scalar {
                 return Err(e.clone());
             }
             // A one-cell operand that is *empty* isn't a one-element array,
@@ -1429,12 +1438,7 @@ impl Sheet {
             // boolean still reports #N/A, so it can't be folded into the
             // general non-numeric handling (all three confirmed against
             // real Excel with CORREL against a 4-cell range).
-            let single_blank = match arg {
-                ResultData::None => true,
-                ResultData::List(items) => items.len() == 1 && matches!(items[0], ResultData::None),
-                _ => false,
-            };
-            if single_blank {
+            if matches!(scalar, ResultData::None) {
                 return Err("#VALUE!".to_string());
             }
         }
@@ -1555,19 +1559,98 @@ impl Sheet {
         }
     }
 
-    fn flatten_stat_numbers_a(&self, arg: &ResultData) -> Vec<f64> {
-        match arg {
+    /// `flatten_stat_numbers` across an argument list, applying Excel's rule
+    /// for text supplied *directly* as an argument: it is coerced if it
+    /// looks numeric, and is `#VALUE!` if it does not. Text reached through
+    /// a reference is skipped instead, which is what `flatten_stat_numbers`
+    /// already does on its own.
+    ///
+    /// The split matters because silently skipping uncoercible direct text
+    /// turns a wrong formula into a plausible number: `DEVSQ("abc",3,4,5)`
+    /// answered 2 (the spread of the remaining three) where Excel answers
+    /// `#VALUE!`. Verified against real Excel for SUM, AVERAGE, DEVSQ,
+    /// STDEV, VAR, MEDIAN, MAX, MIN, PRODUCT, SUMSQ, GEOMEAN, AVEDEV, SKEW
+    /// and KURT. COUNT is the deliberate exception -- it never errors, it
+    /// just doesn't count what it can't read -- and does not call this.
+    fn flatten_args_stat_numbers(
+        &self,
+        args: &[ResultData],
+        is_direct: &[bool],
+    ) -> Result<Vec<f64>, String> {
+        let mut out = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let direct = is_direct.get(i).copied().unwrap_or(false);
+            if direct && matches!(arg, ResultData::String(_)) && self.to_f64(arg).is_none() {
+                return Err("#VALUE!".to_string());
+            }
+            out.extend(self.flatten_stat_numbers(arg, direct));
+        }
+        Ok(out)
+    }
+
+    /// Flatten arguments for the `*A` statistical family (AVERAGEA, MAXA,
+    /// MINA, STDEVA, STDEVPA, VARA, VARPA), which count text and booleans
+    /// rather than skipping them.
+    ///
+    /// Text is where the family gets interesting, and the rule depends on
+    /// *how* the text arrived. Inside a reference it counts as 0, which is
+    /// the documented behaviour everyone knows. Passed directly as an
+    /// argument it is coerced instead, and a value that will not coerce is
+    /// an error rather than a zero. Against real Excel, with A1 holding the
+    /// text "12":
+    ///
+    /// ```text
+    /// AVERAGEA(A1, 3)     = 1.5        text in a reference counts as 0
+    /// AVERAGEA("12", 3)   = 7.5        direct text is coerced
+    /// AVERAGEA("abc", 3)  = #VALUE!    ... and must coerce
+    /// ```
+    fn flatten_stat_numbers_a(
+        &self,
+        arg: &ResultData,
+        is_direct: bool,
+    ) -> Result<Vec<f64>, String> {
+        Ok(match arg {
             ResultData::Float(f) => vec![*f],
             ResultData::Integer(i) => vec![*i as f64],
             ResultData::Boolean(b) => vec![if *b { 1.0 } else { 0.0 }],
-            ResultData::String(_) => vec![0.0],
-            ResultData::List(list) => list
-                .iter()
-                .flat_map(|v| self.flatten_stat_numbers_a(v))
-                .collect(),
+            ResultData::String(_) => {
+                if is_direct {
+                    match self.to_f64(arg) {
+                        Some(f) => vec![f],
+                        None => return Err("#VALUE!".to_string()),
+                    }
+                } else {
+                    vec![0.0]
+                }
+            }
+            ResultData::Error(e) => return Err(e.clone()),
+            // Anything nested is a reference, never a direct argument.
+            ResultData::List(list) => {
+                let mut out = Vec::new();
+                for v in list {
+                    out.extend(self.flatten_stat_numbers_a(v, false)?);
+                }
+                out
+            }
             ResultData::None => vec![],
             _ => vec![0.0],
+        })
+    }
+
+    /// `flatten_stat_numbers_a` over a whole argument list, using the
+    /// caller's per-argument direct/reference classification.
+    fn flatten_args_stat_numbers_a(
+        &self,
+        args: &[ResultData],
+        is_direct: &[bool],
+    ) -> Result<Vec<f64>, String> {
+        let mut out = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            out.extend(
+                self.flatten_stat_numbers_a(arg, is_direct.get(i).copied().unwrap_or(false))?,
+            );
         }
+        Ok(out)
     }
 
     fn extract_matrix(&self, arg: &ResultData) -> Vec<Vec<f64>> {
@@ -1654,7 +1737,11 @@ impl Sheet {
     fn opt_f64_arg(&self, args: &[ResultData], i: usize, default: f64) -> Result<f64, EngineError> {
         match args.get(i) {
             None => Ok(default),
-            Some(ResultData::None) => Ok(default),
+            // A supplied-but-blank argument is 0, not the default. Excel
+            // draws that line sharply: LOG(1, <blank>) is #NUM! because the
+            // base is 0, while LOG(1) uses base 10 and returns 0. Same for
+            // LEFT("abcd", <blank>) = "" and MROUND(10, <blank>) = 0.
+            Some(ResultData::None) => Ok(0.0),
             Some(v) => self.to_f64(v).ok_or_else(|| {
                 EngineError::EvalError(EvalError::UnknownFunction("#VALUE!".to_string()))
             }),
@@ -4198,18 +4285,19 @@ impl Sheet {
             let dispatched = match upper_name.as_str() {
                 // --- STATISTICAL FUNCTIONS ---
                 "AVEDEV" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::avedev(&nums))
                 }
                 "AVERAGEA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     if nums.is_empty() {
                         Ok(ResultData::Error("#DIV/0!".to_string()))
                     } else {
@@ -4468,11 +4556,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::covariance_s(&xs, &ys))
                 }
                 "DEVSQ" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::devsq(&nums))
                 }
                 "EXPON.DIST" | "EXPONDIST" => {
@@ -4665,7 +4753,16 @@ impl Sheet {
                     res_to_rd(crate::core::stats::gamma_inv(p, alpha, beta))
                 }
                 "GAMMALN" | "GAMMALN.PRECISE" => {
+                    // ln(Gamma(x)) is only defined for x > 0 in Excel --
+                    // GAMMALN(-5), GAMMALN(0) and GAMMALN of a large
+                    // negative are all #NUM!. The underlying lgamma here
+                    // uses the reflection formula and happily returns a
+                    // value for negative non-integers, so the domain has to
+                    // be enforced at the boundary.
                     let x = self.to_f64_arg(evaluated_args.first(), "GAMMALN")?;
+                    if x <= 0.0 {
+                        return Ok(ResultData::Error("#NUM!".to_string()));
+                    }
                     let val = crate::core::stats::lgamma(x);
                     if val.is_nan() {
                         Ok(ResultData::Error("#NUM!".to_string()))
@@ -4678,11 +4775,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::gauss(z))
                 }
                 "GEOMEAN" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::geomean(&nums))
                 }
                 "GROWTH" | "LOGEST" => {
@@ -4726,11 +4823,11 @@ impl Sheet {
                     }
                 }
                 "HARMEAN" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::harmean(&nums))
                 }
                 "HYPGEOM.DIST" | "HYPGEOMDIST" => {
@@ -4767,11 +4864,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::intercept(&ys, &xs))
                 }
                 "KURT" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::kurt(&nums))
                 }
                 "LARGE" => {
@@ -4840,10 +4937,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::lognorm_inv(p, mean, std_dev))
                 }
                 "MAXA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     if nums.is_empty() {
                         Ok(ResultData::Float(0.0))
                     } else {
@@ -4895,18 +4993,19 @@ impl Sheet {
                     }
                 }
                 "MEDIAN" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::median(&nums))
                 }
                 "MINA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     if nums.is_empty() {
                         Ok(ResultData::Float(0.0))
                     } else {
@@ -4958,11 +5057,11 @@ impl Sheet {
                     }
                 }
                 "MODE.MULT" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     match crate::core::stats::mode_mult(&nums) {
                         Ok(modes) => Ok(ResultData::List(
                             modes.into_iter().map(ResultData::Float).collect(),
@@ -4971,11 +5070,11 @@ impl Sheet {
                     }
                 }
                 "MODE.SNGL" | "MODE" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::mode_sngl(&nums))
                 }
                 "NEGBINOM.DIST" | "NEGBINOMDIST" => {
@@ -5147,19 +5246,19 @@ impl Sheet {
                     res_to_rd(crate::core::stats::rsq(&ys, &xs))
                 }
                 "SKEW" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::skew(&nums))
                 }
                 "SKEW.P" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::skew_p(&nums))
                 }
                 "SLOPE" => {
@@ -5185,33 +5284,35 @@ impl Sheet {
                     res_to_rd(crate::core::stats::standardize(x, mean, std_dev))
                 }
                 "STDEV.P" | "STDEVP" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::stdev_p(&nums))
                 }
                 "STDEV.S" | "STDEV" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::stdev_s(&nums))
                 }
                 "STDEVA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::stdev_s(&nums))
                 }
                 "STDEVPA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::stdev_p(&nums))
                 }
                 "STEYX" => {
@@ -5311,33 +5412,35 @@ impl Sheet {
                     res_to_rd(crate::core::stats::trimmean(&nums, percent))
                 }
                 "VAR.P" | "VARP" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::var_p(&nums))
                 }
                 "VAR.S" | "VAR" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, arg)| self.flatten_stat_numbers(arg, arg_is_direct[i]))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::var_s(&nums))
                 }
                 "VARA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::var_s(&nums))
                 }
                 "VARPA" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers_a(arg))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers_a(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::var_p(&nums))
                 }
                 "WEIBULL.DIST" | "WEIBULL" => {
@@ -5730,8 +5833,27 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::power(num, p))
                 }
                 "QUOTIENT" => {
-                    let num = self.to_f64_arg(evaluated_args.first(), "QUOTIENT")?;
-                    let den = self.to_f64_arg(evaluated_args.get(1), "QUOTIENT")?;
+                    // QUOTIENT rejects *booleans* but still coerces
+                    // numeric text: QUOTIENT(12, TRUE) is #VALUE! while
+                    // QUOTIENT("12", 5) is 2 and QUOTIENT(12, "ab") is
+                    // #VALUE!. (MOD differs again -- MOD(TRUE, 2) is 1.)
+                    // So this is to_f64's coercion with booleans excluded,
+                    // not a numbers-only rule -- rejecting numeric strings
+                    // too made QUOTIENT over a CONCATENATE/RIGHT result
+                    // #VALUE! where Excel computes.
+                    let coerce = |v: Option<&ResultData>| -> Option<f64> {
+                        match v {
+                            Some(ResultData::Boolean(_)) => None,
+                            Some(other) => self.to_f64(other),
+                            None => None,
+                        }
+                    };
+                    let (Some(num), Some(den)) = (
+                        coerce(evaluated_args.first()),
+                        coerce(evaluated_args.get(1)),
+                    ) else {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    };
                     res_to_rd(crate::core::math_trig::quotient(num, den))
                 }
                 "RADIANS" => {
@@ -5814,17 +5936,32 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sqrtpi(x))
                 }
                 "SUMPRODUCT" => {
-                    let arrays: Vec<Vec<f64>> = evaluated_args
-                        .iter()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .collect();
+                    // SUMPRODUCT treats non-numeric entries as zeros rather
+                    // than skipping or rejecting them, which matters twice
+                    // over: the term contributes 0, and -- because the
+                    // entry still occupies its slot -- the arrays stay the
+                    // same length so the remaining terms keep lining up.
+                    // Dropping them instead made SUMPRODUCT(2, "abc")
+                    // #VALUE! (length 1 against length 0) where real Excel
+                    // answers 0, and SUMPRODUCT({1,2}, {3,"x"}) is 3.
+                    let mut arrays: Vec<Vec<f64>> = Vec::new();
+                    let mut first_err = None;
+                    for arg in &evaluated_args {
+                        let mut slots = Vec::new();
+                        self.flatten_positional(arg, &mut slots, &mut first_err);
+                        arrays.push(slots.into_iter().map(|v| v.unwrap_or(0.0)).collect());
+                    }
+                    if let Some(e) = first_err {
+                        return Ok(ResultData::Error(e));
+                    }
                     res_to_rd(crate::core::math_trig::sumproduct(&arrays))
                 }
                 "SUMSQ" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
-                        .collect();
+                    let nums: Vec<f64> =
+                        match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::math_trig::sumsq(&nums))
                 }
                 "SUMX2MY2" => {
@@ -5883,11 +6020,11 @@ impl Sheet {
                     if let Some(arg) = evaluated_args.first() {
                         flatten_text(arg, &mut items);
                     }
-                    // A reference with nothing but blanks in it has no text
-                    // to render at all -- real Excel answers #VALUE! (e.g.
-                    // ARRAYTOTEXT over a single empty cell), rather than
-                    // producing an empty string.
-                    if items.iter().all(|t| t.is_empty()) {
+                    // A *single* empty cell has no text to render at all
+                    // and is #VALUE!. A multi-cell range of blanks is not:
+                    // ARRAYTOTEXT over two empty cells is "," in real
+                    // Excel, i.e. the separators still show.
+                    if items.len() == 1 && items[0].is_empty() {
                         return Ok(ResultData::Error("#VALUE!".to_string()));
                     }
                     let fmt = evaluated_args.get(1).and_then(|v| self.to_f64(v));
@@ -6575,19 +6712,30 @@ impl Sheet {
                 }
                 "ERF" | "ERFC" | "ERF.PRECISE" | "ERFC.PRECISE" => {
                     // Unlike SQRT/ABS/INT/MOD (which all accept a boolean
-                    // as 1/0), the error functions take a number and
-                    // nothing else -- real Excel answers #VALUE! for both
-                    // ERF(TRUE) and ERF("text"), so this can't go through
-                    // to_f64_arg's lenient coercion.
-                    // A blank argument still coerces to 0 (ERF(<blank>)
-                    // is 0 and ERFC(<blank>) is 1 in real Excel); only
-                    // text and booleans are rejected.
+                    // as 1/0), the error functions reject booleans: real
+                    // Excel answers #VALUE! for ERF(TRUE) and ERF(FALSE).
+                    // Numeric *text* is coerced though, from a literal or
+                    // from a text cell, and surrounding whitespace is
+                    // tolerated -- ERF("1") and ERF(" 1 ") both give
+                    // 0.8427007929497149. Non-numeric text is #VALUE!.
+                    // A blank argument coerces to 0 (ERF(<blank>) is 0 and
+                    // ERFC(<blank>) is 1). Same rule as QUOTIENT.
                     let x = match evaluated_args.first() {
                         None | Some(ResultData::None) => 0.0,
-                        Some(v) => match Self::aggregate_range_number(v) {
-                            Some(f) => f,
-                            None => return Ok(ResultData::Error("#VALUE!".to_string())),
-                        },
+                        Some(v) => {
+                            // A one-cell range arrives as a one-element List.
+                            let scalar = match v {
+                                ResultData::List(items) if items.len() == 1 => &items[0],
+                                other => other,
+                            };
+                            if matches!(scalar, ResultData::Boolean(_)) {
+                                return Ok(ResultData::Error("#VALUE!".to_string()));
+                            }
+                            match self.to_f64(scalar) {
+                                Some(f) => f,
+                                None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                            }
+                        }
                     };
                     let v = if upper_name.starts_with("ERFC") {
                         crate::core::stats::erfc(x)
@@ -7032,9 +7180,17 @@ impl Sheet {
                     // already make.
                     let mut count = 0;
                     for (i, arg) in evaluated_args.iter().enumerate() {
-                        if arg_is_direct.get(i).copied().unwrap_or(false)
-                            && matches!(arg, ResultData::Boolean(_))
+                        let direct = arg_is_direct.get(i).copied().unwrap_or(false);
+                        if direct && matches!(arg, ResultData::Boolean(_)) {
+                            count += 1;
+                        } else if direct
+                            && matches!(arg, ResultData::String(_))
+                            && self.to_f64(arg).is_some()
                         {
+                            // Numeric text typed directly counts too --
+                            // COUNT("12", 3, 4, 5) is 4. Text that will not
+                            // coerce is simply not counted; unlike the rest
+                            // of the family COUNT never reports #VALUE!.
                             count += 1;
                         } else {
                             count += self.count_helper(arg);
