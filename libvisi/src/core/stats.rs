@@ -1410,7 +1410,7 @@ pub fn t_test(
                 return Err("#DIV/0!".to_string());
             }
             let m1 = array1.iter().sum::<f64>() / n1 as f64;
-            let m2 = array2.iter().sum::<f64>() / n1 as f64;
+            let m2 = array2.iter().sum::<f64>() / n2 as f64;
             let s1 = var_s(array1)?;
             let s2 = var_s(array2)?;
             let df = (n1 + n2 - 2) as f64;
