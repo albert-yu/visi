@@ -790,3 +790,31 @@ fn num_of(r: &ResultData) -> f64 {
         other => panic!("expected a number, got {other:?}"),
     }
 }
+
+#[test]
+fn test_serial_zero_is_excels_phantom_january_zero() {
+    // Excel's serial 0 is "January 0, 1900", not 1 January, and it is
+    // consistent about it: DAY(0) is 0 while MONTH(0) is 1 and YEAR(0) is
+    // 1900. Returning day 1 there put every one of these out by a day.
+    assert_eq!(num("=DAY(0)"), 0.0);
+    assert_eq!(num("=MONTH(0)"), 1.0);
+    assert_eq!(num("=YEAR(0)"), 1900.0);
+    // A fraction of a day is still day 0.
+    assert_eq!(num("=DAY(0.6299)"), 0.0);
+    match eval_one("=TEXT(0.6299, \"yyyy-mm-dd\")") {
+        ResultData::String(s) => assert_eq!(s, "1900-01-00"),
+        other => panic!("expected 1900-01-00, got {other:?}"),
+    }
+    // Serial 1 onwards is unchanged, including the 1900 leap-year bug.
+    assert_eq!(num("=DAY(1)"), 1.0);
+    for (serial, want) in [
+        (59.0, "1900-02-28"),
+        (60.0, "1900-02-29"),
+        (61.0, "1900-03-01"),
+    ] {
+        match eval_one(&format!("=TEXT({serial}, \"yyyy-mm-dd\")")) {
+            ResultData::String(s) => assert_eq!(s, want, "for serial {serial}"),
+            other => panic!("expected {want}, got {other:?}"),
+        }
+    }
+}

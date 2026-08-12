@@ -52,7 +52,11 @@ pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
 pub fn serial_to_ymd(serial: f64) -> (i32, i32, i32) {
     let mut s = serial.floor() as i64;
     if s < 1 {
-        return (1900, 1, 1);
+        // Serial 0 is Excel's phantom "January 0, 1900", not 1 January:
+        // DAY(0) is 0, MONTH(0) is 1, YEAR(0) is 1900, and
+        // TEXT(0.6299, "yyyy-mm-dd") is "1900-01-00". Returning day 1 here
+        // made every one of those off by a day.
+        return (1900, 1, 0);
     }
     if s == 60 {
         return (1900, 2, 29);
