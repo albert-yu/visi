@@ -103,6 +103,44 @@ impl ResultData {
     }
 }
 
+/// Rounds a significant-digit string to `keep` digits, half away from zero,
+/// trimming the trailing zeros Excel does not display. Returns the digits
+/// and the (possibly incremented) exponent -- rounding 999 up to 100 shifts
+/// the decimal point.
+fn round_digits_half_up(digits: &str, exp: i32, keep: usize) -> (String, i32) {
+    if digits.len() <= keep {
+        return (digits.to_string(), exp);
+    }
+    let mut kept: Vec<u8> = digits.as_bytes()[..keep].to_vec();
+    let round_up = digits.as_bytes()[keep] >= b'5';
+    let mut exp = exp;
+    if round_up {
+        let mut i = keep;
+        loop {
+            if i == 0 {
+                // Every digit carried: 999... becomes 1000..., one decimal
+                // place further left.
+                kept.insert(0, b'1');
+                kept.pop();
+                exp += 1;
+                break;
+            }
+            i -= 1;
+            if kept[i] == b'9' {
+                kept[i] = b'0';
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    let mut out = String::from_utf8(kept).expect("ascii digits");
+    while out.len() > 1 && out.ends_with('0') {
+        out.pop();
+    }
+    (out, exp)
+}
+
 pub fn format_excel_number(f: f64) -> String {
     if f == 0.0 {
         return "0".to_string();
@@ -171,19 +209,23 @@ pub fn format_excel_number(f: f64) -> String {
         let suffix_len = format!("E{:+03}", exp).len();
         let frac_digits = 18usize.saturating_sub(suffix_len).min(14);
 
-        // Re-rounding can carry into the exponent (9.99e5 -> 1.0e6), so
-        // take the exponent from this rendering rather than the earlier one.
-        let sci = format!("{:.*e}", frac_digits, f);
-        let (mantissa, exp_str) = sci.split_once('e').expect("{:e} always emits an exponent");
-        let exp: i32 = exp_str.parse().expect("{:e} emits an integer exponent");
-        let mut mantissa = mantissa.to_string();
-        if mantissa.contains('.') {
-            while mantissa.ends_with('0') {
-                mantissa.pop();
-            }
-            if mantissa.ends_with('.') {
-                mantissa.pop();
-            }
+        // Rounded from the *15-significant-digit* value, not from the raw
+        // f64. Excel snaps a result to 15 significant digits and only then
+        // formats it, so when a three-digit exponent leaves room for just
+        // 14 the two roundings compose. 28^-92 is
+        // 7.26877317134744769...e-134: rounding that straight to 14 digits
+        // gives ...7474, but snapping to 15 first gives 7.26877317134745
+        // and then 14 gives ...7475, which is what Excel prints.
+        //
+        // Working from the digit string rather than re-rounding the f64
+        // keeps the two steps exact, and rounds half away from zero, as
+        // Excel does elsewhere (DOLLAR/FIXED/TEXT).
+        let (rounded_digits, exp) = round_digits_half_up(digits, exp, frac_digits + 1);
+        let mut mantissa = String::from(sign);
+        mantissa.push_str(&rounded_digits[..1]);
+        if rounded_digits.len() > 1 {
+            mantissa.push('.');
+            mantissa.push_str(&rounded_digits[1..]);
         }
         format!("{}E{:+03}", mantissa, exp)
     }

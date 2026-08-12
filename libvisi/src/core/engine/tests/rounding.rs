@@ -2026,3 +2026,27 @@ fn test_number_to_text_keeps_only_excels_fifteen_significant_digits() {
         "3.14159265358979"
     );
 }
+
+#[test]
+fn test_scientific_notation_rounds_from_the_fifteen_digit_value() {
+    use crate::core::engine::result_data::format_excel_number;
+
+    // Excel snaps a result to 15 significant digits and only then formats
+    // it, so when a three-digit exponent leaves room for just 14 the two
+    // roundings compose. 28^-92 is 7.26877317134744769...e-134: rounding
+    // that straight to 14 digits gives ...7474, but snapping to 15 first
+    // gives 7.26877317134745 and then 14 gives ...7475 -- which is what
+    // Excel prints.
+    assert_eq!(format_excel_number(28f64.powi(-92)), "7.2687731713475E-134");
+    // The neighbours this could have disturbed, all real Excel values.
+    assert_eq!(
+        format_excel_number(2.277577478736661e-171),
+        "2.2775774787367E-171"
+    );
+    assert_eq!(
+        format_excel_number(-2.05237592634038e-10),
+        "-2.05237592634038E-10"
+    );
+    assert_eq!(format_excel_number(1.0 / 3e20), "3.33333333333333E-21");
+    assert_eq!(format_excel_number(1e20), "1E+20");
+}
