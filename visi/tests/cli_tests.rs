@@ -910,6 +910,57 @@ fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
 }
 
 #[test]
+fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
+    // Regression for #26: WorkbookManager::evaluate() called
+    // mark_all_dirty() once before its 3-pass loop instead of once per
+    // pass. Sheet::commit drains and clears a sheet's dirty queue as it
+    // processes it, so without re-marking, passes 2 and 3 had nothing
+    // left dirty and were silent no-ops -- a cross-sheet chain more than
+    // one hop deep (First's formula -> Second's formula -> First's
+    // formula again) kept whichever stale value pass 1 happened to
+    // compute before the sheet it depended on had a chance to update.
+    // Found via the fuzzer's new cross-sheet generator block, which
+    // exercises exactly this shape.
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+
+    wb.sheets[0].set_cell_src(0, 0, "10".to_string());
+    wb.sheets[0].set_cell_src(0, 1, "=A1*2".to_string());
+    wb.sheets[1].set_cell_src(0, 0, "=First!B1+1".to_string());
+    // This is the cell that needs a *second* pass: it depends on
+    // Second!A1, which itself only becomes correct after First!B1 is
+    // computed earlier in the very same first pass.
+    wb.sheets[0].set_cell_src(0, 2, "=Second!A1*3".to_string());
+
+    wb.evaluate().unwrap();
+
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 1))
+            .to_string(),
+        "20"
+    );
+    assert_eq!(
+        wb.sheets[1]
+            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .to_string(),
+        "21"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 2))
+            .to_string(),
+        "63"
+    );
+}
+
+#[test]
 fn test_coordinate_parsing() {
     let (sheet, row, col) = parse_cell_ref("Sheet2!D10").unwrap();
     assert_eq!(sheet, Some("Sheet2".to_string()));

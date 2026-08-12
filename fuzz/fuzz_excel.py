@@ -186,7 +186,7 @@ class ExcelFuzzGenerator:
     # covered.
     RANGE_INFO_FUNCTIONS = [
         "ROW", "ROWS", "COLUMN", "COLUMNS", "AREAS", "ISREF",
-        "FORMULATEXT", "ISFORMULA", "HYPERLINK", "SHEETS", "INDIRECT", "OFFSET",
+        "FORMULATEXT", "ISFORMULA", "HYPERLINK", "SHEETS", "SHEET", "INDIRECT", "OFFSET",
     ]
     # Dynamic-array reshaping/lookup functions. TRANSPOSE is deliberately
     # excluded: every authoring variant tried (bare, `_xlfn.`,
@@ -1460,7 +1460,7 @@ class ExcelFuzzGenerator:
     def generate_range_info_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained formula for one RANGE_INFO_FUNCTIONS entry,
         against a real cell/range from the plain-value rows of the formula
-        block. FORMULATEXT/ISFORMULA/SHEETS are post-2007 functions real
+        block. FORMULATEXT/ISFORMULA/SHEETS/SHEET are post-2007 functions real
         Excel's own OOXML writer always stores with an `_xlfn.` prefix
         (see CLAUDE.md/RRI's comment above in generate_financial_formula);
         openpyxl doesn't add that prefix automatically, so it's supplied
@@ -1496,6 +1496,11 @@ class ExcelFuzzGenerator:
             return f'=HYPERLINK("https://example.com/{random.randint(1, 1000)}", {cell})'
         if fn == "SHEETS":
             return "=_xlfn.SHEETS()"
+        if fn == "SHEET":
+            # With a real second sheet now in the workbook (see
+            # create_fuzz_workbook's cross-sheet block), this is no longer
+            # a trivially-always-1 check in either engine.
+            return "=_xlfn.SHEET()"
         if fn == "INDIRECT":
             return f'=SUM(INDIRECT("{rng}"))'
         if fn == "OFFSET":
@@ -1754,6 +1759,34 @@ class ExcelFuzzGenerator:
         for i, fn in enumerate(self.DATABASE_FUNCTIONS):
             formula = self.generate_database_formula(fn, ws, db_crit_col, i)
             ws.cell(row=i + 1, column=db_formula_col, value=formula)
+
+        # --- Cross-sheet block: a real second sheet, so Sheet2!A1-style
+        # references and WorkbookManager::evaluate()'s 3-pass cross-sheet
+        # propagation are actually exercised end-to-end -- previously this
+        # generator only ever produced single-sheet workbooks (#26).
+        #
+        # A strict one-directional chain (never a cycle, which neither
+        # engine is guaranteed to resolve the same way):
+        #   Sheet1 table body (plain values)
+        #     -> Sheet1!{x1_cell} (already-generated formula-block cell)
+        #     -> Sheet2!B1 (SUM over Sheet1's table body, plus x1_cell)
+        #     -> Sheet1!{cross_col}1 (references Sheet2!B1)
+        # so resolving the final cell genuinely requires Sheet1's own
+        # formula pass to complete, then Sheet2 to see it, then Sheet1
+        # again -- exactly the kind of chain the 3 fixed passes exist for.
+        ws2 = wb.create_sheet("Sheet2")
+        for r in range(1, value_rows + 1):
+            for c in range(1, num_cols + 1):
+                val = self.generate_random_value()
+                if val is not None:
+                    ws2.cell(row=r, column=c, value=val)
+
+        x1_cell = f"{self._col_name(min_col)}{value_rows + 1}"
+        table_body = f"Sheet1!A2:{self._col_name(num_cols)}{num_rows}"
+        ws2.cell(row=1, column=num_cols + 1, value=f"=SUM({table_body})+Sheet1!{x1_cell}")
+
+        cross_sheet_col = db_crit_col + 1
+        ws.cell(row=1, column=cross_sheet_col, value=f"=Sheet2!{self._col_name(num_cols + 1)}1*2")
 
         wb.save(file_path)
 
