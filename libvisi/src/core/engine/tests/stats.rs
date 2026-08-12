@@ -662,3 +662,85 @@ fn test_chitest_rejects_only_a_negative_total_not_negative_expected_values() {
         other => panic!("expected #DIV/0!, got {other:?}"),
     }
 }
+
+#[test]
+fn test_normal_cdf_keeps_its_left_tail() {
+    // Computed via erfc rather than 0.5 * (1 + erf(x/sqrt(2))), which
+    // cancels catastrophically once erf approaches -1 and eventually
+    // rounds to exactly 0 -- NORM.S.DIST(-11, TRUE) used to return 0, so
+    // even SIGN() of it disagreed with Excel. Both reference values are
+    // real Excel's, and it resolves the tail well past -30.
+    assert_float_close(
+        &eval1("=NORM.S.DIST(-11, TRUE)"),
+        1.9106595744986622e-28,
+        1e-40,
+    );
+    assert_float_close(
+        &eval1("=NORM.S.DIST(-30, TRUE)"),
+        4.9067139271479094e-198,
+        1e-210,
+    );
+    assert_float_close(&eval1("=SIGN(NORM.S.DIST(-11, TRUE))"), 1.0, 1e-12);
+    // The body of the distribution is unchanged.
+    assert_float_close(&eval1("=NORM.S.DIST(0, TRUE)"), 0.5, 1e-15);
+    assert_float_close(
+        &eval1("=NORM.S.DIST(1.96, TRUE)"),
+        0.9750021048517795,
+        1e-15,
+    );
+}
+
+#[test]
+fn test_paired_sums_and_correl_report_div_zero_when_nothing_pairs_up() {
+    // Real Excel answers #DIV/0! -- not 0, and not #N/A -- when the two
+    // ranges are the same length but no pair survives, and likewise for
+    // CORREL over a series with no variance.
+    let mut sheet = create_sheet(&[
+        ["1", "2", "7", "7"],
+        ["=\"a\"", "=\"b\"", "", ""],
+        [
+            "=SUMX2MY2(A1:B1, A2:B2)",
+            "=SUMXMY2(A1:B1, A2:B2)",
+            "=SUMX2PY2(A1:B1, A2:B2)",
+            "=CORREL(C1:D1, C1:D1)",
+        ],
+    ]);
+    sheet.commit(None).unwrap();
+    for col in 0..4 {
+        match sheet.get_result_data(&CellRef::new(2, col)) {
+            ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "column {col}"),
+            other => panic!("expected #DIV/0! in column {col}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
+    // F.DIST.RT used to be computed as 1 - CDF. For a large F statistic
+    // the CDF is within an ULP or two of 1, so that subtraction discarded
+    // most of the answer's digits; it now goes through the incomplete
+    // beta's symmetry instead. All reference values are real Excel's, and
+    // everything below agrees with it to better than 2e-13 relative.
+    assert_float_close(
+        &eval1("=F.DIST.RT(120.02429320013077, 2, 4)"),
+        2.686379655301735e-4,
+        1e-16,
+    );
+    assert_float_close(
+        &eval1("=F.DIST.RT(1000000, 2, 4)"),
+        3.9999840000480035e-12,
+        1e-24,
+    );
+    assert_float_close(&eval1("=F.DIST.RT(2, 3, 7)"), 0.20269364248665092, 1e-13);
+    assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-12);
+    assert_float_close(&eval1("=F.DIST.RT(1, 5, 5)"), 0.4999999999999999, 1e-13);
+    assert_float_close(&eval1("=FDIST(4.28, 3, 10)"), 0.03467052591390302, 1e-14);
+    // The left tail is unaffected.
+    assert_float_close(&eval1("=F.DIST(2, 3, 7, TRUE)"), 0.7973063575133491, 1e-13);
+
+    // FISHERINV is tanh; the (e^2y - 1)/(e^2y + 1) spelling overflowed to
+    // inf/inf past y ~ 355 and reported #NUM! where Excel reports 1.
+    assert_float_close(&eval1("=FISHERINV(1000)"), 1.0, 1e-15);
+    assert_float_close(&eval1("=FISHERINV(-1000)"), -1.0, 1e-15);
+    assert_float_close(&eval1("=FISHERINV(0.5)"), 0.46211715726000974, 1e-15);
+}

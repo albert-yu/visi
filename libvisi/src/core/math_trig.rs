@@ -716,6 +716,12 @@ pub fn sumx2my2(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
     }
+    // Nothing left to pair up is #DIV/0!, not a sum of zero terms. Real
+    // Excel reports #DIV/0! when every pair is excluded -- e.g. both
+    // ranges the same length but one made entirely of text.
+    if xs.is_empty() {
+        return Err("#DIV/0!".to_string());
+    }
     Ok(xs.iter().zip(ys.iter()).map(|(&x, &y)| x * x - y * y).sum())
 }
 
@@ -723,12 +729,22 @@ pub fn sumx2py2(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
     }
+    // Nothing left to pair up is #DIV/0!, not a sum of zero terms. Real
+    // Excel reports #DIV/0! when every pair is excluded -- e.g. both
+    // ranges the same length but one made entirely of text.
+    if xs.is_empty() {
+        return Err("#DIV/0!".to_string());
+    }
     Ok(xs.iter().zip(ys.iter()).map(|(&x, &y)| x * x + y * y).sum())
 }
 
 pub fn sumxmy2(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
+    }
+    // See sumx2my2: zero usable pairs is #DIV/0!.
+    if xs.is_empty() {
+        return Err("#DIV/0!".to_string());
     }
     Ok(xs
         .iter()

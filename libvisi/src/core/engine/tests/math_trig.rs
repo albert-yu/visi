@@ -489,3 +489,37 @@ fn test_sumproduct_treats_non_numeric_entries_as_zero() {
         other => panic!("expected 3, got {other:?}"),
     }
 }
+
+#[test]
+fn test_only_a_few_numeric_functions_reject_booleans() {
+    // Excel's coercion is not uniform here, and the split does not follow
+    // from anything about the functions -- it had to be probed one at a
+    // time. These four answer #VALUE! to a boolean:
+    for src in [
+        "=FACTDOUBLE(TRUE)",
+        "=SQRTPI(TRUE)",
+        "=ERF(TRUE)",
+        "=ERFC(TRUE)",
+        "=BIN2DEC(TRUE)",
+    ] {
+        match eval_one(src) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
+            other => panic!("expected #VALUE! for {src}, got {other:?}"),
+        }
+    }
+
+    // ... while their neighbours take TRUE as 1 without complaint. All of
+    // these values are real Excel's.
+    assert_eq!(num("=FACTDOUBLE(6)"), 48.0);
+    assert_eq!(num("=FACT(TRUE)"), 1.0);
+    assert_eq!(num("=SQRT(TRUE)"), 1.0);
+    assert_eq!(num("=SIGN(TRUE)"), 1.0);
+    assert_eq!(num("=INT(TRUE)"), 1.0);
+    assert_eq!(num("=EVEN(TRUE)"), 2.0);
+    assert_eq!(num("=ODD(TRUE)"), 1.0);
+    assert_eq!(num("=LN(TRUE)"), 0.0);
+    assert_eq!(num("=LOG10(TRUE)"), 0.0);
+    assert_eq!(num("=GAMMALN(TRUE)"), 0.0);
+    assert!((num("=EXP(TRUE)") - std::f64::consts::E).abs() < 1e-15);
+    assert!((num("=DEGREES(TRUE)") - 57.29577951308232).abs() < 1e-13);
+}

@@ -88,7 +88,13 @@ pub fn normal_pdf(x: f64) -> f64 {
 
 /// Standard normal CDF via error function
 pub fn normal_cdf(x: f64) -> f64 {
-    0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
+    // Via erfc, not `0.5 * (1 + erf(...))`. In the left tail erf approaches
+    // -1, so that form cancels catastrophically and eventually rounds to
+    // exactly 0: NORM.S.DIST(-11, TRUE) came out as 0 instead of
+    // 1.9106595744986622e-28, which real Excel reports in full. erfc keeps
+    // the tail accurate all the way down (Excel still resolves
+    // NORM.S.DIST(-30, TRUE) as 4.9067139271479094e-198).
+    0.5 * erfc(-x / std::f64::consts::SQRT_2)
 }
 
 /// Error function erf(x). Delegates to `libm` (a pure-Rust fdlibm port,
@@ -109,36 +115,17 @@ pub fn erfc(x: f64) -> f64 {
     libm::erfc(x)
 }
 
-/// Log Gamma function ln(Gamma(x)) using Lanczos approximation (g=7, N=9)
+/// log|Gamma(x)|. Delegates to `libm` (a pure-Rust fdlibm port) rather
+/// than the 9-term Lanczos approximation this used to hand-roll, for the
+/// same reason `erf` does: Lanczos is good to roughly 1e-13 relative,
+/// which is visible against Excel. GAMMALN(1) is exactly 0 and Lanczos
+/// returned 2.16e-13, and the error propagated into everything built on
+/// it (the beta/F/t densities, COMBIN, HYPGEOM.DIST, ...).
+///
+/// libm returns +inf at the non-positive-integer poles where this used to
+/// return NaN; both normalize to #NUM! at the dispatch boundary.
 pub fn lgamma(x: f64) -> f64 {
-    if x <= 0.0 {
-        if x == x.floor() {
-            return f64::NAN; // Pole at non-positive integers
-        }
-        let sin_pix = (std::f64::consts::PI * x).sin().abs();
-        return (std::f64::consts::PI / sin_pix).ln() - lgamma(1.0 - x);
-    }
-
-    let p = [
-        0.999_999_999_999_809_9,
-        676.5203681218851,
-        -1259.139216722289,
-        771.323_428_777_653_1,
-        -176.615_029_162_140_6,
-        12.507343278686905,
-        -0.13857109526572012,
-        9.984_369_578_019_572e-6,
-        1.5056327351493116e-7,
-    ];
-
-    let z = x - 1.0;
-    let mut sum = p[0];
-    for (i, &pi) in p.iter().enumerate().skip(1) {
-        sum += pi / (z + i as f64);
-    }
-
-    let t = z + 7.5;
-    0.5 * (2.0 * std::f64::consts::PI).ln() + (z + 0.5) * t.ln() - t + sum.ln()
+    libm::lgamma(x)
 }
 
 /// Gamma function Gamma(x)
@@ -1374,7 +1361,14 @@ pub fn f_dist_rt(x: f64, df1: f64, df2: f64) -> Result<f64, String> {
     if x < 0.0 || df1 < 1.0 || df2 < 1.0 {
         return Err("#NUM!".to_string());
     }
-    Ok(1.0 - f_dist(x, df1, df2, true)?)
+    // Via the symmetry I_y(a, b) = 1 - I_(1-y)(b, a), rather than
+    // subtracting the left tail from 1. For a large F statistic that left
+    // tail sits within an ULP or two of 1, so `1.0 - cdf` throws away most
+    // of the answer's significant digits -- F.TEST agreed with Excel only
+    // to about 12 of them. Forming 1-y directly as df2 / (df1*x + df2)
+    // sidesteps the cancellation.
+    let y_complement = df2 / (df1 * x + df2);
+    Ok(incbeta(df2 / 2.0, df1 / 2.0, y_complement))
 }
 
 pub fn f_inv(p: f64, df1: f64, df2: f64) -> Result<f64, String> {
@@ -1589,8 +1583,11 @@ pub fn fisher(x: f64) -> Result<f64, String> {
 }
 
 pub fn fisherinv(y: f64) -> Result<f64, String> {
-    let e2y = (2.0 * y).exp();
-    Ok((e2y - 1.0) / (e2y + 1.0))
+    // (e^2y - 1) / (e^2y + 1) is tanh(y), but computing it that way
+    // overflows to inf/inf for y beyond ~355 and came back as #NUM! where
+    // Excel simply reports 1. tanh saturates instead, which is also what
+    // the identity is worth in f64 long before that point.
+    Ok(y.tanh())
 }
 
 pub fn permut(n: f64, k: f64) -> Result<f64, String> {

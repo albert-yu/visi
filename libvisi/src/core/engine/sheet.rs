@@ -1734,6 +1734,19 @@ impl Sheet {
     /// the `.and_then(to_f64).unwrap_or(default)` shape used in places
     /// conflates the two, so e.g. `LOG(3.14, "E")` quietly computed
     /// base-10 instead of erroring.
+    /// True when the first argument is a boolean and the function is one
+    /// of the few that refuse them.
+    ///
+    /// Excel's numeric coercion is not uniform here. SQRT, FACT, SIGN,
+    /// INT, EXP, ROMAN and most of their neighbours take TRUE as 1
+    /// without complaint, but ERF, ERFC, FACTDOUBLE and SQRTPI all answer
+    /// #VALUE! -- verified one function at a time against real Excel,
+    /// because the split does not follow from anything about the
+    /// functions themselves.
+    fn first_arg_is_boolean(args: &[ResultData]) -> bool {
+        matches!(args.first(), Some(ResultData::Boolean(_)))
+    }
+
     fn opt_f64_arg(&self, args: &[ResultData], i: usize, default: f64) -> Result<f64, EngineError> {
         match args.get(i) {
             None => Ok(default),
@@ -5686,6 +5699,11 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::fact(n))
                 }
                 "FACTDOUBLE" => {
+                    // FACTDOUBLE(TRUE) is #VALUE! even though
+                    // FACTDOUBLE(1) is 1. See first_arg_is_boolean.
+                    if Self::first_arg_is_boolean(&evaluated_args) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let n = self.to_f64_arg(evaluated_args.first(), "FACTDOUBLE")?;
                     res_to_rd(crate::core::math_trig::factdouble(n))
                 }
@@ -5932,6 +5950,9 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sinh(x))
                 }
                 "SQRTPI" => {
+                    if Self::first_arg_is_boolean(&evaluated_args) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let x = self.to_f64_arg(evaluated_args.first(), "SQRTPI")?;
                     res_to_rd(crate::core::math_trig::sqrtpi(x))
                 }
@@ -6607,6 +6628,9 @@ impl Sheet {
                     res_to_rd(crate::core::engineering::bessely(x, n))
                 }
                 "BIN2DEC" => {
+                    if Self::first_arg_is_boolean(&evaluated_args) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let t = evaluated_args
                         .first()
                         .map(|v| v.to_string())
@@ -6729,6 +6753,7 @@ impl Sheet {
                                 other => other,
                             };
                             if matches!(scalar, ResultData::Boolean(_)) {
+                                // See first_arg_is_boolean.
                                 return Ok(ResultData::Error("#VALUE!".to_string()));
                             }
                             match self.to_f64(scalar) {
