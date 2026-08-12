@@ -869,6 +869,22 @@ fn test_chitest_with_no_surviving_pair_is_one_not_not_available() {
         0.8427007929497149,
         1e-15,
     );
+
+    // A range holding no number at all is a different case, and is
+    // #DIV/0! -- the same rule the paired sums use. Above, each range
+    // still had one number in it (27 and -323.7702).
+    let mut sheet = create_sheet(&[
+        ["=\"cUVCpj\"", "=TRUE", "-60.63", "=\"XDWK\""],
+        ["=\"mpSHAC\"", "", "-331.95", "=TRUE"],
+        ["=CHITEST(A1:A2, B1:B2)", "=CHITEST(C1:C2, D1:D2)", "", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    for col in 0..2 {
+        match sheet.get_result_data(&CellRef::new(2, col)) {
+            ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "column {col}"),
+            other => panic!("expected #DIV/0! in column {col}, got {other:?}"),
+        }
+    }
 }
 
 #[test]

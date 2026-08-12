@@ -833,7 +833,13 @@ pub fn coupdaybs(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> 
 /// to the settlement -> next-coupon span.
 pub fn coupdaysnc(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> f64 {
     let ncd = coupon_ncd(settlement, maturity, frequency);
-    basis_days_between(settlement, ncd, basis)
+    // The span *ends* at a coupon date, so on basis 0 a month-end coupon
+    // gets pulled to the 30th -- the same rule ODDLPRICE's coupon-ended
+    // spans use. Settlement 2011-08-28 against a 2013-02-28 maturity has
+    // its next coupon on 2011-08-31, and real Excel counts 2 days, not the
+    // 3 the plain NASD rule gives. COUPDAYBS is unaffected: its span ends
+    // at the settlement date, not at a coupon.
+    coupon_end_days(settlement, ncd, basis)
 }
 
 /// Shared by `PRICE`/`YIELD`: present value (per 100 face) of a regular

@@ -4526,6 +4526,15 @@ impl Sheet {
                     // original dimensions when working out the degrees of
                     // freedom), so the values themselves still come from
                     // the lenient flatten.
+                    // Same shape as the paired sums: a range holding no
+                    // numeric value at all is #DIV/0!, while a range that
+                    // merely loses every *pair* to exclusion still computes
+                    // (the statistic is 0, so the answer is 1).
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     let mut first_err = None;
                     let a_raw = self.positional_numbers(evaluated_args.first(), &mut first_err);
                     let e_raw = self.positional_numbers(evaluated_args.get(1), &mut first_err);

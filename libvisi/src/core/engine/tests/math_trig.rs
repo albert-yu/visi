@@ -685,3 +685,46 @@ fn test_mod_reports_num_once_the_quotient_stops_being_meaningful() {
     assert_eq!(num("=MOD(10, -3)"), -2.0);
     assert_eq!(num("=MOD(TRUE, 2)"), 1.0);
 }
+
+#[test]
+fn test_coupdaysnc_and_acoth_precision() {
+    // COUPDAYSNC's span ends at a coupon date, so on basis 0 a month-end
+    // coupon is pulled back to the 30th -- the same rule ODDLPRICE's
+    // coupon-ended spans use. Settlement 2011-08-28 against a 2013-02-28
+    // maturity has its next coupon on 2011-08-31, and real Excel counts 2
+    // days there, not the 3 the plain NASD rule gives. COUPDAYBS is
+    // unaffected: its span ends at the settlement date.
+    let s = "DATE(2011,8,28)";
+    let m = "EDATE(DATE(2011,8,28),18)";
+    assert_eq!(num(&format!("=COUPDAYSNC({s}, {m}, 2, 0)")), 2.0);
+    assert_eq!(num(&format!("=COUPDAYBS({s}, {m}, 2, 0)")), 178.0);
+    assert_eq!(num(&format!("=COUPDAYS({s}, {m}, 2, 0)")), 180.0);
+    // Other bases and a non-month-end coupon are unchanged.
+    assert_eq!(
+        num("=COUPDAYSNC(DATE(2003,12,21), EDATE(DATE(2003,12,21),108), 1, 1)"),
+        366.0
+    );
+    assert_eq!(
+        num("=COUPDAYSNC(DATE(2017,9,22), EDATE(DATE(2017,9,22),36), 2, 3)"),
+        181.0
+    );
+    assert_eq!(
+        num("=COUPDAYSNC(DATE(2011,8,15), EDATE(DATE(2011,8,15),18), 2, 0)"),
+        180.0
+    );
+
+    // ACOTH via atanh(1/x). The 0.5 * ln((x+1)/(x-1)) form loses its
+    // significant digits for large |x|: the true ACOTH(-165) is
+    // -0.006060680266172405095..., and it returned
+    // -0.006060680266172425 -- wrong from the 15th digit, which is
+    // precisely where Excel's display lands.
+    // Tolerance is relative: the old form was off by 3.3e-15 relative,
+    // this one by under 2e-16.
+    let exact = -0.0060606802661724050957;
+    let got = num("=ACOTH(-165)");
+    assert!(
+        ((got - exact) / exact).abs() < 1e-15,
+        "ACOTH(-165) expected {exact}, got {got}"
+    );
+    assert!((num("=ACOTH(2)") - 0.5493061443340549).abs() < 1e-16);
+}

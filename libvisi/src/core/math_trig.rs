@@ -31,7 +31,12 @@ pub fn acoth(x: f64) -> Result<f64, String> {
     if x.abs() <= 1.0 {
         Err("#NUM!".to_string())
     } else {
-        Ok(0.5 * ((x + 1.0) / (x - 1.0)).ln())
+        // atanh(1/x), not 0.5 * ln((x+1)/(x-1)): for large |x| that ratio
+        // approaches 1 and the logarithm loses most of its significant
+        // digits. ACOTH(-165) is -0.006060680266172405..., and the
+        // logarithm form gave -0.006060680266172425 -- wrong from the
+        // 15th digit, which is exactly where Excel's display lands.
+        Ok((1.0 / x).atanh())
     }
 }
 

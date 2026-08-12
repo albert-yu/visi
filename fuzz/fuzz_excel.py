@@ -657,10 +657,12 @@ class ExcelFuzzGenerator:
         y = random.randint(y_lo, y_hi)
         m = random.randint(1, 12)
         d = random.randint(1, 28)
-        if avoid_february_month_end and m == 2 and d == 28:
-            # Day 28 is always February's month-end here (the range above
-            # never reaches the 29th), and a February month-end is the one
-            # input ACCRINT is known to get wrong -- see
+        if avoid_february_month_end and d == 28:
+            # Capped at 27, not just rewritten when the month is February.
+            # ACCRINT derives its first-interest date with EDATE, so a
+            # day-28 issue in *any* month can land on 28 February and turn
+            # the whole quasi-coupon schedule end-of-month -- which is the
+            # case ACCRINT is known to get wrong. See
             # "docs/excel-discrepancies.md" section 8.
             d = 27
         return f"DATE({y}, {m}, {d})"
