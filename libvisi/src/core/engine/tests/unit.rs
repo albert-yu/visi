@@ -1199,7 +1199,9 @@ fn test_structured_reference_whole_row_no_column() {
     sheet.commit(None).unwrap();
 
     // `[@]` (this row, no column) spans every column of the current row.
-    let (res, _) = sheet.eval_with_row("=SUM([@])", None, Some(0)).unwrap();
+    let (res, _) = sheet
+        .eval_with_row("=SUM([@])", None, Some(0), None)
+        .unwrap();
     assert_eq!(get_float_val(&res), Some(15.0));
 }
 
@@ -1496,4 +1498,123 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
         get_float_val(&sheet.get_result_data(&CellRef::new(5, 1))),
         Some(124.49)
     );
+}
+
+/// #26 flags an absence of any circular-reference testing: `commit`'s
+/// dirty-cell BFS is bounded by `max_ops`, not real cycle detection (unlike
+/// real Excel, which shows a warning and substitutes 0 by default, or
+/// converges under user-configured iterative calculation -- neither
+/// modeled here). This is a documented, intentional shortcut, not a bug to
+/// fix, but nothing previously confirmed it actually holds: these tests
+/// lock in the safety property that matters -- a cycle terminates quickly
+/// with a finite result rather than hanging or panicking -- so a future
+/// change to the dirty-queue/max_ops logic can't silently regress that
+/// into an infinite loop.
+#[test]
+fn test_self_referencing_formula_terminates_without_hanging() {
+    let mut sheet = Sheet::new(SheetInit {
+        id: None,
+        name: Some("s".to_string()),
+        rows: 1,
+        cols: 1,
+    });
+    sheet.set_cell_src(0, 0, "=A1+1".to_string());
+
+    let start = std::time::Instant::now();
+    let result = sheet.commit(None);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "self-reference must not hang"
+    );
+    assert!(result.is_ok());
+
+    match sheet.get_result_data(&CellRef::new(0, 0)) {
+        ResultData::Float(f) => assert!(f.is_finite()),
+        ResultData::Integer(_) => {}
+        other => panic!("expected a finite numeric result, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_multi_cell_circular_chain_terminates_without_hanging() {
+    let mut sheet = Sheet::new(SheetInit {
+        id: None,
+        name: Some("s".to_string()),
+        rows: 1,
+        cols: 3,
+    });
+    // A1 -> B1 -> C1 -> A1
+    sheet.set_cell_src(0, 0, "=B1+1".to_string());
+    sheet.set_cell_src(0, 1, "=C1+1".to_string());
+    sheet.set_cell_src(0, 2, "=A1+1".to_string());
+
+    let start = std::time::Instant::now();
+    let result = sheet.commit(None);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "a 3-cell cycle must not hang"
+    );
+    assert!(result.is_ok());
+
+    for col in 0..3 {
+        match sheet.get_result_data(&CellRef::new(0, col)) {
+            ResultData::Float(f) => assert!(f.is_finite()),
+            ResultData::Integer(_) => {}
+            other => panic!("expected a finite numeric result, got {other:?}"),
+        }
+    }
+}
+
+/// Regression for a stack-overflow/hang found via libvisi/fuzz's
+/// formula_eval target within its first extended run (#26 -- zero
+/// formula-level Rust fuzz coverage existed before that target). A bare,
+/// unaggregated range reference that includes the very cell its own
+/// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P
+/// span) reads its own currently-stored value back as one element of the
+/// range on every recompute; since that stored value *is* the previous
+/// recompute's `ResultData::List`, each pass nested a List one level
+/// deeper inside itself. Per-op cost grew visibly superlinearly (measured
+/// via temporary instrumentation: ~350ms for ops 1-200, ~3.6s for ops
+/// 1000-1200) and the process stack-overflowed via recursive Clone/Drop
+/// around op ~1300 -- well before commit()'s own max_ops=10000 circuit
+/// breaker ever got a chance to trip, since each op was individually
+/// getting more expensive rather than the op *count* running away.
+#[test]
+fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
+    let mut sheet = Sheet::new(SheetInit {
+        id: None,
+        name: Some("Sheet1".to_string()),
+        rows: 20,
+        cols: 20,
+    });
+    sheet.set_cell_src(0, 0, "1".to_string());
+    sheet.set_cell_src(1, 0, "2".to_string());
+    sheet.set_cell_src(0, 1, "3.5".to_string());
+
+    // Column K (index 10) is squarely inside the C..P (2..15) span this
+    // formula itself references.
+    sheet.set_cell_src(10, 10, "=C:P".to_string());
+
+    let start = std::time::Instant::now();
+    let result = sheet.commit(None);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "self-referential whole-column range must not hang"
+    );
+    assert!(result.is_ok());
+
+    // The formula's own cell must not have grown into a deeply-nested
+    // List -- it should still just be the (blank-for-self, per the fix)
+    // range's List, one level deep.
+    match sheet.get_result_data(&CellRef::new(10, 10)) {
+        ResultData::List(items) => {
+            assert!(
+                items
+                    .iter()
+                    .all(|item| !matches!(item, ResultData::List(_))),
+                "range result must not contain a nested List"
+            );
+        }
+        other => panic!("expected a flat List result, got {other:?}"),
+    }
 }

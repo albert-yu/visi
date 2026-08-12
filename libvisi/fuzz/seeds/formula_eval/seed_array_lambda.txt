@@ -1,0 +1,1 @@
+=LET(x,SEQUENCE(3),SUM(MAP(x,LAMBDA(v,v*2))))

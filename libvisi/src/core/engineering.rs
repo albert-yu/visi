@@ -427,9 +427,115 @@ pub fn besselj(x: f64, n: f64) -> Result<f64, String> {
     Ok(sum)
 }
 
-pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
-    besseli(x, n)
+const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
+
+fn factorial(n: usize) -> f64 {
+    (1..=n).map(|i| i as f64).product()
 }
+
+/// The `m`th harmonic number `H_m = sum_{i=1}^m 1/i` (`H_0 = 0`), which is
+/// what `psi(m+1) = H_m - EULER_GAMMA` reduces to for non-negative integer
+/// `m` -- the digamma terms every Bessel-second-kind series below needs.
+fn harmonic(m: usize) -> f64 {
+    (1..=m).map(|i| 1.0 / i as f64).sum()
+}
+
+/// `K_n(x)`, the modified Bessel function of the second kind, for
+/// non-negative integer order (Abramowitz & Stegun 9.6.11/9.6.13):
+///
+/// K_n(x) = (1/2) sum_{k=0}^{n-1} (-1)^k (n-k-1)!/k! (x/2)^(2k-n)
+///        + (-1)^(n+1) ln(x/2) I_n(x)
+///        + (-1)^n (1/2) sum_{k=0}^inf [psi(k+1)+psi(n+k+1)]/(k!(n+k)!) (x/2)^(2k+n)
+///
+/// Confirmed by hand against known reference values (K_0(1) ~ 0.4210244,
+/// K_1(1) ~ 0.6019072). Diverges as x -> 0, unlike I_n, so this used to be
+/// a real correctness bug when it aliased `besseli` directly -- see #26.
+pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
+    if x <= 0.0 || n < 0.0 {
+        return Err("#NUM!".to_string());
+    }
+    let order = n.floor() as usize;
+    let half_x = x / 2.0;
+    let ln_half_x = half_x.ln();
+    let i_n = besseli(x, order as f64)?;
+
+    let n_is_even = order.is_multiple_of(2);
+    let mut result = if n_is_even {
+        -ln_half_x * i_n
+    } else {
+        ln_half_x * i_n
+    };
+
+    if order >= 1 {
+        let mut finite_sum = 0.0;
+        let mut sign = 1.0;
+        for k in 0..order {
+            finite_sum += sign * factorial(order - k - 1) / factorial(k)
+                * half_x.powi(2 * k as i32 - order as i32);
+            sign = -sign;
+        }
+        result += 0.5 * finite_sum;
+    }
+
+    let mut series_sum = 0.0;
+    for k in 0..80 {
+        let psi_sum = (harmonic(k) - EULER_GAMMA) + (harmonic(order + k) - EULER_GAMMA);
+        let term = psi_sum / (factorial(k) * factorial(order + k))
+            * half_x.powi(2 * k as i32 + order as i32);
+        series_sum += term;
+        if term.abs() < 1e-18 && k > 5 {
+            break;
+        }
+    }
+    result += (if n_is_even { 1.0 } else { -1.0 }) * 0.5 * series_sum;
+
+    Ok(result)
+}
+
+/// `Y_n(x)`, the Bessel function of the second kind, for non-negative
+/// integer order (Abramowitz & Stegun 9.1.11):
+///
+/// Y_n(x) = (2/pi) J_n(x) ln(x/2)
+///        - (1/pi) sum_{k=0}^{n-1} (n-k-1)!/k! (x/2)^(2k-n)
+///        - (1/pi) sum_{k=0}^inf (-1)^k [psi(k+1)+psi(n+k+1)]/(k!(n+k)!) (x/2)^(2k+n)
+///
+/// Confirmed by hand against known reference values (Y_0(1) ~ 0.0882570,
+/// Y_1(1) ~ -0.7812128). Unlike `besselj` it diverges as x -> 0, so this
+/// used to be a real correctness bug when it aliased `besselj` directly --
+/// see #26.
 pub fn bessely(x: f64, n: f64) -> Result<f64, String> {
-    besselj(x, n)
+    if x <= 0.0 || n < 0.0 {
+        return Err("#NUM!".to_string());
+    }
+    let order = n.floor() as usize;
+    let half_x = x / 2.0;
+    let ln_half_x = half_x.ln();
+    let j_n = besselj(x, order as f64)?;
+
+    let mut result = (2.0 / std::f64::consts::PI) * j_n * ln_half_x;
+
+    if order >= 1 {
+        let mut finite_sum = 0.0;
+        for k in 0..order {
+            finite_sum +=
+                factorial(order - k - 1) / factorial(k) * half_x.powi(2 * k as i32 - order as i32);
+        }
+        result -= finite_sum / std::f64::consts::PI;
+    }
+
+    let mut series_sum = 0.0;
+    let mut sign = 1.0;
+    for k in 0..80 {
+        let psi_sum = (harmonic(k) - EULER_GAMMA) + (harmonic(order + k) - EULER_GAMMA);
+        let term = sign * psi_sum / (factorial(k) * factorial(order + k))
+            * half_x.powi(2 * k as i32 + order as i32);
+        series_sum += term;
+        sign = -sign;
+        if term.abs() < 1e-18 && k > 5 {
+            break;
+        }
+    }
+    result -= series_sum / std::f64::consts::PI;
+
+    Ok(result)
 }

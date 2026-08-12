@@ -864,6 +864,139 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
 }
 
 #[test]
+fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
+    // Regression for #26: SHEET() always returned 1 regardless of true
+    // position, since the Context WorkbookManager::evaluate builds didn't
+    // carry real sheet order (self.sheets is a Vec, but Context.sheets is
+    // an unordered HashMap). Exercised through WorkbookManager::evaluate
+    // itself, not just a hand-built Context, since that's the actual
+    // production code path that populates it.
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+    wb.add_sheet("Third").unwrap();
+
+    wb.sheets[0].set_cell_src(0, 0, "=SHEET()".to_string());
+    wb.sheets[2].set_cell_src(0, 0, "=SHEET()".to_string());
+    // A cross-sheet reference from sheet 1 reports the *referenced*
+    // sheet's ordinal.
+    wb.sheets[0].set_cell_src(0, 1, "=SHEET(Third!A1)".to_string());
+
+    wb.evaluate().unwrap();
+
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .to_string(),
+        "1"
+    );
+    assert_eq!(
+        wb.sheets[2]
+            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .to_string(),
+        "3"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 1))
+            .to_string(),
+        "3"
+    );
+}
+
+#[test]
+fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
+    // Regression for #26: WorkbookManager::evaluate() called
+    // mark_all_dirty() once before its 3-pass loop instead of once per
+    // pass. Sheet::commit drains and clears a sheet's dirty queue as it
+    // processes it, so without re-marking, passes 2 and 3 had nothing
+    // left dirty and were silent no-ops -- a cross-sheet chain more than
+    // one hop deep (First's formula -> Second's formula -> First's
+    // formula again) kept whichever stale value pass 1 happened to
+    // compute before the sheet it depended on had a chance to update.
+    // Found via the fuzzer's new cross-sheet generator block, which
+    // exercises exactly this shape.
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+
+    wb.sheets[0].set_cell_src(0, 0, "10".to_string());
+    wb.sheets[0].set_cell_src(0, 1, "=A1*2".to_string());
+    wb.sheets[1].set_cell_src(0, 0, "=First!B1+1".to_string());
+    // This is the cell that needs a *second* pass: it depends on
+    // Second!A1, which itself only becomes correct after First!B1 is
+    // computed earlier in the very same first pass.
+    wb.sheets[0].set_cell_src(0, 2, "=Second!A1*3".to_string());
+
+    wb.evaluate().unwrap();
+
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 1))
+            .to_string(),
+        "20"
+    );
+    assert_eq!(
+        wb.sheets[1]
+            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .to_string(),
+        "21"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&libvisi::core::CellRef::new(0, 2))
+            .to_string(),
+        "63"
+    );
+}
+
+#[test]
+fn test_cross_sheet_circular_reference_terminates_without_hanging() {
+    // #26 flags an absence of circular-reference testing; this is the
+    // cross-sheet counterpart to libvisi's own self-reference/multi-cell
+    // cycle tests, exercised through WorkbookManager::evaluate() (the
+    // fixed 3-pass loop) rather than a single Sheet::commit call. A cycle
+    // here is naturally bounded by the fixed pass count, but nothing
+    // previously confirmed that -- especially after the mark_all_dirty
+    // per-pass fix above, which makes every pass do real work again.
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+    wb.sheets[0].set_cell_src(0, 0, "=Second!A1+1".to_string());
+    wb.sheets[1].set_cell_src(0, 0, "=First!A1+1".to_string());
+
+    let start = std::time::Instant::now();
+    wb.evaluate().unwrap();
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "a cross-sheet cycle must not hang"
+    );
+
+    for (sheet_idx, label) in [(0, "First!A1"), (1, "Second!A1")] {
+        match wb.sheets[sheet_idx].get_result_data(&libvisi::core::CellRef::new(0, 0)) {
+            libvisi::core::ResultData::Float(f) => assert!(f.is_finite(), "{label} not finite"),
+            libvisi::core::ResultData::Integer(_) => {}
+            other => panic!("expected a finite numeric result for {label}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn test_coordinate_parsing() {
     let (sheet, row, col) = parse_cell_ref("Sheet2!D10").unwrap();
     assert_eq!(sheet, Some("Sheet2".to_string()));

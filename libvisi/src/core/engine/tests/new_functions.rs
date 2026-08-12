@@ -976,6 +976,63 @@ fn test_sheets_counts_context_sheets() {
 }
 
 #[test]
+fn test_sheet_reports_real_workbook_ordinal() {
+    // Regression for #26: SHEET() always returned 1 regardless of true
+    // position, since `Context.sheets` is an unordered `HashMap` and
+    // nothing threaded real order down from `WorkbookManager::sheets` (a
+    // `Vec`, where order is genuine) into `Sheet::evaluate_function`.
+    let table1 = Sheet::new(SheetInit {
+        id: None,
+        name: Some("table_1".to_string()),
+        rows: 2,
+        cols: 2,
+    });
+    let table2 = Sheet::new(SheetInit {
+        id: None,
+        name: Some("table_2".to_string()),
+        rows: 2,
+        cols: 2,
+    });
+    let table3 = Sheet::new(SheetInit {
+        id: None,
+        name: Some("table_3".to_string()),
+        rows: 2,
+        cols: 2,
+    });
+    let sheets = [table1, table2, table3];
+
+    let mut context = Context::new();
+    for sheet in &sheets {
+        context.add_table(sheet.name.clone(), sheet);
+    }
+    context.sheet_order = sheets.iter().map(|s| s.name.clone()).collect();
+
+    let (r1, _) = sheets[0].eval("=SHEET()", Some(&context)).unwrap();
+    assert_float_close(&r1, 1.0, 1e-9);
+    let (r2, _) = sheets[1].eval("=SHEET()", Some(&context)).unwrap();
+    assert_float_close(&r2, 2.0, 1e-9);
+    let (r3, _) = sheets[2].eval("=SHEET()", Some(&context)).unwrap();
+    assert_float_close(&r3, 3.0, 1e-9);
+
+    // A reference into another sheet reports *that* sheet's ordinal, not
+    // the formula's own.
+    let (r4, _) = sheets[0]
+        .eval("=SHEET(table_3!A1)", Some(&context))
+        .unwrap();
+    assert_float_close(&r4, 3.0, 1e-9);
+
+    // A plain text sheet name is also accepted, same as real Excel.
+    let (r5, _) = sheets[0]
+        .eval("=SHEET(\"table_2\")", Some(&context))
+        .unwrap();
+    assert_float_close(&r5, 2.0, 1e-9);
+
+    // No context at all (standalone eval outside a WorkbookManager pass)
+    // keeps the old documented fallback of 1.
+    assert!(matches!(eval1("=SHEET()"), ResultData::Float(f) if f == 1.0));
+}
+
+#[test]
 fn test_indirect_resolves_cell_and_range_text() {
     let grid: [[&str; 2]; 3] = [
         ["10", "=INDIRECT(\"A1\")"],
@@ -1264,6 +1321,179 @@ fn test_xmatch_supports_next_smaller_and_larger_modes() {
     assert_float_close(&exact, 2.0, 1e-9);
     let (next_smaller, _) = sheet.eval("=XMATCH(25,A1:A5,-1)", None).unwrap();
     assert_float_close(&next_smaller, 2.0, 1e-9);
+}
+
+#[test]
+fn test_bare_row_and_column_report_current_cell_position() {
+    // No-arg ROW()/COLUMN() report the position of the cell the formula
+    // itself lives in -- distinct from the reference-argument form, which
+    // reports the referenced range instead (already covered elsewhere).
+    let grid: [[&str; 3]; 2] = [["=ROW()", "=COLUMN()", "x"], ["x", "x", "=ROW()+COLUMN()"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 0)), 1.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 2.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 2)), 5.0, 1e-9);
+}
+
+#[test]
+fn test_let_binds_names_in_sequence_and_rejects_duplicate_names() {
+    assert_float_close(&eval1("=LET(x, 5, x * 2)"), 10.0, 1e-9);
+    // Later pairs can reference earlier ones in the same LET.
+    assert_float_close(&eval1("=LET(x, 5, y, x + 1, x + y)"), 11.0, 1e-9);
+    assert!(matches!(
+        eval1("=LET(x, 1, x, 2, x)"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+}
+
+#[test]
+fn test_randarray_respects_shape_bounds_and_whole_number_flag() {
+    match eval1("=RANDARRAY(2,3,10,20,TRUE)") {
+        ResultData::List(rows) => {
+            assert_eq!(rows.len(), 2);
+            for row in &rows {
+                match row {
+                    ResultData::List(cells) => {
+                        assert_eq!(cells.len(), 3);
+                        for cell in cells {
+                            let v = match cell {
+                                ResultData::Float(f) => *f,
+                                ResultData::Integer(i) => *i as f64,
+                                other => panic!("expected numeric cell, got {other:?}"),
+                            };
+                            assert!((10.0..=20.0).contains(&v), "{v} out of [10,20]");
+                            assert_eq!(v.fract(), 0.0, "expected a whole number, got {v}");
+                        }
+                    }
+                    other => panic!("expected a row List, got {other:?}"),
+                }
+            }
+        }
+        other => panic!("expected a List of rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_hlookup_exact_and_approximate_match_on_text_header_row() {
+    // extract_matrix-based HLOOKUP used to coerce every cell through
+    // to_f64 and silently drop non-numeric ones, so a text header row (the
+    // common HLOOKUP case) never matched -- see #26.
+    let grid: [[&str; 3]; 2] = [["Jan", "Feb", "Mar"], ["10", "20", "30"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let (exact, _) = sheet.eval("=HLOOKUP(\"Feb\",A1:C2,2,FALSE)", None).unwrap();
+    assert_float_close(&exact, 20.0, 1e-9);
+
+    assert!(matches!(
+        sheet.eval("=HLOOKUP(\"Nope\",A1:C2,2,FALSE)", None).unwrap().0,
+        ResultData::Error(ref e) if e == "#N/A"
+    ));
+
+    let numeric_grid: [[&str; 3]; 2] = [["10", "20", "30"], ["a", "b", "c"]];
+    let mut numeric_sheet = create_sheet(&numeric_grid);
+    numeric_sheet.commit(None).unwrap();
+    // Approximate match: largest header <= 25 is 20, in column 2.
+    let (approx, _) = numeric_sheet.eval("=HLOOKUP(25,A1:C2,2)", None).unwrap();
+    assert_eq!(approx.to_string(), "b");
+}
+
+#[test]
+fn test_date_functions_match_documented_excel_examples() {
+    // Jan 1, 2024 (serial 45292) is a Monday. WORKDAY skips both weekend
+    // days landing on Mon 1/8/2024 (serial 45299) five working days later
+    // (Tue-Fri, then Mon).
+    assert_float_close(&eval1("=WORKDAY(DATE(2024,1,1),5)"), 45299.0, 1e-9);
+    // Inclusive of both endpoints, excluding the Sat/Sun in between:
+    // Jan 1, 2, 3, 4, 5, 8 = 6 working days.
+    assert_float_close(
+        &eval1("=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,8))"),
+        6.0,
+        1e-9,
+    );
+    // EOMONTH(0) is the same month's last day; EOMONTH(1) rolls into
+    // Feb 2024, a leap year (serial 45351 = Feb 29), so the last day is
+    // the 29th.
+    assert_float_close(&eval1("=DAY(EOMONTH(DATE(2024,1,15),0))"), 31.0, 1e-9);
+    assert_float_close(&eval1("=EOMONTH(DATE(2024,1,15),1)"), 45351.0, 1e-9);
+    // WEEKNUM with the default return type (week starts Sunday): Jan 1,
+    // 2024 (a Monday) is always week 1; the first Sunday (Jan 7) starts
+    // week 2.
+    assert_float_close(&eval1("=WEEKNUM(DATE(2024,1,1))"), 1.0, 1e-9);
+    assert_float_close(&eval1("=WEEKNUM(DATE(2024,1,7))"), 2.0, 1e-9);
+    // Microsoft's own DAYS360 documentation example (US/NASD method).
+    assert_float_close(
+        &eval1("=DAYS360(DATE(2011,1,30),DATE(2011,2,1))"),
+        1.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn test_besselk_bessely_match_known_reference_values() {
+    // Regression for #26: BESSELK/BESSELY used to alias BESSELI/BESSELJ
+    // directly, which is a distinct-function bug, not an imprecision --
+    // K_n/Y_n diverge as x -> 0 while I_n/J_n stay finite there. Expected
+    // values are well-known constants (Abramowitz & Stegun tables).
+    assert_float_close(&eval1("=BESSELK(1,0)"), 0.4210244382, 1e-8);
+    assert_float_close(&eval1("=BESSELK(1,1)"), 0.6019072301, 1e-8);
+    assert_float_close(&eval1("=BESSELY(1,0)"), 0.0882569642, 1e-8);
+    assert_float_close(&eval1("=BESSELY(1,1)"), -0.7812128213, 1e-8);
+    // Sanity check the still-correct BESSELI/BESSELJ weren't disturbed.
+    assert_float_close(&eval1("=BESSELI(1,0)"), 1.2660658778, 1e-8);
+    assert_float_close(&eval1("=BESSELJ(1,0)"), 0.7651976866, 1e-8);
+}
+
+#[test]
+fn test_complex_number_functions_round_trip() {
+    assert_eq!(eval1("=COMPLEX(3,4)").to_string(), "3+4i");
+    assert_float_close(&eval1("=IMABS(\"3+4i\")"), 5.0, 1e-9);
+    assert_float_close(&eval1("=IMREAL(\"3+4i\")"), 3.0, 1e-9);
+    assert_float_close(&eval1("=IMAGINARY(\"3+4i\")"), 4.0, 1e-9);
+    assert_eq!(eval1("=IMCONJUGATE(\"3+4i\")").to_string(), "3-4i");
+    assert_eq!(eval1("=IMSUM(\"3+4i\",\"1-2i\")").to_string(), "4+2i");
+    assert_eq!(eval1("=IMSUB(\"3+4i\",\"1-2i\")").to_string(), "2+6i");
+    // (3+4i)(1-2i) = 3-6i+4i-8i^2 = 3-2i+8 = 11-2i
+    assert_eq!(eval1("=IMPRODUCT(\"3+4i\",\"1-2i\")").to_string(), "11-2i");
+    // (3+4i)/(1-2i) = (3+4i)(1+2i)/5 = (3+6i+4i-8)/5 = (-5+10i)/5 = -1+2i
+    assert_eq!(eval1("=IMDIV(\"3+4i\",\"1-2i\")").to_string(), "-1+2i");
+}
+
+#[test]
+fn test_cube_webservice_image_report_unavailable_connections_not_echo_stub_args() {
+    // Regression for #26: these used to echo their last argument back as
+    // a placeholder result -- a plausible-looking wrong value is worse
+    // than a visible error, since it can silently corrupt a downstream
+    // calculation with no signal anything is wrong. None has a local data
+    // source this engine can serve (a live OLAP cube connection, actual
+    // network access, real image decoding); the error codes match what
+    // real Excel shows once its equivalent live connection/resource is
+    // unavailable (#N/A for the CUBE* family, mirroring RTD/STOCKHISTORY
+    // just below; #VALUE! for WEBSERVICE/IMAGE, per Microsoft's own docs).
+    for formula in [
+        "=CUBEKPIMEMBER(\"conn\",\"kpi\",1)",
+        "=CUBEMEMBER(\"conn\",\"member\")",
+        "=CUBEMEMBERPROPERTY(\"conn\",\"member\",\"prop\")",
+        "=CUBERANKEDMEMBER(\"conn\",\"set\",1)",
+        "=CUBESET(\"conn\",\"set\")",
+        "=CUBESETCOUNT(\"set\")",
+        "=CUBEVALUE(\"conn\",\"member\")",
+    ] {
+        assert!(
+            matches!(eval1(formula), ResultData::Error(ref e) if e == "#N/A"),
+            "expected #N/A for {formula}"
+        );
+    }
+    assert!(matches!(
+        eval1("=WEBSERVICE(\"https://example.com\")"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+    assert!(matches!(
+        eval1("=IMAGE(\"https://example.com/pic.png\")"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
 }
 
 #[test]

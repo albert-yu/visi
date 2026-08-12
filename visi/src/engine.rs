@@ -149,13 +149,25 @@ impl WorkbookManager {
             return Ok(());
         }
 
-        // 1. Mark all cells dirty across all sheets
-        for sheet in &mut self.sheets {
-            sheet.mark_all_dirty();
-        }
+        // `self.sheets` is the one place true workbook order exists --
+        // `Context.sheets` is an unordered `HashMap` -- so `SHEET()` needs
+        // this collected once up front rather than derived from a context.
+        let sheet_order: Vec<String> = self.sheets.iter().map(|s| s.name.clone()).collect();
 
-        // 2. Multi-pass evaluation to resolve cross-sheet formula dependencies
+        // Multi-pass evaluation to resolve cross-sheet formula dependencies.
+        // Every cell is re-marked dirty at the start of *each* pass, not
+        // just once before the loop -- `Sheet::commit` drains and clears a
+        // sheet's dirty queue as it processes it, so without re-marking,
+        // passes 2 and 3 had nothing left dirty and were silent no-ops.
+        // That meant a cross-sheet chain more than one hop deep (sheet A's
+        // formula depends on sheet B's formula depending on sheet A) kept
+        // whatever stale value pass 1 happened to compute before B had a
+        // chance to update -- found via the fuzzer's new cross-sheet
+        // generator block (#26).
         for _pass in 0..3 {
+            for sheet in &mut self.sheets {
+                sheet.mark_all_dirty();
+            }
             for i in 0..self.sheets.len() {
                 let (left, right) = self.sheets.split_at_mut(i);
                 let (target_sheet, right_tail) = right.split_first_mut().unwrap();
@@ -168,6 +180,7 @@ impl WorkbookManager {
                     context.add_table(s.name.clone(), s);
                 }
                 context.pivot_tables = &self.pivot_tables;
+                context.sheet_order = sheet_order.clone();
 
                 let _ = target_sheet.commit(Some(&context));
             }

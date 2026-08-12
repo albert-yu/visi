@@ -117,31 +117,6 @@ pub fn address_fn(
     }
 }
 
-pub fn hlookup(
-    lookup_val: &ResultData,
-    table: &[Vec<ResultData>],
-    row_idx: f64,
-    range_lookup: Option<bool>,
-) -> ResultData {
-    let row = row_idx.floor() as usize;
-    if row == 0 || table.is_empty() || row > table.len() {
-        return ResultData::Error("#VALUE!".to_string());
-    }
-    let exact = !range_lookup.unwrap_or(true);
-
-    let first_row = &table[0];
-    for (c, item) in first_row.iter().enumerate() {
-        if exact {
-            if item.to_string() == lookup_val.to_string() {
-                return table[row - 1].get(c).cloned().unwrap_or(ResultData::None);
-            }
-        } else if item.to_string() == lookup_val.to_string() {
-            return table[row - 1].get(c).cloned().unwrap_or(ResultData::None);
-        }
-    }
-    ResultData::Error("#N/A".to_string())
-}
-
 // ============================================================================
 // 4. Web & Stub Functions
 // ============================================================================
