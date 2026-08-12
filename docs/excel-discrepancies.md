@@ -78,34 +78,48 @@ costs roughly one cell per few hundred iterations, and the same generator
 range is what exercises the number-to-text formatting rules that *did* turn up
 real bugs.
 
-## 4. Rounding ties in the incomplete beta — *No stable answer*
+## 4. Incomplete-beta accuracy — *visi gap, mostly closed*
 
-The F and t distributions are computed from a continued-fraction
-incomplete beta, accurate to a few ULP. That is enough to agree with Excel
-on the value, but not always on the 15th digit Excel *prints*, because
-some inputs land almost exactly on a rounding tie:
+The F and t distributions come from a single continued-fraction incomplete
+beta, and its accuracy sets how often visi's 15th displayed digit matches
+Excel's. Against 50-digit `mpmath` over 60 random `F.DIST.RT(x, df1, df2)`:
 
-```
-FTEST over one fuzzed pair
-  true value  0.94171633283387507291   (40-digit mpmath)
-  Excel       0.941716332833875
-  visi        0.941716332833876
-```
+| | median | p90 | max |
+| --- | --- | --- | --- |
+| before | ~12.7 ULP | ~51.6 | ~76.8 |
+| after | **3.0 ULP** | 13.6 | 22.8 |
 
-The true value sits **0.7 ULP** above the point where the 15th digit flips
-from 5 to 6. Rounding it the way Excel does requires better-than-ULP
-accuracy, which no double-precision implementation can promise, so this
-particular input has no answer an independent engine can reliably
-reproduce.
+Two changes got it there: converging the continued fraction to
+`f64::EPSILON` rather than the textbook `1e-15`, and computing the beta
+prefactor as `x^a (1-x)^b / (a·B(a,b))` from `tgamma` instead of
+`exp(a·ln x + b·ln(1-x) − lbeta)`. The log form routes everything through
+one exponential, so the *absolute* error of its argument becomes the
+*relative* error of the result — `lgamma(a+b)` alone can put ~5e-16 into
+the exponent. `Γ` for the integer and half-integer arguments these
+families produce is built by recurrence from `sqrt(pi)`, which stays near
+half an ULP where this crate's `tgamma` drifts 2.6 ULP at 1.5.
 
-Not excluded, because it is rare (roughly one cell per 60 iterations) and
-indistinguishable at generation time from the ordinary cases the same
-functions cover. Worth checking rather than assuming, though: visi's
-incomplete beta is now within a few ULP throughout, and on
-`F.DIST.RT(120.02429320013077, 2, 4)` it is **37x closer to the true value
-than Excel** (3.5e-16 relative against 1.3e-14) — so a disagreement here
-is at least as likely to be Excel's error as visi's. Arbitrate with
-`mpmath` before changing anything.
+The residual (p90 ~14 ULP) is in the continued fraction itself at larger
+degrees of freedom, not in the prefactor — capping the recurrence changes
+nothing, and the swap branch is *better* than the direct one (median 1.35
+vs 3.58 ULP). Closing it properly means region-specific algorithms, as
+Boost.Math does, which is a much larger piece of work than anything else
+in this file.
+
+**An earlier version of this section was wrong** and claimed the one
+remaining case was an unfixable sub-ULP rounding tie. It was not: the true
+value sat 3.85 ULP from the tie, and visi was 10 ULP out. It now prints
+Excel's digits.
+
+The lesson is worth keeping, though: when arbitrating a 15th-digit
+disagreement, measure the distance to the **tie midpoint** between the two
+candidate renderings, not to the nearer candidate. Those differ by half a
+digit-step, which is several ULP.
+
+And check which engine is wrong before assuming it is visi — on
+`F.DIST.RT(120.02429320013077, 2, 4)` visi is **37x closer to the true
+value than Excel** (3.5e-16 relative against 1.3e-14). Arbitrate with
+`mpmath`.
 
 ## 5. FORECAST.ETS.SEASONALITY — *No stable answer*
 

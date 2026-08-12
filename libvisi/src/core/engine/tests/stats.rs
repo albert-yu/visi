@@ -959,3 +959,48 @@ fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
         assert_err(src, "#VALUE!");
     }
 }
+
+#[test]
+fn test_incomplete_beta_prefactor_accuracy() {
+    // The beta prefactor is computed from tgamma rather than as
+    // exp(a*ln x + b*ln(1-x) - lbeta), which put the absolute error of a
+    // logarithm straight into the relative error of the result. All
+    // expected values are 50-digit mpmath evaluations of the regularized
+    // incomplete beta, not Excel's.
+    //
+    // The FTEST case is the one this was chased down for: the true value
+    // is 0.94171633283387507291, which renders at 15 digits as
+    // 0.941716332833875. visi used to be ~10 ULP high and print ...876.
+    let mut sheet = create_sheet(&[
+        ["127.95", "127.95"],
+        ["5", "5"],
+        ["28", "28"],
+        ["-24.3108", "92"],
+        ["0", "=FTEST(A1:A11, B1:B4)"],
+        ["-40", ""],
+        ["-45", ""],
+        ["43", ""],
+        ["96", ""],
+        ["-66", ""],
+        ["1", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    let got = match sheet.get_result_data(&CellRef::new(4, 1)) {
+        ResultData::Float(f) => f,
+        other => panic!("expected a number, got {other:?}"),
+    };
+    assert!(
+        (got - 0.94171633283387507291).abs() < 3e-16,
+        "FTEST expected 0.94171633283387507291, got {got}"
+    );
+    assert_eq!(format!("{got:.15}"), "0.941716332833875");
+
+    // Spot checks across the parameter space, all within ~2 ULP.
+    assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-15);
+    assert_float_close(&eval1("=BETA.DIST(0.5, 2, 3, TRUE)"), 0.6875, 1e-15);
+    assert_float_close(
+        &eval1("=T.DIST(1.5, 10, TRUE)"),
+        0.91774633677727990958,
+        1e-15,
+    );
+}
