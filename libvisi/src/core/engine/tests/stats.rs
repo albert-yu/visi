@@ -910,3 +910,42 @@ fn test_mode_family_rejects_a_lone_blank_operand() {
     // No repeated value is still #N/A, not #VALUE!.
     assert_err("=MODE(1, 2)", "#N/A");
 }
+
+#[test]
+fn test_shape_mismatch_outranks_the_no_numbers_rule() {
+    // A shape mismatch is #N/A and wins over everything else, including a
+    // range that also holds no numeric value at all. Getting the order
+    // wrong matters beyond the error class: IFNA/ISNA are watching for
+    // exactly #N/A, so a spurious #DIV/0! escapes them.
+    let mut sheet = create_sheet(&[
+        ["1", "=\"x\"", "5", "=SUMXMY2(A1:A3, B1:B2)"],
+        ["2", "=\"y\"", "6", "=SUMXMY2(A1:A3, C1:C2)"],
+        ["3", "", "", "=CHITEST(A1:A1, A1:B5)"],
+    ]);
+    sheet.commit(None).unwrap();
+    for row in 0..3 {
+        match sheet.get_result_data(&CellRef::new(row, 3)) {
+            ResultData::Error(e) => assert_eq!(e, "#N/A", "row {row}"),
+            other => panic!("expected #N/A in row {row}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
+    // GCD, LCM and MULTINOMIAL coerce text that looks numeric and reject
+    // everything else -- so this is narrower than "text is #VALUE!", which
+    // is what it used to do. All values are real Excel's.
+    assert_float_close(&eval1("=GCD(\"12\", 8)"), 4.0, 1e-12);
+    assert_float_close(&eval1("=LCM(\"4\", 6)"), 12.0, 1e-12);
+    assert_float_close(&eval1("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
+    assert_float_close(&eval1("=MULTINOMIAL(RIGHT(\"a5\", 1), 2)"), 21.0, 1e-9);
+    for src in [
+        "=GCD(\"x\", 8)",
+        "=GCD(TRUE, 8)",
+        "=LCM(\"x\", 6)",
+        "=MULTINOMIAL(\"x\", 2)",
+    ] {
+        assert_err(src, "#VALUE!");
+    }
+}

@@ -1509,6 +1509,18 @@ impl Sheet {
                 BlankPolicy::Skip => Ok(()),
                 BlankPolicy::Reject => Err("#VALUE!".to_string()),
             },
+            // Numeric text is coerced, non-numeric text is not: real Excel
+            // gives GCD("12", 8) = 4, LCM("4", 6) = 12 and
+            // MULTINOMIAL("3", 2) = 10, while GCD("x", 8) is #VALUE!.
+            // Booleans stay rejected -- GCD(TRUE, 8) is #VALUE! -- which
+            // is why this can't just fall through to `to_f64`.
+            ResultData::String(_) => match self.to_f64(arg) {
+                Some(f) => {
+                    out.push(f);
+                    Ok(())
+                }
+                None => Err("#VALUE!".to_string()),
+            },
             _ => Err("#VALUE!".to_string()),
         }
     }
@@ -4526,15 +4538,6 @@ impl Sheet {
                     // original dimensions when working out the degrees of
                     // freedom), so the values themselves still come from
                     // the lenient flatten.
-                    // Same shape as the paired sums: a range holding no
-                    // numeric value at all is #DIV/0!, while a range that
-                    // merely loses every *pair* to exclusion still computes
-                    // (the statistic is 0, so the answer is 1).
-                    if self.paired_sum_has_no_numbers(evaluated_args.first())
-                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
-                    {
-                        return Ok(ResultData::Error("#DIV/0!".to_string()));
-                    }
                     let mut first_err = None;
                     let a_raw = self.positional_numbers(evaluated_args.first(), &mut first_err);
                     let e_raw = self.positional_numbers(evaluated_args.get(1), &mut first_err);
@@ -4553,6 +4556,16 @@ impl Sheet {
                     }
                     if let Some(e) = first_err {
                         return Ok(ResultData::Error(e));
+                    }
+                    // Same shape as the paired sums, and checked only after
+                    // the #N/A cases above: a range holding no numeric
+                    // value at all is #DIV/0!, while a range that merely
+                    // loses every *pair* to exclusion still computes -- the
+                    // statistic is 0, so the answer is 1.
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
                     }
                     // Values are taken pairwise so a non-numeric cell in
                     // one range can't leave the two sides different lengths
@@ -6073,42 +6086,51 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sumsq(&nums))
                 }
                 "SUMX2MY2" => {
-                    if self.paired_sum_has_no_numbers(evaluated_args.first())
-                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
-                    {
-                        return Ok(ResultData::Error("#DIV/0!".to_string()));
-                    }
+                    // paired_args first: a shape mismatch is #N/A and takes
+                    // precedence over everything below it, even when a
+                    // range also holds no numbers at all.
                     let (xs, ys) =
                         match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                             Ok(v) => v,
                             Err(e) => return Ok(ResultData::Error(e)),
                         };
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     res_to_rd(crate::core::math_trig::sumx2my2(&xs, &ys))
                 }
                 "SUMX2PY2" => {
-                    if self.paired_sum_has_no_numbers(evaluated_args.first())
-                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
-                    {
-                        return Ok(ResultData::Error("#DIV/0!".to_string()));
-                    }
+                    // paired_args first: a shape mismatch is #N/A and takes
+                    // precedence over everything below it, even when a
+                    // range also holds no numbers at all.
                     let (xs, ys) =
                         match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                             Ok(v) => v,
                             Err(e) => return Ok(ResultData::Error(e)),
                         };
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     res_to_rd(crate::core::math_trig::sumx2py2(&xs, &ys))
                 }
                 "SUMXMY2" => {
-                    if self.paired_sum_has_no_numbers(evaluated_args.first())
-                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
-                    {
-                        return Ok(ResultData::Error("#DIV/0!".to_string()));
-                    }
+                    // paired_args first: a shape mismatch is #N/A and takes
+                    // precedence over everything below it, even when a
+                    // range also holds no numbers at all.
                     let (xs, ys) =
                         match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                             Ok(v) => v,
                             Err(e) => return Ok(ResultData::Error(e)),
                         };
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     res_to_rd(crate::core::math_trig::sumxmy2(&xs, &ys))
                 }
                 "TANH" => {
