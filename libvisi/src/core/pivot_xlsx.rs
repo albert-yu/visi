@@ -234,7 +234,7 @@ fn subtotal_token(agg: PivotAggregation) -> &'static str {
 }
 
 fn build_pivot_xml_unit(
-    sheets: &[Sheet],
+    sheets: &[&Sheet],
     pivot: &PivotTable,
     cache_id: usize,
 ) -> Result<PivotXmlUnit, String> {
@@ -628,10 +628,11 @@ pub fn inject_pivot_tables(
     sheets: &[Sheet],
     pivots: &[PivotTable],
 ) -> Result<Vec<u8>, String> {
+    let sheet_refs: Vec<&Sheet> = sheets.iter().collect();
     let mut units: Vec<PivotXmlUnit> = Vec::new();
     for pivot in pivots {
         if sheets.iter().any(|s| s.id == pivot.dest_sheet_id) {
-            units.push(build_pivot_xml_unit(sheets, pivot, units.len())?);
+            units.push(build_pivot_xml_unit(&sheet_refs, pivot, units.len())?);
         }
     }
     if units.is_empty() {

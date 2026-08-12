@@ -30,6 +30,25 @@ pub fn asc(text: &str) -> Result<String, String> {
     Ok(res)
 }
 
+pub fn jis(text: &str) -> Result<String, String> {
+    let mut res = String::new();
+    for c in text.chars() {
+        let code = c as u32;
+        if (0x0021..=0x007E).contains(&code) {
+            if let Some(ch) = char::from_u32(code + 0xfee0) {
+                res.push(ch);
+            } else {
+                res.push(c);
+            }
+        } else if c == ' ' {
+            res.push('\u{3000}');
+        } else {
+            res.push(c);
+        }
+    }
+    Ok(res)
+}
+
 pub fn bahttext(number: f64) -> Result<String, String> {
     if number.is_nan() || number.is_infinite() {
         return Err("#VALUE!".to_string());
@@ -266,19 +285,21 @@ pub fn phonetic(reference: &str) -> Result<String, String> {
 }
 
 pub fn regexextract(text: &str, pattern: &str) -> Result<String, String> {
-    if let Some(pos) = text.find(pattern) {
-        Ok(text[pos..pos + pattern.len()].to_string())
-    } else {
-        Err("#N/A".to_string())
+    let re = regex::Regex::new(pattern).map_err(|_| "#VALUE!".to_string())?;
+    match re.find(text) {
+        Some(m) => Ok(m.as_str().to_string()),
+        None => Err("#N/A".to_string()),
     }
 }
 
 pub fn regexreplace(text: &str, pattern: &str, replacement: &str) -> Result<String, String> {
-    Ok(text.replace(pattern, replacement))
+    let re = regex::Regex::new(pattern).map_err(|_| "#VALUE!".to_string())?;
+    Ok(re.replace_all(text, replacement).into_owned())
 }
 
 pub fn regextest(text: &str, pattern: &str) -> Result<bool, String> {
-    Ok(text.contains(pattern))
+    let re = regex::Regex::new(pattern).map_err(|_| "#VALUE!".to_string())?;
+    Ok(re.is_match(text))
 }
 
 pub fn replace_fn(
