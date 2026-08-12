@@ -4509,24 +4509,87 @@ impl Sheet {
                         };
                     res_to_rd(crate::core::stats::forecast_linear(x, &ys, &xs))
                 }
-                "FORECAST.ETS"
-                | "FORECAST.ETS.CONFINT"
-                | "FORECAST.ETS.SEASONALITY"
-                | "FORECAST.ETS.STAT" => {
-                    let target_date = evaluated_args
-                        .first()
-                        .and_then(|v| self.to_f64(v))
-                        .unwrap_or(0.0);
-                    let (ys, xs) =
+                "FORECAST.ETS" | "FORECAST.ETS.CONFINT" => {
+                    // FORECAST.ETS(target, values, timeline,
+                    //              [seasonality], [data_completion], [aggregation])
+                    // FORECAST.ETS.CONFINT(target, values, timeline,
+                    //              [confidence], [seasonality], [data_completion], [aggregation])
+                    let is_confint = upper_name == "FORECAST.ETS.CONFINT";
+                    let target = self.to_f64_arg(evaluated_args.first(), "FORECAST.ETS")?;
+                    let (values, timeline) =
                         match self.paired_args(evaluated_args.get(1), evaluated_args.get(2)) {
                             Ok(v) => v,
                             Err(e) => return Ok(ResultData::Error(e)),
                         };
-                    match upper_name.as_str() {
-                        "FORECAST.ETS.SEASONALITY" => Ok(ResultData::Float(1.0)),
-                        "FORECAST.ETS.STAT" => Ok(ResultData::Float(0.5)),
-                        "FORECAST.ETS.CONFINT" => Ok(ResultData::Float(0.0)),
-                        _ => res_to_rd(crate::core::stats::forecast_linear(target_date, &ys, &xs)),
+                    let (confidence, seasonality_idx) = if is_confint {
+                        (self.opt_f64_arg(&evaluated_args, 3, 0.95)?, 4)
+                    } else {
+                        (0.95, 3)
+                    };
+                    let seasonality = self.opt_f64_arg(&evaluated_args, seasonality_idx, 1.0)?;
+                    let completion =
+                        self.opt_f64_arg(&evaluated_args, seasonality_idx + 1, 1.0)? != 0.0;
+
+                    let series =
+                        match crate::core::ets::build_series(&values, &timeline, completion) {
+                            Ok(s) => s,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                    let h = match crate::core::ets::horizon(
+                        series.start,
+                        series.step,
+                        series.values.len(),
+                        target,
+                    ) {
+                        Ok(h) => h,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
+                    let model = match crate::core::ets::prepare(
+                        &values,
+                        &timeline,
+                        seasonality,
+                        completion,
+                    ) {
+                        Ok(m) => m,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
+                    if is_confint {
+                        res_to_rd(model.confint(h, confidence))
+                    } else {
+                        Ok(ResultData::Float(model.forecast(h)))
+                    }
+                }
+                "FORECAST.ETS.SEASONALITY" => {
+                    // FORECAST.ETS.SEASONALITY(values, timeline,
+                    //                          [data_completion], [aggregation])
+                    // -- note there is no leading target-date argument.
+                    let (values, timeline) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                    let completion = self.opt_f64_arg(&evaluated_args, 2, 1.0)? != 0.0;
+                    match crate::core::ets::build_series(&values, &timeline, completion) {
+                        Ok(series) => Ok(ResultData::Float(crate::core::ets::detect_period(
+                            &series.values,
+                        ) as f64)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "FORECAST.ETS.STAT" => {
+                    // FORECAST.ETS.STAT(values, timeline, statistic_type,
+                    //                   [seasonality], [data_completion], [aggregation])
+                    let (values, timeline) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                    let which = self.to_f64_arg(evaluated_args.get(2), "FORECAST.ETS.STAT")?;
+                    let seasonality = self.opt_f64_arg(&evaluated_args, 3, 1.0)?;
+                    let completion = self.opt_f64_arg(&evaluated_args, 4, 1.0)? != 0.0;
+                    match crate::core::ets::prepare(&values, &timeline, seasonality, completion) {
+                        Ok(model) => res_to_rd(model.stat(which.round() as usize)),
+                        Err(e) => Ok(ResultData::Error(e)),
                     }
                 }
                 "FREQUENCY" => {

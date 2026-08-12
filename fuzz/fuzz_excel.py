@@ -171,29 +171,49 @@ class ExcelFuzzGenerator:
     # CLAUDE.md), so each is wrapped in INDEX(...) to pin down the single
     # scalar a plain cell comparison can check, matching how a spreadsheet
     # author would consume them from one cell in practice.
-    # The whole FORECAST.ETS family (FORECAST.ETS, .CONFINT, .SEASONALITY,
-    # .STAT) is deliberately excluded, for two independent reasons:
-    #   - visi does not actually implement them. They're hardcoded stubs
-    #     (SEASONALITY always returns 1, STAT always 0.5, CONFINT always 0,
-    #     and FORECAST.ETS falls back to a plain linear forecast), whereas
-    #     Excel's are real AAA triple-exponential smoothing. Fuzzing a stub
-    #     against a real implementation just reports the same known gap
-    #     every run instead of finding anything.
-    #   - Their signatures don't even match what this generator emits: the
-    #     real ones are FORECAST.ETS.SEASONALITY(values, timeline) and
-    #     FORECAST.ETS.STAT(values, timeline, stat_type) -- no leading
-    #     target-date argument -- so real Excel answers #VALUE! on arity
-    #     alone. They also need a genuine equally-spaced timeline; handed
-    #     this generator's random unsorted column, real Excel returns #NUM!
-    #     (confirmed directly: the same call with a clean 1..5 timeline
-    #     computes fine).
-    # Implementing real ETS would be the fix; until then this is a known,
-    # documented gap rather than a silently-passing test.
     ARRAY_FUNCTIONS = [
         "MDETERM", "MINVERSE", "MMULT", "MUNIT", "SEQUENCE",
         "LINEST", "LOGEST", "GROWTH", "TREND",
         "FORECAST", "FORECAST.LINEAR",
         "SERIESSUM",
+    ]
+    # The FORECAST.ETS family, fuzzed against a *well-posed* series (see
+    # the ETS block in create_fuzz_workbook): a regular timeline carrying an
+    # exact linear trend plus an exactly repeating season.
+    #
+    # That restriction is deliberate and is what makes the comparison
+    # meaningful. Excel fits alpha/beta/gamma with a proprietary optimizer
+    # and reports them to three decimals; no independent implementation
+    # reproduces those digits on noisy data, so a random series would only
+    # ever be asserting "did you reimplement Microsoft's optimizer". On a
+    # series the model fits perfectly the forecast is the same for any sane
+    # parameter triple -- Excel returns the exact continuation -- so what
+    # actually gets tested is the part that *is* well-defined: timeline
+    # validation and gap filling, season-length detection, the Holt-Winters
+    # recurrences, and extrapolation.
+    #
+    # STAT types 1-3 (alpha/beta/gamma) are excluded for the same reason:
+    # they report the optimizer's chosen parameters, which stay
+    # implementation-specific even when the forecast doesn't. Types 4-8
+    # (MASE/SMAPE/MAE/RMSE/step) are well-defined and are included.
+    # FORECAST.ETS.SEASONALITY is deliberately absent. Excel's automatic
+    # season-length detection is a heuristic that does not simply report the
+    # series' true period, and its answer turns on the *arrangement* of the
+    # seasonal offsets rather than on their magnitude or the trend. Probed
+    # directly, over 16 points with slope 2 and the same four offsets merely
+    # permuted: [8, -2, -8, 2] -> 4, [11, -11, 2, -2] -> 2,
+    # [2, -2, 11, -11] -> 2, and [-2, -11, 11, 2] -> 0, i.e. Excel reports
+    # *no* seasonality for a series that is exactly period-4. (Trend
+    # strength is not the trigger: holding the offsets fixed and sweeping
+    # the slope from 0 to 4 leaves the answer at 4 throughout.) Comparing
+    # against that is asserting a specific heuristic, not correctness, so
+    # detection is covered by libvisi's own unit tests -- on the patterns
+    # where Excel's answer *is* the true period -- and every function below
+    # is handed an explicit season length instead.
+    ETS_FUNCTIONS = [
+        "FORECAST.ETS", "FORECAST.ETS.CONFINT",
+        "FORECAST.ETS.STAT4", "FORECAST.ETS.STAT5", "FORECAST.ETS.STAT6",
+        "FORECAST.ETS.STAT7", "FORECAST.ETS.STAT8",
     ]
     CONDITIONAL_AGG_FUNCTIONS = [
         "AVERAGEIF", "AVERAGEIFS", "COUNTIF", "COUNTIFS",
@@ -382,6 +402,12 @@ class ExcelFuzzGenerator:
         # database functions (generate_database_formula) since it already
         # has a header row of column-letter names plus random data rows.
         self._db_range = None
+        # Populated by create_fuzz_workbook()'s ETS block; used by
+        # generate_ets_formula().
+        self._ets_timeline_range = None
+        self._ets_values_range = None
+        self._ets_next_target = 0
+        self._ets_period = 0
 
     def _col_name(self, col_idx):
         """Converts 1-based column index to A1 column letter (1 -> A, 2 -> B, 27 -> AA)."""
@@ -1452,6 +1478,31 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for logic function {fn}")
 
     # -- Array/matrix function generator -------------------------------------
+    def generate_ets_formula(self, fn):
+        """One FORECAST.ETS-family call against the workbook's ETS block.
+
+        The season length is always passed explicitly (`_ets_period`, 0 for
+        a pure-trend series) rather than left to Excel's auto-detection --
+        see the ETS_FUNCTIONS comment for why. `_ets_next_target` is the
+        first timeline point past the end of the series, so the forecast is
+        a genuine extrapolation; Excel returns #NUM! for a target inside the
+        timeline.
+        """
+        v = self._ets_values_range
+        t = self._ets_timeline_range
+        target = self._ets_next_target
+        season = self._ets_period
+        if fn == "FORECAST.ETS":
+            return f"=FORECAST.ETS({target + random.randint(0, 1)}, {v}, {t}, {season})"
+        if fn == "FORECAST.ETS.CONFINT":
+            # Signature puts confidence_level *before* seasonality.
+            return f"=FORECAST.ETS.CONFINT({target}, {v}, {t}, 0.95, {season})"
+        if fn.startswith("FORECAST.ETS.STAT"):
+            stat = int(fn[-1])
+            return f"=FORECAST.ETS.STAT({v}, {t}, {stat}, {season})"
+
+        raise AssertionError(f"no generator wired up for ETS function {fn}")
+
     def generate_array_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained formula for one ARRAY_FUNCTIONS entry. Matrix
         functions (MDETERM/MINVERSE/MMULT) use small square subranges of the
@@ -1478,8 +1529,10 @@ class ExcelFuzzGenerator:
             return f"=INDEX(MUNIT({random.randint(1, 4)}), 1, 1)"
         if fn == "SEQUENCE":
             return f"=INDEX(SEQUENCE({random.randint(1, 4)}, {random.randint(1, 4)}, {random.randint(-5, 5)}, {random.randint(1, 3)}), 1, 1)"
-        if fn in ("LINEST", "LOGEST", "GROWTH", "TREND", "FORECAST", "FORECAST.LINEAR",
-                  "FORECAST.ETS", "FORECAST.ETS.CONFINT", "FORECAST.ETS.SEASONALITY", "FORECAST.ETS.STAT"):
+        # The FORECAST.ETS family is generated by generate_ets_formula
+        # instead -- it needs the dedicated regular-timeline block and its
+        # signatures differ from the plain regression functions here.
+        if fn in ("LINEST", "LOGEST", "GROWTH", "TREND", "FORECAST", "FORECAST.LINEAR"):
             c2_off = 1 if span > 1 else 0
             ys = f"{col(0)}1:{col(0)}{value_rows}"
             xs = f"{col(c2_off)}1:{col(c2_off)}{value_rows}"
@@ -1903,6 +1956,50 @@ class ExcelFuzzGenerator:
         emit_block(self.TEXT_EXTRA_FUNCTIONS, lambda fn: self.generate_text2_formula(fn, value_rows, min_col, max_col))
         emit_block(self.LOGIC_EXTRA_FUNCTIONS, lambda fn: self.generate_logic_formula(fn, value_rows, min_col, max_col))
         emit_block(self.ARRAY_FUNCTIONS, lambda fn: self.generate_array_formula(fn, value_rows, min_col, max_col))
+
+        # --- ETS block: a regular timeline plus an exactly-modelled series.
+        # Both the trend and the seasonal offsets are whole numbers so the
+        # series is representable exactly in binary floating point, which
+        # keeps "the model fits perfectly" true to the last bit rather than
+        # only to within rounding.
+        ets_time_col = next_col
+        ets_value_col = next_col + 1
+        next_col += 2
+
+        ets_len = 16
+        # Half the time a pure trend (no seasonal term at all), half the
+        # time a trend plus an exactly repeating season. Both the slope and
+        # the offsets are whole numbers, so "the model fits this perfectly"
+        # holds to the last bit rather than only to within rounding -- which
+        # is what makes the forecast independent of the smoothing
+        # parameters, and therefore comparable across two implementations
+        # that optimize them differently.
+        period = random.choice([0, 2, 4])
+        base = random.randint(10, 200)
+        slope = random.randint(1, 4)
+        if period:
+            # Offsets sum to zero so they don't bias the trend.
+            half = [random.randint(1, 12) for _ in range(period // 2)]
+            offsets = half + [-x for x in half]
+            random.shuffle(offsets)
+        else:
+            offsets = [0]
+
+        for i in range(ets_len):
+            ws.cell(row=i + 1, column=ets_time_col, value=i + 1)
+            ws.cell(
+                row=i + 1,
+                column=ets_value_col,
+                value=base + slope * i + offsets[i % len(offsets)],
+            )
+        tcol = self._col_name(ets_time_col)
+        vcol = self._col_name(ets_value_col)
+        self._ets_timeline_range = f"{tcol}1:{tcol}{ets_len}"
+        self._ets_values_range = f"{vcol}1:{vcol}{ets_len}"
+        self._ets_next_target = ets_len + 1
+        self._ets_period = period
+
+        emit_block(self.ETS_FUNCTIONS, lambda fn: self.generate_ets_formula(fn))
         emit_block(self.CONDITIONAL_AGG_FUNCTIONS, lambda fn: self.generate_conditional_formula(fn, value_rows, min_col, max_col))
         emit_block(self.VOLATILE_FUNCTIONS, lambda fn: self.generate_volatile_formula(fn))
         emit_block(self.LAMBDA_FUNCTIONS, lambda fn: self.generate_lambda_formula(fn, value_rows, min_col, max_col))

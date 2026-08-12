@@ -276,3 +276,87 @@ fn test_present_but_non_numeric_optional_argument_is_value_error() {
         "{got:?}"
     );
 }
+
+#[test]
+fn test_forecast_ets_reproduces_excel_on_well_posed_series() {
+    // The ETS family used to be hardcoded stubs (SEASONALITY always 1,
+    // STAT always 0.5, CONFINT always 0, and FORECAST.ETS falling back to
+    // a straight linear fit). It is now a real AAA Holt-Winters model.
+    //
+    // Excel's alpha/beta/gamma come out of a proprietary optimizer that an
+    // independent implementation cannot be expected to reproduce digit for
+    // digit on noisy data. What *is* checkable -- and what these cases
+    // cover -- is a series the model fits perfectly, where the forecast is
+    // the same for any sane parameter triple and Excel's own answer is the
+    // exact continuation. Every expectation below was read from real Excel.
+    let t8: Vec<f64> = (1..=8).map(|i| i as f64).collect();
+    let linear: Vec<f64> = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0];
+
+    assert_eq!(
+        crate::core::ets::detect_period(&linear),
+        0,
+        "no seasonality"
+    );
+    let m = crate::core::ets::prepare(&linear, &t8, 1.0, true).expect("fits");
+    for (h, want) in [(1usize, 26.0), (2, 28.0), (3, 30.0)] {
+        let got = m.forecast(h);
+        assert!((got - want).abs() < 1e-9, "h={h}: got {got}, want {want}");
+    }
+    // A perfect fit leaves no error and no prediction interval.
+    for stat in [4usize, 5, 6, 7] {
+        assert!(m.stat(stat).expect("stat").abs() < 1e-9, "stat {stat}");
+    }
+    assert!(m.confint(1, 0.95).expect("confint").abs() < 1e-9);
+    // Excel reports exactly these for the degenerate (perfect-fit) case.
+    assert!((m.alpha - 0.9).abs() < 1e-12, "alpha = {}", m.alpha);
+    assert!((m.beta - 0.001).abs() < 1e-12, "beta = {}", m.beta);
+
+    // Trend plus a repeating period-4 season: Excel detects 4 and forecasts
+    // the exact continuation, 18 then 28.
+    let t16: Vec<f64> = (1..=16).map(|i| i as f64).collect();
+    let seasonal: Vec<f64> = vec![
+        10.0, 20.0, 15.0, 5.0, 12.0, 22.0, 17.0, 7.0, 14.0, 24.0, 19.0, 9.0, 16.0, 26.0, 21.0, 11.0,
+    ];
+    assert_eq!(crate::core::ets::detect_period(&seasonal), 4, "period 4");
+    let m2 = crate::core::ets::prepare(&seasonal, &t16, 1.0, true).expect("fits");
+    for (h, want) in [(1usize, 18.0), (2, 28.0)] {
+        let got = m2.forecast(h);
+        assert!(
+            (got - want).abs() < 1e-9,
+            "seasonal h={h}: got {got}, want {want}"
+        );
+    }
+
+    // A zigzag with no trend is period 2 (Excel agrees).
+    let zig: Vec<f64> = vec![10.0, 14.0, 11.0, 17.0, 15.0, 20.0, 18.0, 24.0, 21.0, 27.0];
+    assert_eq!(crate::core::ets::detect_period(&zig), 2);
+}
+
+#[test]
+fn test_forecast_ets_timeline_validation() {
+    let vals = vec![1.0, 2.0, 3.0, 4.0];
+    // Irregular spacing has no constant step.
+    let ragged = vec![1.0, 2.0, 4.5, 9.0];
+    assert_eq!(
+        crate::core::ets::build_series(&vals, &ragged, true).err(),
+        Some("#NUM!".to_string())
+    );
+    // Mismatched lengths.
+    assert_eq!(
+        crate::core::ets::build_series(&vals, &[1.0, 2.0], true).err(),
+        Some("#N/A".to_string())
+    );
+    // A gap is interpolated, not rejected: 1, 2, _, 4 over t = 1,2,4.
+    let s = crate::core::ets::build_series(&[1.0, 2.0, 4.0], &[1.0, 2.0, 4.0], true)
+        .expect("gap is completed");
+    assert_eq!(s.values.len(), 4);
+    assert!((s.values[2] - 3.0).abs() < 1e-9, "{:?}", s.values);
+    assert!((s.step - 1.0).abs() < 1e-12);
+
+    // A target at or before the end of the timeline has no horizon.
+    assert_eq!(
+        crate::core::ets::horizon(1.0, 1.0, 4, 4.0).err(),
+        Some("#NUM!".to_string())
+    );
+    assert_eq!(crate::core::ets::horizon(1.0, 1.0, 4, 6.0), Ok(2));
+}
