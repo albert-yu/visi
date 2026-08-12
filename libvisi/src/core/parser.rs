@@ -637,7 +637,12 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
         let c = chars[i];
         if let Some(q) = in_quote {
             if c == '\\' {
-                i += 2;
+                // A `\` as the last character of an unterminated quoted
+                // string (e.g. `="\`) would otherwise push `i` one past
+                // `chars.len()`, so the final `chars[last_idx..i]` slice
+                // below panics -- clamp instead of blindly skipping two
+                // chars. Found via libvisi/fuzz's formula_eval target.
+                i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
                 in_quote = None;
@@ -1108,7 +1113,15 @@ pub fn rewrite_structured_table_reference(
         let c = chars[i];
         if let Some(q) = in_quote {
             if c == '\\' {
-                i += 2;
+                // Same unbounded-overshoot shape as compile_formula's
+                // identical loop above (a trailing `\` in an unterminated
+                // quoted string can push `i` one past chars.len()). This
+                // function's own final slice is the open-ended
+                // `chars[last_idx..]` rather than `chars[last_idx..i]`, so
+                // it doesn't actually panic today -- clamped anyway, so
+                // this loop can't become a live crash the same way if
+                // that ever changes.
+                i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
                 in_quote = None;
@@ -2391,5 +2404,30 @@ mod tests {
             None,
         );
         assert_eq!(rewritten, None);
+    }
+
+    #[test]
+    fn test_compile_formula_never_panics_on_unterminated_quote_ending_in_backslash() {
+        // Regression for a crash found via libvisi/fuzz's formula_eval
+        // target within seconds of adding it (#26 -- the harness had zero
+        // formula-level fuzz coverage before): a `\` as the very last
+        // character of an unterminated quoted string (e.g. `="\`) pushed
+        // the scan index one past chars.len(), so the final
+        // chars[last_idx..i] slice panicked with a range-out-of-bounds
+        // error. Doesn't need to produce any particular result, just not
+        // crash on malformed input.
+        let _ = compile_formula("=\"\\", &[]);
+        let _ = compile_formula("=\"unterminated\\", &[]);
+    }
+
+    #[test]
+    fn test_rewrite_structured_table_reference_never_panics_on_unterminated_quote() {
+        // This function's in-quote/backslash scan loop has the exact same
+        // unbounded-overshoot shape as compile_formula's (fixed the same
+        // way, defensively) -- but its own final slice happens to be the
+        // open-ended `chars[last_idx..]` rather than `chars[last_idx..i]`,
+        // so an overshot `i` doesn't actually panic here today. Kept as a
+        // safety-net regression test in case that changes.
+        let _ = rewrite_structured_table_reference("=Sales[Amount]&\"\\", "Sales", None, None);
     }
 }

@@ -792,29 +792,70 @@ impl Sheet {
 
                 let is_col_range = *end_row == usize::MAX;
 
+                // A whole-column range's dependency is scoped to the
+                // *column*, not each individual cell, but the loop below
+                // still visits every (row, col) pair -- without tracking
+                // which columns this range has already registered, the
+                // `deps.contains` scan below (needed for correctness
+                // against whatever `deps` already held coming in) would
+                // run once per *cell* instead of once per *column*, i.e.
+                // O(width * height * deps.len()) instead of O(width *
+                // deps.len()). For a wide range (e.g. `=C:LL`, 322
+                // columns) evaluated repeatedly (e.g. inside a self-
+                // referential formula bounded by commit()'s max_ops, see
+                // the fix just above), that quadratic-in-width blowup was
+                // the difference between finishing in under a second and
+                // taking tens of seconds to minutes -- found via the same
+                // libvisi/fuzz formula_eval run (#26).
+                let mut seen_col_deps: HashSet<usize> = HashSet::new();
+
                 let mut results = Vec::new();
                 for r in *start_row..=actual_end_row {
                     for c in *start_col..=*end_col {
                         let cell_ref = CellRef::new(r, c);
                         if is_self {
                             if is_col_range {
-                                let col_dep = Dependency::LocalColumn(c);
-                                if !deps.contains(&col_dep) {
-                                    deps.push(col_dep);
+                                if seen_col_deps.insert(c) {
+                                    let col_dep = Dependency::LocalColumn(c);
+                                    if !deps.contains(&col_dep) {
+                                        deps.push(col_dep);
+                                    }
                                 }
                             } else {
                                 deps.push(Dependency::Local(cell_ref));
                             }
-                            results.push(self.get_result_data(&cell_ref));
+                            // A range that includes the very cell this
+                            // formula lives in (most commonly a bare,
+                            // unaggregated whole-column/whole-row range
+                            // like `=C:P` sitting inside columns C..P)
+                            // must not read that cell's own currently
+                            // stored value back into itself: on every
+                            // recompute the stored value *is* this List,
+                            // so reading it back would nest a List inside
+                            // itself one level deeper each pass --
+                            // unbounded growth that only stops at a stack
+                            // overflow in recursive Clone/Drop, found via
+                            // libvisi/fuzz's formula_eval target (#26).
+                            // Blank matches this engine's existing
+                            // convention for an unresolvable self-read
+                            // elsewhere (e.g. ISBLANK(GET(...)) on an
+                            // empty cell).
+                            if row == Some(r) && col == Some(c) {
+                                results.push(ResultData::None);
+                            } else {
+                                results.push(self.get_result_data(&cell_ref));
+                            }
                         } else {
                             let name = sheet.as_ref().unwrap().clone();
                             if is_col_range {
-                                let col_dep = Dependency::RemoteColumn {
-                                    sheet: name.clone(),
-                                    col: c,
-                                };
-                                if !deps.contains(&col_dep) {
-                                    deps.push(col_dep);
+                                if seen_col_deps.insert(c) {
+                                    let col_dep = Dependency::RemoteColumn {
+                                        sheet: name.clone(),
+                                        col: c,
+                                    };
+                                    if !deps.contains(&col_dep) {
+                                        deps.push(col_dep);
+                                    }
                                 }
                             } else {
                                 deps.push(Dependency::Remote {

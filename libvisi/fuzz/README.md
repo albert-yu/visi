@@ -1,11 +1,12 @@
-# VBA parsing fuzz targets
+# Crash-hunting fuzz targets
 
-`cargo-fuzz` (libFuzzer) harness for the two places in `libvisi` that parse
-completely untrusted bytes -- a `.xlsm`/`.bin` someone else authored, not
-anything this codebase produced itself. This is a different kind of fuzzing
-than `../../fuzz/` at the repo root: that one is differential (compares
-`visi`'s formula/pivot evaluation against real Excel's); this one just hunts
-for panics, unbounded allocation, and infinite loops on malformed input.
+`cargo-fuzz` (libFuzzer) harness for the places in `libvisi` that parse
+completely untrusted input -- a `.xlsm`/`.bin` or a formula string someone
+else authored, not anything this codebase produced itself. This is a
+different kind of fuzzing than `../../fuzz/` at the repo root: that one is
+differential (compares `visi`'s formula/pivot evaluation against real
+Excel's); this one just hunts for panics, unbounded allocation, and
+infinite loops on malformed input -- no output property is checked.
 
 ## Targets
 
@@ -16,6 +17,18 @@ for panics, unbounded allocation, and infinite loops on malformed input.
   full import pipeline: CFB container parsing, `dir`-stream decompression,
   `PROJECTMODULES` record walking, and per-module stream decompression. This
   is what runs on `xl/vbaProject.bin` the moment any `.xlsm` is opened.
+- **`formula_eval`** -- feeds arbitrary bytes as formula text through the
+  full formula pipeline (`compile_formula` -> `serialize_formula` ->
+  `parse_excel_formula` -> `evaluate_ast`/`evaluate_function`) via
+  `Sheet::commit`, against a small pre-populated sheet. Added because the
+  differential harness at `../../fuzz/` only ever generates formulas its own
+  generator functions consider well-formed, and the Python-side VBA
+  crash-fuzzing this directory used to cover was the *only* Rust-level fuzz
+  coverage that existed -- zero formula-level crash coverage (see #26).
+  Found a real bug on its first run: a `\` as the last character of an
+  unterminated quoted string (e.g. `="\`) panicked `compile_formula` with an
+  out-of-bounds slice (fixed in `core/parser.rs`, regression-tested in its
+  `#[cfg(test)]` module).
 
 ## Setup
 
@@ -32,6 +45,8 @@ From `libvisi/`:
 cargo +nightly fuzz run ovba_decompress
 mkdir -p fuzz/corpus/vba_import
 cargo +nightly fuzz run vba_import fuzz/corpus/vba_import fuzz/seeds/vba_import   # seed corpus, see below
+mkdir -p fuzz/corpus/formula_eval
+cargo +nightly fuzz run formula_eval fuzz/corpus/formula_eval fuzz/seeds/formula_eval
 ```
 
 Add `-- -max_total_time=60` (or `-runs=N`) to bound a run instead of fuzzing

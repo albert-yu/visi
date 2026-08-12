@@ -1,0 +1,1 @@
+=CONCAT(LEFT(C1,3),"-",TEXT(A1,"0.00"),Sheet1!A1,$B$1,A1:C3)

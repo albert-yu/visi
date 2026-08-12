@@ -1564,3 +1564,57 @@ fn test_multi_cell_circular_chain_terminates_without_hanging() {
         }
     }
 }
+
+/// Regression for a stack-overflow/hang found via libvisi/fuzz's
+/// formula_eval target within its first extended run (#26 -- zero
+/// formula-level Rust fuzz coverage existed before that target). A bare,
+/// unaggregated range reference that includes the very cell its own
+/// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P
+/// span) reads its own currently-stored value back as one element of the
+/// range on every recompute; since that stored value *is* the previous
+/// recompute's `ResultData::List`, each pass nested a List one level
+/// deeper inside itself. Per-op cost grew visibly superlinearly (measured
+/// via temporary instrumentation: ~350ms for ops 1-200, ~3.6s for ops
+/// 1000-1200) and the process stack-overflowed via recursive Clone/Drop
+/// around op ~1300 -- well before commit()'s own max_ops=10000 circuit
+/// breaker ever got a chance to trip, since each op was individually
+/// getting more expensive rather than the op *count* running away.
+#[test]
+fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
+    let mut sheet = Sheet::new(SheetInit {
+        id: None,
+        name: Some("Sheet1".to_string()),
+        rows: 20,
+        cols: 20,
+    });
+    sheet.set_cell_src(0, 0, "1".to_string());
+    sheet.set_cell_src(1, 0, "2".to_string());
+    sheet.set_cell_src(0, 1, "3.5".to_string());
+
+    // Column K (index 10) is squarely inside the C..P (2..15) span this
+    // formula itself references.
+    sheet.set_cell_src(10, 10, "=C:P".to_string());
+
+    let start = std::time::Instant::now();
+    let result = sheet.commit(None);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "self-referential whole-column range must not hang"
+    );
+    assert!(result.is_ok());
+
+    // The formula's own cell must not have grown into a deeply-nested
+    // List -- it should still just be the (blank-for-self, per the fix)
+    // range's List, one level deep.
+    match sheet.get_result_data(&CellRef::new(10, 10)) {
+        ResultData::List(items) => {
+            assert!(
+                items
+                    .iter()
+                    .all(|item| !matches!(item, ResultData::List(_))),
+                "range result must not contain a nested List"
+            );
+        }
+        other => panic!("expected a flat List result, got {other:?}"),
+    }
+}
