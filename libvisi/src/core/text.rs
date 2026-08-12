@@ -170,10 +170,31 @@ pub fn detectlanguage(_text: &str) -> Result<String, String> {
     Ok("en".to_string())
 }
 
+/// Rounds half away from zero at `decimals` places, the rule Excel's
+/// DOLLAR/FIXED display uses. Rust's `format!("{:.N}", x)` instead rounds
+/// the *binary* value to nearest-even, so a decimal literal like 3395.85
+/// (whose nearest f64 is a hair below 3395.85) formats down to "3395.8"
+/// where Excel shows "3395.9". Confirmed against real Excel:
+/// DOLLAR(3395.85, 1) = "$3,395.9", DOLLAR(2.5, 0) = "$3",
+/// DOLLAR(-2.5, 0) = "($3)".
+fn round_half_away_from_zero(value: f64, decimals: usize) -> f64 {
+    let factor = 10f64.powi(decimals as i32);
+    let scaled = value * factor;
+    // Nudge by one ulp-ish epsilon so a value that is only *just* below
+    // the .5 boundary because of binary representation still rounds up.
+    let eps = scaled.abs() * f64::EPSILON * 4.0;
+    let adjusted = if scaled >= 0.0 {
+        scaled + eps
+    } else {
+        scaled - eps
+    };
+    (adjusted.abs().round().copysign(adjusted)) / factor
+}
+
 pub fn dollar(number: f64, decimals: Option<f64>) -> Result<String, String> {
     let dec = decimals.unwrap_or(2.0).round() as usize;
     let is_neg = number < 0.0;
-    let abs_num = number.abs();
+    let abs_num = round_half_away_from_zero(number, dec).abs();
     let formatted = format!("{:.*}", dec, abs_num);
     let parts: Vec<&str> = formatted.split('.').collect();
     let int_part = parts[0];
@@ -231,7 +252,7 @@ pub fn fixed(
     let dec = decimals.unwrap_or(2.0).round() as usize;
     let skip_commas = no_commas.unwrap_or(false);
     let is_neg = number < 0.0;
-    let abs_num = number.abs();
+    let abs_num = round_half_away_from_zero(number, dec).abs();
     let formatted = format!("{:.*}", dec, abs_num);
 
     if skip_commas {
@@ -400,15 +421,87 @@ pub fn t_fn(val: &str, is_string: bool) -> String {
     }
 }
 
-pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
-    if format_text.contains('%') {
-        Ok(format!("{:.1}%", val * 100.0))
-    } else if format_text.contains('.') {
-        let dec_count = format_text.split('.').nth(1).unwrap_or("").len();
-        Ok(format!("{:.*}", dec_count, val))
-    } else {
-        Ok(format!("{:.0}", val))
+fn add_thousands_separators(digits: &str) -> String {
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(*b as char);
     }
+    out
+}
+
+fn format_date_text(val: f64, format_text: &str) -> Result<String, String> {
+    if val < 0.0 {
+        return Err("#VALUE!".to_string());
+    }
+    let (y, m, d) = crate::core::date_fn::serial_to_ymd(val);
+    // Longest tokens first so "yyyy" isn't partially eaten by a "yy" pass.
+    let replaced = format_text
+        .replace("yyyy", &format!("{:04}", y))
+        .replace("yy", &format!("{:02}", y % 100))
+        .replace("mm", &format!("{:02}", m))
+        .replace("dd", &format!("{:02}", d));
+    Ok(replaced)
+}
+
+/// A pragmatic subset of Excel's TEXT() number-format mini-language: `$`
+/// currency prefix, `%` percentage (value *100, suffixed), `,` thousands
+/// grouping, and `.0...`/`.#...` decimal-place count, plus common date
+/// tokens (`yyyy`/`yy`/`mm`/`dd`). Not a full format-code parser (no
+/// custom positive/negative/zero sections, no scientific notation, no
+/// fractions, ...) -- covers what this engine's own formula generation
+/// and fuzzing actually exercise.
+pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
+    let fmt = format_text.trim();
+
+    let has_date_tokens =
+        (fmt.contains('y') || fmt.contains('d')) && !fmt.contains('0') && !fmt.contains('#');
+    if has_date_tokens {
+        return format_date_text(val, fmt);
+    }
+
+    let has_currency = fmt.contains('$');
+    let has_percent = fmt.contains('%');
+    let has_comma = fmt.contains(',');
+    let dec_count = match fmt.find('.') {
+        Some(idx) => fmt[idx + 1..]
+            .chars()
+            .take_while(|c| *c == '0' || *c == '#')
+            .count(),
+        None => 0,
+    };
+
+    let scaled = if has_percent { val * 100.0 } else { val };
+    let is_negative = scaled < 0.0;
+    let formatted = format!("{:.*}", dec_count, scaled.abs());
+    let (int_part, dec_part) = match formatted.split_once('.') {
+        Some((i, d)) => (i.to_string(), Some(d.to_string())),
+        None => (formatted, None),
+    };
+    let int_part = if has_comma {
+        add_thousands_separators(&int_part)
+    } else {
+        int_part
+    };
+
+    let mut result = int_part;
+    if let Some(d) = dec_part {
+        result.push('.');
+        result.push_str(&d);
+    }
+    if has_currency {
+        result.insert(0, '$');
+    }
+    if is_negative {
+        result.insert(0, '-');
+    }
+    if has_percent {
+        result.push('%');
+    }
+    Ok(result)
 }
 
 pub fn textafter(text: &str, delimiter: &str, instance: Option<f64>) -> Result<String, String> {

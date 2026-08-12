@@ -369,3 +369,153 @@ fn test_regression_and_correlation() {
     let r5 = sheet.get_result_data(&CellRef::new(2, 4));
     assert!(matches!(r5, ResultData::Float(v) if (v - 1.0).abs() < 1e-6));
 }
+
+#[test]
+fn test_inv_normal_cdf_matches_real_excel_to_near_double_precision() {
+    // erf() used to be the classic Abramowitz & Stegun 7.1.26 rational
+    // approximation, with a documented max error of ~1.5e-7 -- that
+    // bounded the precision of everything built on it (normal_cdf,
+    // inv_normal_cdf, and therefore CONFIDENCE/CONFIDENCE.NORM/
+    // NORM.S.INV/NORMSINV/NORMINV/LOGINV/LOGNORM.INV), which is why all
+    // of them mismatched real Excel in the ~7th significant digit on
+    // every differential fuzzing run. Now delegates to libm's erf/erfc
+    // (a pure-Rust fdlibm port, full double precision).
+    // 1.959963984540054 is the well-known two-sided 95% confidence
+    // z-value.
+    assert_float_close(&eval1("=NORM.S.INV(0.975)"), 1.959963984540054, 1e-9);
+}
+
+#[test]
+fn test_tdist_honors_tails_argument() {
+    // Legacy TDIST(x, df, tails) was wired to the same handler as
+    // T.DIST.2T (always two-tailed), completely ignoring the `tails`
+    // argument -- TDIST(x, df, 1) (one-tailed) returned exactly double
+    // the correct value, since the two-tailed probability is 2x the
+    // one-tailed probability for a symmetric distribution. Found via
+    // differential fuzzing (an exact 2x discrepancy against real Excel).
+    let one_tailed = eval1("=TDIST(2, 10, 1)");
+    let rt = eval1("=T.DIST.RT(2, 10)");
+    assert_float_close(
+        &one_tailed,
+        match rt {
+            ResultData::Float(v) => v,
+            other => panic!("expected float, got {other:?}"),
+        },
+        1e-9,
+    );
+
+    let two_tailed = eval1("=TDIST(2, 10, 2)");
+    let one_val = match one_tailed {
+        ResultData::Float(v) => v,
+        other => panic!("expected float, got {other:?}"),
+    };
+    assert_float_close(&two_tailed, one_val * 2.0, 1e-9);
+}
+
+#[test]
+fn test_percentrank_truncates_to_significance_not_rounds() {
+    // PERCENTRANK.INC/.EXC used `.round()` when limiting the result to
+    // `significance` digits, but real Excel truncates instead -- e.g. a
+    // raw value of 0.055555... at significance 3 displays as 0.055, not
+    // the rounded 0.056. Found via differential fuzzing (a handful of
+    // PERCENTRANK calls were off by exactly 0.001 against real Excel).
+    let grid = [
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+        [
+            "=PERCENTRANK(A1:J1, 1.5)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    // rank = (0 + 0.5) / 9 = 0.0555... -> truncated to 0.055, not
+    // rounded up to 0.056.
+    let r = sheet.get_result_data(&CellRef::new(1, 0));
+    assert!(
+        matches!(r, ResultData::Float(v) if (v - 0.055).abs() < 1e-9),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn test_hypgeomdist_legacy_is_pmf_only_and_out_of_support_is_zero() {
+    // Two independent HYPGEOM.DIST/HYPGEOMDIST bugs found via
+    // differential fuzzing:
+    //  - Legacy HYPGEOMDIST takes no `cumulative` argument at all -- it's
+    //    always the point probability mass -- but the dispatcher defaulted
+    //    a missing 5th argument to `true` (cumulative), so it silently
+    //    summed the PMF from 0 up through the given count instead of
+    //    just returning that one point's probability.
+    //  - The PMF's log-combination formula assumed valid choose()
+    //    arguments and produced a pole (NaN) instead of 0 once a count
+    //    fell outside the distribution's actual support, propagating as
+    //    #NUM! instead of the mathematically correct 0.
+    let grid = [[
+        "=HYPGEOMDIST(1, 4, 19, 45)",
+        "=HYPGEOM.DIST(1, 4, 19, 45, FALSE)",
+        "=HYPGEOM.DIST(4, 25, 13, 25, FALSE)",
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 0));
+    let r2 = sheet.get_result_data(&CellRef::new(0, 1));
+    match (&r1, &r2) {
+        (ResultData::Float(a), ResultData::Float(b)) => {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "HYPGEOMDIST(1,4,19,45)={a} should equal the non-cumulative HYPGEOM.DIST={b}"
+            );
+        }
+        _ => panic!("expected floats, got {r1:?} / {r2:?}"),
+    }
+
+    let r3 = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(r3, ResultData::Float(v) if v.abs() < 1e-9),
+        "{r3:?}"
+    );
+}
+
+#[test]
+fn test_inverse_beta_and_f_distributions_converge_to_excel_values() {
+    // inv_incbeta (which BETA.INV/BETAINV/F.INV/F.INV.RT/FINV all go
+    // through) used unguarded Newton iteration that *clamped* an
+    // overshooting step to [1e-12, 1-1e-12]. Those clamps are absorbing,
+    // so once a step overshot, x stuck to the boundary and got returned
+    // as the answer -- BETAINV would report a flat 1e-12 or
+    // 0.999999999999, and F.INV (which maps the result back through
+    // df2*y/(df1*(1-y)), a pole as y approaches 1) would report ~1e12.
+    // Now safeguarded: Newton only when the step stays inside the current
+    // bracket, bisection otherwise. Every expected value below was read
+    // straight out of real Excel.
+    for (f, expected) in [
+        ("=BETAINV(0.945, 9.128, 5.585)", 0.8079143872863086),
+        ("=_xlfn.BETA.INV(0.077, 4.347, 1.607)", 0.45886530331058883),
+        ("=_xlfn.F.INV(0.119, 8, 1)", 0.3281233164680227),
+        ("=_xlfn.F.INV(0.883, 1, 8)", 3.0866529196587305),
+        ("=_xlfn.F.INV.RT(0.942, 18, 3)", 0.33370421499396513),
+        ("=_xlfn.F.INV.RT(0.876, 17, 6)", 0.5030517141697566),
+        ("=FINV(0.709, 1, 11)", 0.14670778600563464),
+        ("=FINV(0.868, 10, 9)", 0.4767239715231606),
+        ("=_xlfn.F.INV.RT(0.38, 17, 1)", 3.9202240523326743),
+    ] {
+        let got = eval1(f);
+        match got {
+            ResultData::Float(v) => {
+                let rel = (v - expected).abs() / expected.abs().max(1e-300);
+                assert!(rel < 1e-9, "{f}: got {v}, want {expected} (rel {rel:e})");
+            }
+            other => panic!("{f}: got {other:?}, want {expected}"),
+        }
+    }
+}

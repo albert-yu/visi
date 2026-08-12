@@ -91,32 +91,22 @@ pub fn normal_cdf(x: f64) -> f64 {
     0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
 }
 
-/// Error function erf(x)
+/// Error function erf(x). Delegates to `libm` (a pure-Rust fdlibm port,
+/// full double precision) rather than the ~1.5e-7-max-error Abramowitz &
+/// Stegun 7.1.26 rational approximation this used to hand-roll -- that
+/// bounded precision propagated into every function built on
+/// normal_cdf/inv_normal_cdf (CONFIDENCE, CONFIDENCE.NORM, NORM.S.INV,
+/// NORMSINV, NORMINV, LOGINV, LOGNORM.INV, ...), which is why real Excel
+/// and visi disagreed in the ~7th significant digit on all of them.
 pub fn erf(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    if x == 0.0 {
-        return 0.0;
-    }
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let ax = x.abs();
-    if ax > 10.0 {
-        return sign;
-    }
-
-    // High-precision Chebyshev approximation (erfc(x) for x >= 0)
-    let t = 1.0 / (1.0 + 0.3275911 * ax);
-    let poly = t
-        * (0.254829592
-            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-    let ans = 1.0 - poly * (-ax * ax).exp();
-    sign * ans
+    libm::erf(x)
 }
 
-/// Complementary error function erfc(x) = 1 - erf(x)
+/// Complementary error function erfc(x) = 1 - erf(x). Uses libm's own
+/// erfc directly (not `1.0 - erf(x)`) since that subtraction loses
+/// precision for large x, where erf(x) is very close to 1.
 pub fn erfc(x: f64) -> f64 {
-    1.0 - erf(x)
+    libm::erfc(x)
 }
 
 /// Log Gamma function ln(Gamma(x)) using Lanczos approximation (g=7, N=9)
@@ -341,24 +331,66 @@ pub fn inv_incbeta(a: f64, b: f64, p: f64) -> Result<f64, String> {
         return Err("#NUM!".to_string());
     }
 
+    // Safeguarded Newton: a Newton step when it stays inside the current
+    // bracket, otherwise a bisection step. incbeta is monotonically
+    // increasing in x on [0, 1], so [0, 1] is always a valid starting
+    // bracket and bisection alone would already converge -- Newton is
+    // only an accelerator here, never something that can run away.
+    //
+    // The previous version was unguarded Newton that simply *clamped* an
+    // overshooting step to [1e-12, 1-1e-12]. Those clamps are absorbing:
+    // once a step overshot, x stuck to the boundary and the loop returned
+    // it as the answer. That surfaced against real Excel as BETAINV
+    // answering a flat 1e-12 or 0.999999999999, and (since
+    // F.INV/F.INV.RT/FINV map y back through `df2*y / (df1*(1-y))`, which
+    // blows up as y approaches 1) as F.INV returning ~1e12 instead of a
+    // small number.
     let y = inv_normal_cdf(p)?;
     let h = 2.0 / (1.0 / (2.0 * a - 1.0) + 1.0 / (2.0 * b - 1.0));
     let w = (y * (h + 5.0 / 6.0 - 2.0 / (3.0 * h)).sqrt() / h)
         - (1.0 / (2.0 * b - 1.0) - 1.0 / (2.0 * a - 1.0)) * (y * y + 5.0 / 6.0 - 2.0 / (3.0 * h));
-    let mut x = (a / (a + b * (2.0 * w).exp())).clamp(0.0001, 0.9999);
+    let initial = a / (a + b * (2.0 * w).exp());
+    let mut x = if initial.is_finite() && initial > 0.0 && initial < 1.0 {
+        initial
+    } else {
+        0.5
+    };
 
-    for _ in 0..40 {
+    let lbeta = lgamma(a) + lgamma(b) - lgamma(a + b);
+    let mut lo = 0.0_f64;
+    let mut hi = 1.0_f64;
+
+    for _ in 0..200 {
         let err = incbeta(a, b, x) - p;
-        if err.abs() < 1e-12 {
-            break;
+        if err.abs() < 1e-14 {
+            return Ok(x);
         }
-        let lbeta = lgamma(a) + lgamma(b) - lgamma(a + b);
+        // incbeta is increasing, so err < 0 means x is still too small.
+        if err < 0.0 {
+            lo = x;
+        } else {
+            hi = x;
+        }
+
         let pdf = ((a - 1.0) * x.ln() + (b - 1.0) * (1.0 - x).ln() - lbeta).exp();
-        if pdf == 0.0 {
+        let newton = if pdf > 0.0 && pdf.is_finite() {
+            x - err / pdf
+        } else {
+            f64::NAN
+        };
+        let next = if newton.is_finite() && newton > lo && newton < hi {
+            newton
+        } else {
+            0.5 * (lo + hi)
+        };
+
+        if (next - x).abs() <= 1e-16 * x.abs().max(f64::MIN_POSITIVE) {
+            return Ok(next);
+        }
+        x = next;
+        if hi - lo <= f64::EPSILON {
             break;
         }
-        let step = err / pdf;
-        x = (x - step).clamp(1e-12, 1.0 - 1e-12);
     }
 
     Ok(x)
@@ -764,8 +796,14 @@ pub fn percentrank_inc(data: &[f64], x: f64, significance: usize) -> Result<f64,
         }
     }
 
+    // Excel's PERCENTRANK truncates to `significance` digits rather than
+    // rounding (a raw value of e.g. 0.4545 gives 0.454, not 0.455). The
+    // nudge matters: a rank that is mathematically exactly 0.4 can land a
+    // hair below it in f64 (0.39999999999999997), and truncating *that*
+    // yields 0.399 where Excel reports 0.4.
     let mult = 10.0_f64.powi(significance as i32);
-    Ok((ans * mult).round() / mult)
+    let scaled = ans * mult;
+    Ok((scaled + scaled.abs().max(1.0) * f64::EPSILON * 4.0).floor() / mult)
 }
 
 pub fn percentrank_exc(data: &[f64], x: f64, significance: usize) -> Result<f64, String> {
@@ -796,8 +834,14 @@ pub fn percentrank_exc(data: &[f64], x: f64, significance: usize) -> Result<f64,
         }
     }
 
+    // Excel's PERCENTRANK truncates to `significance` digits rather than
+    // rounding (a raw value of e.g. 0.4545 gives 0.454, not 0.455). The
+    // nudge matters: a rank that is mathematically exactly 0.4 can land a
+    // hair below it in f64 (0.39999999999999997), and truncating *that*
+    // yields 0.399 where Excel reports 0.4.
     let mult = 10.0_f64.powi(significance as i32);
-    Ok((ans * mult).round() / mult)
+    let scaled = ans * mult;
+    Ok((scaled + scaled.abs().max(1.0) * f64::EPSILON * 4.0).floor() / mult)
 }
 
 // ============================================================================
@@ -805,8 +849,14 @@ pub fn percentrank_exc(data: &[f64], x: f64, significance: usize) -> Result<f64,
 // ============================================================================
 
 pub fn covariance_p(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
-    if xs.len() != ys.len() || xs.is_empty() {
+    // Length mismatch is #N/A, but zero usable pairs is #DIV/0! -- both
+    // confirmed against real Excel (e.g. CORREL over two ranges whose
+    // every pair contains a text cell gives #DIV/0!, not #N/A).
+    if xs.len() != ys.len() {
         return Err("#N/A".to_string());
+    }
+    if xs.is_empty() {
+        return Err("#DIV/0!".to_string());
     }
     let n = xs.len() as f64;
     let mean_x = xs.iter().sum::<f64>() / n;
@@ -837,8 +887,14 @@ pub fn covariance_s(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
 }
 
 pub fn correl(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
-    if xs.len() != ys.len() || xs.is_empty() {
+    // Length mismatch is #N/A, but zero usable pairs is #DIV/0! -- both
+    // confirmed against real Excel (e.g. CORREL over two ranges whose
+    // every pair contains a text cell gives #DIV/0!, not #N/A).
+    if xs.len() != ys.len() {
         return Err("#N/A".to_string());
+    }
+    if xs.is_empty() {
+        return Err("#DIV/0!".to_string());
     }
     let n = xs.len() as f64;
     let mean_x = xs.iter().sum::<f64>() / n;
@@ -865,8 +921,14 @@ pub fn correl(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
 }
 
 pub fn slope(ys: &[f64], xs: &[f64]) -> Result<f64, String> {
-    if xs.len() != ys.len() || xs.is_empty() {
+    // Length mismatch is #N/A, but zero usable pairs is #DIV/0! -- both
+    // confirmed against real Excel (e.g. CORREL over two ranges whose
+    // every pair contains a text cell gives #DIV/0!, not #N/A).
+    if xs.len() != ys.len() {
         return Err("#N/A".to_string());
+    }
+    if xs.is_empty() {
+        return Err("#DIV/0!".to_string());
     }
     let n = xs.len() as f64;
     let mean_x = xs.iter().sum::<f64>() / n;
@@ -1205,6 +1267,15 @@ pub fn hypgeom_dist(
     let n_pop = pop_size.floor();
 
     let pmf_fn = |x: f64| -> f64 {
+        // C(m_pop, x) is architecturally 0 once x is outside [0, m_pop],
+        // and likewise C(n_pop - m_pop, n - x) once (n - x) is outside
+        // [0, n_pop - m_pop] -- the lgamma-based log-combination formula
+        // below assumes valid choose() arguments and produces a pole
+        // (lgamma of a non-positive integer -> NaN) rather than 0 outside
+        // that range, so this has to be checked before calling it.
+        if x < 0.0 || x > m_pop || (n - x) < 0.0 || (n - x) > n_pop - m_pop {
+            return 0.0;
+        }
         let log_comb1 = lgamma(m_pop + 1.0) - lgamma(x + 1.0) - lgamma(m_pop - x + 1.0);
         let log_comb2 = lgamma(n_pop - m_pop + 1.0)
             - lgamma(n - x + 1.0)
@@ -1256,7 +1327,15 @@ pub fn chisq_test(actual: &[f64], expected: &[f64]) -> Result<f64, String> {
     }
     let mut chi2 = 0.0;
     for (&o, &e) in actual.iter().zip(expected.iter()) {
-        if e <= 0.0 {
+        // A negative expected frequency is out of the distribution's
+        // domain (#NUM!); an expected frequency of exactly zero is the
+        // division itself failing (#DIV/0!). Both confirmed against real
+        // Excel -- lumping them together as #DIV/0! got the negative case
+        // wrong.
+        if e < 0.0 {
+            return Err("#NUM!".to_string());
+        }
+        if e == 0.0 {
             return Err("#DIV/0!".to_string());
         }
         chi2 += (o - e) * (o - e) / e;
@@ -1388,9 +1467,18 @@ pub fn t_test(
 
     let (t_stat, df) = match test_type {
         1 => {
-            // Paired
-            if n1 != n2 || n1 <= 1 {
+            // Paired. A genuine length mismatch is #N/A (though the
+            // caller already checks raw sizes before pairwise-excluding),
+            // but *too few usable pairs* is #DIV/0! -- there's no
+            // denominator to divide by. Confirmed against real Excel:
+            // T.TEST over two 5-cell ranges whose pairwise-valid overlap
+            // is a single pair reports #DIV/0!, as does a pair of
+            // identical (zero-variance) samples.
+            if n1 != n2 {
                 return Err("#N/A".to_string());
+            }
+            if n1 <= 1 {
+                return Err("#DIV/0!".to_string());
             }
             let diffs: Vec<f64> = array1
                 .iter()
@@ -1542,23 +1630,38 @@ pub fn prob(
 }
 
 pub fn frequency(data: &[f64], bins: &[f64]) -> Result<Vec<f64>, String> {
-    let mut sorted_bins = bins.to_vec();
-    sorted_bins.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    // Excel sorts the bins internally to work out the interval each value
+    // falls in, but reports each interval's count back at that bin's
+    // *original* position in bins_array, with the overflow count last.
+    // Returning the counts in sorted order instead (what this used to do)
+    // silently permutes the result whenever bins_array isn't already
+    // ascending. Verified against real Excel with bins [25, -10, 8] over
+    // data [5, -20, 30, 1, 12]: Excel gives [1, 1, 2, 1], i.e. the sorted
+    // counts [1, 2, 1] mapped back through each bin's rank, then overflow.
+    let mut order: Vec<usize> = (0..bins.len()).collect();
+    order.sort_by(|&a, &b| bins[a].partial_cmp(&bins[b]).unwrap_or(Ordering::Equal));
+    let sorted_bins: Vec<f64> = order.iter().map(|&i| bins[i]).collect();
 
-    let mut counts = vec![0.0; sorted_bins.len() + 1];
+    let mut sorted_counts = vec![0.0; sorted_bins.len() + 1];
     for &x in data {
         let mut placed = false;
         for (i, &b) in sorted_bins.iter().enumerate() {
             if x <= b {
-                counts[i] += 1.0;
+                sorted_counts[i] += 1.0;
                 placed = true;
                 break;
             }
         }
         if !placed {
-            let last = counts.len() - 1;
-            counts[last] += 1.0;
+            let last = sorted_counts.len() - 1;
+            sorted_counts[last] += 1.0;
         }
     }
+
+    let mut counts = vec![0.0; bins.len() + 1];
+    for (rank, &orig_idx) in order.iter().enumerate() {
+        counts[orig_idx] = sorted_counts[rank];
+    }
+    counts[bins.len()] = sorted_counts[bins.len()];
     Ok(counts)
 }

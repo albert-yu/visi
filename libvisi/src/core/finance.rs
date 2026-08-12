@@ -176,7 +176,23 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
         }
     };
     let r = newton_raphson(f, guess)?;
-    if r <= -0.9999 { None } else { Some(r) }
+    // Reject a solution that has collapsed onto the degenerate root at
+    // r = -1 rather than finding a real rate. For an annuity-due with
+    // fv = 0 the payment term carries a factor of (1 + r), so r = -1
+    // satisfies the equation exactly for *any* inputs -- and for a long
+    // enough nper, (1+r)^nper underflows so fast that the iteration slides
+    // into that basin from a perfectly ordinary starting guess. Excel
+    // reports #NUM! for these (confirmed directly: the same call that
+    // gives #NUM! from the default guess returns a real rate when handed
+    // a guess near the true root, so this is a convergence outcome, not a
+    // claim that no root exists).
+    //
+    // The bound is -0.999 rather than the -0.9999 it used to be because
+    // the iteration reliably stalled a hair *above* the old threshold
+    // (around -0.99989999), slipping through as if it were a genuine
+    // answer. No real per-period rate lives in that gap anyway -- it would
+    // be a loss of 99.9% per period.
+    if r <= -0.999 { None } else { Some(r) }
 }
 
 /// Interest accrued during `period` on the outstanding balance, walked

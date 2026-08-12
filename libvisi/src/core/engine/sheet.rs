@@ -122,6 +122,17 @@ impl Default for SheetInit {
     }
 }
 
+/// How a blank cell is treated by the strict numeric flatteners.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlankPolicy {
+    /// Counts as 0 (GCD/LCM).
+    Zero,
+    /// Dropped entirely, shifting later elements (SERIESSUM).
+    Skip,
+    /// #VALUE!, like text (LINEST/TREND/GROWTH/LOGEST/MMULT).
+    Reject,
+}
+
 impl Sheet {
     pub fn new(args: SheetInit) -> Sheet {
         let SheetInit {
@@ -1299,6 +1310,236 @@ impl Sheet {
         }
     }
 
+    /// Flattens one argument positionally: `Some(n)` for a numeric cell,
+    /// `None` for anything real Excel excludes from a paired statistical
+    /// calculation (text, boolean, blank). Unlike flatten_stat_numbers,
+    /// excluded cells still occupy a slot, so two ranges of the same
+    /// shape always produce vectors of the same length and element `i` of
+    /// one still lines up with element `i` of the other.
+    fn flatten_positional(
+        &self,
+        arg: &ResultData,
+        out: &mut Vec<Option<f64>>,
+        first_err: &mut Option<String>,
+    ) {
+        match arg {
+            ResultData::List(items) => {
+                for item in items {
+                    self.flatten_positional(item, out, first_err);
+                }
+            }
+            ResultData::Float(f) => out.push(Some(*f)),
+            ResultData::Integer(i) => out.push(Some(*i as f64)),
+            ResultData::Error(e) => {
+                if first_err.is_none() {
+                    *first_err = Some(e.clone());
+                }
+                out.push(None);
+            }
+            _ => out.push(None),
+        }
+    }
+
+    fn positional_numbers(
+        &self,
+        arg: Option<&ResultData>,
+        first_err: &mut Option<String>,
+    ) -> Vec<Option<f64>> {
+        let mut out = Vec::new();
+        if let Some(a) = arg {
+            self.flatten_positional(a, &mut out, first_err);
+        }
+        out
+    }
+
+    /// Excel's paired statistical functions (CORREL/PEARSON/COVAR/
+    /// COVARIANCE.P/COVARIANCE.S/SLOPE/INTERCEPT/RSQ/STEYX/FORECAST/
+    /// TREND/LINEST/GROWTH/LOGEST/T.TEST/SUMX2PY2/SUMXMY2/SUMX2MY2/PROB)
+    /// compare the two ranges' *raw* element counts first -- a mismatch
+    /// is #N/A regardless of content -- and then drop every (x, y) pair
+    /// where either side is non-numeric, keeping what survives aligned.
+    ///
+    /// Verified directly against real Excel: `COVAR(A1:A4, B1:B4)` with
+    /// one text cell in B returns exactly the value of the 3-element
+    /// ranges with that whole pair physically removed, and the same holds
+    /// for SLOPE/INTERCEPT/RSQ/PEARSON/STEYX/FORECAST/T.TEST/SUMX*.
+    /// Booleans and blanks are excluded the same way text is.
+    ///
+    /// This is deliberately *not* the same as flattening each side
+    /// independently (what flatten_stat_numbers does): dropping a
+    /// non-numeric from only one side shifts every later element against
+    /// its partner, silently correlating the wrong values together.
+    /// F.TEST/FTEST is the exception that genuinely does want independent
+    /// per-array flattening -- it compares two samples' variances and
+    /// doesn't require equal sizes at all (confirmed against real Excel:
+    /// `FTEST(4-cell-with-text, ...)` equals `FTEST(full-4-cell, ...)`
+    /// against the 3-cell survivor, i.e. each side shrinks on its own).
+    fn pair_and_filter(
+        xs_raw: Vec<Option<f64>>,
+        ys_raw: Vec<Option<f64>>,
+    ) -> Result<(Vec<f64>, Vec<f64>), String> {
+        if xs_raw.len() != ys_raw.len() {
+            return Err("#N/A".to_string());
+        }
+        let mut xs = Vec::with_capacity(xs_raw.len());
+        let mut ys = Vec::with_capacity(ys_raw.len());
+        for (x, y) in xs_raw.into_iter().zip(ys_raw) {
+            if let (Some(x), Some(y)) = (x, y) {
+                xs.push(x);
+                ys.push(y);
+            }
+        }
+        Ok((xs, ys))
+    }
+
+    /// pair_and_filter over two argument slots.
+    fn paired_args(
+        &self,
+        x_arg: Option<&ResultData>,
+        y_arg: Option<&ResultData>,
+    ) -> Result<(Vec<f64>, Vec<f64>), String> {
+        // The size check has to come *before* propagating any error cell
+        // sitting inside either range: real Excel reports #N/A for two
+        // differently-sized ranges even when one of them contains a live
+        // error (confirmed by probing `CORREL` over a 4-cell and a 3-cell
+        // range whose second range held a #DIV/0!, which answers #N/A).
+        // These functions are therefore excluded from the generic
+        // "any error in an argument short-circuits the call" pre-pass, and
+        // re-raise the error here only once the shapes agree.
+        // A *scalar* operand carrying an error propagates before any
+        // shape logic runs: Excel resolves a 1x1 reference to a plain
+        // value first, and an error value in an ordinary operand position
+        // short-circuits the call. So `SUMX2PY2(A1:A4, P1:P1)` with a
+        // #DIV/0! in P1 is #DIV/0!, even though the two operands are
+        // differently sized.
+        //
+        // An error inside a *multi-cell* range does not get that
+        // treatment -- there the size check wins, and
+        // `SUMX2PY2(A1:A4, N1:N3)` with an error inside N1:N3 is #N/A.
+        // Both confirmed against real Excel, and consistently across
+        // CORREL/SLOPE/STEYX/SUMX2PY2.
+        for arg in [x_arg, y_arg].into_iter().flatten() {
+            if let ResultData::Error(e) = arg {
+                return Err(e.clone());
+            }
+        }
+        let mut first_err = None;
+        let xs_raw = self.positional_numbers(x_arg, &mut first_err);
+        let ys_raw = self.positional_numbers(y_arg, &mut first_err);
+        if xs_raw.len() != ys_raw.len() {
+            return Err("#N/A".to_string());
+        }
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+        Self::pair_and_filter(xs_raw, ys_raw)
+    }
+
+    /// Like flatten_stat_numbers, but errors instead of silently dropping
+    /// a cell real Excel won't accept. Excel's array/matrix-argument
+    /// functions don't ignore text the way SUM/AVERAGE-style aggregates
+    /// do -- one bad cell makes the whole call #VALUE!.
+    ///
+    /// `blanks` selects between the three behaviours real Excel actually
+    /// exhibits here, each established by probing it directly:
+    ///  - `BlankPolicy::Zero` (GCD/LCM): a blank counts as 0 and the call
+    ///    still succeeds. `GCD` over `{4, 6, <blank>, 8}` is 2 and `LCM`
+    ///    over it is 0 (i.e. the blank really did participate as a zero),
+    ///    while the same range with `TRUE` in place of the blank is
+    ///    #VALUE!.
+    ///  - `BlankPolicy::Skip` (SERIESSUM): a blank is dropped outright,
+    ///    which *shifts* every later coefficient down a power.
+    ///    `SERIESSUM(0.5, 0, 2, {4, 6, <blank>, 8})` is 6.0 -- exactly the
+    ///    3-coefficient answer -- not the 5.625 a zero in that slot gives.
+    ///  - `BlankPolicy::Reject` (LINEST/TREND/GROWTH/LOGEST/MMULT): text,
+    ///    booleans *and* blanks are all #VALUE!. LINEST returns #VALUE!
+    ///    for each of those three separately and only computes when every
+    ///    cell is a real number.
+    ///
+    /// Note this deliberately does not go through `to_f64`, which is the
+    /// lenient coercion used for scalar arguments -- that maps a blank to
+    /// 0, a boolean to 1/0, and a numeric-looking string to its value,
+    /// none of which these functions accept.
+    fn flatten_strict_inner(
+        &self,
+        arg: &ResultData,
+        blanks: BlankPolicy,
+        out: &mut Vec<f64>,
+    ) -> Result<(), String> {
+        match arg {
+            ResultData::List(items) => {
+                for item in items {
+                    self.flatten_strict_inner(item, blanks, out)?;
+                }
+                Ok(())
+            }
+            ResultData::Error(e) => Err(e.clone()),
+            ResultData::Float(f) => {
+                out.push(*f);
+                Ok(())
+            }
+            ResultData::Integer(i) => {
+                out.push(*i as f64);
+                Ok(())
+            }
+            ResultData::None => match blanks {
+                BlankPolicy::Zero => {
+                    out.push(0.0);
+                    Ok(())
+                }
+                BlankPolicy::Skip => Ok(()),
+                BlankPolicy::Reject => Err("#VALUE!".to_string()),
+            },
+            _ => Err("#VALUE!".to_string()),
+        }
+    }
+
+    fn flatten_strict_numbers(&self, arg: &ResultData) -> Result<Vec<f64>, String> {
+        let mut out = Vec::new();
+        self.flatten_strict_inner(arg, BlankPolicy::Zero, &mut out)?;
+        Ok(out)
+    }
+
+    /// flatten_strict_numbers with blanks dropped rather than zero-filled.
+    fn flatten_skipping_blanks(&self, arg: Option<&ResultData>) -> Result<Vec<f64>, String> {
+        let mut out = Vec::new();
+        if let Some(a) = arg {
+            self.flatten_strict_inner(a, BlankPolicy::Skip, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// flatten_strict_numbers with the stricter "a blank is also #VALUE!"
+    /// rule the regression-array and matrix functions use.
+    fn flatten_numbers_only(&self, arg: &ResultData) -> Result<Vec<f64>, String> {
+        let mut out = Vec::new();
+        self.flatten_strict_inner(arg, BlankPolicy::Reject, &mut out)?;
+        Ok(out)
+    }
+
+    /// The value of one cell of a SUMIF/AVERAGEIF/MAXIFS/MINIFS-style
+    /// *aggregate* range. Only a real number counts: Excel silently skips
+    /// text and booleans in the range being summed/averaged/compared
+    /// (confirmed directly -- `SUMIF` over a range holding
+    /// `{100, TRUE, 200, "txt", 300}` is 600, and MAXIFS over the same
+    /// range is 300, not the boolean coerced to 1). Using the lenient
+    /// `to_f64` here instead folded `TRUE` in as a 1, which both shifted
+    /// sums/averages and could win a MAX/MIN outright.
+    fn aggregate_range_number(val: &ResultData) -> Option<f64> {
+        match val {
+            ResultData::Float(f) => Some(*f),
+            ResultData::Integer(i) => Some(*i as f64),
+            _ => None,
+        }
+    }
+
+    fn flatten_numbers_only_arg(&self, arg: Option<&ResultData>) -> Result<Vec<f64>, String> {
+        match arg {
+            Some(a) => self.flatten_numbers_only(a),
+            None => Ok(vec![]),
+        }
+    }
+
     fn flatten_stat_numbers_a(&self, arg: &ResultData) -> Vec<f64> {
         match arg {
             ResultData::Float(f) => vec![*f],
@@ -1337,6 +1578,71 @@ impl Sheet {
                 rows
             }
             _ => vec![],
+        }
+    }
+
+    /// Reshapes a range argument's flat evaluated list back into a 2D
+    /// row-major matrix using the *reference's* own width.
+    ///
+    /// A plain rectangular range like `F1:G2` evaluates to a flat
+    /// `List` of 4 scalars with no nesting, so extract_matrix (which can
+    /// only treat a nested `List` as a row) turned it into a 4x1 column
+    /// instead of a 2x2 square -- and every matrix function then reported
+    /// #VALUE! on a perfectly valid square range. MMULT already
+    /// reconstructed its operands' shapes from the argument expression
+    /// this way; this shares that logic with MDETERM/MINVERSE.
+    fn matrix_from_arg(
+        &self,
+        expr: &crate::core::parser::Expr,
+        value: &ResultData,
+    ) -> Vec<Vec<f64>> {
+        // A list of lists already carries its own shape.
+        if let ResultData::List(items) = value
+            && items.iter().any(|i| matches!(i, ResultData::List(_)))
+        {
+            return self.extract_matrix(value);
+        }
+        // Only real numbers: the matrix functions reject text, booleans
+        // and blanks alike (all confirmed #VALUE! against real Excel), so
+        // a cell that isn't a number collapses the whole matrix rather
+        // than being coerced by to_f64.
+        fn plain(v: &ResultData) -> Option<f64> {
+            match v {
+                ResultData::Float(f) => Some(*f),
+                ResultData::Integer(i) => Some(*i as f64),
+                _ => None,
+            }
+        }
+        let items: Vec<&ResultData> = match value {
+            ResultData::List(items) => items.iter().collect(),
+            other => vec![other],
+        };
+        if items.iter().any(|v| plain(v).is_none()) {
+            return Vec::new();
+        }
+        let flat: Vec<f64> = items.iter().filter_map(|v| plain(v)).collect();
+        let cols = match Self::range_bounds(expr) {
+            Some((_, _, start_col, _, end_col)) => end_col.saturating_sub(start_col) + 1,
+            None => flat.len().max(1),
+        };
+        if cols == 0 || !flat.len().is_multiple_of(cols) {
+            return self.extract_matrix(value);
+        }
+        flat.chunks(cols).map(|c| c.to_vec()).collect()
+    }
+
+    /// An optional numeric argument. An *absent* argument falls back to
+    /// `default`, but one that is present and non-numeric is #VALUE! --
+    /// the `.and_then(to_f64).unwrap_or(default)` shape used in places
+    /// conflates the two, so e.g. `LOG(3.14, "E")` quietly computed
+    /// base-10 instead of erroring.
+    fn opt_f64_arg(&self, args: &[ResultData], i: usize, default: f64) -> Result<f64, EngineError> {
+        match args.get(i) {
+            None => Ok(default),
+            Some(ResultData::None) => Ok(default),
+            Some(v) => self.to_f64(v).ok_or_else(|| {
+                EngineError::EvalError(EvalError::UnknownFunction("#VALUE!".to_string()))
+            }),
         }
     }
 
@@ -1565,6 +1871,26 @@ impl Sheet {
             ResultData::Float(f) => Some(*f),
             _ => None,
         }
+    }
+
+    /// Exact-match ("match_type 0" / "range_lookup FALSE") comparison for
+    /// MATCH/VLOOKUP/HLOOKUP/XLOOKUP.
+    ///
+    /// A *blank* lookup value is coerced to 0 (Excel's usual empty-cell
+    /// coercion) and a blank cell in the searched range never matches
+    /// anything. Comparing the two blanks as equal strings instead --
+    /// which is what a plain `to_string()` comparison does, since both
+    /// render as "" -- made `MATCH(A1, A1:A4, 0)` over a blank A1 report
+    /// a hit at position 1 where real Excel reports #N/A.
+    fn exact_lookup_matches(lookup: &ResultData, candidate: &ResultData) -> bool {
+        if matches!(candidate, ResultData::None) {
+            return false;
+        }
+        let lookup_key = match lookup {
+            ResultData::None => "0".to_string(),
+            other => other.to_string(),
+        };
+        candidate.to_string() == lookup_key
     }
 
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
@@ -1833,16 +2159,21 @@ impl Sheet {
     }
 
     fn proper(&self, s: &str) -> String {
+        // Per Microsoft's own definition, PROPER capitalizes a letter
+        // preceded by "any character that is not a letter" -- that
+        // includes digits, not just punctuation/spacing, which is why
+        // PROPER("123abc") is "123Abc": the digits aren't letters, so the
+        // 'a' right after them still counts as the start of a new word.
         let mut c_chars = Vec::new();
         let mut capitalize_next = true;
         for c in s.chars() {
-            if c.is_alphanumeric() {
+            if c.is_alphabetic() {
                 if capitalize_next {
                     c_chars.extend(c.to_uppercase());
-                    capitalize_next = false;
                 } else {
                     c_chars.extend(c.to_lowercase());
                 }
+                capitalize_next = false;
             } else {
                 c_chars.push(c);
                 capitalize_next = true;
@@ -3523,6 +3854,70 @@ impl Sheet {
                 }
             }
 
+            if upper_name == "IFNA" {
+                if args.len() < 2 {
+                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                        "IFNA requires 2 arguments".to_string(),
+                    )));
+                }
+                let first_val = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
+                if let ResultData::Error(ref e) = first_val
+                    && e == "#N/A"
+                {
+                    return self.evaluate_ast(&args[1], context, row, col, deps, scope);
+                }
+                return Ok(first_val);
+            }
+
+            if upper_name == "IFS" {
+                // Lazily evaluated: only the arms up to and including the
+                // first TRUE condition are ever computed, so an error
+                // sitting in a later (unselected) value never propagates.
+                // Confirmed against real Excel: `IFS(TRUE, 42, TRUE, 1/0)`
+                // is 42, while `IFS(FALSE, 42, TRUE, 1/0)` is #DIV/0!.
+                let mut i = 0;
+                while i + 1 < args.len() {
+                    let cond = self.evaluate_ast(&args[i], context, row, col, deps, scope)?;
+                    if let ResultData::Error(_) = cond {
+                        return Ok(cond);
+                    }
+                    if self.to_bool(&cond) {
+                        return self.evaluate_ast(&args[i + 1], context, row, col, deps, scope);
+                    }
+                    i += 2;
+                }
+                return Ok(ResultData::Error("#N/A".to_string()));
+            }
+
+            if upper_name == "SWITCH" {
+                // Lazily evaluated for the same reason as IFS: an error in
+                // a value arm that isn't selected must not propagate
+                // (`SWITCH(2, 1, 1/0, 2, 99, -1)` is 99 in real Excel).
+                if args.len() < 3 {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                let target = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
+                if let ResultData::Error(_) = target {
+                    return Ok(target);
+                }
+                let mut i = 1;
+                while i + 1 < args.len() {
+                    let case = self.evaluate_ast(&args[i], context, row, col, deps, scope)?;
+                    if let ResultData::Error(_) = case {
+                        return Ok(case);
+                    }
+                    if target.to_string() == case.to_string() {
+                        return self.evaluate_ast(&args[i + 1], context, row, col, deps, scope);
+                    }
+                    i += 2;
+                }
+                // A trailing odd argument is the default.
+                if i < args.len() {
+                    return self.evaluate_ast(&args[i], context, row, col, deps, scope);
+                }
+                return Ok(ResultData::Error("#N/A".to_string()));
+            }
+
             if upper_name == "CHOOSE" {
                 if args.len() < 2 {
                     return Err(EngineError::EvalError(EvalError::UnknownFunction(
@@ -3708,9 +4103,59 @@ impl Sheet {
                 upper_name.as_str(),
                 "SUM" | "AVERAGE" | "MIN" | "MAX" | "PRODUCT"
             );
-            if upper_name != "IFERROR"
-                && upper_name != "ISERROR"
-                && upper_name != "ISNA"
+            // The type-introspection functions must see an error value
+            // rather than have it propagate past them: real Excel answers
+            // TYPE(1/0) = 16, ISNONTEXT(1/0) = TRUE, and
+            // ISTEXT/ISNUMBER/ISLOGICAL/ISBLANK(1/0) = FALSE. (Math
+            // functions like ISODD do still propagate -- ISODD(1/0) is
+            // #DIV/0! -- so they stay out of this list.)
+            let inspects_errors = matches!(
+                upper_name.as_str(),
+                "IFERROR"
+                    | "ISERROR"
+                    | "ISNA"
+                    | "ISERR"
+                    | "ERROR.TYPE"
+                    | "TYPE"
+                    | "ISTEXT"
+                    | "ISNONTEXT"
+                    | "ISNUMBER"
+                    | "ISLOGICAL"
+                    | "ISBLANK"
+            );
+            if !inspects_errors
+                // COUNTA counts an error argument as one more non-blank
+                // value, and COUNT skips it, rather than either
+                // propagating it (both match real Excel).
+                && upper_name != "COUNTA"
+                && upper_name != "COUNT"
+                // AGGREGATE decides for itself whether to propagate or
+                // ignore an error in its data, based on its `options`
+                // argument, so it must see the raw arguments.
+                && upper_name != "AGGREGATE"
+                // The paired statistical functions check their two ranges'
+                // shapes before anything else -- a size mismatch is #N/A
+                // even when a range also holds an error value -- so they
+                // re-raise errors themselves (see paired_args).
+                && !matches!(
+                    upper_name.as_str(),
+                    "CORREL"
+                        | "PEARSON"
+                        | "COVAR"
+                        | "COVARIANCE.P"
+                        | "COVARIANCE.S"
+                        | "SLOPE"
+                        | "INTERCEPT"
+                        | "RSQ"
+                        | "STEYX"
+                        | "FORECAST"
+                        | "FORECAST.LINEAR"
+                        | "SUMX2MY2"
+                        | "SUMX2PY2"
+                        | "SUMXMY2"
+                        | "CHISQ.TEST"
+                        | "CHITEST"
+                )
                 && !uses_ordered_arg_error_check
                 && let Some(err) = Self::find_error_in_args(&evaluated_args)
             {
@@ -3724,7 +4169,15 @@ impl Sheet {
                 }
             };
 
-            match upper_name.as_str() {
+            // A NaN can only come from a math function evaluated outside
+            // its domain (ASIN/ACOS of |x|>1, SQRT/LN/LOG10 of a negative,
+            // ...), and an infinity only from one that overflowed
+            // (POWER(42, 600), EXP(1000)). Excel has neither -- it reports
+            // #NUM! for both -- so rather than bolting a domain/overflow
+            // guard onto each of those call sites individually, normalize
+            // here at the single point every function result flows
+            // through.
+            let dispatched = match upper_name.as_str() {
                 // --- STATISTICAL FUNCTIONS ---
                 "AVEDEV" => {
                     let nums: Vec<f64> = evaluated_args
@@ -3769,7 +4222,7 @@ impl Sheet {
                     for (i, val) in range_list.iter().enumerate() {
                         if self.match_criteria(val, criteria)
                             && let Some(target_val) = avg_range.get(i)
-                            && let Some(f) = self.to_f64(target_val)
+                            && let Some(f) = Self::aggregate_range_number(target_val)
                         {
                             sum += f;
                             count += 1;
@@ -3812,7 +4265,7 @@ impl Sheet {
                                 break;
                             }
                         }
-                        if all_match && let Some(f) = self.to_f64(target_val) {
+                        if all_match && let Some(f) = Self::aggregate_range_number(target_val) {
                             sum += f;
                             count += 1;
                         }
@@ -3905,6 +4358,23 @@ impl Sheet {
                     res_to_rd(crate::core::stats::chisq_inv_rt(p, df))
                 }
                 "CHISQ.TEST" | "CHITEST" => {
+                    // Like the paired statistical functions, CHITEST
+                    // compares its two ranges' *raw* cell counts first --
+                    // a mismatch is #N/A even when a range also holds an
+                    // error value. It does not, however, pairwise-exclude
+                    // the way CORREL and friends do (Excel keeps the
+                    // original dimensions when working out the degrees of
+                    // freedom), so the values themselves still come from
+                    // the lenient flatten.
+                    let mut first_err = None;
+                    let a_raw = self.positional_numbers(evaluated_args.first(), &mut first_err);
+                    let e_raw = self.positional_numbers(evaluated_args.get(1), &mut first_err);
+                    if a_raw.len() != e_raw.len() {
+                        return Ok(ResultData::Error("#N/A".to_string()));
+                    }
+                    if let Some(e) = first_err {
+                        return Ok(ResultData::Error(e));
+                    }
                     let actual: Vec<f64> = evaluated_args
                         .first()
                         .map(|arg| self.flatten_stat_numbers(arg, false))
@@ -3928,14 +4398,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::confidence_t(alpha, std_dev, size))
                 }
                 "CORREL" | "PEARSON" => {
-                    let xs: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (xs, ys) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::correl(&xs, &ys))
                 }
                 "COUNTBLANK" => {
@@ -3954,25 +4421,19 @@ impl Sheet {
                     Ok(ResultData::Float(count as f64))
                 }
                 "COVARIANCE.P" | "COVAR" => {
-                    let xs: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (xs, ys) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::covariance_p(&xs, &ys))
                 }
                 "COVARIANCE.S" => {
-                    let xs: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (xs, ys) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::covariance_s(&xs, &ys))
                 }
                 "DEVSQ" => {
@@ -4041,14 +4502,11 @@ impl Sheet {
                 }
                 "FORECAST" | "FORECAST.LINEAR" => {
                     let x = self.to_f64_arg(evaluated_args.first(), "FORECAST")?;
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(2)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (ys, xs) =
+                        match self.paired_args(evaluated_args.get(1), evaluated_args.get(2)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::forecast_linear(x, &ys, &xs))
                 }
                 "FORECAST.ETS"
@@ -4059,14 +4517,11 @@ impl Sheet {
                         .first()
                         .and_then(|v| self.to_f64(v))
                         .unwrap_or(0.0);
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(2)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (ys, xs) =
+                        match self.paired_args(evaluated_args.get(1), evaluated_args.get(2)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     match upper_name.as_str() {
                         "FORECAST.ETS.SEASONALITY" => Ok(ResultData::Float(1.0)),
                         "FORECAST.ETS.STAT" => Ok(ResultData::Float(0.5)),
@@ -4137,17 +4592,32 @@ impl Sheet {
                     res_to_rd(crate::core::stats::geomean(&nums))
                 }
                 "GROWTH" | "LOGEST" => {
-                    let ys: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_else(|| (1..=ys.len()).map(|i| i as f64).collect());
+                    // LINEST/TREND/GROWTH/LOGEST are the *array* form of
+                    // the regression family and, unlike scalar FORECAST
+                    // (which drops a non-numeric pair and carries on),
+                    // real Excel rejects any non-numeric cell outright
+                    // with #VALUE! -- confirmed by probing all five
+                    // against the same text-containing range.
+                    let ys = match self.flatten_numbers_only_arg(evaluated_args.first()) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
+                    let xs = match evaluated_args.get(1) {
+                        Some(arg) => match self.flatten_numbers_only(arg) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        },
+                        None => (1..=ys.len()).map(|i| i as f64).collect(),
+                    };
                     let ln_ys: Vec<f64> = ys.iter().map(|y| y.ln()).collect();
-                    let m = crate::core::stats::slope(&ln_ys, &xs).unwrap_or(0.0);
-                    let b = crate::core::stats::intercept(&ln_ys, &xs).unwrap_or(0.0);
+                    let m = match crate::core::stats::slope(&ln_ys, &xs) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
+                    let b = match crate::core::stats::intercept(&ln_ys, &xs) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
                     if upper_name == "LOGEST" {
                         Ok(ResultData::List(vec![
                             ResultData::Float(m.exp()),
@@ -4174,10 +4644,18 @@ impl Sheet {
                     let sample_size = self.to_f64_arg(evaluated_args.get(1), "HYPGEOM.DIST")?;
                     let pop_s = self.to_f64_arg(evaluated_args.get(2), "HYPGEOM.DIST")?;
                     let pop_size = self.to_f64_arg(evaluated_args.get(3), "HYPGEOM.DIST")?;
-                    let cumulative = evaluated_args
-                        .get(4)
-                        .map(|v| self.to_bool(v))
-                        .unwrap_or(true);
+                    // Legacy HYPGEOMDIST takes no cumulative flag at all --
+                    // it's always the point probability mass, never the
+                    // cumulative sum (unlike HYPGEOM.DIST, whose 5th
+                    // argument is required and selects between the two).
+                    let cumulative = if upper_name == "HYPGEOMDIST" {
+                        false
+                    } else {
+                        evaluated_args
+                            .get(4)
+                            .map(|v| self.to_bool(v))
+                            .unwrap_or(true)
+                    };
                     res_to_rd(crate::core::stats::hypgeom_dist(
                         sample_s,
                         sample_size,
@@ -4187,14 +4665,11 @@ impl Sheet {
                     ))
                 }
                 "INTERCEPT" => {
-                    let ys: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (ys, xs) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::intercept(&ys, &xs))
                 }
                 "KURT" => {
@@ -4214,16 +4689,31 @@ impl Sheet {
                     res_to_rd(crate::core::stats::large(&nums, k))
                 }
                 "LINEST" | "TREND" => {
-                    let ys: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_else(|| (1..=ys.len()).map(|i| i as f64).collect());
-                    let m = crate::core::stats::slope(&ys, &xs).unwrap_or(0.0);
-                    let b = crate::core::stats::intercept(&ys, &xs).unwrap_or(0.0);
+                    // LINEST/TREND/GROWTH/LOGEST are the *array* form of
+                    // the regression family and, unlike scalar FORECAST
+                    // (which drops a non-numeric pair and carries on),
+                    // real Excel rejects any non-numeric cell outright
+                    // with #VALUE! -- confirmed by probing all five
+                    // against the same text-containing range.
+                    let ys = match self.flatten_numbers_only_arg(evaluated_args.first()) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
+                    let xs = match evaluated_args.get(1) {
+                        Some(arg) => match self.flatten_numbers_only(arg) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        },
+                        None => (1..=ys.len()).map(|i| i as f64).collect(),
+                    };
+                    let m = match crate::core::stats::slope(&ys, &xs) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
+                    let b = match crate::core::stats::intercept(&ys, &xs) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
                     if upper_name == "LINEST" {
                         Ok(ResultData::List(vec![
                             ResultData::Float(m),
@@ -4299,7 +4789,7 @@ impl Sheet {
                                 break;
                             }
                         }
-                        if all_match && let Some(f) = self.to_f64(target_val) {
+                        if all_match && let Some(f) = Self::aggregate_range_number(target_val) {
                             max_val = max_val.max(f);
                             found = true;
                         }
@@ -4362,7 +4852,7 @@ impl Sheet {
                                 break;
                             }
                         }
-                        if all_match && let Some(f) = self.to_f64(target_val) {
+                        if all_match && let Some(f) = Self::aggregate_range_number(target_val) {
                             min_val = min_val.min(f);
                             found = true;
                         }
@@ -4496,14 +4986,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::poisson_dist(x, mean, cumulative))
                 }
                 "PROB" => {
-                    let x_range: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let prob_range: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (x_range, prob_range) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     let lower = self.to_f64_arg(evaluated_args.get(2), "PROB")?;
                     let upper = evaluated_args.get(3).and_then(|v| self.to_f64(v));
                     res_to_rd(crate::core::stats::prob(
@@ -4558,14 +5045,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::rank_eq(number, &ref_data, order))
                 }
                 "RSQ" => {
-                    let ys: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (ys, xs) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::rsq(&ys, &xs))
                 }
                 "SKEW" => {
@@ -4585,14 +5069,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::skew_p(&nums))
                 }
                 "SLOPE" => {
-                    let ys: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (ys, xs) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::slope(&ys, &xs))
                 }
                 "SMALL" => {
@@ -4640,14 +5121,11 @@ impl Sheet {
                     res_to_rd(crate::core::stats::stdev_p(&nums))
                 }
                 "STEYX" => {
-                    let ys: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let xs: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (ys, xs) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::steyx(&ys, &xs))
                 }
                 "T.DIST" => {
@@ -4659,10 +5137,20 @@ impl Sheet {
                         .unwrap_or(true);
                     res_to_rd(crate::core::stats::t_dist(x, df, cumulative))
                 }
-                "T.DIST.2T" | "TDIST" => {
+                "T.DIST.2T" => {
                     let x = self.to_f64_arg(evaluated_args.first(), "T.DIST.2T")?;
                     let df = self.to_f64_arg(evaluated_args.get(1), "T.DIST.2T")?;
                     res_to_rd(crate::core::stats::t_dist_2t(x, df))
+                }
+                "TDIST" => {
+                    let x = self.to_f64_arg(evaluated_args.first(), "TDIST")?;
+                    let df = self.to_f64_arg(evaluated_args.get(1), "TDIST")?;
+                    let tails = self.to_f64_arg(evaluated_args.get(2), "TDIST")?;
+                    if tails == 1.0 {
+                        res_to_rd(crate::core::stats::t_dist_rt(x, df))
+                    } else {
+                        res_to_rd(crate::core::stats::t_dist_2t(x, df))
+                    }
                 }
                 "T.DIST.RT" => {
                     let x = self.to_f64_arg(evaluated_args.first(), "T.DIST.RT")?;
@@ -4680,14 +5168,6 @@ impl Sheet {
                     res_to_rd(crate::core::stats::t_inv_2t(p, df))
                 }
                 "T.TEST" | "TTEST" => {
-                    let array1: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let array2: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
                     let tails = evaluated_args
                         .get(2)
                         .and_then(|v| self.to_f64(v))
@@ -4696,6 +5176,34 @@ impl Sheet {
                         .get(3)
                         .and_then(|v| self.to_f64(v))
                         .unwrap_or(1.0) as usize;
+                    // Only test_type 1 is the *paired* test, where the two
+                    // arrays must be the same size (#N/A otherwise) and a
+                    // non-numeric cell drops its whole (x, y) pair. Types 2
+                    // and 3 are two-*sample* tests that compare two
+                    // independent groups, so they accept different sizes
+                    // and each array drops its own non-numerics
+                    // independently. Both confirmed against real Excel:
+                    // `TTEST(4-cell-with-text, 4-cell, 1, 2)` equals
+                    // `TTEST(full-4-cell, 3-cell-survivor, 1, 2)`, while
+                    // the same call with type 1 instead equals the
+                    // 3-vs-3 pairwise-survivor form.
+                    let (array1, array2) = if test_type == 1 {
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        }
+                    } else {
+                        (
+                            evaluated_args
+                                .first()
+                                .map(|arg| self.flatten_stat_numbers(arg, false))
+                                .unwrap_or_default(),
+                            evaluated_args
+                                .get(1)
+                                .map(|arg| self.flatten_stat_numbers(arg, false))
+                                .unwrap_or_default(),
+                        )
+                    };
                     res_to_rd(crate::core::stats::t_test(
                         &array1, &array2, tails, test_type,
                     ))
@@ -4771,10 +5279,88 @@ impl Sheet {
                     let x = self.to_f64_arg(evaluated_args.first(), "ACOTH")?;
                     res_to_rd(crate::core::math_trig::acoth(x))
                 }
-                "AGGREGATE" | "SUBTOTAL" => {
+                "AGGREGATE" => {
+                    // AGGREGATE(function_num, options, ref1, ...) -- unlike
+                    // SUBTOTAL(function_num, ref1, ...), its *second*
+                    // argument is the options flag, not data. Sharing
+                    // SUBTOTAL's handler (which skips only the first
+                    // argument) folded that options value straight into
+                    // the aggregated numbers, so e.g. AGGREGATE(4, 6, ...)
+                    // computed MAX over the data *plus a literal 6*.
                     let fn_num = self
                         .to_f64_arg(evaluated_args.first(), "AGGREGATE")?
                         .round() as usize;
+                    let options = evaluated_args
+                        .get(1)
+                        .and_then(|v| self.to_f64(v))
+                        .unwrap_or(0.0)
+                        .round() as usize;
+                    // Function numbers 14-19 (LARGE/SMALL/PERCENTILE.INC/
+                    // QUARTILE.INC/PERCENTILE.EXC/QUARTILE.EXC) take a
+                    // trailing k argument after the array.
+                    let takes_k = (14..=19).contains(&fn_num);
+                    let data_end = if takes_k {
+                        evaluated_args.len().saturating_sub(1)
+                    } else {
+                        evaluated_args.len()
+                    };
+                    let k = if takes_k {
+                        evaluated_args
+                            .last()
+                            .and_then(|v| self.to_f64(v))
+                            .unwrap_or(1.0)
+                    } else {
+                        1.0
+                    };
+                    // Options 2/3/6/7 mean "ignore error values"; every
+                    // option this engine can express other than that still
+                    // propagates an error in the data, matching Excel.
+                    let ignores_errors = matches!(options, 2 | 3 | 6 | 7);
+                    let data_args = &evaluated_args[2.min(evaluated_args.len())..data_end];
+                    if !ignores_errors && let Some(err) = Self::find_error_in_args(data_args) {
+                        return Ok(err);
+                    }
+                    let nums: Vec<f64> = data_args
+                        .iter()
+                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
+                        .collect();
+                    match fn_num {
+                        1 => res_to_rd(if nums.is_empty() {
+                            Err("#DIV/0!".to_string())
+                        } else {
+                            Ok(nums.iter().sum::<f64>() / nums.len() as f64)
+                        }),
+                        2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
+                        4 => Ok(ResultData::Float(
+                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                        )),
+                        5 => Ok(ResultData::Float(
+                            nums.iter().cloned().fold(f64::INFINITY, f64::min),
+                        )),
+                        6 => Ok(ResultData::Float(nums.iter().product())),
+                        7 => res_to_rd(crate::core::stats::stdev_s(&nums)),
+                        8 => res_to_rd(crate::core::stats::stdev_p(&nums)),
+                        9 => Ok(ResultData::Float(nums.iter().sum())),
+                        10 => res_to_rd(crate::core::stats::var_s(&nums)),
+                        11 => res_to_rd(crate::core::stats::var_p(&nums)),
+                        12 => res_to_rd(crate::core::stats::median(&nums)),
+                        13 => res_to_rd(crate::core::stats::mode_sngl(&nums)),
+                        14 => res_to_rd(crate::core::stats::large(&nums, k.round() as usize)),
+                        15 => res_to_rd(crate::core::stats::small(&nums, k.round() as usize)),
+                        16 => res_to_rd(crate::core::stats::percentile_inc(&nums, k)),
+                        17 => {
+                            res_to_rd(crate::core::stats::quartile_inc(&nums, k.round() as usize))
+                        }
+                        18 => res_to_rd(crate::core::stats::percentile_exc(&nums, k)),
+                        19 => {
+                            res_to_rd(crate::core::stats::quartile_exc(&nums, k.round() as usize))
+                        }
+                        _ => Ok(ResultData::Error("#VALUE!".to_string())),
+                    }
+                }
+                "SUBTOTAL" => {
+                    let fn_num =
+                        self.to_f64_arg(evaluated_args.first(), "SUBTOTAL")?.round() as usize;
                     let nums: Vec<f64> = evaluated_args
                         .iter()
                         .skip(1)
@@ -4898,44 +5484,46 @@ impl Sheet {
                     let mode = evaluated_args.get(2).and_then(|v| self.to_f64(v));
                     res_to_rd(crate::core::math_trig::floor_math(x, sig, mode))
                 }
-                "GCD" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
-                        .collect();
-                    res_to_rd(crate::core::math_trig::gcd(&nums))
-                }
-                "LCM" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
-                        .collect();
-                    res_to_rd(crate::core::math_trig::lcm(&nums))
+                "GCD" | "LCM" => {
+                    let mut nums = Vec::new();
+                    for arg in &evaluated_args {
+                        match self.flatten_strict_numbers(arg) {
+                            Ok(v) => nums.extend(v),
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        }
+                    }
+                    if upper_name == "GCD" {
+                        res_to_rd(crate::core::math_trig::gcd(&nums))
+                    } else {
+                        res_to_rd(crate::core::math_trig::lcm(&nums))
+                    }
                 }
                 "LOG" => {
                     let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
-                    let base = evaluated_args
-                        .get(1)
-                        .and_then(|v| self.to_f64(v))
-                        .unwrap_or(10.0);
-                    if num <= 0.0 || base <= 0.0 || base == 1.0 {
+                    let base = self.opt_f64_arg(&evaluated_args, 1, 10.0)?;
+                    // Base 1 is #DIV/0!, not #NUM!: log(n)/log(1) divides
+                    // by zero. Everything else out of domain stays #NUM!
+                    // (both confirmed against real Excel).
+                    if base == 1.0 {
+                        Ok(ResultData::Error("#DIV/0!".to_string()))
+                    } else if num <= 0.0 || base <= 0.0 {
                         Ok(ResultData::Error("#NUM!".to_string()))
                     } else {
                         Ok(ResultData::Float(num.log(base)))
                     }
                 }
                 "MDETERM" => {
-                    let matrix = evaluated_args
-                        .first()
-                        .map(|arg| self.extract_matrix(arg))
-                        .unwrap_or_default();
+                    let matrix = match (args.first(), evaluated_args.first()) {
+                        (Some(e), Some(v)) => self.matrix_from_arg(e, v),
+                        _ => Vec::new(),
+                    };
                     res_to_rd(crate::core::math_trig::mdeterm(&matrix))
                 }
                 "MINVERSE" => {
-                    let matrix = evaluated_args
-                        .first()
-                        .map(|arg| self.extract_matrix(arg))
-                        .unwrap_or_default();
+                    let matrix = match (args.first(), evaluated_args.first()) {
+                        (Some(e), Some(v)) => self.matrix_from_arg(e, v),
+                        _ => Vec::new(),
+                    };
                     match crate::core::math_trig::minverse(&matrix) {
                         Ok(inv) => Ok(ResultData::List(
                             inv.into_iter()
@@ -4955,10 +5543,16 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::mround(x, mult))
                 }
                 "MULTINOMIAL" => {
-                    let nums: Vec<f64> = evaluated_args
-                        .iter()
-                        .flat_map(|arg| self.flatten_stat_numbers(arg, false))
-                        .collect();
+                    // Like GCD/LCM, MULTINOMIAL rejects a non-numeric cell
+                    // outright (#VALUE!) instead of skipping it the way
+                    // SUM does -- a blank still counts as 0.
+                    let mut nums = Vec::new();
+                    for arg in &evaluated_args {
+                        match self.flatten_strict_numbers(arg) {
+                            Ok(v) => nums.extend(v),
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        }
+                    }
                     res_to_rd(crate::core::math_trig::multinomial(&nums))
                 }
                 "MUNIT" => {
@@ -4981,9 +5575,45 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::odd(x))
                 }
                 "PERCENTOF" => {
-                    let data_val = self.to_f64_arg(evaluated_args.first(), "PERCENTOF")?;
-                    let target_val = self.to_f64_arg(evaluated_args.get(1), "PERCENTOF")?;
-                    res_to_rd(crate::core::math_trig::percentof(data_val, target_val))
+                    // PERCENTOF(subset, all) is SUM(subset)/SUM(all), and
+                    // it inherits SUM's leniency rather than erroring on a
+                    // non-numeric argument: real Excel gives 0 for
+                    // PERCENTOF(<text>, 10) (the numerator sums to 0) and
+                    // #DIV/0! for PERCENTOF(10, <text>) or PERCENTOF(10, 0)
+                    // (the denominator does). Routing both arguments
+                    // through to_f64_arg instead made any text #VALUE!.
+                    // Text *inside a referenced range* sums as 0 (so
+                    // PERCENTOF(<text cell>, 10) is 0 and
+                    // PERCENTOF(10, <text cell>) is #DIV/0!), but a
+                    // directly-supplied non-numeric value -- a literal, or
+                    // the result of a nested call like LOWER(...) -- is
+                    // #VALUE!. That's the same direct-vs-reference split
+                    // the SUM/AVERAGE helpers already make.
+                    let mut sums = [0.0f64; 2];
+                    for (i, slot) in sums.iter_mut().enumerate() {
+                        let Some(v) = evaluated_args.get(i) else {
+                            continue;
+                        };
+                        if arg_is_direct.get(i).copied().unwrap_or(false) {
+                            match v {
+                                ResultData::None => {}
+                                other => match self.to_f64(other) {
+                                    Some(f) => *slot = f,
+                                    None => {
+                                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                                    }
+                                },
+                            }
+                        } else {
+                            *slot = self.flatten_stat_numbers(v, false).iter().sum();
+                        }
+                    }
+                    let [data_val, target_val] = sums;
+                    if target_val == 0.0 {
+                        Ok(ResultData::Error("#DIV/0!".to_string()))
+                    } else {
+                        res_to_rd(crate::core::math_trig::percentof(data_val, target_val))
+                    }
                 }
                 "PI" => Ok(ResultData::Float(std::f64::consts::PI)),
                 "POWER" => {
@@ -5057,10 +5687,10 @@ impl Sheet {
                     let x = self.to_f64_arg(evaluated_args.first(), "SERIESSUM")?;
                     let n = self.to_f64_arg(evaluated_args.get(1), "SERIESSUM")?;
                     let m = self.to_f64_arg(evaluated_args.get(2), "SERIESSUM")?;
-                    let coeffs: Vec<f64> = evaluated_args
-                        .get(3)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let coeffs = match self.flatten_skipping_blanks(evaluated_args.get(3)) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
                     res_to_rd(crate::core::math_trig::seriessum(x, n, m, &coeffs))
                 }
                 "SIGN" => {
@@ -5090,36 +5720,27 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sumsq(&nums))
                 }
                 "SUMX2MY2" => {
-                    let xs: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (xs, ys) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::math_trig::sumx2my2(&xs, &ys))
                 }
                 "SUMX2PY2" => {
-                    let xs: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (xs, ys) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::math_trig::sumx2py2(&xs, &ys))
                 }
                 "SUMXMY2" => {
-                    let xs: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let ys: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    let (xs, ys) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::math_trig::sumxmy2(&xs, &ys))
                 }
                 "TANH" => {
@@ -5134,15 +5755,33 @@ impl Sheet {
 
                 // --- TEXT FUNCTIONS ---
                 "ARRAYTOTEXT" => {
-                    let items: Vec<String> = evaluated_args
-                        .first()
-                        .map(|arg| {
-                            self.flatten_stat_numbers(arg, false)
-                                .iter()
-                                .map(|v| v.to_string())
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    // Every element's own text (numbers via
+                    // format_excel_number, TRUE/FALSE, raw strings, ...)
+                    // via ResultData's Display -- not flatten_stat_numbers,
+                    // which silently drops non-numeric cells and so only
+                    // ever produced a text/bool-free (and often empty)
+                    // result for a mixed range.
+                    fn flatten_text(val: &ResultData, out: &mut Vec<String>) {
+                        match val {
+                            ResultData::List(items) => {
+                                for item in items {
+                                    flatten_text(item, out);
+                                }
+                            }
+                            other => out.push(other.to_string()),
+                        }
+                    }
+                    let mut items = Vec::new();
+                    if let Some(arg) = evaluated_args.first() {
+                        flatten_text(arg, &mut items);
+                    }
+                    // A reference with nothing but blanks in it has no text
+                    // to render at all -- real Excel answers #VALUE! (e.g.
+                    // ARRAYTOTEXT over a single empty cell), rather than
+                    // producing an empty string.
+                    if items.iter().all(|t| t.is_empty()) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let fmt = evaluated_args.get(1).and_then(|v| self.to_f64(v));
                     match crate::core::text::arraytotext(&items, fmt) {
                         Ok(s) => Ok(ResultData::String(s)),
@@ -5589,30 +6228,20 @@ impl Sheet {
                     res_to_rd(crate::core::date_fn::date_fn(y, m, d))
                 }
                 "DATEDIF" => {
-                    let s = self.to_f64_arg(evaluated_args.first(), "DATEDIF")?;
-                    let e = self.to_f64_arg(evaluated_args.get(1), "DATEDIF")?;
+                    let start = self.to_f64_arg(evaluated_args.first(), "DATEDIF")?;
+                    let end = self.to_f64_arg(evaluated_args.get(1), "DATEDIF")?;
                     let unit = evaluated_args
                         .get(2)
                         .map(|v| v.to_string())
                         .unwrap_or_default();
-                    let (y1, m1, d1) = crate::core::date_fn::serial_to_ymd(s);
-                    let (y2, m2, d2) = crate::core::date_fn::serial_to_ymd(e);
-                    match unit.to_uppercase().as_str() {
-                        "Y" => Ok(ResultData::Float((y2 - y1) as f64)),
-                        "M" => Ok(ResultData::Float(((y2 - y1) * 12 + (m2 - m1)) as f64)),
-                        "D" => Ok(ResultData::Float(e - s)),
-                        "MD" => Ok(ResultData::Float((d2 - d1) as f64)),
-                        "YM" => Ok(ResultData::Float(((m2 - m1) % 12) as f64)),
-                        "YD" => Ok(ResultData::Float((e - s) % 365.0)),
-                        _ => Ok(ResultData::Float(e - s)),
-                    }
+                    res_to_rd(crate::core::date_fn::datedif(start, end, &unit))
                 }
                 "DATEVALUE" => {
                     let text = evaluated_args
                         .first()
                         .map(|v| v.to_string())
                         .unwrap_or_default();
-                    res_to_rd(crate::core::text::value(&text))
+                    res_to_rd(crate::core::date_fn::datevalue(&text))
                 }
                 "DAY" => {
                     let s = self.to_f64_arg(evaluated_args.first(), "DAY")?;
@@ -5679,7 +6308,7 @@ impl Sheet {
                         .first()
                         .map(|v| v.to_string())
                         .unwrap_or_default();
-                    res_to_rd(crate::core::text::value(&text))
+                    res_to_rd(crate::core::date_fn::timevalue(&text))
                 }
                 "WEEKDAY" => {
                     let s = self.to_f64_arg(evaluated_args.first(), "WEEKDAY")?;
@@ -5836,13 +6465,28 @@ impl Sheet {
                     let n2 = evaluated_args.get(1).and_then(|v| self.to_f64(v));
                     res_to_rd(crate::core::engineering::delta(n1, n2))
                 }
-                "ERF" | "ERF.PRECISE" => {
-                    let x = self.to_f64_arg(evaluated_args.first(), "ERF")?;
-                    res_to_rd(Ok(crate::core::stats::erf(x)))
-                }
-                "ERFC" | "ERFC.PRECISE" => {
-                    let x = self.to_f64_arg(evaluated_args.first(), "ERFC")?;
-                    res_to_rd(Ok(crate::core::stats::erfc(x)))
+                "ERF" | "ERFC" | "ERF.PRECISE" | "ERFC.PRECISE" => {
+                    // Unlike SQRT/ABS/INT/MOD (which all accept a boolean
+                    // as 1/0), the error functions take a number and
+                    // nothing else -- real Excel answers #VALUE! for both
+                    // ERF(TRUE) and ERF("text"), so this can't go through
+                    // to_f64_arg's lenient coercion.
+                    // A blank argument still coerces to 0 (ERF(<blank>)
+                    // is 0 and ERFC(<blank>) is 1 in real Excel); only
+                    // text and booleans are rejected.
+                    let x = match evaluated_args.first() {
+                        None | Some(ResultData::None) => 0.0,
+                        Some(v) => match Self::aggregate_range_number(v) {
+                            Some(f) => f,
+                            None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                        },
+                    };
+                    let v = if upper_name.starts_with("ERFC") {
+                        crate::core::stats::erfc(x)
+                    } else {
+                        crate::core::stats::erf(x)
+                    };
+                    res_to_rd(Ok(v))
                 }
                 "GESTEP" => {
                     let n = self.to_f64_arg(evaluated_args.first(), "GESTEP")?;
@@ -5990,21 +6634,53 @@ impl Sheet {
                     }
                 }
                 "IMCOS" | "IMCOSH" | "IMCOT" | "IMCSC" | "IMCSCH" | "IMEXP" | "IMLN"
-                | "IMLOG10" | "IMLOG2" | "IMPOWER" | "IMSEC" | "IMSECH" | "IMSIN" | "IMSINH"
-                | "IMSQRT" | "IMTAN" => {
+                | "IMLOG10" | "IMLOG2" | "IMSEC" | "IMSECH" | "IMSIN" | "IMSINH" | "IMSQRT"
+                | "IMTAN" => {
                     let t = evaluated_args
                         .first()
                         .map(|v| v.to_string())
                         .unwrap_or_default();
-                    Ok(ResultData::String(t))
+                    let result = match upper_name.as_str() {
+                        "IMCOS" => crate::core::engineering::imcos(&t),
+                        "IMCOSH" => crate::core::engineering::imcosh(&t),
+                        "IMCOT" => crate::core::engineering::imcot(&t),
+                        "IMCSC" => crate::core::engineering::imcsc(&t),
+                        "IMCSCH" => crate::core::engineering::imcsch(&t),
+                        "IMEXP" => crate::core::engineering::imexp(&t),
+                        "IMLN" => crate::core::engineering::imln(&t),
+                        "IMLOG10" => crate::core::engineering::imlog10(&t),
+                        "IMLOG2" => crate::core::engineering::imlog2(&t),
+                        "IMSEC" => crate::core::engineering::imsec(&t),
+                        "IMSECH" => crate::core::engineering::imsech(&t),
+                        "IMSIN" => crate::core::engineering::imsin(&t),
+                        "IMSINH" => crate::core::engineering::imsinh(&t),
+                        "IMSQRT" => crate::core::engineering::imsqrt(&t),
+                        "IMTAN" => crate::core::engineering::imtan(&t),
+                        _ => unreachable!(),
+                    };
+                    match result {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
+                }
+                "IMPOWER" => {
+                    let t = evaluated_args
+                        .first()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let n = self.to_f64_arg(evaluated_args.get(1), "IMPOWER")?;
+                    match crate::core::engineering::impower(&t, n) {
+                        Ok(s) => Ok(ResultData::String(s)),
+                        Err(e) => Ok(ResultData::Error(e)),
+                    }
                 }
 
                 // --- INFORMATION & LOGICAL & DATABASE & LOOKUP & WEB & CUBE FUNCTIONS ---
                 "ERROR.TYPE" => {
-                    let t = evaluated_args
-                        .first()
-                        .map(|v| v.to_string())
-                        .unwrap_or_default();
+                    let t = match evaluated_args.first() {
+                        Some(ResultData::Error(e)) => e.clone(),
+                        _ => String::new(),
+                    };
                     res_to_rd(crate::core::extended_fn::error_type(&t))
                 }
                 "ISERR" => {
@@ -6045,38 +6721,6 @@ impl Sheet {
                     Ok(ResultData::Boolean(crate::core::extended_fn::xor_fn(
                         &bools,
                     )))
-                }
-                "IFNA" => {
-                    let val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
-                    let alt = evaluated_args.get(1).cloned().unwrap_or(ResultData::None);
-                    Ok(crate::core::extended_fn::ifna(val, alt))
-                }
-                "IFS" => {
-                    for chunk in evaluated_args.chunks(2) {
-                        if chunk.len() == 2 && self.to_bool(&chunk[0]) {
-                            return Ok(chunk[1].clone());
-                        }
-                    }
-                    Ok(ResultData::Error("#N/A".to_string()))
-                }
-                "SWITCH" => {
-                    if evaluated_args.is_empty() {
-                        return Ok(ResultData::Error("#VALUE!".to_string()));
-                    }
-                    let expr = &evaluated_args[0];
-                    let rest = &evaluated_args[1..];
-                    let mut i = 0;
-                    while i + 1 < rest.len() {
-                        if expr.to_string() == rest[i].to_string() {
-                            return Ok(rest[i + 1].clone());
-                        }
-                        i += 2;
-                    }
-                    if i < rest.len() {
-                        Ok(rest[i].clone())
-                    } else {
-                        Ok(ResultData::Error("#N/A".to_string()))
-                    }
                 }
                 "ADDRESS" => {
                     let r = self.to_f64_arg(evaluated_args.first(), "ADDRESS")?;
@@ -6129,7 +6773,7 @@ impl Sheet {
                         let mut found_col_idx: Option<usize> = None;
                         if !range_lookup {
                             for (c, item) in first_row.iter().enumerate() {
-                                if item.to_string() == lookup_val.to_string() {
+                                if Self::exact_lookup_matches(lookup_val, item) {
                                     found_col_idx = Some(c);
                                     break;
                                 }
@@ -6273,9 +6917,20 @@ impl Sheet {
                     }
                 }
                 "COUNT" => {
+                    // A boolean counts when it is typed directly as an
+                    // argument, but not when it merely sits inside a
+                    // referenced range -- Excel's documented split, and the
+                    // same is_direct distinction the SUM/AVERAGE helpers
+                    // already make.
                     let mut count = 0;
-                    for arg in evaluated_args {
-                        count += self.count_helper(&arg);
+                    for (i, arg) in evaluated_args.iter().enumerate() {
+                        if arg_is_direct.get(i).copied().unwrap_or(false)
+                            && matches!(arg, ResultData::Boolean(_))
+                        {
+                            count += 1;
+                        } else {
+                            count += self.count_helper(arg);
+                        }
                     }
                     Ok(ResultData::Float(count as f64))
                 }
@@ -6375,11 +7030,13 @@ impl Sheet {
                 }
                 "FLOOR" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "FLOOR")?;
-                    Ok(ResultData::Float(val.floor()))
+                    let sig = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::floor_math(val, sig, None))
                 }
                 "CEILING" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "CEILING")?;
-                    Ok(ResultData::Float(val.ceil()))
+                    let sig = evaluated_args.get(1).and_then(|v| self.to_f64(v));
+                    res_to_rd(crate::core::math_trig::ceiling_math(val, sig, None))
                 }
                 "LOG10" => {
                     let val = self.to_f64_arg(evaluated_args.first(), "LOG10")?;
@@ -6992,12 +7649,10 @@ impl Sheet {
                             "MOD requires 2 arguments".to_string(),
                         )));
                     }
-                    let n = self.to_f64(&evaluated_args[0]).unwrap_or(0.0);
-                    let d = self.to_f64(&evaluated_args[1]).unwrap_or(1.0);
+                    let n = self.to_f64_arg(evaluated_args.first(), "MOD")?;
+                    let d = self.to_f64_arg(evaluated_args.get(1), "MOD")?;
                     if d == 0.0 {
-                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
-                            "MOD divisor cannot be zero".to_string(),
-                        )));
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
                     }
                     let val = n - d * (n / d).floor();
                     Ok(ResultData::Float(val))
@@ -7030,7 +7685,7 @@ impl Sheet {
                         let mut match_idx: Option<usize> = None;
                         if match_type == 0 {
                             for (idx, item) in list.iter().enumerate() {
-                                if item.to_string() == lookup_val.to_string() {
+                                if Self::exact_lookup_matches(lookup_val, item) {
                                     match_idx = Some(idx);
                                     break;
                                 }
@@ -7146,6 +7801,11 @@ impl Sheet {
                             }
                             best.map(|(i, _)| i)
                         }
+                        // XMATCH deliberately does NOT use
+                        // exact_lookup_matches: unlike MATCH/VLOOKUP,
+                        // real Excel's XMATCH *does* match a blank lookup
+                        // value against a blank cell (XMATCH over a blank
+                        // A1 in A1:A4 returns 1 where MATCH returns #N/A).
                         _ => arr
                             .iter()
                             .position(|item| item.to_string() == lookup_val.to_string()),
@@ -7186,7 +7846,7 @@ impl Sheet {
                         if !range_lookup {
                             for r in 0..num_rows {
                                 let first_col_val = &list[r * num_cols];
-                                if first_col_val.to_string() == lookup_val.to_string() {
+                                if Self::exact_lookup_matches(lookup_val, first_col_val) {
                                     found_row_idx = Some(r);
                                     break;
                                 }
@@ -7248,6 +7908,9 @@ impl Sheet {
                         };
 
                         for idx in iter_indices {
+                            // Like XMATCH (and unlike VLOOKUP/MATCH),
+                            // XLOOKUP matches a blank lookup value against
+                            // a blank cell rather than reporting #N/A.
                             if lookup_list[idx].to_string() == lookup_val.to_string() {
                                 found_idx = Some(idx);
                                 break;
@@ -7290,7 +7953,7 @@ impl Sheet {
                     let mut sum = 0.0;
                     for idx in 0..range_list.len() {
                         if idx < sum_list.len() && self.match_criteria(&range_list[idx], criteria) {
-                            sum += self.to_f64(&sum_list[idx]).unwrap_or(0.0);
+                            sum += Self::aggregate_range_number(&sum_list[idx]).unwrap_or(0.0);
                         }
                     }
                     Ok(ResultData::Float(sum))
@@ -7330,7 +7993,7 @@ impl Sheet {
                             }
                         }
                         if all_match {
-                            sum += self.to_f64(&sum_list[idx]).unwrap_or(0.0);
+                            sum += Self::aggregate_range_number(&sum_list[idx]).unwrap_or(0.0);
                         }
                     }
                     Ok(ResultData::Float(sum))
@@ -7475,13 +8138,33 @@ impl Sheet {
                             return Ok(ResultData::Error("#VALUE!".to_string()));
                         }
 
+                        // A non-numeric cell anywhere in either operand
+                        // makes the whole call #VALUE! in real Excel, not
+                        // a silent 0 -- MMULT doesn't ignore text the way
+                        // SUM/AVERAGE-style aggregates do.
+                        fn as_plain_number(v: &ResultData) -> Option<f64> {
+                            match v {
+                                ResultData::Float(f) => Some(*f),
+                                ResultData::Integer(i) => Some(*i as f64),
+                                _ => None,
+                            }
+                        }
                         let mut result_list = Vec::with_capacity(rows1 * cols2);
                         for r in 0..rows1 {
                             for c in 0..cols2 {
                                 let mut val = 0.0;
                                 for k in 0..cols1 {
-                                    let v1 = self.to_f64(&list1[r * cols1 + k]).unwrap_or(0.0);
-                                    let v2 = self.to_f64(&list2[k * cols2 + c]).unwrap_or(0.0);
+                                    // Only a real number is acceptable --
+                                    // MMULT rejects text, booleans and
+                                    // blanks alike (all confirmed #VALUE!
+                                    // against real Excel), so this can't
+                                    // use to_f64's lenient coercion.
+                                    let (Some(v1), Some(v2)) = (
+                                        as_plain_number(&list1[r * cols1 + k]),
+                                        as_plain_number(&list2[k * cols2 + c]),
+                                    ) else {
+                                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                                    };
                                     val += v1 * v2;
                                 }
                                 result_list.push(ResultData::Float(val));
@@ -8152,6 +8835,12 @@ impl Sheet {
                     "Unknown function: {}",
                     name
                 )))),
+            };
+            match dispatched {
+                Ok(ResultData::Float(f)) if !f.is_finite() => {
+                    Ok(ResultData::Error("#NUM!".to_string()))
+                }
+                other => other,
             }
         }
     }

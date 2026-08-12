@@ -109,6 +109,92 @@ fn test_regex_functions_use_real_regex_not_literal_substring() {
 }
 
 #[test]
+fn test_text_number_format_codes() {
+    // TEXT()'s number-format handling used to be a crude stub: `%` always
+    // hardcoded exactly 1 decimal place regardless of the format string,
+    // and `,` (thousands grouping), `$` (currency), and date-token
+    // formats ("yyyy-mm-dd") weren't implemented at all -- the raw
+    // number was returned unformatted. Found via differential fuzzing
+    // (every TEXT() call with one of these formats mismatched real
+    // Excel).
+    let grid = [[
+        "=TEXT(-7679.0669, \"$#,##0.00\")",
+        "=TEXT(3021.1929, \"#,##0\")",
+        "=TEXT(6436.3899, \"0%\")",
+        "=TEXT(DATE(1910,8,29), \"yyyy-mm-dd\")",
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 0));
+    assert!(
+        matches!(r1, ResultData::String(ref s) if s == "-$7,679.07"),
+        "{r1:?}"
+    );
+
+    let r2 = sheet.get_result_data(&CellRef::new(0, 1));
+    assert!(
+        matches!(r2, ResultData::String(ref s) if s == "3,021"),
+        "{r2:?}"
+    );
+
+    // 6436.3899 * 100 = 643639.9%, "0" has no decimal places -> rounds
+    // to a whole percent, not the old stub's hardcoded ".0".
+    let r3 = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(r3, ResultData::String(ref s) if s == "643639%"),
+        "{r3:?}"
+    );
+
+    let r4 = sheet.get_result_data(&CellRef::new(0, 3));
+    assert!(
+        matches!(r4, ResultData::String(ref s) if s == "1910-08-29"),
+        "{r4:?}"
+    );
+}
+
+#[test]
+fn test_proper_capitalizes_letter_after_digits() {
+    // PROPER used `is_alphanumeric()` to decide whether a character
+    // could consume the "capitalize the next letter" flag, so a run of
+    // digits incorrectly ate it the same way a letter would --
+    // PROPER("123abc") returned "123abc" unchanged instead of "123Abc".
+    // Per Microsoft's own definition, PROPER capitalizes a letter
+    // preceded by "any character that is not a letter", which includes
+    // digits, not just punctuation/spacing.
+    let grid = [["=PROPER(\"123abc\")"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r = sheet.get_result_data(&CellRef::new(0, 0));
+    assert!(
+        matches!(r, ResultData::String(ref s) if s == "123Abc"),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn test_arraytotext_joins_every_element_including_text_and_blanks() {
+    // ARRAYTOTEXT used flatten_stat_numbers, which silently drops any
+    // non-numeric cell (its lenient mode is built for SUM/AVERAGE-style
+    // aggregates) -- so a range with any text or blank cells produced a
+    // result missing those elements entirely, instead of joining every
+    // element's own text the way real Excel does.
+    let grid = [
+        ["1", "\"hello\"", "TRUE", ""],
+        ["=ARRAYTOTEXT(A1:D1)", "", "", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r = sheet.get_result_data(&CellRef::new(1, 0));
+    assert!(
+        matches!(r, ResultData::String(ref s) if s == "1, hello, TRUE, "),
+        "{r:?}"
+    );
+}
+
+#[test]
 fn test_jis_is_inverse_of_asc() {
     let grid = [["=ASC(JIS(\"AB 1\"))", "=JIS(\"AB\")"]];
     let mut sheet = create_sheet(&grid);

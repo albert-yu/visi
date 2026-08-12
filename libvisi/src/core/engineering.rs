@@ -218,28 +218,33 @@ pub fn parse_complex(text: &str) -> Result<ComplexNum, String> {
 }
 
 pub fn format_complex(c: ComplexNum) -> String {
+    use crate::core::engine::result_data::format_excel_number;
     let s = c.suffix;
+    let re_s = format_excel_number(c.re);
+    let im_abs_s = format_excel_number(c.im.abs());
     if c.im == 0.0 {
-        format!("{}", c.re)
+        re_s
     } else if c.re == 0.0 {
         if c.im == 1.0 {
             format!("{}", s)
         } else if c.im == -1.0 {
             format!("-{}", s)
+        } else if c.im > 0.0 {
+            format!("{}{}", im_abs_s, s)
         } else {
-            format!("{}{}", c.im, s)
+            format!("-{}{}", im_abs_s, s)
         }
     } else if c.im > 0.0 {
         if c.im == 1.0 {
-            format!("{}+{}", c.re, s)
+            format!("{}+{}", re_s, s)
         } else {
-            format!("{}+{}{}", c.re, c.im, s)
+            format!("{}+{}{}", re_s, im_abs_s, s)
         }
     } else {
         if c.im == -1.0 {
-            format!("{}-{}", c.re, s)
+            format!("{}-{}", re_s, s)
         } else {
-            format!("{}{}{}", c.re, c.im, s)
+            format!("{}-{}{}", re_s, im_abs_s, s)
         }
     }
 }
@@ -332,6 +337,231 @@ pub fn imdiv(in_str1: &str, in_str2: &str) -> Result<String, String> {
         im,
         suffix: c1.suffix,
     }))
+}
+
+// --- Complex transcendental functions -------------------------------------
+//
+// These all compute on `ComplexNum` end to end and format exactly once, at
+// the public boundary. An earlier version composed them out of the public
+// string-returning helpers (e.g. `imtan` = `imdiv(imsin(s), imcos(s))`),
+// which round-tripped every intermediate through
+// format_complex/parse_complex -- i.e. through Excel's 15-significant-digit
+// *display* rounding -- and lost several digits of precision before the
+// final division even started. That showed up against real Excel as a
+// last-few-digits disagreement on IMTAN/IMCOT/IMSEC/IMCSC/IMSECH/IMCSCH.
+
+fn c_exp(c: ComplexNum) -> ComplexNum {
+    let mag = c.re.exp();
+    ComplexNum {
+        re: mag * c.im.cos(),
+        im: mag * c.im.sin(),
+        suffix: c.suffix,
+    }
+}
+
+fn c_ln(c: ComplexNum) -> Result<ComplexNum, String> {
+    if c.re == 0.0 && c.im == 0.0 {
+        return Err("#NUM!".to_string());
+    }
+    Ok(ComplexNum {
+        re: (c.re * c.re + c.im * c.im).sqrt().ln(),
+        im: c.im.atan2(c.re),
+        suffix: c.suffix,
+    })
+}
+
+fn c_scale(c: ComplexNum, k: f64) -> ComplexNum {
+    ComplexNum {
+        re: c.re * k,
+        im: c.im * k,
+        suffix: c.suffix,
+    }
+}
+
+fn c_pow(c: ComplexNum, n: f64) -> Result<ComplexNum, String> {
+    let r = (c.re * c.re + c.im * c.im).sqrt();
+    if r == 0.0 {
+        return if n > 0.0 {
+            Ok(ComplexNum {
+                re: 0.0,
+                im: 0.0,
+                suffix: c.suffix,
+            })
+        } else {
+            Err("#NUM!".to_string())
+        };
+    }
+    let angle = n * c.im.atan2(c.re);
+    let r_n = r.powf(n);
+    Ok(ComplexNum {
+        re: r_n * angle.cos(),
+        im: r_n * angle.sin(),
+        suffix: c.suffix,
+    })
+}
+
+fn c_sin(c: ComplexNum) -> ComplexNum {
+    ComplexNum {
+        re: c.re.sin() * c.im.cosh(),
+        im: c.re.cos() * c.im.sinh(),
+        suffix: c.suffix,
+    }
+}
+
+fn c_cos(c: ComplexNum) -> ComplexNum {
+    ComplexNum {
+        re: c.re.cos() * c.im.cosh(),
+        im: -c.re.sin() * c.im.sinh(),
+        suffix: c.suffix,
+    }
+}
+
+fn c_sinh(c: ComplexNum) -> ComplexNum {
+    ComplexNum {
+        re: c.re.sinh() * c.im.cos(),
+        im: c.re.cosh() * c.im.sin(),
+        suffix: c.suffix,
+    }
+}
+
+fn c_cosh(c: ComplexNum) -> ComplexNum {
+    ComplexNum {
+        re: c.re.cosh() * c.im.cos(),
+        im: c.re.sinh() * c.im.sin(),
+        suffix: c.suffix,
+    }
+}
+
+/// 1/(a+bi) = (a-bi)/(a^2+b^2), keeping the operand's own `i`/`j` suffix
+/// (dividing a literal "1" by it would always come back suffixed `i`).
+fn c_recip(c: ComplexNum) -> Result<ComplexNum, String> {
+    let denom = c.re * c.re + c.im * c.im;
+    if denom == 0.0 {
+        return Err("#NUM!".to_string());
+    }
+    Ok(ComplexNum {
+        re: c.re / denom,
+        im: -c.im / denom,
+        suffix: c.suffix,
+    })
+}
+
+pub fn imexp(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_exp(parse_complex(in_str)?)))
+}
+
+pub fn imln(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_ln(parse_complex(in_str)?)?))
+}
+
+pub fn imlog10(in_str: &str) -> Result<String, String> {
+    let ln_c = c_ln(parse_complex(in_str)?)?;
+    Ok(format_complex(c_scale(ln_c, 1.0 / 10f64.ln())))
+}
+
+pub fn imlog2(in_str: &str) -> Result<String, String> {
+    let ln_c = c_ln(parse_complex(in_str)?)?;
+    Ok(format_complex(c_scale(ln_c, 1.0 / 2f64.ln())))
+}
+
+pub fn impower(in_str: &str, n: f64) -> Result<String, String> {
+    Ok(format_complex(c_pow(parse_complex(in_str)?, n)?))
+}
+
+pub fn imsqrt(in_str: &str) -> Result<String, String> {
+    impower(in_str, 0.5)
+}
+
+pub fn imsin(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_sin(parse_complex(in_str)?)))
+}
+
+pub fn imcos(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_cos(parse_complex(in_str)?)))
+}
+
+pub fn imsinh(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_sinh(parse_complex(in_str)?)))
+}
+
+pub fn imcosh(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_cosh(parse_complex(in_str)?)))
+}
+
+/// tan and cot via their double-angle forms
+///   tan(x+iy) = [sin 2x + i sinh 2y] / [cos 2x + cosh 2y]
+///   cot(x+iy) = [sin 2x - i sinh 2y] / [cosh 2y - cos 2x]
+/// rather than as a complex division of sin by cos.
+///
+/// The naive sin/cos quotient loses most of its significant digits once
+/// |y| grows: sin(z) and cos(z) both pick up components of order
+/// cosh(y)/sinh(y) (already ~550 by y = 7), and their ratio's real part
+/// is a tiny residual left after those large nearly-equal terms cancel.
+/// That showed up against real Excel as IMTAN/IMCOT agreeing only to
+/// about the 10th significant digit. Both identities below keep every
+/// intermediate the same magnitude as the result, so no cancellation
+/// happens at all.
+fn c_tan_parts(c: ComplexNum, cotangent: bool) -> Result<ComplexNum, String> {
+    let two_x = 2.0 * c.re;
+    let two_y = 2.0 * c.im;
+    // cosh/sinh overflow to infinity past ~710; the ratio has long since
+    // saturated at +/-i by then, so report that limit directly instead of
+    // letting inf/inf produce a NaN.
+    if two_y.abs() > 700.0 {
+        return Ok(ComplexNum {
+            re: 0.0,
+            im: if (two_y > 0.0) != cotangent {
+                1.0
+            } else {
+                -1.0
+            },
+            suffix: c.suffix,
+        });
+    }
+    let (sin_2x, cos_2x) = two_x.sin_cos();
+    let sinh_2y = two_y.sinh();
+    let cosh_2y = two_y.cosh();
+    let denom = if cotangent {
+        cosh_2y - cos_2x
+    } else {
+        cosh_2y + cos_2x
+    };
+    if denom == 0.0 {
+        return Err("#NUM!".to_string());
+    }
+    Ok(ComplexNum {
+        re: sin_2x / denom,
+        im: if cotangent {
+            -sinh_2y / denom
+        } else {
+            sinh_2y / denom
+        },
+        suffix: c.suffix,
+    })
+}
+
+pub fn imtan(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_tan_parts(parse_complex(in_str)?, false)?))
+}
+
+pub fn imcot(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_tan_parts(parse_complex(in_str)?, true)?))
+}
+
+pub fn imsec(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_recip(c_cos(parse_complex(in_str)?))?))
+}
+
+pub fn imcsc(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_recip(c_sin(parse_complex(in_str)?))?))
+}
+
+pub fn imsech(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_recip(c_cosh(parse_complex(in_str)?))?))
+}
+
+pub fn imcsch(in_str: &str) -> Result<String, String> {
+    Ok(format_complex(c_recip(c_sinh(parse_complex(in_str)?))?))
 }
 
 // ============================================================================

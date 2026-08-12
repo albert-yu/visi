@@ -331,34 +331,77 @@ pub fn arabic(text: &str) -> Result<f64, String> {
     }
 }
 
-pub fn roman(number: f64, _form: Option<f64>) -> Result<String, String> {
+/// Excel's ROMAN, including its four progressively "concise" forms.
+///
+/// Form 0 is classic notation, which only subtracts a power of ten one or
+/// two places below the numeral it precedes (CM, CD, XC, XL, IX, IV).
+/// Forms 1-4 unlock progressively longer "reaches" and additionally allow
+/// the half-power numerals (V, L, D) to be subtracted, which is how Excel
+/// gets its shorter non-classical spellings. `form` used to be ignored
+/// outright, so every form rendered as form 0.
+///
+/// Writing the numerals in descending order M D C L X V I (indices 0..6),
+/// let `reach` be the index distance from the minuend to the subtrahend.
+/// The concision level a pair needs is then:
+///   * power-of-ten subtrahend (I, X, C):  `2 * ((reach - 1) / 2)`
+///   * half-power subtrahend  (V, L, D):   `1 + 2 * ((reach - 2) / 2)`
+///
+/// That reproduces every documented pair at exactly the form Excel first
+/// uses it: CD/XL/IV and CM/XC/IX at form 0; LD/LM/VL at 1; XD/XM at 2;
+/// VD/VM at 3; ID/IM at 4. Verified against real Excel across all five
+/// forms of 45, 499, 990, 1481 and 1999.
+pub fn roman(number: f64, form: Option<f64>) -> Result<String, String> {
     let n = number.floor() as i64;
     if !(1..=3999).contains(&n) {
         return Err("#VALUE!".to_string());
     }
+    let level = form.unwrap_or(0.0).floor().clamp(0.0, 4.0) as usize;
 
-    let map = [
+    const NUMERALS: [(i64, &str); 7] = [
         (1000, "M"),
-        (900, "CM"),
         (500, "D"),
-        (400, "CD"),
         (100, "C"),
-        (90, "XC"),
         (50, "L"),
-        (40, "XL"),
         (10, "X"),
-        (9, "IX"),
         (5, "V"),
-        (4, "IV"),
         (1, "I"),
     ];
 
+    let mut candidates: Vec<(i64, String)> = NUMERALS
+        .iter()
+        .map(|(v, sym)| (*v, (*sym).to_string()))
+        .collect();
+    for (i, (big, big_sym)) in NUMERALS.iter().enumerate() {
+        for (j, (small, small_sym)) in NUMERALS.iter().enumerate().skip(i + 1) {
+            let reach = j - i;
+            // Even indices are the powers of ten (M, C, X, I); odd ones
+            // the half-powers (D, L, V).
+            let needed = if j % 2 == 0 {
+                2 * ((reach - 1) / 2)
+            } else if reach < 2 {
+                // e.g. "DM"/"LC"/"VX" -- worth the same as the plain
+                // numeral, never a real spelling.
+                continue;
+            } else {
+                1 + 2 * ((reach - 2) / 2)
+            };
+            if needed <= level {
+                candidates.push((big - small, format!("{}{}", small_sym, big_sym)));
+            }
+        }
+    }
+    // Greedy needs richest-first; ties go to the shorter spelling.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())));
+
     let mut rem = n;
     let mut res = String::new();
-    for (val, sym) in map {
-        while rem >= val {
+    for (val, sym) in &candidates {
+        while rem >= *val {
             res.push_str(sym);
-            rem -= val;
+            rem -= *val;
+        }
+        if rem == 0 {
+            break;
         }
     }
     Ok(res)
@@ -433,6 +476,12 @@ pub fn gcd(nums: &[f64]) -> Result<f64, String> {
     if nums.is_empty() {
         return Err("#VALUE!".to_string());
     }
+    // Excel's GCD/LCM are defined only for non-negative arguments and
+    // report #NUM! for a negative one, rather than quietly working on its
+    // magnitude the way `.abs()` below otherwise would.
+    if nums.iter().any(|n| *n < 0.0) {
+        return Err("#NUM!".to_string());
+    }
     let mut result = nums[0].floor().abs() as u64;
     fn gcd_two(mut a: u64, mut b: u64) -> u64 {
         while b != 0 {
@@ -452,6 +501,9 @@ pub fn gcd(nums: &[f64]) -> Result<f64, String> {
 pub fn lcm(nums: &[f64]) -> Result<f64, String> {
     if nums.is_empty() {
         return Err("#VALUE!".to_string());
+    }
+    if nums.iter().any(|n| *n < 0.0) {
+        return Err("#NUM!".to_string());
     }
     fn gcd_two(mut a: u64, mut b: u64) -> u64 {
         while b != 0 {

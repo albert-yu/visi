@@ -112,6 +112,185 @@ pub fn date_fn(year: f64, month: f64, day: f64) -> Result<f64, String> {
     }
 }
 
+/// Parses a date-only text into an (year, month, day) triple, without
+/// resolving it to a serial number yet (datevalue and the date portion of
+/// value() in text.rs both need this). Supports the formats Excel's own
+/// DATEVALUE recognizes without relying on the current locale: ISO
+/// `YYYY-MM-DD` / `YYYY/MM/DD`, and US-style `M/D/YYYY` (2- or 4-digit
+/// year, 2-digit year assumed 20xx for 00-29 and 19xx for 30-99, matching
+/// Excel's own pivot point).
+pub fn parse_date_parts(text: &str) -> Option<(i32, i32, i32)> {
+    let s = text.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = if s.contains('-') {
+        s.split('-').collect()
+    } else if s.contains('/') {
+        s.split('/').collect()
+    } else {
+        return None;
+    };
+    if parts.len() != 3 {
+        return None;
+    }
+    let nums: Vec<i32> = parts
+        .iter()
+        .filter_map(|p| p.trim().parse::<i32>().ok())
+        .collect();
+    if nums.len() != 3 {
+        return None;
+    }
+
+    // ISO order (year first) if the first component looks like a year.
+    let (y, m, d) = if parts[0].trim().len() == 4 {
+        (nums[0], nums[1], nums[2])
+    } else {
+        // US order: month/day/year, with a 2- or 4-digit year.
+        let mut y = nums[2];
+        if parts[2].trim().len() <= 2 {
+            y = if y <= 29 { 2000 + y } else { 1900 + y };
+        }
+        (y, nums[0], nums[1])
+    };
+
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// Days in a given month, honouring leap years.
+pub fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 30,
+    }
+}
+
+/// DATEDIF's calendar difference, decomposed into whole years, whole
+/// months and leftover days -- the shared basis for all six unit codes.
+///
+/// The point of the borrowing below is that DATEDIF counts *completed*
+/// intervals. If the end day-of-month hasn't reached the start's yet,
+/// that month isn't complete: the day difference borrows the length of
+/// the month preceding the end date, and the month count drops by one
+/// (which can in turn borrow a year). Computing the parts independently
+/// instead -- plain `m2 - m1`, plain `d2 - d1` -- overcounts by a month
+/// whenever the end day is earlier, and can even go negative ("MD" of a
+/// pair whose end day precedes its start day used to report -9).
+fn datedif_parts(start: f64, end: f64) -> (i32, i32, i32) {
+    let (y1, m1, d1) = serial_to_ymd(start);
+    let (y2, m2, d2) = serial_to_ymd(end);
+
+    let mut years = y2 - y1;
+    let mut months = m2 - m1;
+    let mut days = d2 - d1;
+
+    if days < 0 {
+        months -= 1;
+        let (prev_y, prev_m) = if m2 == 1 { (y2 - 1, 12) } else { (y2, m2 - 1) };
+        days += days_in_month(prev_y, prev_m);
+    }
+    if months < 0 {
+        years -= 1;
+        months += 12;
+    }
+    (years, months, days)
+}
+
+pub fn datedif(start: f64, end: f64, unit: &str) -> Result<f64, String> {
+    if end < start {
+        return Err("#NUM!".to_string());
+    }
+    let (years, months, days) = datedif_parts(start, end);
+    let (y1, m1, d1) = serial_to_ymd(start);
+    match unit.to_uppercase().as_str() {
+        "Y" => Ok(years as f64),
+        "M" => Ok((years * 12 + months) as f64),
+        "D" => Ok(end.floor() - start.floor()),
+        "MD" => Ok(days as f64),
+        "YM" => Ok(months as f64),
+        // Days since the most recent anniversary of the start date, i.e.
+        // the day count with whole years removed.
+        "YD" => {
+            let anniversary = ymd_to_serial(y1 + years, m1, d1);
+            Ok(end.floor() - anniversary)
+        }
+        _ => Err("#NUM!".to_string()),
+    }
+}
+
+pub fn datevalue(text: &str) -> Result<f64, String> {
+    match parse_date_parts(text) {
+        Some((y, m, d)) => Ok(ymd_to_serial(y, m, d)),
+        None => Err("#VALUE!".to_string()),
+    }
+}
+
+/// Parses a time-only text into a day fraction (0.0..1.0). Supports
+/// `H:MM`, `H:MM:SS`, and either with a trailing `AM`/`PM` marker
+/// (case-insensitive, with or without a separating space).
+pub fn parse_time_fraction(text: &str) -> Option<f64> {
+    let s = text.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let lower = s.to_lowercase();
+    let (body, meridiem) = if let Some(stripped) = lower.strip_suffix("am") {
+        (stripped.trim(), Some(true))
+    } else if let Some(stripped) = lower.strip_suffix("pm") {
+        (stripped.trim(), Some(false))
+    } else {
+        (lower.as_str(), None)
+    };
+
+    let parts: Vec<&str> = body.split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return None;
+    }
+    let mut h: f64 = parts[0].trim().parse().ok()?;
+    let m: f64 = parts[1].trim().parse().ok()?;
+    let s_val: f64 = if parts.len() == 3 {
+        parts[2].trim().parse().ok()?
+    } else {
+        0.0
+    };
+    if !(0.0..60.0).contains(&m) || !(0.0..60.0).contains(&s_val) {
+        return None;
+    }
+
+    if let Some(is_am) = meridiem {
+        if !(1.0..=12.0).contains(&h) {
+            return None;
+        }
+        h = if is_am {
+            if h == 12.0 { 0.0 } else { h }
+        } else if h == 12.0 {
+            12.0
+        } else {
+            h + 12.0
+        };
+    } else if !(0.0..24.0).contains(&h) {
+        return None;
+    }
+
+    let total_seconds = h * 3600.0 + m * 60.0 + s_val;
+    Some((total_seconds / 86400.0).rem_euclid(1.0))
+}
+
+pub fn timevalue(text: &str) -> Result<f64, String> {
+    parse_time_fraction(text).ok_or_else(|| "#VALUE!".to_string())
+}
+
 pub fn day_fn(serial: f64) -> Result<f64, String> {
     if serial < 0.0 {
         Err("#NUM!".to_string())

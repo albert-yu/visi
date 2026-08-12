@@ -70,15 +70,6 @@ pub fn xor_fn(bools: &[bool]) -> bool {
     bools.iter().filter(|&&b| b).count() % 2 != 0
 }
 
-pub fn ifna(val: ResultData, alt: ResultData) -> ResultData {
-    if let ResultData::Error(ref e) = val
-        && e == "#N/A"
-    {
-        return alt;
-    }
-    val
-}
-
 // ============================================================================
 // 3. Lookup & Reference Helpers
 // ============================================================================
@@ -110,8 +101,8 @@ pub fn address_fn(
     }
     match abs_type {
         1 => Ok(format!("${}${}", col_str, r)),
-        2 => Ok(format!("${}{}", col_str, r)),
-        3 => Ok(format!("{}${}", col_str, r)),
+        2 => Ok(format!("{}${}", col_str, r)),
+        3 => Ok(format!("${}{}", col_str, r)),
         4 => Ok(format!("{}{}", col_str, r)),
         _ => Ok(format!("${}${}", col_str, r)),
     }
