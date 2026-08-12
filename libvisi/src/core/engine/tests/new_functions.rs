@@ -1462,6 +1462,41 @@ fn test_complex_number_functions_round_trip() {
 }
 
 #[test]
+fn test_cube_webservice_image_report_unavailable_connections_not_echo_stub_args() {
+    // Regression for #26: these used to echo their last argument back as
+    // a placeholder result -- a plausible-looking wrong value is worse
+    // than a visible error, since it can silently corrupt a downstream
+    // calculation with no signal anything is wrong. None has a local data
+    // source this engine can serve (a live OLAP cube connection, actual
+    // network access, real image decoding); the error codes match what
+    // real Excel shows once its equivalent live connection/resource is
+    // unavailable (#N/A for the CUBE* family, mirroring RTD/STOCKHISTORY
+    // just below; #VALUE! for WEBSERVICE/IMAGE, per Microsoft's own docs).
+    for formula in [
+        "=CUBEKPIMEMBER(\"conn\",\"kpi\",1)",
+        "=CUBEMEMBER(\"conn\",\"member\")",
+        "=CUBEMEMBERPROPERTY(\"conn\",\"member\",\"prop\")",
+        "=CUBERANKEDMEMBER(\"conn\",\"set\",1)",
+        "=CUBESET(\"conn\",\"set\")",
+        "=CUBESETCOUNT(\"set\")",
+        "=CUBEVALUE(\"conn\",\"member\")",
+    ] {
+        assert!(
+            matches!(eval1(formula), ResultData::Error(ref e) if e == "#N/A"),
+            "expected #N/A for {formula}"
+        );
+    }
+    assert!(matches!(
+        eval1("=WEBSERVICE(\"https://example.com\")"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+    assert!(matches!(
+        eval1("=IMAGE(\"https://example.com/pic.png\")"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+}
+
+#[test]
 fn test_stockhistory_and_rtd_report_unavailable_data_source() {
     // Neither has a local data source this engine can serve (a live
     // Microsoft stock-data cloud connection, a registered Windows COM RTD

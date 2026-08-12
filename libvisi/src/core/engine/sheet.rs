@@ -6152,11 +6152,41 @@ impl Sheet {
                             .unwrap_or(ResultData::Error("#VALUE!".to_string()))),
                     }
                 }
-                "GROUPBY" | "IMAGE" | "PIVOTBY" => {
-                    Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
-                }
+                // No OLAP cube connection concept exists in this engine --
+                // #N/A matches what real Excel shows once a cube function's
+                // underlying connection is unavailable, the same reasoning
+                // already applied to RTD/STOCKHISTORY above, rather than
+                // the misleading echo-the-last-argument placeholder these
+                // (and GROUPBY/PIVOTBY/IMAGE/WEBSERVICE below) used to fall
+                // through to -- a plausible-looking wrong value is worse
+                // than a visible error, since it can silently corrupt a
+                // downstream calculation with no signal anything is wrong.
                 "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER"
-                | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" | "WEBSERVICE" => {
+                | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" => {
+                    Ok(ResultData::Error("#N/A".to_string()))
+                }
+                // WEBSERVICE needs actual network access to an arbitrary
+                // URL; #VALUE! matches Microsoft's own documented error
+                // for a request that can't be completed.
+                "WEBSERVICE" => Ok(ResultData::Error("#VALUE!".to_string())),
+                // IMAGE needs to fetch/decode real image data, which this
+                // engine has no concept of; #VALUE! matches real Excel's
+                // error for a source it can't resolve to a usable image.
+                "IMAGE" => Ok(ResultData::Error("#VALUE!".to_string())),
+                // GROUPBY/PIVOTBY are genuine, deterministic array
+                // functions (not connection-dependent like the above) --
+                // unlike those, faking an error here would be its own
+                // regression from the previous echo-last-arg placeholder,
+                // which at least degraded gracefully for the single-
+                // aggregate-function common case. Properly implementing
+                // Excel's full row/column-field grouping and dynamic-array
+                // spill semantics is real, separately-scoped work (this
+                // engine already has the pivot-table grouping machinery in
+                // pivot.rs that a real implementation would build on) --
+                // left as a stub for now, but returning #N/A like the
+                // genuinely-unimplementable functions above would be
+                // actively misleading about *why* it's unimplemented.
+                "GROUPBY" | "PIVOTBY" => {
                     Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None))
                 }
                 "FILTERXML" => {
