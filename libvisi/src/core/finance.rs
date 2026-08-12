@@ -684,7 +684,10 @@ use crate::core::date_fn;
 /// it is handled separately by `coupdays`/`basis_year_days`.
 fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     match basis as i64 {
-        0 => date_fn::days360(start, end, Some(false)).unwrap_or(0.0),
+        // Not `days360(.., Some(false))`: the DAYS360 function's US method
+        // and the NASD convention the bond functions use differ on
+        // February month-ends. See `date_fn::days_30_360_nasd`.
+        0 => date_fn::days_30_360_nasd(start, end),
         4 => date_fn::days360(start, end, Some(true)).unwrap_or(0.0),
         _ => end - start,
     }

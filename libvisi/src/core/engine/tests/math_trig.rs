@@ -523,3 +523,45 @@ fn test_only_a_few_numeric_functions_reject_booleans() {
     assert!((num("=EXP(TRUE)") - std::f64::consts::E).abs() < 1e-15);
     assert!((num("=DEGREES(TRUE)") - 57.29577951308232).abs() < 1e-13);
 }
+
+#[test]
+fn test_days360_and_yearfrac_use_different_thirty_360_rules() {
+    // Excel's DAYS360 function and its YEARFRAC basis 0 (the NASD
+    // convention the bond functions share) genuinely disagree, which is
+    // why visi implements them separately. Two rules differ:
+    //
+    //  - When *both* ends are February month-ends, YEARFRAC pulls the end
+    //    date to the 30th and DAYS360 does not.
+    //  - DAYS360's "end date on the 31st comes back to the 30th" rule
+    //    tests the *adjusted* start day, YEARFRAC's the original -- so a
+    //    February month-end start triggers it for one and not the other.
+    //
+    // Every pair below is a real-Excel value; the ones where the two
+    // columns differ are exactly the cases that separate the rules.
+    let cases: [(&str, &str, f64, f64); 12] = [
+        ("DATE(2003,2,28)", "DATE(2005,2,28)", 718.0, 720.0),
+        ("DATE(2004,2,29)", "DATE(2008,2,29)", 1439.0, 1440.0),
+        ("DATE(2004,2,29)", "DATE(2005,2,28)", 358.0, 360.0),
+        ("DATE(2003,2,28)", "DATE(2004,2,29)", 359.0, 360.0),
+        ("DATE(2003,2,28)", "DATE(2005,3,31)", 750.0, 751.0),
+        ("DATE(2003,1,31)", "DATE(2005,2,28)", 748.0, 748.0),
+        ("DATE(2003,2,28)", "DATE(2005,2,27)", 717.0, 717.0),
+        ("DATE(2003,3,31)", "DATE(2005,2,28)", 688.0, 688.0),
+        ("DATE(2003,1,31)", "DATE(2005,3,31)", 780.0, 780.0),
+        ("DATE(2003,3,15)", "DATE(2005,5,31)", 796.0, 796.0),
+        ("DATE(2003,1,30)", "DATE(2005,3,31)", 780.0, 780.0),
+        ("DATE(2003,4,30)", "DATE(2005,2,28)", 658.0, 658.0),
+    ];
+    for (start, end, days360, yearfrac) in cases {
+        let d = num(&format!("=DAYS360({start}, {end}, FALSE)"));
+        assert!(
+            (d - days360).abs() < 1e-9,
+            "DAYS360({start}, {end}) expected {days360}, got {d}"
+        );
+        let y = num(&format!("=YEARFRAC({start}, {end}, 0) * 360"));
+        assert!(
+            (y - yearfrac).abs() < 1e-6,
+            "YEARFRAC({start}, {end}, 0) * 360 expected {yearfrac}, got {y}"
+        );
+    }
+}

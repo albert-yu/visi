@@ -335,29 +335,68 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
             d2 = 30;
         }
     } else {
-        // US (NASD) method. What separates it from the European method is
-        // the end-of-February handling below -- without it the two agree on
-        // every date pair that does not land on a February month-end, which
-        // is why omitting it looked correct for a long time.
-        //
-        // The order matters: the "both ends are February month-ends" rule
-        // has to be tested while d1 still holds the real day, before d1 is
-        // pulled to the 30th.
+        // The DAYS360 *function's* US method, which is not quite the NASD
+        // 30/360 convention Excel's own YEARFRAC and bond functions use --
+        // see `days_30_360_nasd`, which documents the two differences and
+        // the cases that separate them. The end-of-February rule below is
+        // what distinguishes this from the European method; without it the
+        // two agree on every pair that avoids a February month-end, which
+        // is why omitting it went unnoticed for a long time.
         if m1 == 2 && d1 == days_in_month(y1, m1) {
-            if m2 == 2 && d2 == days_in_month(y2, m2) {
-                d2 = 30;
-            }
             d1 = 30;
         }
         if d1 == 31 {
             d1 = 30;
         }
+        // Note this tests the *adjusted* d1, so a February month-end start
+        // does pull a 31st end date back to the 30th here.
         if d2 == 31 && d1 == 30 {
             d2 = 30;
         }
     }
 
     Ok(((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64)
+}
+
+/// The NASD 30/360 day count that Excel's YEARFRAC (basis 0) and the bond
+/// functions use. This is *not* what the DAYS360 function computes, which
+/// is why it lives here separately rather than sharing `days360`'s US
+/// branch. Two rules differ, and each shows up on its own:
+///
+/// - When both ends are February month-ends, this pulls the end date to
+///   the 30th as well. DAYS360 does not:
+///   `YEARFRAC(2003-02-28, 2005-02-28, 0) * 360` is 720 while
+///   `DAYS360(2003-02-28, 2005-02-28, FALSE)` is 718.
+/// - The "end date on the 31st comes back to the 30th" rule tests the
+///   start day *before* it was adjusted, so a February month-end start
+///   does not trigger it: `YEARFRAC(2003-02-28, 2005-03-31, 0) * 360` is
+///   751 where `DAYS360` gives 750.
+///
+/// Verified against real Excel over twelve date pairs chosen to separate
+/// the two rule sets.
+pub fn days_30_360_nasd(start_date: f64, end_date: f64) -> f64 {
+    let (y1, m1, mut d1) = serial_to_ymd(start_date);
+    let (y2, m2, mut d2) = serial_to_ymd(end_date);
+
+    let d1_is_feb_eom = m1 == 2 && d1 == days_in_month(y1, m1);
+    let d2_is_feb_eom = m2 == 2 && d2 == days_in_month(y2, m2);
+    // Tested before d1 is adjusted below.
+    let d1_was_month_end = d1 == 30 || d1 == 31;
+
+    if d1_is_feb_eom && d2_is_feb_eom {
+        d2 = 30;
+    }
+    if d1_is_feb_eom {
+        d1 = 30;
+    }
+    if d2 == 31 && d1_was_month_end {
+        d2 = 30;
+    }
+    if d1 == 31 {
+        d1 = 30;
+    }
+
+    ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
 }
 
 pub fn edate(start_date: f64, months: f64) -> Result<f64, String> {
@@ -588,7 +627,10 @@ pub fn yearfrac(start_date: f64, end_date: f64, basis: Option<f64>) -> Result<f6
     let diff = d2 - d1;
 
     match b {
-        0 => Ok(days360(d1, d2, Some(false))? / 360.0),
+        // The NASD convention, not the DAYS360 function's US method --
+        // Excel's own YEARFRAC and DAYS360 genuinely disagree on February
+        // month-ends. See `days_30_360_nasd`.
+        0 => Ok(days_30_360_nasd(d1, d2) / 360.0),
         1 => Ok(diff / actual_actual_year_days(d1, d2)),
         2 => Ok(diff / 360.0),
         3 => Ok(diff / 365.0),

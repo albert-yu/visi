@@ -149,12 +149,12 @@ class ExcelFuzzGenerator:
         "PERCENTILE", "PERCENTILE.INC", "PERCENTILE.EXC",
         # QUARTILE.EXC excluded: visi's exclusive-quartile interpolation
         # rejects some quart/sample-size combinations Excel accepts (see
-        # "docs/excel-discrepancies.md" section 8). QUARTILE.INC and the PERCENTILE.* family
+        # "docs/excel-discrepancies.md" section 9). QUARTILE.INC and the PERCENTILE.* family
         # agree and stay fuzzed.
         "QUARTILE", "QUARTILE.INC",
         "PERCENTRANK", "PERCENTRANK.INC", "PERCENTRANK.EXC",
         # FREQUENCY excluded: its bins_array coercion for non-numeric bins
-        # is not understood (see "docs/excel-discrepancies.md" section 10).
+        # is not understood (see "docs/excel-discrepancies.md" section 11).
         "RANK", "RANK.EQ", "RANK.AVG", "TRIMMEAN", "MODE.MULT",
     ]
     LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
@@ -305,7 +305,7 @@ class ExcelFuzzGenerator:
         # demonstrably exists (the same call returns a rate when handed a
         # guess near it), so the comparison asserts whether Excel's
         # iteration converged from its default 0.1 rather than anything
-        # about correctness. See "docs/excel-discrepancies.md" section 9.
+        # about correctness. See "docs/excel-discrepancies.md" section 10.
         "PV", "FV", "PMT", "NPER", "IPMT", "PPMT", "CUMIPMT",
         "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
         "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "DOLLARDE", "DOLLARFR",
@@ -645,7 +645,7 @@ class ExcelFuzzGenerator:
             v = -v
         return v
 
-    def _fin_date(self, y_lo=1995, y_hi=2035):
+    def _fin_date(self, y_lo=1995, y_hi=2035, avoid_february_month_end=False):
         """A DATE(...) literal. Bond/day-count functions below always
         derive related dates (maturity, first coupon, ...) from one of
         these via EDATE(...)/serial-day arithmetic *inside* the generated
@@ -657,6 +657,12 @@ class ExcelFuzzGenerator:
         y = random.randint(y_lo, y_hi)
         m = random.randint(1, 12)
         d = random.randint(1, 28)
+        if avoid_february_month_end and m == 2 and d == 28:
+            # Day 28 is always February's month-end here (the range above
+            # never reaches the 29th), and a February month-end is the one
+            # input ACCRINT is known to get wrong -- see
+            # "docs/excel-discrepancies.md" section 8.
+            d = 27
         return f"DATE({y}, {m}, {d})"
 
     def generate_financial_formula(self, fn=None):
@@ -917,7 +923,9 @@ class ExcelFuzzGenerator:
         if fn == "ACCRINT":
             # Restricted to basis 0/4 (30/360) -- see the doc comment on
             # finance::accrint for why bases 1/2/3 aren't fuzzed here.
-            issue = self._fin_date()
+            # February month-end issue dates are excluded as a known gap;
+            # see "docs/excel-discrepancies.md" section 8.
+            issue = self._fin_date(avoid_february_month_end=True)
             freq = bond_freq()
             months = 12 // freq
             first_interest = f"EDATE({issue}, {months})"
@@ -2331,7 +2339,7 @@ class DifferentialComparator:
         # *different* error, visi and Excel sometimes surface different
         # ones -- which error wins depends on Excel's internal evaluation
         # order and differs per operator and per function. That is a
-        # documented divergence ("docs/excel-discrepancies.md" section 11),
+        # documented divergence ("docs/excel-discrepancies.md" section 12),
         # and by default a disagreement where *both* engines errored is
         # counted separately rather than as a failure.
         #
@@ -2520,7 +2528,7 @@ def main():
         help=(
             "Count a disagreement where both engines errored but with different "
             "error classes as a failure. Off by default -- see "
-            "docs/excel-discrepancies.md section 11."
+            "docs/excel-discrepancies.md section 12."
         ),
     )
     args = parser.parse_args()

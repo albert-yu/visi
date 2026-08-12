@@ -155,7 +155,41 @@ off-by-one cases), but the coefficient brackets and the switch to straight
 line at the end of life are not fully reverse-engineered. Excluded pending
 that work.
 
-## 8. QUARTILE.EXC — *visi gap*
+## 8. ACCRINT from a February month-end — *visi gap*
+
+With an issue date on a February month-end, ACCRINT accrues slightly less
+than Excel does:
+
+```
+ACCRINT(2003-02-28, +6mo, +24mo, 0.0171, 34973.86, 2, 0, FALSE)
+  visi 1192.783   Excel 1196.106      (Excel = exactly 4 coupons)
+ACCRINT(2004-02-29, +6mo, +18mo, 0.05, 10000, 2, 0, FALSE)
+  visi 745.833    Excel 748.611
+```
+
+Both Excel answers equal `par * rate * NASD-30/360 days(issue, settlement)
+/ 360` — i.e. the whole span counted once, not summed period by period.
+But that model is not what ACCRINT does in general, because the result
+*does* depend on `frequency`: for one span, Excel gives 608.33 at
+frequency 1 and 2 and 483.33 at frequency 4, and 483.33 corresponds to
+accruing from the second quasi-coupon date rather than from the issue.
+
+So the whole-span model fits the February cases and contradicts the
+frequency cases, and the period-walk model fits the frequency cases and
+contradicts the February ones. A "a period spanned end to end is worth
+exactly one coupon" rule was tried and fixed the first case above while
+breaking the second. Excel's actual schedule rule is not understood, so
+this stays a gap rather than a guess; the harness avoids February
+month-end issue dates for ACCRINT and everything else about it agrees.
+
+Note this is *not* the DAYS360/YEARFRAC divergence found alongside it —
+that one turned out to be real and is now implemented. Excel's `DAYS360`
+function and its `YEARFRAC` basis 0 use genuinely different 30/360 rules
+(`DAYS360(2003-02-28, 2005-02-28, FALSE)` is 718 while
+`YEARFRAC(...) * 360` is 720), verified over twelve date pairs and
+covered by `test_days360_and_yearfrac_use_different_thirty_360_rules`.
+
+## 9. QUARTILE.EXC — *visi gap*
 
 ```
 QUARTILE.EXC(F1:G5, 3)   visi #NUM!   Excel 53
@@ -165,7 +199,7 @@ visi's exclusive-quartile interpolation rejects some quart/sample-size
 combinations Excel accepts. `QUARTILE.INC` and the `PERCENTILE.*` family
 agree.
 
-## 9. RATE — *No stable answer*
+## 10. RATE — *No stable answer*
 
 Excel's `RATE` iterates from its `guess` (default 0.1) and gives up with
 `#NUM!` on series where a root demonstrably exists — handed a guess near that
@@ -188,7 +222,7 @@ Excluded because "did the other engine's iteration happen to converge from
 0.1" is not a property worth asserting. `IRR`, `XIRR`, `MIRR`, `NPV` and the
 rest of the TVM family stay fuzzed.
 
-## 10. FREQUENCY with non-numeric bins — *visi gap*
+## 11. FREQUENCY with non-numeric bins — *visi gap*
 
 When `bins_array` contains blanks, booleans or text, visi and Excel disagree
 on both the bucket contents and the *length* of the result. visi drops
@@ -207,7 +241,7 @@ An all-numeric `bins_array` agrees, including the non-obvious part that Excel
 sorts the bins internally but reports each count back at that bin's original
 position — that is covered by a regression test.
 
-## 11. Error-class precedence in composed expressions — *tolerated by the comparator*
+## 12. Error-class precedence in composed expressions — *tolerated by the comparator*
 
 When several sub-expressions of one formula each produce a *different* error,
 visi and Excel sometimes surface different ones:
