@@ -1974,7 +1974,9 @@ impl Sheet {
                 for item in list {
                     let (p, h) = self.product_helper(item, false);
                     if h {
-                        prod = Self::clean_float(prod * p);
+                        // Raw here; the 15-significant-digit snap belongs
+                        // on the final product only. See the PRODUCT arm.
+                        prod *= p;
                         has_nums = true;
                     }
                 }
@@ -5834,13 +5836,19 @@ impl Sheet {
                     // Like GCD/LCM, MULTINOMIAL rejects a non-numeric cell
                     // outright (#VALUE!) instead of skipping it the way
                     // SUM does -- a blank inside a range still counts as 0.
+                    // ... and a blank operand is only a *missing* operand
+                    // when there is nothing else: MULTINOMIAL(<blank>) and
+                    // MULTINOMIAL(<blank>, <blank>) are #VALUE! while
+                    // MULTINOMIAL(3, <blank>) is 1, the blank counting as
+                    // 0. That is narrower than SUMPRODUCT, where any lone
+                    // blank operand is #VALUE! even beside a number.
+                    if !evaluated_args.is_empty()
+                        && evaluated_args.iter().all(Self::is_empty_scalar_operand)
+                    {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let mut nums = Vec::new();
                     for arg in &evaluated_args {
-                        // ... but a lone blank *cell* is a missing operand.
-                        // See SUMPRODUCT.
-                        if Self::is_empty_scalar_operand(arg) {
-                            return Ok(ResultData::Error("#VALUE!".to_string()));
-                        }
                         match self.flatten_strict_numbers(arg) {
                             Ok(v) => nums.extend(v),
                             Err(e) => return Ok(ResultData::Error(e)),
@@ -8012,7 +8020,19 @@ impl Sheet {
                         }
                     }
                     if has_nums {
-                        Ok(ResultData::Float(prod))
+                        // Excel snaps a formula's result to 15 significant
+                        // digits, and that is observable beyond display:
+                        // PRODUCT(-35, -0.617, -40, -34) is
+                        // 29369.199999999997 in raw f64, and
+                        // ROUNDDOWN(.., 2) of it gives 29369.19, but Excel
+                        // answers 29369.2 because the snap happens first.
+                        //
+                        // Crucially it is applied *once*, to the finished
+                        // product. Doing it per factor compounds: over
+                        // seven factors PRODUCT drifted ~14 ULP and
+                        // rendered 189124133819.665 where Excel gives
+                        // 189124133819.664.
+                        Ok(ResultData::Float(Self::clean_float(prod)))
                     } else {
                         Ok(ResultData::Float(0.0))
                     }

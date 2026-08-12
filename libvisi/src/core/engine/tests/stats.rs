@@ -812,11 +812,16 @@ fn test_a_lone_blank_cell_is_a_missing_operand() {
     //   SUMPRODUCT(<two blank cells>)  = 0
     //   SUMPRODUCT(-50, <blank>)       = #VALUE!
     //   SUMPRODUCT(<one text cell>)    = 0         (text is not blank)
-    // Same for MULTINOMIAL. Z50/Z51 are empty in a fresh sheet.
+    // MULTINOMIAL draws the line in a different place: a blank operand
+    // is only *missing* when there is nothing else, so MULTINOMIAL(3,
+    // <blank>) is 1 with the blank counting as 0, while SUMPRODUCT rejects
+    // a lone blank even beside a number. Z50/Z51 are empty in a fresh
+    // sheet.
     for src in [
         "=SUMPRODUCT(Z50:Z50)",
         "=SUMPRODUCT(-50, Z50)",
-        "=MULTINOMIAL(Z50:Z50)",
+        "=MULTINOMIAL(Z50)",
+        "=MULTINOMIAL(Z50, Z51)",
     ] {
         match eval1(src) {
             ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
@@ -824,6 +829,8 @@ fn test_a_lone_blank_cell_is_a_missing_operand() {
         }
     }
     assert_float_close(&eval1("=SUMPRODUCT(Z50:Z51)"), 0.0, 1e-12);
+    assert_float_close(&eval1("=MULTINOMIAL(3, Z50)"), 1.0, 1e-12);
+    assert_float_close(&eval1("=MULTINOMIAL(Z50, 3)"), 1.0, 1e-12);
 
     let mut sheet = create_sheet(&[["=\"abc\"", "=SUMPRODUCT(A1:A1)"]]);
     sheet.commit(None).unwrap();
