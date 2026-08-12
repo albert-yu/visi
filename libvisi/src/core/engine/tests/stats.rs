@@ -691,27 +691,48 @@ fn test_normal_cdf_keeps_its_left_tail() {
 }
 
 #[test]
-fn test_paired_sums_and_correl_report_div_zero_when_nothing_pairs_up() {
-    // Real Excel answers #DIV/0! -- not 0, and not #N/A -- when the two
-    // ranges are the same length but no pair survives, and likewise for
-    // CORREL over a series with no variance.
+fn test_paired_sums_error_only_when_a_range_holds_no_numbers() {
+    // The rule is *not* "no pair survived exclusion" -- that is simply 0.
+    // Real Excel reports #DIV/0! when one of the ranges contains no
+    // numeric value at all, and otherwise computes over whatever pairs
+    // survive. The two are easy to confuse because they usually coincide:
+    //
+    //   [53, TRUE] vs [TRUE, -10]   every pair dropped, yet the answer is
+    //                               0 -- each range does hold a number
+    //   [1, 2]     vs ["a", "b"]    #DIV/0! -- the second holds none
+    //   [-116.9395, 53] vs [TRUE, -10]  = 2909, i.e. 53^2 + (-10)^2
+    //
+    // All values below are real Excel's.
     let mut sheet = create_sheet(&[
-        ["1", "2", "7", "7"],
-        ["=\"a\"", "=\"b\"", "", ""],
+        // A       B         C      D        E       F
+        ["-116.9395", "53", "=TRUE", "=\"I3w\"", "=TRUE", "-10"],
+        ["1", "2", "=\"a\"", "=\"b\"", "=TRUE", "=TRUE"],
         [
-            "=SUMX2MY2(A1:B1, A2:B2)",
-            "=SUMXMY2(A1:B1, A2:B2)",
-            "=SUMX2PY2(A1:B1, A2:B2)",
-            "=CORREL(C1:D1, C1:D1)",
+            "=SUMX2PY2(A1:C1, D1:F1)",
+            "=SUMX2PY2(B1:C1, E1:F1)",
+            "=SUMX2PY2(A1:B1, E1:F1)",
+            "=SUMX2PY2(A2:B2, C2:D2)",
+            "=SUMX2PY2(A2:B2, E2:F2)",
+            "=SUMXMY2(A1:C1, D1:F1)",
         ],
     ]);
     sheet.commit(None).unwrap();
-    for col in 0..4 {
+
+    // Every pair dropped, but both ranges hold a number: 0, not an error.
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 0)), 0.0, 1e-12);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 1)), 0.0, 1e-12);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 5)), 0.0, 1e-12);
+    // One boolean pair dropped, one numeric pair kept.
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 2)), 2909.0, 1e-9);
+    // A range with nothing numeric in it at all.
+    for col in [3, 4] {
         match sheet.get_result_data(&CellRef::new(2, col)) {
             ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "column {col}"),
             other => panic!("expected #DIV/0! in column {col}, got {other:?}"),
         }
     }
+    // CORREL over a series with no variance is #DIV/0! independently.
+    assert_err("=CORREL(A1:C1, D1:F1)", "#DIV/0!");
 }
 
 #[test]
@@ -807,4 +828,18 @@ fn test_a_lone_blank_cell_is_a_missing_operand() {
     let mut sheet = create_sheet(&[["=\"abc\"", "=SUMPRODUCT(A1:A1)"]]);
     sheet.commit(None).unwrap();
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 0.0, 1e-12);
+}
+
+#[test]
+fn test_gamma_keeps_full_precision_at_integer_arguments() {
+    // GAMMA(34) is exactly 33! = 8683317618811886495518194401280000000,
+    // which Excel displays as 8.68331761881189E+36. Computing it as
+    // exp(lgamma(x)) costs several significant digits and gave
+    // 8.68331761881199E+36 -- wrong from the 14th.
+    assert_float_close(&eval1("=GAMMA(34)"), 8.68331761881189e36, 1e24);
+    assert_float_close(&eval1("=GAMMA(5)"), 24.0, 1e-12);
+    assert_float_close(&eval1("=GAMMA(11)"), 3628800.0, 1e-6);
+    // Non-integer and negative arguments are unchanged.
+    assert_float_close(&eval1("=GAMMA(0.5)"), 1.7724538509055159, 1e-15);
+    assert_float_close(&eval1("=GAMMA(-1.5)"), 2.3632718012073544, 1e-14);
 }

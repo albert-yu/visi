@@ -1734,6 +1734,24 @@ impl Sheet {
     /// the `.and_then(to_f64).unwrap_or(default)` shape used in places
     /// conflates the two, so e.g. `LOG(3.14, "E")` quietly computed
     /// base-10 instead of erroring.
+    /// `#DIV/0!` when either operand of a paired sum contains no numeric
+    /// value at all.
+    ///
+    /// This is *not* the same as "no pair survived exclusion", which is
+    /// simply 0. Real Excel, with a column [53, TRUE] against a row
+    /// [TRUE, -10]: every pair is dropped (each holds a boolean), yet the
+    /// answer is 0 rather than an error, because each range does hold a
+    /// number. Swap in a range that is entirely text or entirely booleans
+    /// and it becomes #DIV/0!.
+    ///
+    /// Fitted against eleven real-Excel cases spanning text, booleans and
+    /// mixtures, at one, two and three elements per range.
+    fn paired_sum_has_no_numbers(&self, arg: Option<&ResultData>) -> bool {
+        let mut ignored = None;
+        let slots = self.positional_numbers(arg, &mut ignored);
+        slots.iter().all(|v| v.is_none())
+    }
+
     /// True when an argument is a *single-cell* operand that is empty.
     ///
     /// Excel treats that as a missing operand and answers #VALUE!, rather
@@ -6024,6 +6042,11 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sumsq(&nums))
                 }
                 "SUMX2MY2" => {
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     let (xs, ys) =
                         match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                             Ok(v) => v,
@@ -6032,6 +6055,11 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sumx2my2(&xs, &ys))
                 }
                 "SUMX2PY2" => {
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     let (xs, ys) =
                         match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                             Ok(v) => v,
@@ -6040,6 +6068,11 @@ impl Sheet {
                     res_to_rd(crate::core::math_trig::sumx2py2(&xs, &ys))
                 }
                 "SUMXMY2" => {
+                    if self.paired_sum_has_no_numbers(evaluated_args.first())
+                        || self.paired_sum_has_no_numbers(evaluated_args.get(1))
+                    {
+                        return Ok(ResultData::Error("#DIV/0!".to_string()));
+                    }
                     let (xs, ys) =
                         match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                             Ok(v) => v,

@@ -128,16 +128,18 @@ pub fn lgamma(x: f64) -> f64 {
     libm::lgamma(x)
 }
 
-/// Gamma function Gamma(x)
+/// Gamma function Gamma(x). Uses `libm::tgamma` rather than
+/// `lgamma(x).exp()`: going through the logarithm and back costs several
+/// significant digits, which shows up directly against Excel at integer
+/// arguments where the answer is a factorial. GAMMA(34) is exactly 33! =
+/// 8683317618811886495518194401280000000, which Excel displays as
+/// 8.68331761881189E+36; the exp(lgamma) form gave
+/// 8.68331761881199E+36, wrong from the 14th digit.
 pub fn gamma(x: f64) -> f64 {
     if x <= 0.0 && x == x.floor() {
         return f64::NAN;
     }
-    if x < 0.0 {
-        let sin_pix = (std::f64::consts::PI * x).sin();
-        return std::f64::consts::PI / (sin_pix * gamma(1.0 - x));
-    }
-    lgamma(x).exp()
+    libm::tgamma(x)
 }
 
 /// Lower regularized incomplete gamma P(a, x) = gamma(a, x) / Gamma(a)
