@@ -3,6 +3,9 @@ name = "visi"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 libvisi = { path = "../libvisi" }
