@@ -112,9 +112,42 @@ pub fn format_excel_number(f: f64) -> String {
     }
 
     let abs_f = f.abs();
+    let exp = abs_f.log10().floor() as i32;
 
-    if !(1e-5..1e11).contains(&abs_f) {
-        let exp = abs_f.log10().floor() as i32;
+    // Excel keeps plain decimal notation for as long as the decimal
+    // rendering (at 15 significant digits, trailing zeros trimmed) stays
+    // within 20 characters, and only then falls back to scientific.
+    //
+    // That is a much wider decimal range than the magnitude cutoffs this
+    // used to apply (1e-5 .. 1e11), which turned e.g. 976121418126.432 --
+    // which real Excel writes out in full -- into "9.76121418126432E+11".
+    // Verified against real Excel: 1e18 and 1e19 render in full (19 and 20
+    // characters) while 1e20 (21) goes scientific, and 0.000001207666770903
+    // renders in full (20) while 0.00000120766677090395 (22) goes
+    // scientific.
+    let significant = {
+        // Digits actually needed, once 15-significant-digit rounding has
+        // trimmed whatever trailing zeros it produces.
+        let mantissa = format!("{:.*e}", 14, abs_f);
+        let digits = mantissa
+            .split('e')
+            .next()
+            .unwrap_or("")
+            .replace('.', "")
+            .trim_end_matches('0')
+            .len();
+        digits.max(1)
+    };
+    let decimal_len = if exp >= 0 {
+        let int_digits = (exp + 1) as usize;
+        let frac_digits = significant.saturating_sub(int_digits);
+        int_digits + usize::from(frac_digits > 0) + frac_digits
+    } else {
+        // "0." + leading zeros + significant digits
+        2 + (-exp - 1) as usize + significant
+    };
+
+    if decimal_len > 20 {
         let mantissa = f / 10.0f64.powi(exp);
         let factor = 10.0f64.powi(14);
         let rounded_mantissa = (mantissa * factor).round() / factor;
@@ -129,8 +162,7 @@ pub fn format_excel_number(f: f64) -> String {
         }
         format!("{}E{:+03}", s, exp)
     } else {
-        let log10 = abs_f.log10().floor();
-        let decimals = ((14.0 - log10) as i32).clamp(0, 19) as usize;
+        let decimals = (14 - exp).clamp(0, 19) as usize;
         let formatted = format!("{:.1$}", f, decimals);
         let mut trimmed = formatted;
         if trimmed.contains('.') {

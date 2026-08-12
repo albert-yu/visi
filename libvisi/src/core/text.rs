@@ -476,7 +476,15 @@ pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
 
     let scaled = if has_percent { val * 100.0 } else { val };
     let is_negative = scaled < 0.0;
-    let formatted = format!("{:.*}", dec_count, scaled.abs());
+    // Excel rounds half away from zero on the decimal it shows, whereas
+    // Rust's `{:.N}` rounds the underlying *binary* value to nearest-even:
+    // TEXT(-3873.705, "0.00") is -3873.71 in Excel but formats as -3873.70
+    // here without this. Same rule DOLLAR/FIXED needed.
+    let formatted = format!(
+        "{:.*}",
+        dec_count,
+        round_half_away_from_zero(scaled, dec_count).abs()
+    );
     let (int_part, dec_part) = match formatted.split_once('.') {
         Some((i, d)) => (i.to_string(), Some(d.to_string())),
         None => (formatted, None),

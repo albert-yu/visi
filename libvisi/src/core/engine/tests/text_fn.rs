@@ -230,3 +230,46 @@ fn test_filterxml_basic_and_errors() {
     let r4 = sheet.get_result_data(&CellRef::new(0, 3));
     assert!(matches!(r4, ResultData::Error(ref e) if e == "#VALUE!"));
 }
+
+#[test]
+fn test_number_to_text_matches_excel_decimal_range() {
+    // Excel keeps plain decimal notation until the decimal rendering would
+    // exceed 20 characters. The old magnitude cutoffs (1e-5 .. 1e11) were
+    // far narrower and turned numbers Excel writes out in full into
+    // scientific notation -- CONCATENATE over SINH(...) produced
+    // "9.76121418126432E+11" where Excel gives "976121418126.432".
+    // Every expectation is verbatim real-Excel output.
+    use crate::core::engine::result_data::format_excel_number;
+    for (value, expected) in [
+        (976121418126.432_f64, "976121418126.432"),
+        (1e15, "1000000000000000"),
+        (1e18, "1000000000000000000"),
+        (1e19, "10000000000000000000"),
+        (1e20, "1E+20"),
+        (0.000001, "0.000001"),
+        (0.000000001, "0.000000001"),
+        (0.000001207666770903, "0.000001207666770903"),
+        (0.00000120766677090395, "1.20766677090395E-06"),
+        (0.5, "0.5"),
+        (0.0, "0"),
+    ] {
+        let got = format_excel_number(value);
+        assert_eq!(got, expected, "format_excel_number({value})");
+    }
+}
+
+#[test]
+fn test_text_rounds_half_away_from_zero() {
+    // TEXT used Rust's `{:.N}` formatting, which rounds the *binary* value
+    // to nearest-even; Excel rounds half away from zero on the decimal it
+    // displays. TEXT(-3873.705, "0.00") is -3873.71 in Excel but came out
+    // as -3873.70 here.
+    for (value, fmt, expected) in [
+        (-3873.705_f64, "0.00", "-3873.71"),
+        (2.675, "0.00", "2.68"),
+        (1.005, "0.00", "1.01"),
+    ] {
+        let got = crate::core::text::text_fn(value, fmt);
+        assert_eq!(got, Ok(expected.to_string()), "TEXT({value}, {fmt:?})");
+    }
+}

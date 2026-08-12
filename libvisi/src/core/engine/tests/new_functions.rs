@@ -1511,3 +1511,68 @@ fn test_stockhistory_and_rtd_report_unavailable_data_source() {
         ResultData::Error(ref e) if e == "#N/A"
     ));
 }
+
+#[test]
+fn test_coupon_schedule_is_end_of_month_when_maturity_is() {
+    // A maturity on the last day of its month puts the whole coupon
+    // schedule on month-ends, so a step that lands in a leap year takes the
+    // 29th rather than the anchor's 28th. Stepping by a fixed day-of-month
+    // instead made COUPPCD report the settlement date itself.
+    // Values are verbatim real Excel.
+    let settlement = "DATE(2024,2,28)";
+    let maturity = "EDATE(DATE(2024,2,28),180)"; // 2039-02-28, a month end
+    // 2023-02-28
+    assert_float_close(
+        &eval1(&format!("=COUPPCD({settlement}, {maturity}, 1)")),
+        44985.0,
+        1e-9,
+    );
+    // 2024-02-29 -- the 29th, not the 28th.
+    assert_float_close(
+        &eval1(&format!("=COUPNCD({settlement}, {maturity}, 1)")),
+        45351.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1(&format!("=COUPNUM({settlement}, {maturity}, 1)")),
+        16.0,
+        1e-9,
+    );
+    // Semi-annual on the same bond: 2023-08-31, again a month end.
+    assert_float_close(
+        &eval1(&format!("=COUPPCD({settlement}, {maturity}, 2)")),
+        45169.0,
+        1e-9,
+    );
+
+    // A maturity that is *not* a month end keeps its day-of-month.
+    // 2024-05-15 settling against 2039-06-15, semi-annual.
+    assert_float_close(
+        &eval1("=COUPPCD(DATE(2024,5,15), EDATE(DATE(2024,5,15),181), 2)"),
+        45275.0, // 2023-12-15
+        1e-9,
+    );
+    assert_float_close(
+        &eval1("=COUPNCD(DATE(2024,5,15), EDATE(DATE(2024,5,15),181), 2)"),
+        45458.0, // 2024-06-15
+        1e-9,
+    );
+}
+
+#[test]
+fn test_amordegrc_keeps_full_precision_in_the_running_balance() {
+    // The declining balance carries full precision; only the returned
+    // figure is rounded. Rounding each period and subtracting the rounded
+    // amount compounds the error and shifts a later period by a whole unit
+    // -- period 2 below is 4624.4757 carried exactly (Excel: 4624), but
+    // 4624.508 -> 4625 once the two preceding periods have been rounded.
+    // All four values are verbatim real Excel.
+    let call = |period: i32| {
+        format!(
+            "=AMORDEGRC(27370.88, DATE(1998,10,17), EDATE(DATE(1998,10,17),2), 6352.4, {period}, 0.0909, 0)"
+        )
+    };
+    for (period, want) in [(0, 1037.0), (1, 5984.0), (2, 4624.0), (3, 3574.0)] {
+        assert_float_close(&eval1(&call(period)), want, 1e-9);
+    }
+}

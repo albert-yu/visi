@@ -519,3 +519,26 @@ fn test_inverse_beta_and_f_distributions_converge_to_excel_values() {
         }
     }
 }
+
+#[test]
+fn test_chitest_single_category_is_not_available() {
+    // One category means zero degrees of freedom, so there is no
+    // chi-square distribution to evaluate against and Excel reports #N/A.
+    // The check lives at the call site because it is judged on the ranges'
+    // *raw* size: applying it to the pairwise-filtered values instead
+    // would turn a two-cell pair that merely holds one text cell into
+    // #N/A, where Excel still reports the underlying #DIV/0!.
+    // Numeric single cells, matching the case probed against real Excel
+    // (a *blank* single-cell operand is a different rule -- see
+    // paired_args -- and would report #VALUE!).
+    let grid = [["5", "7", "=CHITEST(A1:A1, B1:B1)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let got = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(got, ResultData::Error(ref e) if e == "#N/A"),
+        "{got:?}"
+    );
+    // Two categories still compute.
+    assert!(crate::core::stats::chisq_test(&[10.0, 20.0], &[10.0, 20.0]).is_ok());
+}

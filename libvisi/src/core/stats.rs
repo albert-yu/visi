@@ -1608,9 +1608,12 @@ pub fn prob(
     lower_limit: f64,
     upper_limit: Option<f64>,
 ) -> Result<f64, String> {
-    if x_range.len() != prob_range.len() || x_range.is_empty() {
+    if x_range.len() != prob_range.len() {
         return Err("#N/A".to_string());
     }
+    // No usable probabilities at all is a probability sum of 0, which
+    // fails the "must sum to 1" rule below -- Excel reports #NUM! for it,
+    // not #N/A (confirmed with a probability range that is entirely text).
     let prob_sum: f64 = prob_range.iter().sum();
     if (prob_sum - 1.0).abs() > 1e-6 {
         return Err("#NUM!".to_string());

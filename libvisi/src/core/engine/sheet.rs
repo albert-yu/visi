@@ -1422,6 +1422,21 @@ impl Sheet {
             if let ResultData::Error(e) = arg {
                 return Err(e.clone());
             }
+            // A one-cell operand that is *empty* isn't a one-element array,
+            // it's a missing operand: Excel answers #VALUE! rather than the
+            // #N/A a shape mismatch would give. Note this is specifically
+            // about blankness -- a one-cell operand holding text or a
+            // boolean still reports #N/A, so it can't be folded into the
+            // general non-numeric handling (all three confirmed against
+            // real Excel with CORREL against a 4-cell range).
+            let single_blank = match arg {
+                ResultData::None => true,
+                ResultData::List(items) => items.len() == 1 && matches!(items[0], ResultData::None),
+                _ => false,
+            };
+            if single_blank {
+                return Err("#VALUE!".to_string());
+            }
         }
         let mut first_err = None;
         let xs_raw = self.positional_numbers(x_arg, &mut first_err);
@@ -4129,6 +4144,9 @@ impl Sheet {
                 // propagating it (both match real Excel).
                 && upper_name != "COUNTA"
                 && upper_name != "COUNT"
+                // COUNTBLANK just asks which cells are empty; an error in
+                // the range is a non-blank cell, not a reason to fail.
+                && upper_name != "COUNTBLANK"
                 // AGGREGATE decides for itself whether to propagate or
                 // ignore an error in its data, based on its `options`
                 // argument, so it must see the raw arguments.
@@ -4372,17 +4390,30 @@ impl Sheet {
                     if a_raw.len() != e_raw.len() {
                         return Ok(ResultData::Error("#N/A".to_string()));
                     }
+                    // A single category leaves zero degrees of freedom, so
+                    // there is no chi-square distribution to evaluate
+                    // against and Excel reports #N/A. Judged on the *raw*
+                    // range size: applying it after pairwise filtering
+                    // would turn a two-cell pair that merely holds one text
+                    // cell into #N/A, where Excel still reports the
+                    // underlying #DIV/0!.
+                    if a_raw.len() < 2 {
+                        return Ok(ResultData::Error("#N/A".to_string()));
+                    }
                     if let Some(e) = first_err {
                         return Ok(ResultData::Error(e));
                     }
-                    let actual: Vec<f64> = evaluated_args
-                        .first()
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
-                    let expected: Vec<f64> = evaluated_args
-                        .get(1)
-                        .map(|arg| self.flatten_stat_numbers(arg, false))
-                        .unwrap_or_default();
+                    // Values are taken pairwise so a non-numeric cell in
+                    // one range can't leave the two sides different lengths
+                    // and turn a computable call into a spurious #N/A --
+                    // Excel still returns a value there (CHITEST over a
+                    // 2-cell pair whose expected range holds one text cell
+                    // computes rather than failing).
+                    let (actual, expected) =
+                        match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
+                            Ok(v) => v,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
                     res_to_rd(crate::core::stats::chisq_test(&actual, &expected))
                 }
                 "CONFIDENCE.NORM" | "CONFIDENCE" => {
@@ -5394,12 +5425,19 @@ impl Sheet {
                             Ok(nums.iter().sum::<f64>() / nums.len() as f64)
                         }),
                         2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
-                        4 => Ok(ResultData::Float(
-                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-                        )),
-                        5 => Ok(ResultData::Float(
-                            nums.iter().cloned().fold(f64::INFINITY, f64::min),
-                        )),
+                        // MAX/MIN over nothing is 0, not an infinity --
+                        // which the dispatch-level NaN/infinity guard would
+                        // otherwise turn into #NUM!.
+                        4 => Ok(ResultData::Float(if nums.is_empty() {
+                            0.0
+                        } else {
+                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                        })),
+                        5 => Ok(ResultData::Float(if nums.is_empty() {
+                            0.0
+                        } else {
+                            nums.iter().cloned().fold(f64::INFINITY, f64::min)
+                        })),
                         6 => Ok(ResultData::Float(nums.iter().product())),
                         7 => res_to_rd(crate::core::stats::stdev_s(&nums)),
                         8 => res_to_rd(crate::core::stats::stdev_p(&nums)),
@@ -5436,12 +5474,19 @@ impl Sheet {
                             Ok(nums.iter().sum::<f64>() / nums.len() as f64)
                         }),
                         2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
-                        4 => Ok(ResultData::Float(
-                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-                        )),
-                        5 => Ok(ResultData::Float(
-                            nums.iter().cloned().fold(f64::INFINITY, f64::min),
-                        )),
+                        // MAX/MIN over nothing is 0, matching plain
+                        // MAX/MIN (and not an infinity, which the
+                        // dispatch-level guard would turn into #NUM!).
+                        4 => Ok(ResultData::Float(if nums.is_empty() {
+                            0.0
+                        } else {
+                            nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                        })),
+                        5 => Ok(ResultData::Float(if nums.is_empty() {
+                            0.0
+                        } else {
+                            nums.iter().cloned().fold(f64::INFINITY, f64::min)
+                        })),
                         6 => Ok(ResultData::Float(nums.iter().product())),
                         7 => res_to_rd(crate::core::stats::stdev_s(&nums)),
                         8 => res_to_rd(crate::core::stats::stdev_p(&nums)),
