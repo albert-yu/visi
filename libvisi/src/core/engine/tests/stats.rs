@@ -843,3 +843,47 @@ fn test_gamma_keeps_full_precision_at_integer_arguments() {
     assert_float_close(&eval1("=GAMMA(0.5)"), 1.7724538509055159, 1e-15);
     assert_float_close(&eval1("=GAMMA(-1.5)"), 2.3632718012073544, 1e-14);
 }
+
+#[test]
+fn test_chitest_with_no_surviving_pair_is_one_not_not_available() {
+    // Every pair holds something non-numeric, so the statistic is 0 and
+    // -- with the degrees of freedom taken from the raw range size -- the
+    // p-value is 1. Real Excel returns 1 here; visi reported #N/A, which
+    // then propagated (ERF(CHITEST(...)) should be erf(1)).
+    let mut sheet = create_sheet(&[
+        ["=\"rBN\"", "-323.7702", "=CHITEST(A1:A3, B1:B3)"],
+        ["", "=\"6-323.7702\"", "=ERF(CHITEST(A1:A3, B1:B3))"],
+        ["27", "=\"B\"", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 1.0, 1e-12);
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 2)),
+        0.8427007929497149,
+        1e-15,
+    );
+}
+
+#[test]
+fn test_mode_family_rejects_a_lone_blank_operand() {
+    // MODE is stricter than its neighbours about a blank operand:
+    // MODE(x, <blank>) is #VALUE! in real Excel while MEDIAN(x, <blank>)
+    // is just x. All three spellings behave the same way.
+    for src in [
+        "=MODE(241.965, Z90)",
+        "=MODE.SNGL(241.965, Z90)",
+        "=MODE.MULT(241.965, Z90)",
+        "=MODE(241.965, 241.965, Z90)",
+    ] {
+        match eval1(src) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
+            other => panic!("expected #VALUE! for {src}, got {other:?}"),
+        }
+    }
+    // Unchanged neighbours, and MODE's ordinary behaviour.
+    assert_float_close(&eval1("=MEDIAN(241.965, Z90)"), 241.965, 1e-12);
+    assert_float_close(&eval1("=MODE(241.965, 241.965)"), 241.965, 1e-12);
+    assert_float_close(&eval1("=MODE(1, 1, 2)"), 1.0, 1e-12);
+    // No repeated value is still #N/A, not #VALUE!.
+    assert_err("=MODE(1, 2)", "#N/A");
+}

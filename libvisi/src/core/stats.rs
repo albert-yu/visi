@@ -1324,9 +1324,14 @@ pub fn chisq_inv_rt(p: f64, df: f64) -> Result<f64, String> {
 /// pair, one pair survives and Excel still evaluates against df = 1 rather
 /// than the df = 0 the survivor count would give.
 pub fn chisq_test(actual: &[f64], expected: &[f64], categories: usize) -> Result<f64, String> {
-    if actual.len() != expected.len() || actual.is_empty() {
+    if actual.len() != expected.len() {
         return Err("#N/A".to_string());
     }
+    // No surviving pair is not an error: the statistic is simply 0, and
+    // with the degrees of freedom coming from `categories` the answer is
+    // 1. Real Excel returns 1 for two 3-cell ranges whose every pair holds
+    // something non-numeric. (A raw size mismatch, and a `categories` of
+    // fewer than 2, are both rejected by the caller before this point.)
     let mut chi2 = 0.0;
     for (&o, &e) in actual.iter().zip(expected.iter()) {
         // An expected frequency of exactly zero is the division itself

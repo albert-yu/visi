@@ -5115,6 +5115,13 @@ impl Sheet {
                     }
                 }
                 "MODE.MULT" => {
+                    // The MODE family rejects a lone blank operand where
+                    // its neighbours tolerate it -- MODE(x, <blank>) is
+                    // #VALUE! while MEDIAN(x, <blank>) is x. Applies to
+                    // all three spellings. See is_empty_scalar_operand.
+                    if evaluated_args.iter().any(Self::is_empty_scalar_operand) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let nums: Vec<f64> =
                         match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
                             Ok(v) => v,
@@ -5128,6 +5135,13 @@ impl Sheet {
                     }
                 }
                 "MODE.SNGL" | "MODE" => {
+                    // The MODE family rejects a lone blank operand where
+                    // its neighbours tolerate it -- MODE(x, <blank>) is
+                    // #VALUE! while MEDIAN(x, <blank>) is x. Applies to
+                    // all three spellings. See is_empty_scalar_operand.
+                    if evaluated_args.iter().any(Self::is_empty_scalar_operand) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     let nums: Vec<f64> =
                         match self.flatten_args_stat_numbers(&evaluated_args, &arg_is_direct) {
                             Ok(v) => v,
