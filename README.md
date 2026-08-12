@@ -8,12 +8,19 @@ and updating Excel (`.xlsx`) files.
 - **`libvisi`**: Core embedded spreadsheet engine providing Excel parsing, AST formula compilation, dependency resolution, execution engine, date calculations, chart metadata, and Excel (`.xlsx`) import/export.
 - **`visi`**: Command-line application adhering to [clig.dev](https://clig.dev) design guidelines for inspecting, editing, evaluating formulas in, and exporting Excel workbooks.
 
-## Building & Installation
+## Installation
 
-### Requirements
+### Homebrew (macOS/Linux)
+```bash
+brew install albert-yu/tap/visi
+```
+
+### Building from Source
+
+#### Requirements
 - [Rust](https://www.rust-lang.org/) (2024 edition supported)
 
-### Build Binary
+#### Build Binary
 ```bash
 # Build dev binary
 cargo build --workspace
