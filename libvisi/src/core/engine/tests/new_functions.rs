@@ -1281,6 +1281,100 @@ fn test_bare_row_and_column_report_current_cell_position() {
 }
 
 #[test]
+fn test_let_binds_names_in_sequence_and_rejects_duplicate_names() {
+    assert_float_close(&eval1("=LET(x, 5, x * 2)"), 10.0, 1e-9);
+    // Later pairs can reference earlier ones in the same LET.
+    assert_float_close(&eval1("=LET(x, 5, y, x + 1, x + y)"), 11.0, 1e-9);
+    assert!(matches!(
+        eval1("=LET(x, 1, x, 2, x)"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+}
+
+#[test]
+fn test_randarray_respects_shape_bounds_and_whole_number_flag() {
+    match eval1("=RANDARRAY(2,3,10,20,TRUE)") {
+        ResultData::List(rows) => {
+            assert_eq!(rows.len(), 2);
+            for row in &rows {
+                match row {
+                    ResultData::List(cells) => {
+                        assert_eq!(cells.len(), 3);
+                        for cell in cells {
+                            let v = match cell {
+                                ResultData::Float(f) => *f,
+                                ResultData::Integer(i) => *i as f64,
+                                other => panic!("expected numeric cell, got {other:?}"),
+                            };
+                            assert!((10.0..=20.0).contains(&v), "{v} out of [10,20]");
+                            assert_eq!(v.fract(), 0.0, "expected a whole number, got {v}");
+                        }
+                    }
+                    other => panic!("expected a row List, got {other:?}"),
+                }
+            }
+        }
+        other => panic!("expected a List of rows, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_hlookup_exact_and_approximate_match_on_text_header_row() {
+    // extract_matrix-based HLOOKUP used to coerce every cell through
+    // to_f64 and silently drop non-numeric ones, so a text header row (the
+    // common HLOOKUP case) never matched -- see #26.
+    let grid: [[&str; 3]; 2] = [["Jan", "Feb", "Mar"], ["10", "20", "30"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let (exact, _) = sheet.eval("=HLOOKUP(\"Feb\",A1:C2,2,FALSE)", None).unwrap();
+    assert_float_close(&exact, 20.0, 1e-9);
+
+    assert!(matches!(
+        sheet.eval("=HLOOKUP(\"Nope\",A1:C2,2,FALSE)", None).unwrap().0,
+        ResultData::Error(ref e) if e == "#N/A"
+    ));
+
+    let numeric_grid: [[&str; 3]; 2] = [["10", "20", "30"], ["a", "b", "c"]];
+    let mut numeric_sheet = create_sheet(&numeric_grid);
+    numeric_sheet.commit(None).unwrap();
+    // Approximate match: largest header <= 25 is 20, in column 2.
+    let (approx, _) = numeric_sheet.eval("=HLOOKUP(25,A1:C2,2)", None).unwrap();
+    assert_eq!(approx.to_string(), "b");
+}
+
+#[test]
+fn test_date_functions_match_documented_excel_examples() {
+    // Jan 1, 2024 (serial 45292) is a Monday. WORKDAY skips both weekend
+    // days landing on Mon 1/8/2024 (serial 45299) five working days later
+    // (Tue-Fri, then Mon).
+    assert_float_close(&eval1("=WORKDAY(DATE(2024,1,1),5)"), 45299.0, 1e-9);
+    // Inclusive of both endpoints, excluding the Sat/Sun in between:
+    // Jan 1, 2, 3, 4, 5, 8 = 6 working days.
+    assert_float_close(
+        &eval1("=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,8))"),
+        6.0,
+        1e-9,
+    );
+    // EOMONTH(0) is the same month's last day; EOMONTH(1) rolls into
+    // Feb 2024, a leap year (serial 45351 = Feb 29), so the last day is
+    // the 29th.
+    assert_float_close(&eval1("=DAY(EOMONTH(DATE(2024,1,15),0))"), 31.0, 1e-9);
+    assert_float_close(&eval1("=EOMONTH(DATE(2024,1,15),1)"), 45351.0, 1e-9);
+    // WEEKNUM with the default return type (week starts Sunday): Jan 1,
+    // 2024 (a Monday) is always week 1; the first Sunday (Jan 7) starts
+    // week 2.
+    assert_float_close(&eval1("=WEEKNUM(DATE(2024,1,1))"), 1.0, 1e-9);
+    assert_float_close(&eval1("=WEEKNUM(DATE(2024,1,7))"), 2.0, 1e-9);
+    // Microsoft's own DAYS360 documentation example (US/NASD method).
+    assert_float_close(
+        &eval1("=DAYS360(DATE(2011,1,30),DATE(2011,2,1))"),
+        1.0,
+        1e-9,
+    );
+}
+
+#[test]
 fn test_stockhistory_and_rtd_report_unavailable_data_source() {
     // Neither has a local data source this engine can serve (a live
     // Microsoft stock-data cloud connection, a registered Windows COM RTD

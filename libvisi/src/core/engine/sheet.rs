@@ -6014,24 +6014,69 @@ impl Sheet {
                     }
                 }
                 "HLOOKUP" => {
-                    let lookup_val = evaluated_args.first().cloned().unwrap_or(ResultData::None);
-                    let table: Vec<Vec<ResultData>> = evaluated_args
-                        .get(1)
-                        .map(|arg| {
-                            self.extract_matrix(arg)
-                                .into_iter()
-                                .map(|row| row.into_iter().map(ResultData::Float).collect())
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let row_idx = self.to_f64_arg(evaluated_args.get(2), "HLOOKUP")?;
-                    let range_lookup = evaluated_args.get(3).map(|v| self.to_bool(v));
-                    Ok(crate::core::extended_fn::hlookup(
-                        &lookup_val,
-                        &table,
-                        row_idx,
-                        range_lookup,
-                    ))
+                    if evaluated_args.len() < 3 {
+                        return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                            "HLOOKUP requires at least 3 arguments".to_string(),
+                        )));
+                    }
+                    let lookup_val = &evaluated_args[0];
+                    let row_idx = self.to_f64(&evaluated_args[2]).unwrap_or(1.0) as usize;
+                    let range_lookup = if evaluated_args.len() >= 4 {
+                        self.to_bool(&evaluated_args[3])
+                    } else {
+                        true
+                    };
+
+                    // The mirror image of VLOOKUP just below: the range's
+                    // flat, row-major `List` is reshaped using the
+                    // *unevaluated* range's column span, the first *row*
+                    // (not column) is searched, and the match is read back
+                    // out of the target row. Previously this went through
+                    // `extract_matrix`, which coerces every cell through
+                    // `to_f64` and silently drops non-numeric ones -- so a
+                    // text header row (the common HLOOKUP case) never
+                    // matched.
+                    if let ResultData::List(list) = &evaluated_args[1] {
+                        let num_cols = match &args[1] {
+                            Expr::RangeRef {
+                                start_col, end_col, ..
+                            } => end_col - start_col + 1,
+                            _ => list.len(),
+                        };
+
+                        let num_rows = list.len().checked_div(num_cols).unwrap_or(0);
+                        if num_rows == 0 || row_idx == 0 || row_idx > num_rows {
+                            return Ok(ResultData::Error("#N/A".to_string()));
+                        }
+
+                        let first_row = &list[..num_cols];
+                        let mut found_col_idx: Option<usize> = None;
+                        if !range_lookup {
+                            for (c, item) in first_row.iter().enumerate() {
+                                if item.to_string() == lookup_val.to_string() {
+                                    found_col_idx = Some(c);
+                                    break;
+                                }
+                            }
+                        } else {
+                            let lookup_f = self.to_f64(lookup_val).unwrap_or(0.0);
+                            for (c, item) in first_row.iter().enumerate() {
+                                let val_f = self.to_f64(item).unwrap_or(0.0);
+                                if val_f <= lookup_f {
+                                    found_col_idx = Some(c);
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        match found_col_idx {
+                            Some(c) => Ok(list[(row_idx - 1) * num_cols + c].clone()),
+                            None => Ok(ResultData::Error("#N/A".to_string())),
+                        }
+                    } else {
+                        Ok(ResultData::Error("#N/A".to_string()))
+                    }
                 }
                 "ENCODEURL" => {
                     let text = evaluated_args
