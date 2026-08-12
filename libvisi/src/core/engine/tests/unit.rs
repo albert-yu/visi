@@ -1499,3 +1499,68 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
         Some(124.49)
     );
 }
+
+/// #26 flags an absence of any circular-reference testing: `commit`'s
+/// dirty-cell BFS is bounded by `max_ops`, not real cycle detection (unlike
+/// real Excel, which shows a warning and substitutes 0 by default, or
+/// converges under user-configured iterative calculation -- neither
+/// modeled here). This is a documented, intentional shortcut, not a bug to
+/// fix, but nothing previously confirmed it actually holds: these tests
+/// lock in the safety property that matters -- a cycle terminates quickly
+/// with a finite result rather than hanging or panicking -- so a future
+/// change to the dirty-queue/max_ops logic can't silently regress that
+/// into an infinite loop.
+#[test]
+fn test_self_referencing_formula_terminates_without_hanging() {
+    let mut sheet = Sheet::new(SheetInit {
+        id: None,
+        name: Some("s".to_string()),
+        rows: 1,
+        cols: 1,
+    });
+    sheet.set_cell_src(0, 0, "=A1+1".to_string());
+
+    let start = std::time::Instant::now();
+    let result = sheet.commit(None);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "self-reference must not hang"
+    );
+    assert!(result.is_ok());
+
+    match sheet.get_result_data(&CellRef::new(0, 0)) {
+        ResultData::Float(f) => assert!(f.is_finite()),
+        ResultData::Integer(_) => {}
+        other => panic!("expected a finite numeric result, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_multi_cell_circular_chain_terminates_without_hanging() {
+    let mut sheet = Sheet::new(SheetInit {
+        id: None,
+        name: Some("s".to_string()),
+        rows: 1,
+        cols: 3,
+    });
+    // A1 -> B1 -> C1 -> A1
+    sheet.set_cell_src(0, 0, "=B1+1".to_string());
+    sheet.set_cell_src(0, 1, "=C1+1".to_string());
+    sheet.set_cell_src(0, 2, "=A1+1".to_string());
+
+    let start = std::time::Instant::now();
+    let result = sheet.commit(None);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "a 3-cell cycle must not hang"
+    );
+    assert!(result.is_ok());
+
+    for col in 0..3 {
+        match sheet.get_result_data(&CellRef::new(0, col)) {
+            ResultData::Float(f) => assert!(f.is_finite()),
+            ResultData::Integer(_) => {}
+            other => panic!("expected a finite numeric result, got {other:?}"),
+        }
+    }
+}

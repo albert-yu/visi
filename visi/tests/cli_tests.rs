@@ -961,6 +961,42 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
 }
 
 #[test]
+fn test_cross_sheet_circular_reference_terminates_without_hanging() {
+    // #26 flags an absence of circular-reference testing; this is the
+    // cross-sheet counterpart to libvisi's own self-reference/multi-cell
+    // cycle tests, exercised through WorkbookManager::evaluate() (the
+    // fixed 3-pass loop) rather than a single Sheet::commit call. A cycle
+    // here is naturally bounded by the fixed pass count, but nothing
+    // previously confirmed that -- especially after the mark_all_dirty
+    // per-pass fix above, which makes every pass do real work again.
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+    wb.sheets[0].set_cell_src(0, 0, "=Second!A1+1".to_string());
+    wb.sheets[1].set_cell_src(0, 0, "=First!A1+1".to_string());
+
+    let start = std::time::Instant::now();
+    wb.evaluate().unwrap();
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "a cross-sheet cycle must not hang"
+    );
+
+    for (sheet_idx, label) in [(0, "First!A1"), (1, "Second!A1")] {
+        match wb.sheets[sheet_idx].get_result_data(&libvisi::core::CellRef::new(0, 0)) {
+            libvisi::core::ResultData::Float(f) => assert!(f.is_finite(), "{label} not finite"),
+            libvisi::core::ResultData::Integer(_) => {}
+            other => panic!("expected a finite numeric result for {label}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn test_coordinate_parsing() {
     let (sheet, row, col) = parse_cell_ref("Sheet2!D10").unwrap();
     assert_eq!(sheet, Some("Sheet2".to_string()));
