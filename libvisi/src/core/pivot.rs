@@ -2727,9 +2727,10 @@ mod tests {
             // A zero-data-row (header-only) Excel Table used to panic on
             // export+reimport ("invalid range bounds" inside calamine's
             // `Range::range`, reachable via `Xlsx::table_by_name`) --
-            // this fuzz loop is what originally found that bug. Fixed by
-            // vendoring a patched calamine (see vendor/calamine/PATCHES.md),
-            // so the Table-sourced arm no longer needs to avoid num_rows=0.
+            // this fuzz loop is what originally found that bug. The import
+            // path no longer calls calamine's table API at all (see
+            // `xlsx::import_tables_from_zip`), so the Table-sourced arm no
+            // longer needs to avoid num_rows=0.
             let num_rows = rng.gen_range(0..=40usize);
             let (mut sheet, col_names) = fuzz_source_sheet(&mut rng, num_rows);
             if use_table {
