@@ -2,12 +2,27 @@
 //!
 //! [`parse_date`] infers both the date and the [`DateFormat`] it was written
 //! in; [`date_to_excel_serial`] converts to Excel's day count, reproducing the
-//! 1900 leap-year bug. `engine::sheet`'s literal coercion is the caller.
+//! 1900 leap-year bug.
 //!
-//! The `DateFormat` half of `parse_date`'s return is currently discarded by
-//! that caller -- it exists for a formatter that would render a date back in
-//! the notation it was typed in. Tests pin the detection so it stays correct
-//! until something uses it.
+//! The `DateFormat` half is what lets a date cell echo back in the notation it
+//! was typed in, the way Excel does: `6/22/26` stays `6/22/26` rather than
+//! normalizing to ISO. [`DateFormat::to_format_code`] lowers it to an Excel
+//! number-format code and [`render_date_code`] renders that code, so this
+//! module and `text::text_fn`'s `TEXT()` share one date formatter instead of
+//! keeping two.
+//!
+//! The value itself stays a plain numeric serial, as it is in Excel -- the
+//! notation lives on the cell, as `CellStyle::num_format`. `engine::sheet`
+//! records it when it recognizes a literal and renders through it in
+//! `get_display_string`; `xlsx` maps it to and from a worksheet `numFmt`.
+//! Month-name casing is the one detail a format code cannot carry, so it
+//! survives [`format_date`] but not a round trip through a worksheet --
+//! which is Excel's behavior too.
+//!
+//! `DateFormat` records the separator, field order, year width and month-name
+//! spelling, but not whether a numeric month or day was zero-padded --
+//! `06/22/2026` and `6/22/2026` are the same format. Rendering is unpadded
+//! there, which is what Excel also does with `m/d/yyyy`.
 
 const MONTHS_FULL: [&str; 12] = [
     "January",
@@ -27,7 +42,7 @@ const MONTHS_SHORT: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StringCase {
     Lower,
     Upper,
@@ -78,7 +93,7 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DateFormat {
     // 3-part formats
     Ymd {
@@ -141,6 +156,186 @@ pub enum DateFormat {
         month_case: StringCase,
         month_full: bool,
     }, // e.g. 2026-Jun -> Year-Month (assumes Day 1)
+}
+
+impl DateFormat {
+    /// Lowers to an Excel number-format code (`m/d/yy`, `d-mmm-yyyy`, ...).
+    ///
+    /// This is the interchange form: it is what gets written to the worksheet
+    /// as a `numFmt` and what [`render_date_code`] consumes. Month-name casing
+    /// has no representation in a format code, so it rides alongside as
+    /// [`DateFormat::month_case`].
+    pub fn to_format_code(&self) -> String {
+        // A month name is "mmm"/"mmmm"; a numeric month is bare "m" because
+        // `DateFormat` does not record zero-padding.
+        fn month_word(full: bool) -> &'static str {
+            if full { "mmmm" } else { "mmm" }
+        }
+        fn year(len: usize) -> &'static str {
+            if len == 2 { "yy" } else { "yyyy" }
+        }
+
+        match *self {
+            DateFormat::Ymd { sep } => format!("yyyy{sep}mm{sep}dd"),
+            DateFormat::Mdy { sep, year_len } => format!("m{sep}d{sep}{}", year(year_len)),
+            DateFormat::Dmy { sep, year_len } => format!("d{sep}m{sep}{}", year(year_len)),
+            DateFormat::DMmmY {
+                sep,
+                year_len,
+                month_full,
+                ..
+            } => format!("d{sep}{}{sep}{}", month_word(month_full), year(year_len)),
+            DateFormat::MmmDY {
+                sep,
+                year_len,
+                month_full,
+                ..
+            } => format!("{}{sep}d{sep}{}", month_word(month_full), year(year_len)),
+            DateFormat::YMmmD {
+                sep,
+                year_len,
+                month_full,
+                ..
+            } => format!("{}{sep}{}{sep}d", year(year_len), month_word(month_full)),
+            DateFormat::Md { sep } => format!("m{sep}d"),
+            DateFormat::My { sep, year_len } => format!("m{sep}{}", year(year_len)),
+            DateFormat::DMmm {
+                sep, month_full, ..
+            } => format!("d{sep}{}", month_word(month_full)),
+            DateFormat::MmmD {
+                sep, month_full, ..
+            } => format!("{}{sep}d", month_word(month_full)),
+            DateFormat::MmmY {
+                sep,
+                year_len,
+                month_full,
+                ..
+            } => format!("{}{sep}{}", month_word(month_full), year(year_len)),
+            DateFormat::YMmm {
+                sep,
+                year_len,
+                month_full,
+                ..
+            } => format!("{}{sep}{}", year(year_len), month_word(month_full)),
+        }
+    }
+
+    /// The casing the month name was typed in, for the formats that have one.
+    pub fn month_case(&self) -> StringCase {
+        match *self {
+            DateFormat::DMmmY { month_case, .. }
+            | DateFormat::MmmDY { month_case, .. }
+            | DateFormat::YMmmD { month_case, .. }
+            | DateFormat::DMmm { month_case, .. }
+            | DateFormat::MmmD { month_case, .. }
+            | DateFormat::MmmY { month_case, .. }
+            | DateFormat::YMmm { month_case, .. } => month_case,
+            _ => StringCase::Title,
+        }
+    }
+}
+
+fn apply_case(s: &str, case: StringCase) -> String {
+    match case {
+        StringCase::Upper => s.to_uppercase(),
+        StringCase::Lower => s.to_lowercase(),
+        // Month names are stored title-cased already.
+        StringCase::Title | StringCase::Original => s.to_string(),
+    }
+}
+
+/// Renders a date through an Excel number-format code.
+///
+/// Handles the date tokens visi recognizes: runs of `y` (1-2 -> 2-digit year,
+/// 3+ -> 4-digit), `m` (1 -> bare month, 2 -> zero-padded, 3 -> `Jun`, 4+ ->
+/// `June`) and `d` (1 -> bare day, 2+ -> zero-padded). Anything else is copied
+/// through verbatim, so separators and literal text survive.
+///
+/// Tokens are matched as runs in a single pass rather than by successive
+/// string replacement, which is what keeps a substituted month name from being
+/// re-scanned -- `December` contains an `m` and `May` a `y`.
+pub fn render_date_code(date: SimpleDate, code: &str, month_case: StringCase) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len() + 8);
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        let lower = c.to_ascii_lowercase();
+        if !matches!(lower, 'y' | 'm' | 'd') {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+
+        let mut run = 0;
+        while i + run < chars.len() && chars[i + run].to_ascii_lowercase() == lower {
+            run += 1;
+        }
+        i += run;
+
+        match lower {
+            'y' => {
+                if run <= 2 {
+                    out.push_str(&format!("{:02}", date.year.rem_euclid(100)));
+                } else {
+                    out.push_str(&format!("{:04}", date.year));
+                }
+            }
+            'm' => {
+                let idx = (date.month as usize).saturating_sub(1);
+                match run {
+                    1 => out.push_str(&date.month.to_string()),
+                    2 => out.push_str(&format!("{:02}", date.month)),
+                    3 => out.push_str(&apply_case(
+                        MONTHS_SHORT.get(idx).copied().unwrap_or(""),
+                        month_case,
+                    )),
+                    _ => out.push_str(&apply_case(
+                        MONTHS_FULL.get(idx).copied().unwrap_or(""),
+                        month_case,
+                    )),
+                }
+            }
+            _ => {
+                if run == 1 {
+                    out.push_str(&date.day.to_string());
+                } else {
+                    out.push_str(&format!("{:02}", date.day));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Renders a date back in the notation [`parse_date`] recognized it in.
+pub fn format_date(date: SimpleDate, format: &DateFormat) -> String {
+    render_date_code(date, &format.to_format_code(), format.month_case())
+}
+
+/// Whether a number-format code renders a date, as opposed to a numeric
+/// format like `0.00` or `#,##0`.
+///
+/// Deliberately narrow: it wants a `y`/`m`/`d` token and no digit placeholder,
+/// so an unrecognized or numeric code falls back to plain number rendering
+/// rather than being mangled into a date.
+pub fn is_date_code(code: &str) -> bool {
+    let has_date_token = code
+        .chars()
+        .any(|c| matches!(c.to_ascii_lowercase(), 'y' | 'm' | 'd'));
+    let has_number_placeholder = code.contains('0') || code.contains('#');
+    has_date_token && !has_number_placeholder
+}
+
+/// The inverse of [`date_to_excel_serial`], for rendering a computed serial.
+pub fn excel_serial_to_date(serial: f64) -> SimpleDate {
+    let (year, month, day) = crate::core::date_fn::serial_to_ymd(serial);
+    SimpleDate {
+        year,
+        month: month.max(0) as u32,
+        day: day.max(0) as u32,
+    }
 }
 
 fn find_month_word(part: &str) -> Option<(u32, bool)> {
@@ -752,6 +947,120 @@ mod tests {
             assert_eq!(date, *want_date, "date mismatch for {src}");
             assert_eq!(format, *want_format, "format mismatch for {src}");
         }
+    }
+
+    /// The point of detecting a format at all: a date echoes back in the
+    /// notation it was typed in. This is the round trip the detection was
+    /// built for and had no consumer for until `format_date` existed.
+    #[test]
+    fn test_format_date_round_trips_the_typed_notation() {
+        let sources = [
+            "2026-06-22",
+            "2026/06/22",
+            "6/22/26",
+            "22-Jun-2026",
+            "22-June-2026",
+            "Jun-22-2026",
+            "22-Jun",
+            "Jun-22",
+            "6/2026",
+            "Jun-26",
+            "2026-Jun",
+        ];
+        for src in sources {
+            let (date, format) = parse_date(src).unwrap_or_else(|| panic!("{src} did not parse"));
+            assert_eq!(
+                format_date(date, &format),
+                src,
+                "round trip failed for {src}"
+            );
+        }
+    }
+
+    /// `DateFormat` records the field order and year width but not whether a
+    /// numeric month or day was zero-padded, so a padded day-first or
+    /// month-first date comes back unpadded. Excel normalizes the same way
+    /// (`m/d/yyyy`); the ISO form is padded because its format code is.
+    #[test]
+    fn test_format_date_normalizes_zero_padding() {
+        let (date, format) = parse_date("22-06-2026").unwrap();
+        assert_eq!(format_date(date, &format), "22-6-2026");
+
+        let (date, format) = parse_date("06/22/2026").unwrap();
+        assert_eq!(format_date(date, &format), "6/22/2026");
+
+        // Year-first keeps its padding: the code really is yyyy-mm-dd.
+        let (date, format) = parse_date("2026-06-22").unwrap();
+        assert_eq!(format_date(date, &format), "2026-06-22");
+    }
+
+    /// Month-name casing is carried by `DateFormat`, not by the format code,
+    /// so it survives `format_date` but not the trip through a worksheet
+    /// `numFmt` -- which is Excel's own behavior.
+    #[test]
+    fn test_format_date_preserves_month_name_case() {
+        for src in ["22-JUN-2026", "22-jun-2026"] {
+            let (date, format) = parse_date(src).unwrap();
+            assert_eq!(format_date(date, &format), src);
+        }
+        let (date, format) = parse_date("22-JUN-2026").unwrap();
+        assert_eq!(format.to_format_code(), "d-mmm-yyyy");
+        assert_eq!(
+            render_date_code(date, &format.to_format_code(), StringCase::Title),
+            "22-Jun-2026"
+        );
+    }
+
+    /// A month *name* contains letters that are themselves format tokens --
+    /// `December` an `m`, `May` a `y`. The renderer scans runs in one pass
+    /// precisely so a substituted name is never re-scanned; successive
+    /// string replacement mangled these.
+    #[test]
+    fn test_render_date_code_does_not_rescan_substituted_month_names() {
+        let dec = SimpleDate {
+            year: 2026,
+            month: 12,
+            day: 5,
+        };
+        assert_eq!(
+            render_date_code(dec, "mmmm d, yyyy", StringCase::Title),
+            "December 5, 2026"
+        );
+        let may = SimpleDate {
+            year: 2026,
+            month: 5,
+            day: 5,
+        };
+        assert_eq!(render_date_code(may, "mmm-yy", StringCase::Title), "May-26");
+    }
+
+    #[test]
+    fn test_render_date_code_token_widths() {
+        let d = SimpleDate {
+            year: 2026,
+            month: 6,
+            day: 7,
+        };
+        assert_eq!(
+            render_date_code(d, "yyyy-mm-dd", StringCase::Title),
+            "2026-06-07"
+        );
+        assert_eq!(render_date_code(d, "m/d/yy", StringCase::Title), "6/7/26");
+        assert_eq!(render_date_code(d, "mmmm", StringCase::Title), "June");
+        // Non-token characters pass through untouched.
+        assert_eq!(
+            render_date_code(d, "[yyyy] week of d", StringCase::Title),
+            "[2026] week of 7"
+        );
+    }
+
+    #[test]
+    fn test_is_date_code_rejects_numeric_formats() {
+        assert!(is_date_code("m/d/yy"));
+        assert!(is_date_code("yyyy-mm-dd"));
+        assert!(!is_date_code("0.00"));
+        assert!(!is_date_code("#,##0"));
+        assert!(!is_date_code(""));
     }
 
     #[test]

@@ -17,6 +17,12 @@ pub struct CellStyle {
     pub font_family: Option<String>,
     /// Font size in points (e.g. 11, 12, 14)
     pub font_size: Option<u16>,
+    /// Excel number-format code (e.g. `m/d/yy`, `yyyy-mm-dd`).
+    ///
+    /// This is how a date cell remembers the notation it was written in: the
+    /// value stays a plain numeric serial, exactly as in Excel, and the format
+    /// governs only how it renders. See `core::date`.
+    pub num_format: Option<String>,
 }
 
 impl CellStyle {
@@ -32,6 +38,7 @@ impl CellStyle {
             && self.underline.is_none()
             && self.font_family.is_none()
             && self.font_size.is_none()
+            && self.num_format.is_none()
     }
 
     pub fn merge(&mut self, other: &CellStyle) {
@@ -55,6 +62,9 @@ impl CellStyle {
         }
         if other.font_size.is_some() {
             self.font_size = other.font_size;
+        }
+        if other.num_format.is_some() {
+            self.num_format = other.num_format.clone();
         }
     }
 }

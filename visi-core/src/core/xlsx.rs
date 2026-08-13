@@ -14,11 +14,15 @@ fn text_cell_src(s: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
+    // Excel handed us a *string* cell, so anything the engine's literal
+    // parser would otherwise claim -- numbers, booleans, and dates such as
+    // "22-Jun" -- has to be quoted to survive the round trip as text.
     let looks_ambiguous = s.starts_with('=')
         || s.parse::<i64>().is_ok()
         || s.parse::<f64>().is_ok()
         || s.eq_ignore_ascii_case("true")
-        || s.eq_ignore_ascii_case("false");
+        || s.eq_ignore_ascii_case("false")
+        || crate::core::date::parse_date(s).is_some();
     if looks_ambiguous {
         format!("\"{}\"", s)
     } else {
@@ -79,6 +83,11 @@ pub(crate) fn import_xlsx_data_raw(
     // attached to the right imported Sheet.
     let mut orig_to_assigned_name: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+
+    // Keyed by *original* sheet name, like the table definitions below, since
+    // it is read straight out of the zip rather than through calamine. A
+    // malformed styles part costs the date notation, not the import.
+    let cell_number_formats = import_cell_number_formats(buffer).unwrap_or_default();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -174,6 +183,12 @@ pub(crate) fn import_xlsx_data_raw(
                             calamine::Data::Error(e) => {
                                 crate::core::engine::ResultData::Error(format!("{:?}", e))
                             }
+                            // A date is its serial. Without this it would
+                            // land as `None` and stay blank until something
+                            // forced a recalculation.
+                            calamine::Data::DateTime(d) => {
+                                crate::core::engine::ResultData::Float(d.as_f64())
+                            }
                             _ => crate::core::engine::ResultData::None,
                         };
                         columns[col_idx].data.set(row_idx, init_res);
@@ -228,6 +243,12 @@ pub(crate) fn import_xlsx_data_raw(
                             calamine::Data::Error(e) => {
                                 crate::core::engine::ResultData::Error(format!("{:?}", e))
                             }
+                            // A date is its serial. Without this it would
+                            // land as `None` and stay blank until something
+                            // forced a recalculation.
+                            calamine::Data::DateTime(d) => {
+                                crate::core::engine::ResultData::Float(d.as_f64())
+                            }
                             _ => crate::core::engine::ResultData::None,
                         };
                         columns[col_idx].data.set(row_idx, init_res);
@@ -267,6 +288,22 @@ pub(crate) fn import_xlsx_data_raw(
                         max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                         columns[col_idx].src[row_idx] = cell_src;
                     }
+                }
+            }
+            // Reattach the date notation each cell was formatted with. The
+            // value itself already arrived as a serial; without this it would
+            // display as 46195 instead of 6/22/26.
+            if let Some(sheet_formats) = cell_number_formats.get(orig_sheet_name) {
+                for (&(row_idx, col_idx), code) in sheet_formats {
+                    let Some(col) = columns.get_mut(col_idx) else {
+                        continue;
+                    };
+                    if row_idx >= col.styles.len() {
+                        continue;
+                    }
+                    let mut style = col.styles[row_idx].clone().unwrap_or_default();
+                    style.num_format = Some(code.clone());
+                    col.styles[row_idx] = Some(style);
                 }
             }
             let elapsed_cells = start_cells.elapsed();
@@ -560,6 +597,26 @@ pub(crate) fn parse_xlsx_table_style(name: &str) -> rust_xlsxwriter::TableStyle 
     }
 }
 
+/// The numeric serial to export for a date-formatted cell, if this is one.
+///
+/// A date cell keeps the typed text in `src` and the serial in `data`, so the
+/// value -- not the source -- is what Excel needs alongside the `numFmt`.
+fn date_serial_for_export(
+    style: Option<&crate::core::CellStyle>,
+    col: &crate::core::engine::DataColumn,
+    row_idx: usize,
+) -> Option<f64> {
+    let code = style?.num_format.as_deref()?;
+    if !crate::core::date::is_date_code(code) {
+        return None;
+    }
+    match col.data.get(row_idx)? {
+        crate::core::engine::ResultData::Float(f) => Some(f),
+        crate::core::engine::ResultData::Integer(i) => Some(i as f64),
+        _ => None,
+    }
+}
+
 pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwriter::Format {
     let mut format = rust_xlsxwriter::Format::new();
     if let Some(font_color) = &style.font_color {
@@ -586,6 +643,9 @@ pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwrit
     }
     if let Some(size) = style.font_size {
         format = format.set_font_size(size as f64);
+    }
+    if let Some(code) = &style.num_format {
+        format = format.set_num_format(code);
     }
     format
 }
@@ -694,6 +754,22 @@ pub(crate) fn export_xlsx_data_raw(
                                 .write_formula(row_idx as u32, col_idx as u16, formula)
                                 .map_err(|e| format!("Failed to write Excel formula: {}", e))?;
                         }
+                    } else if let Some(serial) = date_serial_for_export(style_opt, col, row_idx) {
+                        // A date cell's src is the text that was typed
+                        // ("6/22/26"), which is not parseable as a number.
+                        // Excel wants the serial plus the number format, so
+                        // the computed value is what goes out.
+                        let rx_format = format_opt
+                            .as_ref()
+                            .expect("a date cell always has a num_format style");
+                        worksheet
+                            .write_number_with_format(
+                                row_idx as u32,
+                                col_idx as u16,
+                                serial,
+                                rx_format,
+                            )
+                            .map_err(|e| format!("Failed to write Excel date: {}", e))?;
                     } else if let Ok(val_f64) = cell_src.parse::<f64>() {
                         if let Some(ref rx_format) = format_opt {
                             worksheet
@@ -1629,6 +1705,181 @@ fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)
     Ok(tables)
 }
 
+/// The built-in `numFmtId`s that denote dates, per ECMA-376. Only the
+/// date-bearing ones are listed; ids outside this table and outside the custom
+/// `<numFmt>` range are numeric or text formats and carry no date notation.
+///
+/// The time-bearing built-ins (18-21, 45-47) are deliberately absent: visi has
+/// no time-of-day support, so claiming them would render `h:mm` cells as bare
+/// dates rather than leaving them as plain serials.
+const BUILTIN_DATE_NUM_FMTS: &[(u32, &str)] = &[
+    (14, "m/d/yyyy"),
+    (15, "d-mmm-yy"),
+    (16, "d-mmm"),
+    (17, "mmm-yy"),
+];
+
+/// Date format codes per cell, keyed by sheet name and then by 0-based
+/// `(row, col)`.
+type SheetCellNumberFormats =
+    std::collections::HashMap<String, std::collections::HashMap<(usize, usize), String>>;
+
+/// Maps each cell that carries a date number format to that format's code,
+/// keyed by sheet name and then by `(row, col)` -- both 0-based, matching the
+/// engine.
+///
+/// calamine reports a date-formatted cell as `Data::DateTime` but does not
+/// expose the format code behind it, and the code is the whole point here: it
+/// is what lets `6/22/26` come back as `6/22/26` rather than `2026-06-22`. So
+/// this walks the zip directly, joining each worksheet's per-cell style index
+/// (`<c s="3">`) through `xl/styles.xml`'s `<cellXfs>` to a `numFmtId`, and
+/// then to either a custom `<numFmt>` code or a built-in one.
+fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+
+    let Some(styles_xml) = get_zip_file_content(&mut archive, "xl/styles.xml") else {
+        return Ok(HashMap::new());
+    };
+    let xf_to_code = parse_styles_num_formats(&styles_xml);
+    if xf_to_code.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: HashMap<String, HashMap<(usize, usize), String>> = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let cells = parse_sheet_cell_formats(&sheet_xml, &xf_to_code);
+        if !cells.is_empty() {
+            out.insert(sheet_name, cells);
+        }
+    }
+    Ok(out)
+}
+
+/// Resolves `xl/styles.xml` into "cell style index -> date format code",
+/// keeping only the entries that denote a date.
+fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String> {
+    use std::collections::HashMap;
+
+    let mut custom: HashMap<u32, String> = HashMap::new();
+    // `<xf>` appears under both `<cellStyleXfs>` and `<cellXfs>`; a cell's
+    // `s=` indexes the latter, so only that run is collected.
+    let mut cell_xfs: Vec<u32> = Vec::new();
+    let mut in_cell_xfs = false;
+
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => match e.local_name().as_ref() {
+                b"numFmt" => {
+                    if let Some(id) = get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
+                        && let Some(code) = get_attr(e, b"formatCode")
+                    {
+                        custom.insert(id, code);
+                    }
+                }
+                b"cellXfs" => in_cell_xfs = true,
+                b"xf" if in_cell_xfs => {
+                    cell_xfs.push(
+                        get_attr(e, b"numFmtId")
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(0),
+                    );
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                if e.local_name().as_ref() == b"cellXfs" {
+                    in_cell_xfs = false;
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    let mut out = HashMap::new();
+    for (xf_idx, num_fmt_id) in cell_xfs.into_iter().enumerate() {
+        let code = custom.get(&num_fmt_id).cloned().or_else(|| {
+            BUILTIN_DATE_NUM_FMTS
+                .iter()
+                .find(|(id, _)| *id == num_fmt_id)
+                .map(|(_, code)| (*code).to_string())
+        });
+        if let Some(code) = code
+            && crate::core::date::is_date_code(&code)
+        {
+            out.insert(xf_idx as u32, code);
+        }
+    }
+    out
+}
+
+/// Pulls `(row, col) -> date format code` out of one worksheet part, for the
+/// cells whose style index resolves to a date format.
+fn parse_sheet_cell_formats(
+    xml: &str,
+    xf_to_code: &std::collections::HashMap<u32, String>,
+) -> std::collections::HashMap<(usize, usize), String> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"c"
+                    && let Some(style_idx) = get_attr(e, b"s").and_then(|s| s.parse::<u32>().ok())
+                    && let Some(code) = xf_to_code.get(&style_idx)
+                    && let Some(reference) = get_attr(e, b"r")
+                    && let Some(rc) = parse_a1_cell(&reference)
+                {
+                    out.insert(rc, code.clone());
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+/// `"B3"` -> `(2, 1)`, 0-based. Trailing `$` anchors are not expected in a
+/// cell's `r` attribute and are not accepted.
+fn parse_a1_cell(reference: &str) -> Option<(usize, usize)> {
+    let split = reference.find(|c: char| c.is_ascii_digit())?;
+    let (letters, digits) = reference.split_at(split);
+    if letters.is_empty() || !letters.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut col = 0usize;
+    for c in letters.chars() {
+        col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+    }
+    let row = digits.parse::<usize>().ok()?;
+    if row == 0 {
+        return None;
+    }
+    Some((row - 1, col - 1))
+}
+
 /// Derives a stable chart id from its sheet name and position within that
 /// sheet's charts, so re-importing the same unchanged xlsx always assigns
 /// the same id to the same chart. Uses `DefaultHasher`, which (unlike
@@ -1767,6 +2018,68 @@ mod tests {
         assert_eq!(imported_table.columns[0].src[1], "20");
         assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_table.columns[1].src[1], "abc");
+    }
+
+    /// A date cell has to survive as a *date*: the value goes out as a
+    /// numeric serial (Excel cannot do date arithmetic on text) while the
+    /// notation goes out as the cell's `numFmt` and comes back from it. The
+    /// CLI is a fresh process per invocation, so this round trip is the only
+    /// thing that makes a date still look like one on the next command.
+    #[test]
+    fn test_xlsx_date_notation_survives_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 3,
+            cols: 1,
+            ..Default::default()
+        });
+        for (row, src) in ["6/22/26", "22-Jun-2026", "2026-06-22"].iter().enumerate() {
+            sheet.set_cell_src(row, 0, src.to_string());
+        }
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported, _, _, _) = import_xlsx_data(&bytes, &[], |_, _, _| {}).unwrap();
+        let imported = &imported[0].sheet;
+
+        // The serial is what was written, not the typed text.
+        assert_eq!(imported.columns[0].src[0], "46195");
+        // ... and the notation came back with it.
+        for (row, want) in ["6/22/26", "22-Jun-2026", "2026-06-22"].iter().enumerate() {
+            assert_eq!(
+                imported.get_display_string(&crate::core::CellRef::new(row, 0)),
+                *want,
+                "row {row} lost its date notation"
+            );
+        }
+    }
+
+    /// Text that merely looks like a date must not become one on import --
+    /// Excel handed it over as a string cell, so it stays a string.
+    #[test]
+    fn test_xlsx_date_looking_text_stays_text() {
+        let mut col = DataColumn::new(1);
+        col.name = "A".to_string();
+        col.src = vec!["\"22-Jun\"".to_string()].into();
+        let sheet = Sheet {
+            id: 1,
+            name: "Sheet1".to_string(),
+            columns: vec![col],
+            tables: Vec::new(),
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported, _, _, _) = import_xlsx_data(&bytes, &[], |_, _, _| {}).unwrap();
+        let mut imported = imported.into_iter().next().unwrap().sheet;
+        imported.commit(None).unwrap();
+
+        assert!(matches!(
+            imported.get_result_data(&crate::core::CellRef::new(0, 0)),
+            crate::core::ResultData::String(ref s) if s == "22-Jun"
+        ));
     }
 
     #[test]
