@@ -44,7 +44,7 @@ See `visi-core/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties
 
 Cargo workspace, edition 2024:
 
-- **`visi-core`** — the engine, published to crates.io as `visi-core` (the directory matches). Built as `rlib` **and `cdylib`**, so it is meant to stay embeddable (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm — the browser JS backend is behind the **`wasm` feature** (`getrandom/js`), off by default because a library must not force a global getrandom backend on its consumers.
+- **`visi-core`** — the engine, published to crates.io as `visi-core` (the directory matches). Plain `rlib` — it kept a `cdylib` crate-type for a while without a single `extern "C"` symbol behind it; if C/Python/Node embedding is ever wanted it belongs in a separate `visi-ffi` crate, since `crate-type` can't be feature-gated. Still meant to stay embeddable in the sense that matters (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm — the browser JS backend is behind the **`wasm` feature** (`getrandom/js`), off by default because a library must not force a global getrandom backend on its consumers.
 - **`visi`** — clap-based CLI. `cli.rs` is the arg surface, `main.rs` holds one `handle_*` fn per subcommand, `engine.rs` wraps everything in `WorkbookManager`.
   - be sure to follow [Command Line Interface Guidelines](https://clig.dev) when making changes to the CLI
   - the CLI keeps its own `Result<_, String>` style internally and converts at the boundary (`exit_with_error` takes `impl Display`)
