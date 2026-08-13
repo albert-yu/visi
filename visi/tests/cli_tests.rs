@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::fs;
 use visi::cli::{ChartSubcommands, Cli, Commands, PivotSubcommands};
-use visi::engine::WorkbookManager;
+use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::utils::{parse_cell_ref, parse_range_ref};
 
 #[test]
@@ -1021,9 +1021,11 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
 
     // Set value and style on A1
     wb.set_cell(0, 0, 0, "Styled Header".to_string());
+    // 0-based (row, col): A1.
     wb.set_cell_style(
         None,
-        "A1",
+        0,
+        0,
         CellStyle {
             font_color: Some("#FF0000".to_string()),
             bg_color: Some("#FFFF00".to_string()),
@@ -1036,10 +1038,13 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
     )
     .unwrap();
 
-    // Set range style on B1:B3
+    // Set range style on B1:B3, as 0-based (start_row, start_col, end_row, end_col).
     wb.set_range_style(
         None,
-        "B1:B3",
+        0,
+        1,
+        2,
+        1,
         CellStyle {
             bold: Some(true),
             font_color: Some("blue".to_string()),
@@ -1049,7 +1054,7 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
     .unwrap();
 
     // Verify in-memory styles on wb
-    let style_a1 = wb.get_cell_style(None, "A1").unwrap().unwrap();
+    let style_a1 = wb.get_cell_style(None, 0, 0).unwrap().unwrap();
     assert_eq!(style_a1.font_color, Some("#FF0000".to_string()));
     assert_eq!(style_a1.bg_color, Some("#FFFF00".to_string()));
     assert_eq!(style_a1.bold, Some(true));
@@ -1057,12 +1062,59 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
     assert_eq!(style_a1.font_family, Some("Arial".to_string()));
     assert_eq!(style_a1.font_size, Some(14));
 
-    let style_b2 = wb.get_cell_style(None, "B2").unwrap().unwrap();
+    let style_b2 = wb.get_cell_style(None, 1, 1).unwrap().unwrap();
     assert_eq!(style_b2.bold, Some(true));
     assert_eq!(style_b2.font_color, Some("blue".to_string()));
 
     // Save workbook to file (generates formatted OOXML XLSX output)
     wb.save_file(file_str).unwrap();
+
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
+fn test_style_cell_ref_sheet_prefix_overrides_sheet_flag() {
+    // `visi style cell --cell 'Sheet2!C3' --sheet Sheet1` must style C3 on
+    // *Sheet2*: an explicit prefix in the reference beats the --sheet flag.
+    // That resolution used to live inside WorkbookManager, which parsed the
+    // A1 string itself; it now happens in the CLI, since the workbook API is
+    // index-based. This pins the behavior across that boundary move.
+    use libvisi::core::CellStyle;
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_style_sheet_prefix.xlsx");
+    let file_str = file_path.to_str().unwrap();
+    let _ = fs::remove_file(&file_path);
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+    wb.add_sheet("Sheet2").unwrap();
+
+    // What main.rs does for `--cell 'Sheet2!C3' --sheet Sheet1`.
+    let (specified_sheet, row, col) = visi::utils::parse_cell_ref("Sheet2!C3").unwrap();
+    assert_eq!(specified_sheet.as_deref(), Some("Sheet2"));
+    assert_eq!((row, col), (2, 2));
+    let sheet = specified_sheet.as_deref().or(Some("Sheet1"));
+
+    wb.set_cell_style(
+        sheet,
+        row,
+        col,
+        CellStyle {
+            bold: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Applied to Sheet2, not the --sheet flag's Sheet1.
+    assert_eq!(
+        wb.get_cell_style(Some("Sheet2"), 2, 2).unwrap(),
+        Some(CellStyle {
+            bold: Some(true),
+            ..Default::default()
+        })
+    );
+    assert_eq!(wb.get_cell_style(Some("Sheet1"), 2, 2).unwrap(), None);
 
     let _ = fs::remove_file(file_path);
 }

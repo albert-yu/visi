@@ -12,7 +12,7 @@ use visi::cli::{
     SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands, StyleTableArgs,
     TableArgs, TableSubcommands, VbaModuleKindArg,
 };
-use visi::engine::WorkbookManager;
+use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::format::{get_cell_display_val, render_grid};
 use visi::utils::{
     EXIT_ENGINE_ERROR, EXIT_IO_ERROR, EXIT_USAGE_ERROR, col_idx_to_letters, exit_with_error,
@@ -1012,11 +1012,20 @@ fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
         );
     }
 
+    // A1 notation is resolved here, at the CLI boundary: an explicit sheet
+    // prefix ("Sheet2!B3") wins over the --sheet flag, matching how `set`
+    // and `read` treat the same syntax.
     if let Some(cell_str) = &args.cell {
-        wb.set_cell_style(args.sheet.as_deref(), cell_str, style)
+        let (specified_sheet, row, col) =
+            parse_cell_ref(cell_str).unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+        let sheet = specified_sheet.as_deref().or(args.sheet.as_deref());
+        wb.set_cell_style(sheet, row, col, style)
             .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
     } else if let Some(range_str) = &args.range {
-        wb.set_range_style(args.sheet.as_deref(), range_str, style)
+        let (specified_sheet, start_row, start_col, end_row, end_col) =
+            parse_range_ref(range_str).unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+        let sheet = specified_sheet.as_deref().or(args.sheet.as_deref());
+        wb.set_range_style(sheet, start_row, start_col, end_row, end_col, style)
             .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
     } else {
         exit_with_error(
