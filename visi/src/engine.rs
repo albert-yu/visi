@@ -1,6 +1,6 @@
 //! Filesystem and stdio access for [`WorkbookManager`].
 //!
-//! The workbook model itself lives in `libvisi` and is deliberately
+//! The workbook model itself lives in `visi-core` and is deliberately
 //! byte-oriented, so that it stays usable when embedded somewhere without a
 //! filesystem (wasm, for instance). The path- and stdio-based conventions
 //! this CLI needs -- including clig.dev's `-` meaning stdin/stdout -- are
@@ -9,13 +9,13 @@
 //! [`WorkbookManager`] is re-exported so `visi::engine::WorkbookManager`
 //! keeps resolving for existing callers.
 
-pub use libvisi::{SheetSummary, WorkbookManager, WorkbookSummary};
+pub use visi_core::{SheetSummary, WorkbookManager, WorkbookSummary};
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-/// Path- and stdio-based loading and saving, layered over `libvisi`'s
+/// Path- and stdio-based loading and saving, layered over `visi-core`'s
 /// byte-oriented [`WorkbookManager::load_bytes`]/[`WorkbookManager::save_bytes`].
 ///
 /// A `path_str` of `-` means stdin (loading) or stdout (saving).
@@ -44,19 +44,19 @@ impl WorkbookFile for WorkbookManager {
             fs::read(path_str).map_err(|e| format!("Failed to read file '{}': {}", path_str, e))?
         };
 
-        Self::load_bytes(&buffer)
+        Self::load_bytes(&buffer).map_err(|e| e.to_string())
     }
 
     fn load_file_or_create(path_str: &str) -> Result<Self, String> {
         if path_str != "-" && !Path::new(path_str).exists() {
-            Self::new_empty()
+            Self::new_empty().map_err(|e| e.to_string())
         } else {
             Self::load_file(path_str)
         }
     }
 
     fn save_file(&self, path_str: &str) -> Result<(), String> {
-        let bytes = self.save_bytes()?;
+        let bytes = self.save_bytes().map_err(|e| e.to_string())?;
 
         if path_str == "-" {
             io::stdout()

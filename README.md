@@ -5,8 +5,10 @@ developer-friendly CLI tool for reading, evaluating formulas in,
 and updating Excel (`.xlsx`) files.
 
 `visi` is structured as a modular Cargo workspace containing:
-- **`libvisi`**: Core embedded spreadsheet engine providing Excel parsing, AST formula compilation, dependency resolution, execution engine, date calculations, chart metadata, and Excel (`.xlsx`) import/export.
+- **[`visi-core`](visi-core/)**: Core embedded spreadsheet engine providing Excel parsing, AST formula compilation, dependency resolution, execution engine, date calculations, chart metadata, and Excel (`.xlsx`) import/export. Usable as a library on its own — see [its README](visi-core/README.md).
 - **`visi`**: Command-line application adhering to [clig.dev](https://clig.dev) design guidelines for inspecting, editing, evaluating formulas in, and exporting Excel workbooks.
+
+Minimum supported Rust version: **1.88**.
 
 ## Installation
 
@@ -120,7 +122,7 @@ visi export data.xlsx --sheet Sheet1 --format json --output sheet1.json
 
 ## Testing
 
-Run all unit and integration tests across `libvisi` and `visi`:
+Run all unit and integration tests across `visi-core` and `visi`:
 
 ```bash
 cargo test --workspace

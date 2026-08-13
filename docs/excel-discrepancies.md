@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-12
 
-Cases where `libvisi` and real Microsoft Excel (verified against 16.111.3 on
+Cases where `visi-core` and real Microsoft Excel (verified against 16.111.3 on
 macOS) disagree, and which are therefore **excluded from the differential
 fuzz harness** in `fuzz/fuzz_excel.py`.
 

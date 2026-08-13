@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "libvisi",
+    "visi-core",
     "visi",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.2"
-description = "A high-performance Rust spreadsheet engine and developer-friendly CLI tool for reading, evaluating formulas in, and updating Excel (.xlsx) files"
+rust-version = "1.88"
 homepage = "https://github.com/albert-yu/visi"
 repository = "https://github.com/albert-yu/visi"
 
