@@ -11,14 +11,6 @@ description = "A high-performance Rust spreadsheet engine and developer-friendly
 homepage = "https://github.com/albert-yu/visi"
 repository = "https://github.com/albert-yu/visi"
 
-# calamine panics on an Excel Table with a header row but zero data rows
-# ("invalid range bounds" inside Range::range, reachable via
-# Xlsx::table_by_name). Confirmed still present in the latest upstream
-# release, not just the 0.26 pin -- see vendor/calamine/PATCHES.md for the
-# root cause and the one-function fix applied here.
-[patch.crates-io]
-calamine = { path = "vendor/calamine" }
-
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

@@ -281,71 +281,53 @@ pub fn import_xlsx_data(
         return Err("No worksheets found in the Excel file".to_string());
     }
 
-    // Import Excel Table (ListObject) definitions, attaching each one to
-    // its owning sheet. Name, sheet, and column names come straight from
-    // calamine; the exact header/totals row presence is read directly from
-    // the table's own XML since calamine doesn't expose those counts.
-    if workbook.load_tables().is_ok() {
-        let table_names: Vec<String> = workbook.table_names().into_iter().cloned().collect();
-        for table_name in table_names {
-            let Ok(table) = workbook.table_by_name(&table_name) else {
-                continue;
-            };
-            let Some(assigned_sheet_name) = orig_to_assigned_name.get(table.sheet_name()) else {
-                continue;
-            };
-            let Some(imported) = imported_tables
-                .iter_mut()
-                .find(|t: &&mut ImportedSheet| &t.sheet.name == assigned_sheet_name)
-            else {
-                continue;
-            };
-            let (has_header_row, has_totals_row, table_ref, style_name) =
-                read_table_metadata_from_zip(buffer, &table_name);
+    // Import Excel Table (ListObject) definitions, attaching each one to its
+    // owning sheet. Every field comes from the table's own `xl/tables/*.xml`
+    // part rather than from calamine, whose table API panics on a table with
+    // a header row and zero data rows -- see `import_tables_from_zip`.
+    for (orig_sheet_name, parsed) in import_tables_from_zip(buffer).unwrap_or_default() {
+        let Some(assigned_sheet_name) = orig_to_assigned_name.get(&orig_sheet_name) else {
+            continue;
+        };
+        let Some(imported) = imported_tables
+            .iter_mut()
+            .find(|t: &&mut ImportedSheet| &t.sheet.name == assigned_sheet_name)
+        else {
+            continue;
+        };
 
-            // Prefer the table's own declared `ref` (the whole table's
-            // bounds, header/totals rows included) over reconstructing
-            // position from calamine's `Table::data()` range, which has no
-            // `start()`/`end()` at all for a table with zero data rows
-            // (`Range::empty()`) -- falling back to the old data-range
-            // computation only if the XML `ref` somehow isn't parseable.
-            let (start_row, start_col, end_row, end_col) = if let Some(bounds) = table_ref {
-                bounds
-            } else {
-                let Some((data_start_row, data_start_col)) = table.data().start() else {
-                    continue;
-                };
-                let Some((data_end_row, data_end_col)) = table.data().end() else {
-                    continue;
-                };
-                (
-                    (data_start_row as usize).saturating_sub(usize::from(has_header_row)),
-                    data_start_col as usize,
-                    data_end_row as usize + usize::from(has_totals_row),
-                    data_end_col as usize,
-                )
-            };
+        // The declared `ref` is the sole source of truth for a table's
+        // position. A table whose `ref` is missing or unparseable can't be
+        // placed on the sheet at all, so it's skipped rather than guessed
+        // at.
+        let Some((start_row, start_col, end_row, end_col)) = parsed.bounds else {
+            log::warn!(
+                "Skipping table '{}' on sheet '{}': missing or unparseable ref",
+                parsed.name,
+                orig_sheet_name
+            );
+            continue;
+        };
 
-            // Guard against ranges that don't fit the imported sheet (e.g. a
-            // table whose sheet fell back to the default empty-sheet size).
-            if end_row >= imported.sheet.row_count() || end_col >= imported.sheet.col_count() {
-                continue;
-            }
-
-            imported.sheet.tables.push(crate::core::table::ExcelTable {
-                id: rand::random::<u64>(),
-                name: table_name.clone(),
-                sheet_id: imported.sheet.id,
-                start_row,
-                start_col,
-                end_row,
-                end_col,
-                has_header_row,
-                has_totals_row,
-                columns: table.columns().to_vec(),
-                style_name,
-            });
+        // Guard against ranges that don't fit the imported sheet (e.g. a
+        // table whose sheet fell back to the default empty-sheet size).
+        if end_row >= imported.sheet.row_count() || end_col >= imported.sheet.col_count() {
+            continue;
         }
+
+        imported.sheet.tables.push(crate::core::table::ExcelTable {
+            id: rand::random::<u64>(),
+            name: parsed.name,
+            sheet_id: imported.sheet.id,
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+            has_header_row: parsed.has_header_row,
+            has_totals_row: parsed.has_totals_row,
+            columns: parsed.columns,
+            style_name: parsed.style_name,
+        });
     }
 
     log::info!(
@@ -1131,6 +1113,42 @@ fn parse_sheet_drawing_rels(xml: &str) -> Option<String> {
     drawing_target
 }
 
+/// Collects the table parts a worksheet's `_rels/sheetN.xml.rels` points at,
+/// as bare filenames (`table1.xml`). Every table part lives in `xl/tables/`,
+/// so taking the basename via `get_filename` sidesteps resolving the
+/// `Target` attribute's form entirely: `../tables/table1.xml` (what Excel
+/// and `rust_xlsxwriter` emit) and `/xl/tables/table1.xml` (the absolute
+/// package path `openpyxl` emits, GitHub issue #16) both reduce to the same
+/// name. A worksheet can own several tables, hence a `Vec` -- unlike
+/// `parse_sheet_drawing_rels`, which stops at the first match because a
+/// worksheet has at most one drawing.
+fn parse_sheet_table_rels(xml: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut reader = quick_xml::reader::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
+                let local = e.name().local_name().into_inner();
+                if local == b"Relationship"
+                    && let Some(ty) = get_attr(&e, b"Type")
+                    && ty.ends_with("relationships/table")
+                    && let Some(target) = get_attr(&e, b"Target")
+                {
+                    let filename = get_filename(&target);
+                    if !filename.is_empty() {
+                        targets.push(filename);
+                    }
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    targets
+}
+
 fn parse_drawing_chart_rels(xml: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let mut reader = quick_xml::reader::Reader::from_str(xml);
@@ -1443,83 +1461,135 @@ pub(crate) fn get_zip_file_content(
     Some(content)
 }
 
-/// Reads `headerRowCount`/`totalsRowCount` directly from a table's own XML
-/// part (`xl/tables/table*.xml`), matched by its `displayName`. calamine's
-/// `Table::data()` already excludes the header row (and, in the common
-/// case, the totals row) but doesn't expose these counts directly. Defaults
-/// to `(true, false)` -- a header row and no totals row -- if the table's
-/// XML can't be found or parsed, matching how most real-world tables are
-/// configured.
-/// Reads a table's header/totals row flags (calamine doesn't expose these)
-/// directly from its own `xl/tables/table*.xml`, along with its declared
-/// `ref` range parsed to 0-based `(start_row, start_col, end_row, end_col)`
-/// -- the whole table's bounds, header/totals rows included. The `ref` is
-/// the authoritative source of truth for a table's position: prefer it over
-/// reconstructing bounds from calamine's `Table::data()` range, which is
-/// empty (no `start()`/`end()`) for a table with zero data rows.
-/// `(has_header_row, has_totals_row, bounds)` where `bounds` is 0-based
-/// `(start_row, start_col, end_row, end_col)`.
-type TableMetadata = (bool, bool, Option<(usize, usize, usize, usize)>, Option<String>);
+/// One Excel Table (ListObject) as declared by its own `xl/tables/*.xml`
+/// part. Everything here is read straight out of that XML rather than
+/// through calamine: `Xlsx::table_by_name` panics outright on a table with a
+/// header row and zero data rows (it derives a data-only range whose start
+/// is past its end), which is a shape this crate's own export produces. See
+/// `import_tables_from_zip`.
+struct ParsedTablePart {
+    name: String,
+    columns: Vec<String>,
+    has_header_row: bool,
+    has_totals_row: bool,
+    /// The whole table's bounds from its declared `ref`, header and totals
+    /// rows included, 0-based `(start_row, start_col, end_row, end_col)`.
+    /// `None` when the `ref` attribute is absent or unparseable, in which
+    /// case the table can't be placed and is skipped.
+    bounds: Option<(usize, usize, usize, usize)>,
+    style_name: Option<String>,
+}
 
-fn read_table_metadata_from_zip(buffer: &[u8], table_name: &str) -> TableMetadata {
-    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(buffer)) else {
-        return (true, false, None, None);
-    };
-    let table_files: Vec<String> = archive
-        .file_names()
-        .filter(|n| n.starts_with("xl/tables/") && n.ends_with(".xml"))
-        .map(|s| s.to_string())
-        .collect();
+/// Parses one `xl/tables/tableN.xml` part. Returns `None` if the XML has no
+/// `<table>` element with a `displayName`, which is the only field a table
+/// can't sensibly be reconstructed without.
+///
+/// `headerRowCount` defaults to 1 and `totalsRowCount` to 0 when absent,
+/// matching both the OOXML default and how most real-world tables are
+/// configured -- `rust_xlsxwriter` omits both attributes for an ordinary
+/// header-and-data table.
+fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut name = None;
+    let mut columns = Vec::new();
+    let mut header_row_count = 1usize;
+    let mut totals_row_count = 0usize;
+    let mut bounds = None;
+    let mut style_name = None;
 
-    for file_name in table_files {
-        let Some(xml_content) = get_zip_file_content(&mut archive, &file_name) else {
-            continue;
-        };
-        let mut reader = quick_xml::Reader::from_str(&xml_content);
-        let mut buf = Vec::new();
-        let mut target_found = false;
-        let mut header_row_count = 1;
-        let mut totals_row_count = 0;
-        let mut table_ref = None;
-        let mut style_name = None;
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(quick_xml::events::Event::Start(ref e))
-                | Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    let local_name = e.local_name();
-                    if local_name.as_ref() == b"table" {
-                        let display_name = get_attr(e, b"displayName").unwrap_or_default();
-                        if display_name == table_name {
-                            target_found = true;
-                            header_row_count = get_attr(e, b"headerRowCount")
-                                .and_then(|s| s.parse::<usize>().ok())
-                                .unwrap_or(1);
-                            totals_row_count = get_attr(e, b"totalsRowCount")
-                                .and_then(|s| s.parse::<usize>().ok())
-                                .unwrap_or(0);
-                            table_ref = get_attr(e, b"ref")
-                                .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
-                            if let Some(s) = get_attr(e, b"styleName") {
-                                style_name = Some(s);
-                            }
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                let local_name = e.local_name();
+                match local_name.as_ref() {
+                    b"table" => {
+                        name = get_attr(e, b"displayName");
+                        header_row_count = get_attr(e, b"headerRowCount")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(1);
+                        totals_row_count = get_attr(e, b"totalsRowCount")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        bounds = get_attr(e, b"ref")
+                            .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
+                        if let Some(s) = get_attr(e, b"styleName") {
+                            style_name = Some(s);
                         }
-                    } else if target_found && local_name.as_ref() == b"tableStyleInfo" {
+                    }
+                    b"tableColumn" => {
+                        if let Some(col) = get_attr(e, b"name") {
+                            columns.push(col);
+                        }
+                    }
+                    b"tableStyleInfo" => {
                         if let Some(s) = get_attr(e, b"name") {
                             style_name = Some(s);
                         }
                     }
+                    _ => {}
                 }
-                Ok(quick_xml::events::Event::Eof) | Err(_) => break,
-                _ => {}
             }
-            buf.clear();
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
         }
-        if target_found {
-            return (header_row_count != 0, totals_row_count != 0, table_ref, style_name);
+        buf.clear();
+    }
+
+    Some(ParsedTablePart {
+        name: name?,
+        columns,
+        has_header_row: header_row_count != 0,
+        has_totals_row: totals_row_count != 0,
+        bounds,
+        style_name,
+    })
+}
+
+/// Discovers every Excel Table in the workbook by walking the zip directly,
+/// pairing each with the name of the sheet that owns it.
+///
+/// This deliberately replaces calamine's `load_tables`/`table_by_name`. That
+/// API panics ("invalid range bounds") on a table with a header row and zero
+/// data rows -- a shape `export_xlsx_data` itself produces -- and needing to
+/// work around it was the reason this workspace previously vendored a
+/// patched calamine. Reading the parts here removes the need for that
+/// entirely; calamine is now used only for cell data.
+///
+/// Within a sheet, tables keep their relationship order. Across sheets the
+/// order is irrelevant -- each table is attached to its own sheet -- but the
+/// worksheet parts are still walked in sorted order so that iteration
+/// doesn't inherit `HashMap`'s randomized ordering.
+fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)>, String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+
+    let mut sheet_files: Vec<&String> = sheet_file_to_name.keys().collect();
+    sheet_files.sort();
+    let sheet_files: Vec<String> = sheet_files.into_iter().cloned().collect();
+
+    let mut tables = Vec::new();
+    for sheet_file in sheet_files {
+        let rels_path = format!("xl/worksheets/_rels/{}.rels", sheet_file);
+        let Some(rels_xml) = get_zip_file_content(&mut archive, &rels_path) else {
+            continue;
+        };
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        for table_file in parse_sheet_table_rels(&rels_xml) {
+            let table_path = format!("xl/tables/{}", table_file);
+            if let Some(table_xml) = get_zip_file_content(&mut archive, &table_path)
+                && let Some(parsed) = parse_table_part_xml(&table_xml)
+            {
+                tables.push((sheet_name.clone(), parsed));
+            }
         }
     }
-    (true, false, None, None)
+    Ok(tables)
 }
 
 /// Derives a stable chart id from its sheet name and position within that
@@ -1538,25 +1608,37 @@ fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
     hasher.finish() & 0x001F_FFFF_FFFF_FFFF
 }
 
-fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String> {
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
-        .map_err(|e| format!("Failed to open zip: {}", e))?;
-
-    let workbook_xml = get_zip_file_content(&mut archive, "xl/workbook.xml")
+/// Maps each worksheet part's bare filename (`sheet1.xml`) to the sheet name
+/// the workbook declares for it, by joining `xl/workbook.xml`'s
+/// `<sheet name= r:id=>` entries against `xl/_rels/workbook.xml.rels`. The
+/// part filenames are not in workbook order and carry no reliable
+/// relationship to the sheet's position, so this join is the only way to get
+/// from a part back to its name. Shared by the chart and table importers.
+fn build_sheet_file_to_name(
+    archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let workbook_xml = get_zip_file_content(archive, "xl/workbook.xml")
         .ok_or_else(|| "Missing xl/workbook.xml".to_string())?;
     let r_id_to_name = parse_workbook_sheets(&workbook_xml);
 
-    let workbook_rels_xml = get_zip_file_content(&mut archive, "xl/_rels/workbook.xml.rels")
+    let workbook_rels_xml = get_zip_file_content(archive, "xl/_rels/workbook.xml.rels")
         .ok_or_else(|| "Missing xl/_rels/workbook.xml.rels".to_string())?;
     let r_id_to_target = parse_workbook_rels(&workbook_rels_xml);
 
     let mut sheet_file_to_name = std::collections::HashMap::new();
     for (r_id, name) in r_id_to_name {
         if let Some(target) = r_id_to_target.get(&r_id) {
-            let filename = get_filename(target);
-            sheet_file_to_name.insert(filename, name.clone());
+            sheet_file_to_name.insert(get_filename(target), name.clone());
         }
     }
+    Ok(sheet_file_to_name)
+}
+
+fn import_charts_from_zip(buffer: &[u8]) -> Result<Vec<ParsedChartData>, String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
 
     let mut parsed_charts = Vec::new();
 
@@ -1753,11 +1835,14 @@ mod tests {
     #[test]
     fn test_xlsx_zero_data_row_table_import_export_cycle() {
         // Regression test for a real crash found via libvisi's pivot-table
-        // fuzz testing (see vendor/calamine/PATCHES.md): exporting an Excel
-        // Table with a header row but zero data rows, then reimporting it,
-        // used to panic inside calamine's `Xlsx::table_by_name` ("invalid
-        // range bounds") -- unrelated to pivot tables specifically, a plain
-        // header-only table triggers it on its own.
+        // fuzz testing: exporting an Excel Table with a header row but zero
+        // data rows, then reimporting it, used to panic inside calamine's
+        // `Xlsx::table_by_name` ("invalid range bounds") -- unrelated to
+        // pivot tables specifically, a plain header-only table triggers it
+        // on its own. The import path no longer goes through calamine's
+        // table API at all (see `import_tables_from_zip`), so this now
+        // passes against stock upstream calamine, where the panic is still
+        // present and unfixed.
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 1,
@@ -1792,12 +1877,14 @@ mod tests {
         // compliant writers) may emit worksheet->table relationship
         // `Target` attributes as absolute package paths
         // ("/xl/tables/table1.xml") rather than the "../tables/table1.xml"
-        // relative form Excel and rust_xlsxwriter always use. Unpatched
-        // calamine only special-cases the relative form, so an absolute
-        // target silently resolved to zero tables (see
-        // vendor/calamine/PATCHES.md). Simulate an openpyxl-authored file
-        // by rewriting a normally-exported file's sheet rels to use an
-        // absolute target, then confirm the table still imports.
+        // relative form Excel and rust_xlsxwriter always use. calamine 0.26
+        // only special-cased the relative form, so an absolute target
+        // silently resolved to zero tables. `parse_sheet_table_rels` now
+        // takes the basename of the `Target` regardless of its form, which
+        // makes both spellings equivalent by construction. Simulate an
+        // openpyxl-authored file by rewriting a normally-exported file's
+        // sheet rels to use an absolute target, then confirm the table
+        // still imports.
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 3,
@@ -1854,6 +1941,142 @@ mod tests {
         assert_eq!(imported_sheet.tables.len(), 1);
         assert_eq!(imported_sheet.tables[0].name, "Sales");
         assert_eq!(imported_sheet.tables[0].columns, vec!["Name", "Amount"]);
+    }
+
+    /// Rewrites the `ref` attribute of every `xl/tables/*.xml` part in an
+    /// exported workbook, leaving the rest of the zip byte-for-byte intact.
+    fn rewrite_table_ref(xlsx_data: &[u8], new_ref_attr: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data)).unwrap();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        let mut rewrote = false;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().to_string();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut buf).unwrap();
+            drop(file);
+
+            if name.starts_with("xl/tables/") && name.ends_with(".xml") {
+                let text = String::from_utf8(buf.clone()).unwrap();
+                // Only the <table> element's own ref, not <autoFilter ref=>.
+                let new_text = text.replacen(r#" ref="A1:B2""#, new_ref_attr, 1);
+                assert_ne!(new_text, text, "expected to rewrite a table ref");
+                rewrote = true;
+                buf = new_text.into_bytes();
+            }
+
+            writer.start_file(&name, options).unwrap();
+            std::io::Write::write_all(&mut writer, &buf).unwrap();
+        }
+        assert!(rewrote, "expected to find a table part to rewrite");
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn two_row_table_workbook() -> Vec<u8> {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 2,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Name".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet.set_cell_src(1, 0, "Widget".to_string());
+        sheet.set_cell_src(1, 1, "10".to_string());
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 1, 1, true, false)
+            .unwrap();
+        export_xlsx_data(&[sheet], &[], &[], None).unwrap()
+    }
+
+    #[test]
+    fn test_xlsx_table_with_unparseable_ref_is_skipped_not_misplaced() {
+        // The table's declared `ref` is the sole source of truth for its
+        // position now that the import path no longer consults calamine's
+        // `Table::data()` range as a fallback. A table whose `ref` can't be
+        // parsed therefore can't be placed at all, and is dropped rather
+        // than guessed at -- importantly, the *sheet* and its cell data must
+        // still import cleanly.
+        for bad_ref in [r#" ref="not-a-range""#, ""] {
+            let rewritten = rewrite_table_ref(&two_row_table_workbook(), bad_ref);
+            let (imported_tables, _, _, _) =
+                import_xlsx_data(&rewritten, &[], |_, _, _| {}).unwrap();
+            assert_eq!(imported_tables.len(), 1);
+            let imported_sheet = &imported_tables[0].sheet;
+            assert!(
+                imported_sheet.tables.is_empty(),
+                "table with ref {bad_ref:?} should be skipped, not placed"
+            );
+            // The underlying cells are untouched by the table being dropped.
+            assert_eq!(imported_sheet.columns[0].src[0], "Name");
+            assert_eq!(imported_sheet.columns[0].src[1], "Widget");
+        }
+    }
+
+    #[test]
+    fn test_xlsx_table_ref_survives_round_trip_unchanged() {
+        // Control for the test above: the same workbook with its `ref` left
+        // alone imports the table at exactly the declared bounds.
+        let (imported_tables, _, _, _) =
+            import_xlsx_data(&two_row_table_workbook(), &[], |_, _, _| {}).unwrap();
+        let table = &imported_tables[0].sheet.tables[0];
+        assert_eq!(table.name, "Sales");
+        assert_eq!(table.columns, vec!["Name", "Amount"]);
+        assert_eq!(
+            (
+                table.start_row,
+                table.start_col,
+                table.end_row,
+                table.end_col
+            ),
+            (0, 0, 1, 1)
+        );
+        assert!(table.has_header_row);
+        assert!(!table.has_totals_row);
+    }
+
+    #[test]
+    fn test_xlsx_multiple_tables_on_one_sheet_all_import() {
+        // `parse_sheet_table_rels` returns a Vec because one worksheet can
+        // own several tables -- calamine's per-name lookup hid that, so it
+        // is worth pinning down directly.
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 6,
+            cols: 2,
+            ..Default::default()
+        });
+        for (row, (a, b)) in [
+            ("Name", "Amount"),
+            ("Widget", "10"),
+            ("", ""),
+            ("Region", "Total"),
+            ("East", "20"),
+            ("West", "30"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet.set_cell_src(row, 0, a.to_string());
+            sheet.set_cell_src(row, 1, b.to_string());
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 1, 1, true, false)
+            .unwrap();
+        sheet
+            .add_table("Regions".to_string(), 3, 0, 5, 1, true, false)
+            .unwrap();
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let tables = &imported_tables[0].sheet.tables;
+        assert_eq!(tables.len(), 2);
+        let mut names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["Regions", "Sales"]);
     }
 
     #[test]
