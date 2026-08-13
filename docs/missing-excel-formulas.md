@@ -13,7 +13,7 @@ Last updated: 2026-08-11
 - Genuinely implemented in libvisi: **507**
 - Missing or non-functional: **15**
 
-libvisi implements `PLOT`, `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
+libvisi implements `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
 `STR` — these are engine-specific extensions, not Excel functions, so they
 aren't counted above in either total.
 
@@ -206,9 +206,7 @@ computing the real result, or reports the data source as unavailable)
   `PIVOTBY` take raw array arguments rather than an existing `PivotTable`
   object, so they'd need new array-level grouping/aggregation logic (unlike
   `GETPIVOTDATA`, now implemented — see below); `IMAGE` needs a new
-  `ResultData` variant plus real xlsx image-embedding support that doesn't
-  exist yet for any result type (not even the existing `Plot` variant is
-  embedded as a real xlsx image on export).
+  `IMAGE` needs a new `ResultData` variant plus real xlsx image-embedding support.
 
 `GETPIVOTDATA` is now genuinely implemented
 (`core/pivot.rs::getpivotdata`, dispatched via

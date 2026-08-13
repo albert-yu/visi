@@ -59,7 +59,7 @@ A `Sheet` is **column-oriented**: `columns: Vec<DataColumn>`, each with parallel
 
 Everything internal is **0-based `(row, col)`**; A1 notation exists only at the parser and CLI boundaries (`parser::col_idx_to_letters`, `visi/src/utils.rs`). `src`, `data`, and `compiled_src` must stay the same length — row/col insert/delete paths in `sheet.rs` maintain that invariant by hand.
 
-`ResultData` is the value type (`None`/`Boolean`/`Integer`/`Float`/`String`/`List`/`Dict`/`Plot`/`Error`). `result_data::format_excel_number` reproduces Excel's 15-significant-digit display rules — change it only with fuzz evidence.
+`ResultData` is the value type (`None`/`Boolean`/`Integer`/`Float`/`String`/`List`/`Dict`/`Error`). `result_data::format_excel_number` reproduces Excel's 15-significant-digit display rules — change it only with fuzz evidence.
 
 ### Formula pipeline
 
@@ -72,7 +72,7 @@ Formula text goes through **two distinct representations**, which is the single 
 
 `Sheet::commit()` runs all four per dirty cell — compile, re-serialize, then evaluate the re-serialized string. Non-formula cells (no leading `=`) are parsed as literals right there in `commit`, which is why importing text that *looks* numeric requires quoting (see `xlsx::text_cell_src`).
 
-`evaluate_function` dispatches on the uppercased name after stripping a leading `_xlfn.`. Alongside Excel functions it implements engine-specific ones (`PLOT`, `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, `STR`) — don't assume every name maps to Excel.
+`evaluate_function` dispatches on the uppercased name after stripping a leading `_xlfn.`. Alongside Excel functions it implements engine-specific ones (`GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, `STR`) — don't assume every name maps to Excel.
 
 ### Recalculation and dependencies
 
