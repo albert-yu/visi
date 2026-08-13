@@ -315,7 +315,19 @@ pub fn incbeta(a: f64, b: f64, x: f64) -> f64 {
     // or the powers underflow, which is exactly where the logarithm earns
     // its keep -- hence a finiteness check rather than a fixed cutoff.
     let beta = beta_gamma(a) * beta_gamma(b) / beta_gamma(a + b);
-    let direct = x.powf(a) * (1.0 - x).powf(b) / (a * beta);
+    // `1 - x` rounds, and raising it to the power `b` multiplies that
+    // rounding by `b` -- for b = 50 a half-ULP slip in `1 - x` became 15
+    // ULP in the result. Recover the exact residual (`om + om_err` is
+    // `1 - x` exactly) and apply the first-order correction, which brings
+    // that same case back to 0.3 ULP.
+    //
+    // `(1.0 - om) - x` is exact either way: for x >= 0.5 the original
+    // subtraction was already exact by Sterbenz and the residual is 0,
+    // and for x < 0.5 `om` lands in (0.5, 1] where `1.0 - om` is exact.
+    let om = 1.0 - x;
+    let om_err = (1.0 - om) - x;
+    let pow_om = om.powf(b) * (1.0 + b * om_err / om);
+    let direct = x.powf(a) * pow_om / (a * beta);
     let front = if beta.is_finite() && beta > 0.0 && direct.is_finite() && direct > 0.0 {
         direct
     } else {

@@ -995,6 +995,15 @@ fn test_incomplete_beta_prefactor_accuracy() {
     );
     assert_eq!(format!("{got:.15}"), "0.941716332833875");
 
+    // The (1-x)^b correction: without it, a half-ULP rounding of `1 - x`
+    // is multiplied by b. This case (a=5, b=50) was 15 ULP out and is now
+    // within 1. Reference from 60-digit mpmath.
+    assert_float_close(
+        &eval1("=BETA.DIST(0.0378, 5, 50, TRUE)"),
+        0.052899172535742447319,
+        3e-17,
+    );
+
     // Spot checks across the parameter space, all within ~2 ULP.
     assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-15);
     assert_float_close(&eval1("=BETA.DIST(0.5, 2, 3, TRUE)"), 0.6875, 1e-15);
