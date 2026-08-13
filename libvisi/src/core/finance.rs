@@ -176,7 +176,23 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
         }
     };
     let r = newton_raphson(f, guess)?;
-    if r <= -0.9999 { None } else { Some(r) }
+    // Reject a solution that has collapsed onto the degenerate root at
+    // r = -1 rather than finding a real rate. For an annuity-due with
+    // fv = 0 the payment term carries a factor of (1 + r), so r = -1
+    // satisfies the equation exactly for *any* inputs -- and for a long
+    // enough nper, (1+r)^nper underflows so fast that the iteration slides
+    // into that basin from a perfectly ordinary starting guess. Excel
+    // reports #NUM! for these (confirmed directly: the same call that
+    // gives #NUM! from the default guess returns a real rate when handed
+    // a guess near the true root, so this is a convergence outcome, not a
+    // claim that no root exists).
+    //
+    // The bound is -0.999 rather than the -0.9999 it used to be because
+    // the iteration reliably stalled a hair *above* the old threshold
+    // (around -0.99989999), slipping through as if it were a genuine
+    // answer. No real per-period rate lives in that gap anyway -- it would
+    // be a loss of 99.9% per period.
+    if r <= -0.999 { None } else { Some(r) }
 }
 
 /// Interest accrued during `period` on the outstanding balance, walked
@@ -668,7 +684,10 @@ use crate::core::date_fn;
 /// it is handled separately by `coupdays`/`basis_year_days`.
 fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     match basis as i64 {
-        0 => date_fn::days360(start, end, Some(false)).unwrap_or(0.0),
+        // Not `days360(.., Some(false))`: the DAYS360 function's US method
+        // and the NASD convention the bond functions use differ on
+        // February month-ends. See `date_fn::days_30_360_nasd`.
+        0 => date_fn::days_30_360_nasd(start, end),
         4 => date_fn::days360(start, end, Some(true)).unwrap_or(0.0),
         _ => end - start,
     }
@@ -725,14 +744,35 @@ fn round_half_away_from_zero(x: f64) -> f64 {
 /// step, whereas Excel's real coupon schedule re-derives each quasi-
 /// coupon date from the anchor, so a later 31-day month correctly gets
 /// its 31st back.
+///
+/// When the anchor is the *last day of its month* the schedule is an
+/// end-of-month one, and every date on it is the last day of its own
+/// month rather than the anchor's day number. Excel does this: stepping
+/// back a year from a 28 Feb 2039 maturity lands on 29 Feb 2024, not
+/// 28 Feb 2024 -- confirmed directly (COUPNCD there is 2024-02-29, and at
+/// semi-annual frequency COUPPCD is 2023-08-31, i.e. the 31st).
 fn step_months(anchor: f64, months_per_period: f64, k: f64) -> f64 {
-    date_fn::edate(anchor, months_per_period * k).unwrap_or(anchor)
+    let stepped = date_fn::edate(anchor, months_per_period * k).unwrap_or(anchor);
+    let (ay, am, ad) = date_fn::serial_to_ymd(anchor);
+    if ad != date_fn::days_in_month(ay, am) {
+        return stepped;
+    }
+    let (sy, sm, _) = date_fn::serial_to_ymd(stepped);
+    date_fn::ymd_to_serial(sy, sm, date_fn::days_in_month(sy, sm))
 }
 
 /// Number of whole periods back from `maturity` needed to reach (or pass)
 /// `settlement` -- the shared basis for `COUPPCD`/`COUPNCD`/`COUPNUM`, all
 /// derived from the *same* anchor-relative index so they stay consistent
 /// with each other regardless of any day-of-month clamping along the way.
+///
+/// The comparison is deliberately non-strict. A settlement that really does
+/// land on a coupon date is that period's start, so COUPPCD is the
+/// settlement date and COUPNCD is one period later. (The case that looks
+/// like an exception -- settling 28 Feb 2024 against a 28 Feb 2039 annual
+/// bond, where Excel reports COUPPCD 2023-02-28 -- is not one: on an
+/// end-of-month schedule the 2024 coupon falls on the 29th, so the
+/// settlement date simply isn't a coupon date at all. See step_months.)
 fn coupon_period_index(settlement: f64, maturity: f64, frequency: f64) -> f64 {
     let months = 12.0 / frequency;
     let mut k = 0.0;
@@ -793,7 +833,13 @@ pub fn coupdaybs(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> 
 /// to the settlement -> next-coupon span.
 pub fn coupdaysnc(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> f64 {
     let ncd = coupon_ncd(settlement, maturity, frequency);
-    basis_days_between(settlement, ncd, basis)
+    // The span *ends* at a coupon date, so on basis 0 a month-end coupon
+    // gets pulled to the 30th -- the same rule ODDLPRICE's coupon-ended
+    // spans use. Settlement 2011-08-28 against a 2013-02-28 maturity has
+    // its next coupon on 2011-08-31, and real Excel counts 2 days, not the
+    // 3 the plain NASD rule gives. COUPDAYBS is unaffected: its span ends
+    // at the settlement date, not at a coupon.
+    coupon_end_days(settlement, ncd, basis)
 }
 
 /// Shared by `PRICE`/`YIELD`: present value (per 100 face) of a regular
@@ -1218,9 +1264,15 @@ pub fn amordegrc(
     let rate_d = rate * coeff;
     let frac = amort_first_period_frac(date_purchased, first_period, basis);
 
-    let first_amort = round_half_away_from_zero(cost * frac * rate_d);
+    // The running balance carries *full* precision; only the value actually
+    // returned is rounded. Rounding each period and subtracting the rounded
+    // figure lets the error compound, which is enough to shift a later
+    // period by a whole unit: for cost 27370.88 at rate 0.0909 the period-2
+    // amount is 4624.4757 (Excel: 4624) carrying full precision, but
+    // 4624.508 -> 4625 if the two preceding periods were rounded first.
+    let first_amort = cost * frac * rate_d;
     if period == 0.0 {
-        return Ok(first_amort.min(cost - salvage));
+        return Ok(round_half_away_from_zero(first_amort.min(cost - salvage)));
     }
 
     let mut remaining = cost - first_amort;
@@ -1229,12 +1281,12 @@ pub fn amordegrc(
         if remaining <= salvage {
             return Ok(0.0);
         }
-        let this_amort = round_half_away_from_zero(remaining * rate_d);
+        let this_amort = remaining * rate_d;
         if n as i64 == period as i64 {
             if remaining - this_amort < salvage {
-                return Ok((remaining - salvage).max(0.0));
+                return Ok(round_half_away_from_zero((remaining - salvage).max(0.0)));
             }
-            return Ok(this_amort);
+            return Ok(round_half_away_from_zero(this_amort));
         }
         remaining -= this_amort;
         n += 1.0;
@@ -1375,10 +1427,22 @@ pub fn oddfyield(
 /// period immediately preceding `maturity`, which an earlier version used
 /// and which only coincidentally matched when both periods happened to
 /// have the same calendar length.
+/// Day count for an ODDLPRICE/ODDLYIELD span whose end date is a **coupon
+/// date** rather than the settlement date. On basis 0 those spans pull a
+/// month-end end date back to the 30th; every other basis just uses its
+/// ordinary count. See `date_fn::days_30_360_coupon_end`.
+fn coupon_end_days(start: f64, end: f64, basis: f64) -> f64 {
+    if basis as i64 == 0 {
+        date_fn::days_30_360_coupon_end(start, end)
+    } else {
+        basis_days_between(start, end, basis)
+    }
+}
+
 fn oddlprice_e(last_interest: f64, _maturity: f64, frequency: f64, basis: f64) -> f64 {
     let months = 12.0 / frequency;
     let next_regular = date_fn::edate(last_interest, months).unwrap_or(last_interest);
-    basis_days_between(last_interest, next_regular, basis)
+    coupon_end_days(last_interest, next_regular, basis)
 }
 
 /// Like `ODDFPRICE`/`ODDFYIELD`, this is a documented gap for a "long" odd
@@ -1398,7 +1462,7 @@ pub fn oddlprice(
     basis: f64,
 ) -> f64 {
     let e = oddlprice_e(last_interest, maturity, frequency, basis);
-    let dcnl = basis_days_between(last_interest, maturity, basis);
+    let dcnl = coupon_end_days(last_interest, maturity, basis);
     let dcsl = basis_days_between(last_interest, settlement, basis);
     let dsc = basis_days_between(settlement, maturity, basis);
     let coupon = 100.0 * rate / frequency;
@@ -1419,7 +1483,7 @@ pub fn oddlyield(
     basis: f64,
 ) -> f64 {
     let e = oddlprice_e(last_interest, maturity, frequency, basis);
-    let dcnl = basis_days_between(last_interest, maturity, basis);
+    let dcnl = coupon_end_days(last_interest, maturity, basis);
     let dcsl = basis_days_between(last_interest, settlement, basis);
     let dsc = basis_days_between(settlement, maturity, basis);
     let coupon = 100.0 * rate / frequency;

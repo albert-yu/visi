@@ -369,3 +369,647 @@ fn test_regression_and_correlation() {
     let r5 = sheet.get_result_data(&CellRef::new(2, 4));
     assert!(matches!(r5, ResultData::Float(v) if (v - 1.0).abs() < 1e-6));
 }
+
+#[test]
+fn test_inv_normal_cdf_matches_real_excel_to_near_double_precision() {
+    // erf() used to be the classic Abramowitz & Stegun 7.1.26 rational
+    // approximation, with a documented max error of ~1.5e-7 -- that
+    // bounded the precision of everything built on it (normal_cdf,
+    // inv_normal_cdf, and therefore CONFIDENCE/CONFIDENCE.NORM/
+    // NORM.S.INV/NORMSINV/NORMINV/LOGINV/LOGNORM.INV), which is why all
+    // of them mismatched real Excel in the ~7th significant digit on
+    // every differential fuzzing run. Now delegates to libm's erf/erfc
+    // (a pure-Rust fdlibm port, full double precision).
+    // 1.959963984540054 is the well-known two-sided 95% confidence
+    // z-value.
+    assert_float_close(&eval1("=NORM.S.INV(0.975)"), 1.959963984540054, 1e-9);
+}
+
+#[test]
+fn test_tdist_honors_tails_argument() {
+    // Legacy TDIST(x, df, tails) was wired to the same handler as
+    // T.DIST.2T (always two-tailed), completely ignoring the `tails`
+    // argument -- TDIST(x, df, 1) (one-tailed) returned exactly double
+    // the correct value, since the two-tailed probability is 2x the
+    // one-tailed probability for a symmetric distribution. Found via
+    // differential fuzzing (an exact 2x discrepancy against real Excel).
+    let one_tailed = eval1("=TDIST(2, 10, 1)");
+    let rt = eval1("=T.DIST.RT(2, 10)");
+    assert_float_close(
+        &one_tailed,
+        match rt {
+            ResultData::Float(v) => v,
+            other => panic!("expected float, got {other:?}"),
+        },
+        1e-9,
+    );
+
+    let two_tailed = eval1("=TDIST(2, 10, 2)");
+    let one_val = match one_tailed {
+        ResultData::Float(v) => v,
+        other => panic!("expected float, got {other:?}"),
+    };
+    assert_float_close(&two_tailed, one_val * 2.0, 1e-9);
+}
+
+#[test]
+fn test_percentrank_truncates_to_significance_not_rounds() {
+    // PERCENTRANK.INC/.EXC used `.round()` when limiting the result to
+    // `significance` digits, but real Excel truncates instead -- e.g. a
+    // raw value of 0.055555... at significance 3 displays as 0.055, not
+    // the rounded 0.056. Found via differential fuzzing (a handful of
+    // PERCENTRANK calls were off by exactly 0.001 against real Excel).
+    let grid = [
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+        [
+            "=PERCENTRANK(A1:J1, 1.5)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    // rank = (0 + 0.5) / 9 = 0.0555... -> truncated to 0.055, not
+    // rounded up to 0.056.
+    let r = sheet.get_result_data(&CellRef::new(1, 0));
+    assert!(
+        matches!(r, ResultData::Float(v) if (v - 0.055).abs() < 1e-9),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn test_hypgeomdist_legacy_is_pmf_only_and_out_of_support_is_zero() {
+    // Two independent HYPGEOM.DIST/HYPGEOMDIST bugs found via
+    // differential fuzzing:
+    //  - Legacy HYPGEOMDIST takes no `cumulative` argument at all -- it's
+    //    always the point probability mass -- but the dispatcher defaulted
+    //    a missing 5th argument to `true` (cumulative), so it silently
+    //    summed the PMF from 0 up through the given count instead of
+    //    just returning that one point's probability.
+    //  - The PMF's log-combination formula assumed valid choose()
+    //    arguments and produced a pole (NaN) instead of 0 once a count
+    //    fell outside the distribution's actual support, propagating as
+    //    #NUM! instead of the mathematically correct 0.
+    let grid = [[
+        "=HYPGEOMDIST(1, 4, 19, 45)",
+        "=HYPGEOM.DIST(1, 4, 19, 45, FALSE)",
+        "=HYPGEOM.DIST(4, 25, 13, 25, FALSE)",
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 0));
+    let r2 = sheet.get_result_data(&CellRef::new(0, 1));
+    match (&r1, &r2) {
+        (ResultData::Float(a), ResultData::Float(b)) => {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "HYPGEOMDIST(1,4,19,45)={a} should equal the non-cumulative HYPGEOM.DIST={b}"
+            );
+        }
+        _ => panic!("expected floats, got {r1:?} / {r2:?}"),
+    }
+
+    let r3 = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(r3, ResultData::Float(v) if v.abs() < 1e-9),
+        "{r3:?}"
+    );
+}
+
+#[test]
+fn test_inverse_beta_and_f_distributions_converge_to_excel_values() {
+    // inv_incbeta (which BETA.INV/BETAINV/F.INV/F.INV.RT/FINV all go
+    // through) used unguarded Newton iteration that *clamped* an
+    // overshooting step to [1e-12, 1-1e-12]. Those clamps are absorbing,
+    // so once a step overshot, x stuck to the boundary and got returned
+    // as the answer -- BETAINV would report a flat 1e-12 or
+    // 0.999999999999, and F.INV (which maps the result back through
+    // df2*y/(df1*(1-y)), a pole as y approaches 1) would report ~1e12.
+    // Now safeguarded: Newton only when the step stays inside the current
+    // bracket, bisection otherwise. Every expected value below was read
+    // straight out of real Excel.
+    for (f, expected) in [
+        ("=BETAINV(0.945, 9.128, 5.585)", 0.8079143872863086),
+        ("=_xlfn.BETA.INV(0.077, 4.347, 1.607)", 0.45886530331058883),
+        ("=_xlfn.F.INV(0.119, 8, 1)", 0.3281233164680227),
+        ("=_xlfn.F.INV(0.883, 1, 8)", 3.0866529196587305),
+        ("=_xlfn.F.INV.RT(0.942, 18, 3)", 0.33370421499396513),
+        ("=_xlfn.F.INV.RT(0.876, 17, 6)", 0.5030517141697566),
+        ("=FINV(0.709, 1, 11)", 0.14670778600563464),
+        ("=FINV(0.868, 10, 9)", 0.4767239715231606),
+        ("=_xlfn.F.INV.RT(0.38, 17, 1)", 3.9202240523326743),
+    ] {
+        let got = eval1(f);
+        match got {
+            ResultData::Float(v) => {
+                let rel = (v - expected).abs() / expected.abs().max(1e-300);
+                assert!(rel < 1e-9, "{f}: got {v}, want {expected} (rel {rel:e})");
+            }
+            other => panic!("{f}: got {other:?}, want {expected}"),
+        }
+    }
+}
+
+#[test]
+fn test_chitest_single_category_is_not_available() {
+    // One category means zero degrees of freedom, so there is no
+    // chi-square distribution to evaluate against and Excel reports #N/A.
+    // The check lives at the call site because it is judged on the ranges'
+    // *raw* size: applying it to the pairwise-filtered values instead
+    // would turn a two-cell pair that merely holds one text cell into
+    // #N/A, where Excel still reports the underlying #DIV/0!.
+    // Numeric single cells, matching the case probed against real Excel
+    // (a *blank* single-cell operand is a different rule -- see
+    // paired_args -- and would report #VALUE!).
+    let grid = [["5", "7", "=CHITEST(A1:A1, B1:B1)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let got = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(got, ResultData::Error(ref e) if e == "#N/A"),
+        "{got:?}"
+    );
+    // Two categories still compute.
+    assert!(crate::core::stats::chisq_test(&[10.0, 20.0], &[10.0, 20.0], 2).is_ok());
+}
+
+// ---------------------------------------------------------------------
+// Direct-argument text coercion in the statistical family.
+//
+// All values below are from real Excel 16.111.3. The rule splits on how
+// the text arrived: supplied directly as an argument it is coerced (and
+// is an error if it will not coerce), while text reached through a
+// reference is skipped. Getting this wrong is quiet rather than loud --
+// DEVSQ("abc", 3, 4, 5) used to answer 2, the spread of the remaining
+// three numbers, instead of #VALUE!.
+// ---------------------------------------------------------------------
+
+fn assert_err(source: &str, expected: &str) {
+    match eval1(source) {
+        ResultData::Error(e) => assert_eq!(e, expected, "for {source}"),
+        other => panic!("expected {expected} for {source}, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_direct_numeric_text_is_coerced_by_stat_family() {
+    assert_float_close(&eval1("=SUM(\"12\", 3, 4, 5)"), 24.0, 1e-9);
+    assert_float_close(&eval1("=AVERAGE(\"12\", 3, 4, 5)"), 6.0, 1e-9);
+    assert_float_close(&eval1("=DEVSQ(\"12\", 3, 4, 5)"), 50.0, 1e-9);
+    assert_float_close(&eval1("=STDEV(\"12\", 3, 4, 5)"), 4.08248290463863, 1e-12);
+    assert_float_close(&eval1("=VAR(\"12\", 3, 4, 5)"), 16.666666666666668, 1e-12);
+    assert_float_close(&eval1("=MEDIAN(\"12\", 3, 4, 5)"), 4.5, 1e-9);
+    assert_float_close(&eval1("=SUMSQ(\"12\", 3, 4, 5)"), 194.0, 1e-9);
+    assert_float_close(
+        &eval1("=GEOMEAN(\"12\", 3, 4, 5)"),
+        5.180040128222703,
+        1e-12,
+    );
+    assert_float_close(&eval1("=AVEDEV(\"12\", 3, 4, 5)"), 3.0, 1e-9);
+    assert_float_close(&eval1("=SKEW(\"12\", 3, 4, 5)"), 1.7636326148038874, 1e-12);
+    assert_float_close(&eval1("=KURT(\"12\", 3, 4, 5)"), 3.2279999999999944, 1e-12);
+}
+
+#[test]
+fn test_direct_uncoercible_text_is_value_error_in_stat_family() {
+    for f in [
+        "SUM", "AVERAGE", "DEVSQ", "STDEV", "VAR", "MEDIAN", "MAX", "MIN", "PRODUCT", "SUMSQ",
+        "GEOMEAN", "AVEDEV", "SKEW", "KURT",
+    ] {
+        assert_err(&format!("={f}(\"abc\", 3, 4, 5)"), "#VALUE!");
+    }
+}
+
+#[test]
+fn test_count_never_errors_on_text() {
+    // COUNT is the deliberate exception: numeric text typed directly
+    // counts, uncoercible text is simply not counted, and neither is an
+    // error. Both values are real Excel's.
+    assert_float_close(&eval1("=COUNT(\"12\", 3, 4, 5)"), 4.0, 1e-9);
+    assert_float_close(&eval1("=COUNT(\"abc\", 3, 4, 5)"), 3.0, 1e-9);
+}
+
+#[test]
+fn test_averagea_family_direct_vs_referenced_text() {
+    // Real Excel, with A1 holding the *text* "12":
+    //   AVERAGEA("12", 3) = 7.5   direct text is coerced
+    //   AVERAGEA(A1, 3)   = 1.5   text in a reference counts as 0
+    //   AVERAGEA("abc", 3)= #VALUE!
+    //   AVERAGEA(TRUE, 3) = 2
+    assert_float_close(&eval1("=AVERAGEA(\"12\", 3)"), 7.5, 1e-9);
+    assert_float_close(&eval1("=AVERAGEA(TRUE, 3)"), 2.0, 1e-9);
+    assert_float_close(&eval1("=MAXA(\"12\", 3)"), 12.0, 1e-9);
+    assert_err("=AVERAGEA(\"abc\", 3)", "#VALUE!");
+
+    let mut sheet = create_sheet(&[["=\"12\"", "=AVERAGEA(A1, 3)"]]);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 1.5, 1e-9);
+}
+
+#[test]
+fn test_erf_family_coerces_numeric_text_but_rejects_booleans() {
+    // Real Excel: ERF("1") and ERF(" 1 ") are both 0.8427007929497149,
+    // ERF("-39") is -1, while ERF(TRUE), ERF(FALSE) and ERF("abc") are
+    // all #VALUE!. A blank argument is 0, so ERF(<blank>) is 0.
+    assert_float_close(&eval1("=ERF(\"1\")"), 0.8427007929497149, 1e-15);
+    assert_float_close(&eval1("=ERF(\" 1 \")"), 0.8427007929497149, 1e-15);
+    assert_float_close(&eval1("=ERF(\"-39\")"), -1.0, 1e-15);
+    assert_float_close(&eval1("=ERFC(\"1\")"), 0.15729920705028513, 1e-15);
+    assert_err("=ERF(TRUE)", "#VALUE!");
+    assert_err("=ERF(FALSE)", "#VALUE!");
+    assert_err("=ERFC(TRUE)", "#VALUE!");
+    assert_err("=ERF(\"abc\")", "#VALUE!");
+}
+
+#[test]
+fn test_chitest_rejects_only_a_negative_total_not_negative_expected_values() {
+    // A negative *expected* frequency is not an error on its own. Excel
+    // divides by it and lets that term pull the statistic down, reporting
+    // #NUM! only if the total comes out negative -- so an identical
+    // negative expected value is fine in one series and fatal in another.
+    // All three values are real Excel's.
+    //
+    //   A1:C1 = 1, 2, 3        A2:C2 = 5, -4, 3   -> chi2 = -5.8  -> #NUM!
+    //   A3:C3 = -478.8, 352.51, 8.5
+    //   A4:C4 = 38, 8.5, -75                      -> chi2 ~ 20859 -> 0
+    let mut sheet = create_sheet(&[
+        ["1", "2", "3", "=CHITEST(A1:C1, A2:C2)"],
+        ["5", "-4", "3", "=CHITEST(A3:C3, A4:C4)"],
+        ["-478.8", "352.51", "8.5", "=CHITEST(A1:C1, A5:C5)"],
+        ["38", "8.5", "-75", ""],
+        ["5", "0", "3", ""],
+    ]);
+    sheet.commit(None).unwrap();
+
+    match sheet.get_result_data(&CellRef::new(0, 3)) {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!", "negative statistic is #NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 3)), 0.0, 1e-12);
+    // An expected frequency of exactly zero is the division failing.
+    match sheet.get_result_data(&CellRef::new(2, 3)) {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "zero expected is #DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_normal_cdf_keeps_its_left_tail() {
+    // Computed via erfc rather than 0.5 * (1 + erf(x/sqrt(2))), which
+    // cancels catastrophically once erf approaches -1 and eventually
+    // rounds to exactly 0 -- NORM.S.DIST(-11, TRUE) used to return 0, so
+    // even SIGN() of it disagreed with Excel. Both reference values are
+    // real Excel's, and it resolves the tail well past -30.
+    assert_float_close(
+        &eval1("=NORM.S.DIST(-11, TRUE)"),
+        1.9106595744986622e-28,
+        1e-40,
+    );
+    assert_float_close(
+        &eval1("=NORM.S.DIST(-30, TRUE)"),
+        4.9067139271479094e-198,
+        1e-210,
+    );
+    assert_float_close(&eval1("=SIGN(NORM.S.DIST(-11, TRUE))"), 1.0, 1e-12);
+    // The body of the distribution is unchanged.
+    assert_float_close(&eval1("=NORM.S.DIST(0, TRUE)"), 0.5, 1e-15);
+    assert_float_close(
+        &eval1("=NORM.S.DIST(1.96, TRUE)"),
+        0.9750021048517795,
+        1e-15,
+    );
+}
+
+#[test]
+fn test_paired_sums_error_only_when_a_range_holds_no_numbers() {
+    // The rule is *not* "no pair survived exclusion" -- that is simply 0.
+    // Real Excel reports #DIV/0! when one of the ranges contains no
+    // numeric value at all, and otherwise computes over whatever pairs
+    // survive. The two are easy to confuse because they usually coincide:
+    //
+    //   [53, TRUE] vs [TRUE, -10]   every pair dropped, yet the answer is
+    //                               0 -- each range does hold a number
+    //   [1, 2]     vs ["a", "b"]    #DIV/0! -- the second holds none
+    //   [-116.9395, 53] vs [TRUE, -10]  = 2909, i.e. 53^2 + (-10)^2
+    //
+    // All values below are real Excel's.
+    let mut sheet = create_sheet(&[
+        // A       B         C      D        E       F
+        ["-116.9395", "53", "=TRUE", "=\"I3w\"", "=TRUE", "-10"],
+        ["1", "2", "=\"a\"", "=\"b\"", "=TRUE", "=TRUE"],
+        [
+            "=SUMX2PY2(A1:C1, D1:F1)",
+            "=SUMX2PY2(B1:C1, E1:F1)",
+            "=SUMX2PY2(A1:B1, E1:F1)",
+            "=SUMX2PY2(A2:B2, C2:D2)",
+            "=SUMX2PY2(A2:B2, E2:F2)",
+            "=SUMXMY2(A1:C1, D1:F1)",
+        ],
+    ]);
+    sheet.commit(None).unwrap();
+
+    // Every pair dropped, but both ranges hold a number: 0, not an error.
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 0)), 0.0, 1e-12);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 1)), 0.0, 1e-12);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 5)), 0.0, 1e-12);
+    // One boolean pair dropped, one numeric pair kept.
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 2)), 2909.0, 1e-9);
+    // A range with nothing numeric in it at all.
+    for col in [3, 4] {
+        match sheet.get_result_data(&CellRef::new(2, col)) {
+            ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "column {col}"),
+            other => panic!("expected #DIV/0! in column {col}, got {other:?}"),
+        }
+    }
+    // CORREL over a series with no variance is #DIV/0! independently.
+    assert_err("=CORREL(A1:C1, D1:F1)", "#DIV/0!");
+}
+
+#[test]
+fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
+    // F.DIST.RT used to be computed as 1 - CDF. For a large F statistic
+    // the CDF is within an ULP or two of 1, so that subtraction discarded
+    // most of the answer's digits; it now goes through the incomplete
+    // beta's symmetry instead. All reference values are real Excel's, and
+    // everything below agrees with it to better than 2e-13 relative.
+    // Reference values here are 40-digit mpmath evaluations of the
+    // regularized incomplete beta, not Excel's. visi is closer to the
+    // truth than Excel on this first one: 3.5e-16 relative against
+    // Excel's 1.3e-14.
+    assert_float_close(
+        &eval1("=F.DIST.RT(120.02429320013077, 2, 4)"),
+        2.6863796553017013481e-4,
+        // visi is off by 1.1e-19 here; Excel's own answer is off by
+        // 3.5e-18, so this still asserts a comfortable margin over it.
+        1e-18,
+    );
+    assert_float_close(
+        &eval1("=F.DIST.RT(1000000, 2, 4)"),
+        3.9999840000480035e-12,
+        1e-24,
+    );
+    assert_float_close(&eval1("=F.DIST.RT(2, 3, 7)"), 0.20269364248665092207, 1e-15);
+    assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-12);
+    assert_float_close(&eval1("=F.DIST.RT(1, 5, 5)"), 0.4999999999999999, 1e-13);
+    assert_float_close(
+        &eval1("=FDIST(4.28, 3, 10)"),
+        0.034670525913903016847,
+        1e-16,
+    );
+    // The left tail is unaffected.
+    assert_float_close(&eval1("=F.DIST(2, 3, 7, TRUE)"), 0.7973063575133491, 1e-13);
+
+    // FISHERINV is tanh; the (e^2y - 1)/(e^2y + 1) spelling overflowed to
+    // inf/inf past y ~ 355 and reported #NUM! where Excel reports 1.
+    assert_float_close(&eval1("=FISHERINV(1000)"), 1.0, 1e-15);
+    assert_float_close(&eval1("=FISHERINV(-1000)"), -1.0, 1e-15);
+    assert_float_close(&eval1("=FISHERINV(0.5)"), 0.46211715726000974, 1e-15);
+}
+
+#[test]
+fn test_chitest_takes_degrees_of_freedom_from_the_raw_range_size() {
+    // CHITEST drops pairs where either side is non-numeric, but takes the
+    // degrees of freedom from the ranges' *original* size. With one text
+    // cell in a two-cell pair, one pair survives and Excel still evaluates
+    // against df = 1 -- using the survivor count would give df = 0 and
+    // #NUM!, which is what visi used to return.
+    //
+    // Reference values are real Excel's. The second also exercises the
+    // right tail: computing it as 1 - CDF underflowed to exactly 0.
+    let mut sheet = create_sheet(&[
+        ["-70", "=\"zz\"", "8.6291", "309.431", "3", "4"],
+        [
+            "=CHITEST(A1:B1, C1:D1)",
+            "=CHITEST(A1:C1, D1:F1)",
+            "=CHITEST(A1:A1, C1:C1)",
+            "",
+            "",
+            "",
+        ],
+    ]);
+    sheet.commit(None).unwrap();
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 0)),
+        7.81883827261815e-158,
+        1e-170,
+    );
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 1)),
+        6.38808797549415e-103,
+        1e-115,
+    );
+    // A single category leaves no degrees of freedom at all.
+    match sheet.get_result_data(&CellRef::new(1, 2)) {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_a_lone_blank_cell_is_a_missing_operand() {
+    // Excel distinguishes one blank cell from an array of blanks:
+    //   SUMPRODUCT(<one blank cell>)   = #VALUE!   (missing operand)
+    //   SUMPRODUCT(<two blank cells>)  = 0
+    //   SUMPRODUCT(-50, <blank>)       = #VALUE!
+    //   SUMPRODUCT(<one text cell>)    = 0         (text is not blank)
+    // MULTINOMIAL draws the line in a different place: a blank operand
+    // is only *missing* when there is nothing else, so MULTINOMIAL(3,
+    // <blank>) is 1 with the blank counting as 0, while SUMPRODUCT rejects
+    // a lone blank even beside a number. Z50/Z51 are empty in a fresh
+    // sheet.
+    for src in [
+        "=SUMPRODUCT(Z50:Z50)",
+        "=SUMPRODUCT(-50, Z50)",
+        "=MULTINOMIAL(Z50)",
+        "=MULTINOMIAL(Z50, Z51)",
+    ] {
+        match eval1(src) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
+            other => panic!("expected #VALUE! for {src}, got {other:?}"),
+        }
+    }
+    assert_float_close(&eval1("=SUMPRODUCT(Z50:Z51)"), 0.0, 1e-12);
+    assert_float_close(&eval1("=MULTINOMIAL(3, Z50)"), 1.0, 1e-12);
+    assert_float_close(&eval1("=MULTINOMIAL(Z50, 3)"), 1.0, 1e-12);
+
+    let mut sheet = create_sheet(&[["=\"abc\"", "=SUMPRODUCT(A1:A1)"]]);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 0.0, 1e-12);
+}
+
+#[test]
+fn test_gamma_keeps_full_precision_at_integer_arguments() {
+    // GAMMA(34) is exactly 33! = 8683317618811886495518194401280000000,
+    // which Excel displays as 8.68331761881189E+36. Computing it as
+    // exp(lgamma(x)) costs several significant digits and gave
+    // 8.68331761881199E+36 -- wrong from the 14th.
+    assert_float_close(&eval1("=GAMMA(34)"), 8.68331761881189e36, 1e24);
+    assert_float_close(&eval1("=GAMMA(5)"), 24.0, 1e-12);
+    assert_float_close(&eval1("=GAMMA(11)"), 3628800.0, 1e-6);
+    // Non-integer and negative arguments are unchanged.
+    assert_float_close(&eval1("=GAMMA(0.5)"), 1.7724538509055159, 1e-15);
+    assert_float_close(&eval1("=GAMMA(-1.5)"), 2.3632718012073544, 1e-14);
+}
+
+#[test]
+fn test_chitest_with_no_surviving_pair_is_one_not_not_available() {
+    // Every pair holds something non-numeric, so the statistic is 0 and
+    // -- with the degrees of freedom taken from the raw range size -- the
+    // p-value is 1. Real Excel returns 1 here; visi reported #N/A, which
+    // then propagated (ERF(CHITEST(...)) should be erf(1)).
+    let mut sheet = create_sheet(&[
+        ["=\"rBN\"", "-323.7702", "=CHITEST(A1:A3, B1:B3)"],
+        ["", "=\"6-323.7702\"", "=ERF(CHITEST(A1:A3, B1:B3))"],
+        ["27", "=\"B\"", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 1.0, 1e-12);
+    assert_float_close(
+        &sheet.get_result_data(&CellRef::new(1, 2)),
+        0.8427007929497149,
+        1e-15,
+    );
+
+    // A range holding no number at all is a different case, and is
+    // #DIV/0! -- the same rule the paired sums use. Above, each range
+    // still had one number in it (27 and -323.7702).
+    let mut sheet = create_sheet(&[
+        ["=\"cUVCpj\"", "=TRUE", "-60.63", "=\"XDWK\""],
+        ["=\"mpSHAC\"", "", "-331.95", "=TRUE"],
+        ["=CHITEST(A1:A2, B1:B2)", "=CHITEST(C1:C2, D1:D2)", "", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    for col in 0..2 {
+        match sheet.get_result_data(&CellRef::new(2, col)) {
+            ResultData::Error(e) => assert_eq!(e, "#DIV/0!", "column {col}"),
+            other => panic!("expected #DIV/0! in column {col}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_mode_family_rejects_a_lone_blank_operand() {
+    // MODE is stricter than its neighbours about a blank operand:
+    // MODE(x, <blank>) is #VALUE! in real Excel while MEDIAN(x, <blank>)
+    // is just x. All three spellings behave the same way.
+    for src in [
+        "=MODE(241.965, Z90)",
+        "=MODE.SNGL(241.965, Z90)",
+        "=MODE.MULT(241.965, Z90)",
+        "=MODE(241.965, 241.965, Z90)",
+    ] {
+        match eval1(src) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
+            other => panic!("expected #VALUE! for {src}, got {other:?}"),
+        }
+    }
+    // Unchanged neighbours, and MODE's ordinary behaviour.
+    assert_float_close(&eval1("=MEDIAN(241.965, Z90)"), 241.965, 1e-12);
+    assert_float_close(&eval1("=MODE(241.965, 241.965)"), 241.965, 1e-12);
+    assert_float_close(&eval1("=MODE(1, 1, 2)"), 1.0, 1e-12);
+    // No repeated value is still #N/A, not #VALUE!.
+    assert_err("=MODE(1, 2)", "#N/A");
+}
+
+#[test]
+fn test_shape_mismatch_outranks_the_no_numbers_rule() {
+    // A shape mismatch is #N/A and wins over everything else, including a
+    // range that also holds no numeric value at all. Getting the order
+    // wrong matters beyond the error class: IFNA/ISNA are watching for
+    // exactly #N/A, so a spurious #DIV/0! escapes them.
+    let mut sheet = create_sheet(&[
+        ["1", "=\"x\"", "5", "=SUMXMY2(A1:A3, B1:B2)"],
+        ["2", "=\"y\"", "6", "=SUMXMY2(A1:A3, C1:C2)"],
+        ["3", "", "", "=CHITEST(A1:A1, A1:B5)"],
+    ]);
+    sheet.commit(None).unwrap();
+    for row in 0..3 {
+        match sheet.get_result_data(&CellRef::new(row, 3)) {
+            ResultData::Error(e) => assert_eq!(e, "#N/A", "row {row}"),
+            other => panic!("expected #N/A in row {row}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
+    // GCD, LCM and MULTINOMIAL coerce text that looks numeric and reject
+    // everything else -- so this is narrower than "text is #VALUE!", which
+    // is what it used to do. All values are real Excel's.
+    assert_float_close(&eval1("=GCD(\"12\", 8)"), 4.0, 1e-12);
+    assert_float_close(&eval1("=LCM(\"4\", 6)"), 12.0, 1e-12);
+    assert_float_close(&eval1("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
+    assert_float_close(&eval1("=MULTINOMIAL(RIGHT(\"a5\", 1), 2)"), 21.0, 1e-9);
+    for src in [
+        "=GCD(\"x\", 8)",
+        "=GCD(TRUE, 8)",
+        "=LCM(\"x\", 6)",
+        "=MULTINOMIAL(\"x\", 2)",
+    ] {
+        assert_err(src, "#VALUE!");
+    }
+}
+
+#[test]
+fn test_incomplete_beta_prefactor_accuracy() {
+    // The beta prefactor is computed from tgamma rather than as
+    // exp(a*ln x + b*ln(1-x) - lbeta), which put the absolute error of a
+    // logarithm straight into the relative error of the result. All
+    // expected values are 50-digit mpmath evaluations of the regularized
+    // incomplete beta, not Excel's.
+    //
+    // The FTEST case is the one this was chased down for: the true value
+    // is 0.94171633283387507291, which renders at 15 digits as
+    // 0.941716332833875. visi used to be ~10 ULP high and print ...876.
+    let mut sheet = create_sheet(&[
+        ["127.95", "127.95"],
+        ["5", "5"],
+        ["28", "28"],
+        ["-24.3108", "92"],
+        ["0", "=FTEST(A1:A11, B1:B4)"],
+        ["-40", ""],
+        ["-45", ""],
+        ["43", ""],
+        ["96", ""],
+        ["-66", ""],
+        ["1", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    let got = match sheet.get_result_data(&CellRef::new(4, 1)) {
+        ResultData::Float(f) => f,
+        other => panic!("expected a number, got {other:?}"),
+    };
+    assert!(
+        (got - 0.94171633283387507291).abs() < 3e-16,
+        "FTEST expected 0.94171633283387507291, got {got}"
+    );
+    assert_eq!(format!("{got:.15}"), "0.941716332833875");
+
+    // The (1-x)^b correction: without it, a half-ULP rounding of `1 - x`
+    // is multiplied by b. This case (a=5, b=50) was 15 ULP out and is now
+    // within 1. Reference from 60-digit mpmath.
+    assert_float_close(
+        &eval1("=BETA.DIST(0.0378, 5, 50, TRUE)"),
+        0.052899172535742447319,
+        3e-17,
+    );
+
+    // Spot checks across the parameter space, all within ~2 ULP.
+    assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-15);
+    assert_float_close(&eval1("=BETA.DIST(0.5, 2, 3, TRUE)"), 0.6875, 1e-15);
+    assert_float_close(
+        &eval1("=T.DIST(1.5, 10, TRUE)"),
+        0.91774633677727990958,
+        1e-15,
+    );
+}

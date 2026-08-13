@@ -15,6 +15,7 @@ calamine = "0.26"
 cfb = "0.14"
 getrandom = { version = "0.2", features = ["js"] }
 glam = "0.29"
+libm = "0.2"
 log = "0.4"
 quick-xml = "0.36"
 rand = "0.8"

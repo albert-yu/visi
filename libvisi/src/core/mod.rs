@@ -4,6 +4,7 @@ pub mod date;
 pub mod date_fn;
 pub mod engine;
 pub mod engineering;
+pub mod ets;
 pub mod extended_fn;
 pub mod finance;
 pub mod formula;
