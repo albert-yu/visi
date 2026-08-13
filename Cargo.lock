@@ -457,7 +457,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libvisi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "calamine",
  "cfb",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "visi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "cfb",
  "clap",
