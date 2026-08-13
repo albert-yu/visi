@@ -15,9 +15,6 @@ readme = "README.md"
 keywords = ["excel", "xlsx", "spreadsheet", "formula", "ooxml"]
 categories = ["parser-implementations", "encoding", "data-structures"]
 
-[lib]
-crate-type = ["rlib", "cdylib"]
-
 [features]
 default = []
 # For `wasm32-unknown-unknown` in a browser: routes `getrandom` through the JS
