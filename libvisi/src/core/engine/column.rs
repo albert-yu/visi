@@ -257,6 +257,8 @@ pub struct DataColumn {
     pub compiled_src: SharedVec<CompiledFormula>,
     #[serde(skip, default)]
     pub dirty_indices: SharedVec<usize>,
+    #[serde(default)]
+    pub styles: SharedVec<Option<crate::core::CellStyle>>,
 }
 
 pub struct ColumnPosition {
@@ -273,6 +275,7 @@ impl DataColumn {
             src: vec![String::new(); size].into(),
             compiled_src: vec![CompiledFormula::default(); size].into(),
             dirty_indices: SharedVec::new(),
+            styles: vec![None; size].into(),
         }
     }
 
@@ -296,17 +299,20 @@ impl DataColumn {
             self.src.push(input.to_string());
             self.compiled_src.push(CompiledFormula::default());
             self.data.push(ResultData::None);
+            self.styles.push(None);
         } else {
             let mut i = self.src.len();
             while i < index {
                 self.src.push(String::new());
                 self.compiled_src.push(CompiledFormula::default());
                 self.data.push(ResultData::None);
+                self.styles.push(None);
                 i += 1;
             }
             self.src.push(input.to_string());
             self.compiled_src.push(CompiledFormula::default());
             self.data.push(ResultData::None);
+            self.styles.push(None);
         }
     }
 }

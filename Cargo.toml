@@ -6,6 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
+version = "0.1.1"
 description = "A high-performance Rust spreadsheet engine and developer-friendly CLI tool for reading, evaluating formulas in, and updating Excel (.xlsx) files"
 homepage = "https://github.com/albert-yu/visi"
 repository = "https://github.com/albert-yu/visi"

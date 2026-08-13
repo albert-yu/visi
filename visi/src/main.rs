@@ -9,7 +9,8 @@ use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
     ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroSubcommands, OutputFormat, PivotAggArg,
     PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs,
-    SheetArgs, SheetSubcommands, TableArgs, TableSubcommands, VbaModuleKindArg,
+    SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands, StyleTableArgs,
+    TableArgs, TableSubcommands, VbaModuleKindArg,
 };
 use visi::engine::WorkbookManager;
 use visi::format::{get_cell_display_val, render_grid};
@@ -34,6 +35,7 @@ fn main() {
         Commands::Table(args) => handle_table(args, quiet),
         Commands::Pivot(args) => handle_pivot(args, quiet),
         Commands::Macro(args) => handle_macro(args, quiet),
+        Commands::Style(args) => handle_style(args, quiet),
         Commands::Export(args) => handle_export(args),
     }
 }
@@ -254,6 +256,21 @@ fn handle_set(args: SetArgs, quiet: bool) {
     // Apply updates
     for (s_idx, row, col, val) in &updates {
         wb.set_cell(*s_idx, *row, *col, val.clone());
+    }
+
+    let style = libvisi::core::CellStyle {
+        font_color: args.font_color,
+        bg_color: args.bg_color,
+        bold: if args.bold { Some(true) } else { None },
+        italic: if args.italic { Some(true) } else { None },
+        underline: if args.underline { Some(true) } else { None },
+        font_family: args.font_family,
+        font_size: args.font_size,
+    };
+    if !style.is_empty() {
+        for (s_idx, row, col, _) in &updates {
+            wb.sheets[*s_idx].update_cell_style(*row, *col, |s| s.merge(&style));
+        }
     }
 
     // Evaluate formulas if required
@@ -839,6 +856,11 @@ fn handle_table(args: TableArgs, quiet: bool) {
                 )
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
 
+            if let Some(style_name) = &add_args.style {
+                wb.set_table_style(&add_args.name, style_name)
+                    .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+            }
+
             let save_path = resolve_output_path(add_args.output, add_args.in_place, &add_args.file);
             wb.save_file(&save_path).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_IO_ERROR);
@@ -955,6 +977,83 @@ fn handle_table(args: TableArgs, quiet: bool) {
                 );
             }
         }
+        TableSubcommands::Style(table_args) => {
+            handle_style_table(table_args, quiet);
+        }
+    }
+}
+
+fn handle_style(args: StyleArgs, quiet: bool) {
+    match args.command {
+        StyleSubcommands::Cell(cell_args) => handle_style_cell(cell_args, quiet),
+        StyleSubcommands::Table(table_args) => handle_style_table(table_args, quiet),
+    }
+}
+
+fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
+    let mut wb = WorkbookManager::load_file_or_create(&args.file).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_IO_ERROR);
+    });
+
+    let style = libvisi::core::CellStyle {
+        font_color: args.font_color,
+        bg_color: args.bg_color,
+        bold: if args.bold { Some(true) } else { None },
+        italic: if args.italic { Some(true) } else { None },
+        underline: if args.underline { Some(true) } else { None },
+        font_family: args.font_family,
+        font_size: args.font_size,
+    };
+
+    if style.is_empty() {
+        exit_with_error(
+            "Must specify at least one style attribute (--font-color, --bg-color, --bold, --italic, --underline, --font-family, --font-size)",
+            EXIT_USAGE_ERROR,
+        );
+    }
+
+    if let Some(cell_str) = &args.cell {
+        wb.set_cell_style(args.sheet.as_deref(), cell_str, style)
+            .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+    } else if let Some(range_str) = &args.range {
+        wb.set_range_style(args.sheet.as_deref(), range_str, style)
+            .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
+    } else {
+        exit_with_error(
+            "Must specify target cell with --cell <A1> or range with --range <A1:B10>",
+            EXIT_USAGE_ERROR,
+        );
+    }
+
+    let save_path = resolve_output_path(args.output, args.in_place, &args.file);
+    wb.save_file(&save_path).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_IO_ERROR);
+    });
+
+    if !quiet {
+        eprintln!("Successfully updated cell style -> {}", save_path);
+    }
+}
+
+fn handle_style_table(args: StyleTableArgs, quiet: bool) {
+    let mut wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_IO_ERROR);
+    });
+
+    wb.set_table_style(&args.name, &args.style).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_ENGINE_ERROR);
+    });
+
+    let save_path = resolve_output_path(args.output, args.in_place, &args.file);
+    wb.save_file(&save_path).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_IO_ERROR);
+    });
+
+    if !quiet {
+        eprintln!(
+            "Successfully updated Excel Table '{}' style to '{}' -> {}",
+            args.name, args.style, save_path
+        );
     }
 }
 

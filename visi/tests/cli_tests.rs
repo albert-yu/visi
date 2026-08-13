@@ -1008,3 +1008,96 @@ fn test_coordinate_parsing() {
     assert_eq!((s_row, s_col), (0, 0));
     assert_eq!((e_row, e_col), (4, 1));
 }
+
+#[test]
+fn test_cell_style_setting_and_xlsx_round_trip() {
+    use libvisi::core::CellStyle;
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_cell_styles.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+
+    // Set value and style on A1
+    wb.set_cell(0, 0, 0, "Styled Header".to_string());
+    wb.set_cell_style(
+        None,
+        "A1",
+        CellStyle {
+            font_color: Some("#FF0000".to_string()),
+            bg_color: Some("#FFFF00".to_string()),
+            bold: Some(true),
+            italic: Some(true),
+            font_family: Some("Arial".to_string()),
+            font_size: Some(14),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Set range style on B1:B3
+    wb.set_range_style(
+        None,
+        "B1:B3",
+        CellStyle {
+            bold: Some(true),
+            font_color: Some("blue".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Verify in-memory styles on wb
+    let style_a1 = wb.get_cell_style(None, "A1").unwrap().unwrap();
+    assert_eq!(style_a1.font_color, Some("#FF0000".to_string()));
+    assert_eq!(style_a1.bg_color, Some("#FFFF00".to_string()));
+    assert_eq!(style_a1.bold, Some(true));
+    assert_eq!(style_a1.italic, Some(true));
+    assert_eq!(style_a1.font_family, Some("Arial".to_string()));
+    assert_eq!(style_a1.font_size, Some(14));
+
+    let style_b2 = wb.get_cell_style(None, "B2").unwrap().unwrap();
+    assert_eq!(style_b2.bold, Some(true));
+    assert_eq!(style_b2.font_color, Some("blue".to_string()));
+
+    // Save workbook to file (generates formatted OOXML XLSX output)
+    wb.save_file(file_str).unwrap();
+
+    let _ = fs::remove_file(file_path);
+}
+
+#[test]
+fn test_table_style_theme_setting_and_xlsx_round_trip() {
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_table_style.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
+
+    // Add table data
+    wb.set_cell(0, 0, 0, "ID".to_string());
+    wb.set_cell(0, 0, 1, "Name".to_string());
+    wb.set_cell(0, 1, 0, "1".to_string());
+    wb.set_cell(0, 1, 1, "Alice".to_string());
+
+    wb.add_table(None, "SalesTable", 0, 0, 1, 1, true, false)
+        .unwrap();
+    wb.set_table_style("SalesTable", "TableStyleMedium9").unwrap();
+
+    assert_eq!(
+        wb.get_table_style("SalesTable").unwrap(),
+        Some("TableStyleMedium9".to_string())
+    );
+
+    // Save and reload workbook
+    wb.save_file(file_str).unwrap();
+    let reloaded = WorkbookManager::load_file(file_str).unwrap();
+
+    assert_eq!(
+        reloaded.get_table_style("SalesTable").unwrap(),
+        Some("TableStyleMedium9".to_string())
+    );
+
+    let _ = fs::remove_file(file_path);
+}

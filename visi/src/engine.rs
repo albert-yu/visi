@@ -257,35 +257,69 @@ impl WorkbookManager {
         if sheet_idx >= self.sheets.len() {
             return;
         }
+        self.sheets[sheet_idx].ensure_capacity(target_row, target_col);
+    }
 
-        let sheet = &mut self.sheets[sheet_idx];
-        let current_rows = sheet.row_count();
-        let current_cols = sheet.col_count();
+    pub fn set_cell_style(
+        &mut self,
+        sheet_name: Option<&str>,
+        cell_str: &str,
+        style: libvisi::core::CellStyle,
+    ) -> Result<(), String> {
+        let (specified_sheet, row_idx, col_idx) = crate::utils::parse_cell_ref(cell_str)?;
+        let sheet_idx = self.find_sheet_index(specified_sheet.as_deref().or(sheet_name))?;
+        self.sheets[sheet_idx].update_cell_style(row_idx, col_idx, |s| s.merge(&style));
+        Ok(())
+    }
 
-        // Add missing columns if target_col >= current_cols
-        if target_col >= current_cols {
-            let rows_for_new_cols = current_rows.max(target_row + 1).max(1);
-            for col_i in current_cols..=target_col {
-                let mut new_col = DataColumn::new(rows_for_new_cols);
-                new_col.id = generate_unique_id();
-                new_col.name = col_idx_to_letters(col_i);
-                sheet.columns.push(new_col);
+    pub fn set_range_style(
+        &mut self,
+        sheet_name: Option<&str>,
+        range_str: &str,
+        style: libvisi::core::CellStyle,
+    ) -> Result<(), String> {
+        let (specified_sheet, start_row, start_col, end_row, end_col) =
+            crate::utils::parse_range_ref(range_str)?;
+        let sheet_idx = self.find_sheet_index(specified_sheet.as_deref().or(sheet_name))?;
+        for r in start_row..=end_row {
+            for c in start_col..=end_col {
+                self.sheets[sheet_idx].update_cell_style(r, c, |s| s.merge(&style));
             }
         }
+        Ok(())
+    }
 
-        // Expand all columns if target_row >= current_rows
-        let current_rows = sheet.row_count();
-        if target_row >= current_rows {
-            let needed_rows = target_row + 1;
-            for col in &mut sheet.columns {
-                while col.src.len() < needed_rows {
-                    col.src.push(String::new());
-                    col.compiled_src
-                        .push(libvisi::core::CompiledFormula::default());
-                    col.data.push(ResultData::None);
+    pub fn get_cell_style(
+        &self,
+        sheet_name: Option<&str>,
+        cell_str: &str,
+    ) -> Result<Option<libvisi::core::CellStyle>, String> {
+        let (specified_sheet, row_idx, col_idx) = crate::utils::parse_cell_ref(cell_str)?;
+        let sheet_idx = self.find_sheet_index(specified_sheet.as_deref().or(sheet_name))?;
+        Ok(self.sheets[sheet_idx].get_cell_style(row_idx, col_idx).cloned())
+    }
+
+    pub fn set_table_style(&mut self, table_name: &str, style_name: &str) -> Result<(), String> {
+        for sheet in &mut self.sheets {
+            for table in &mut sheet.tables {
+                if table.name.eq_ignore_ascii_case(table_name) {
+                    table.set_style_name(Some(style_name.to_string()));
+                    return Ok(());
                 }
             }
         }
+        Err(format!("Excel Table '{}' not found", table_name))
+    }
+
+    pub fn get_table_style(&self, table_name: &str) -> Result<Option<String>, String> {
+        for sheet in &self.sheets {
+            for table in &sheet.tables {
+                if table.name.eq_ignore_ascii_case(table_name) {
+                    return Ok(table.style_name.clone());
+                }
+            }
+        }
+        Err(format!("Excel Table '{}' not found", table_name))
     }
 
     /// Update cell source / value at (row, col)

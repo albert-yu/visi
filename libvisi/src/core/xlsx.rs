@@ -300,7 +300,7 @@ pub fn import_xlsx_data(
             else {
                 continue;
             };
-            let (has_header_row, has_totals_row, table_ref) =
+            let (has_header_row, has_totals_row, table_ref, style_name) =
                 read_table_metadata_from_zip(buffer, &table_name);
 
             // Prefer the table's own declared `ref` (the whole table's
@@ -343,6 +343,7 @@ pub fn import_xlsx_data(
                 has_header_row,
                 has_totals_row,
                 columns: table.columns().to_vec(),
+                style_name,
             });
         }
     }
@@ -486,6 +487,108 @@ fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String 
     }
 }
 
+pub(crate) fn parse_xlsx_color(color_str: &str) -> Option<rust_xlsxwriter::Color> {
+    let trimmed = color_str.trim().trim_start_matches('#');
+    if trimmed.eq_ignore_ascii_case("black") {
+        return Some(rust_xlsxwriter::Color::Black);
+    }
+    if trimmed.eq_ignore_ascii_case("white") {
+        return Some(rust_xlsxwriter::Color::White);
+    }
+    if trimmed.eq_ignore_ascii_case("red") {
+        return Some(rust_xlsxwriter::Color::Red);
+    }
+    if trimmed.eq_ignore_ascii_case("blue") {
+        return Some(rust_xlsxwriter::Color::Blue);
+    }
+    if trimmed.eq_ignore_ascii_case("green") {
+        return Some(rust_xlsxwriter::Color::Green);
+    }
+    if trimmed.eq_ignore_ascii_case("yellow") {
+        return Some(rust_xlsxwriter::Color::Yellow);
+    }
+    if trimmed.eq_ignore_ascii_case("gray") || trimmed.eq_ignore_ascii_case("grey") {
+        return Some(rust_xlsxwriter::Color::Gray);
+    }
+    if trimmed.len() == 6 {
+        if let Ok(rgb) = u32::from_str_radix(trimmed, 16) {
+            return Some(rust_xlsxwriter::Color::RGB(rgb));
+        }
+    } else if trimmed.len() == 8 {
+        if let Ok(rgb) = u32::from_str_radix(&trimmed[2..], 16) {
+            return Some(rust_xlsxwriter::Color::RGB(rgb));
+        }
+    }
+    None
+}
+
+pub(crate) fn parse_xlsx_table_style(name: &str) -> rust_xlsxwriter::TableStyle {
+    match name.to_lowercase().as_str() {
+        "tablestylelight1" | "light1" => rust_xlsxwriter::TableStyle::Light1,
+        "tablestylelight2" | "light2" => rust_xlsxwriter::TableStyle::Light2,
+        "tablestylelight3" | "light3" => rust_xlsxwriter::TableStyle::Light3,
+        "tablestylelight4" | "light4" => rust_xlsxwriter::TableStyle::Light4,
+        "tablestylelight5" | "light5" => rust_xlsxwriter::TableStyle::Light5,
+        "tablestylelight6" | "light6" => rust_xlsxwriter::TableStyle::Light6,
+        "tablestylelight7" | "light7" => rust_xlsxwriter::TableStyle::Light7,
+        "tablestylelight8" | "light8" => rust_xlsxwriter::TableStyle::Light8,
+        "tablestylelight9" | "light9" => rust_xlsxwriter::TableStyle::Light9,
+        "tablestylelight10" | "light10" => rust_xlsxwriter::TableStyle::Light10,
+        "tablestylemedium1" | "medium1" => rust_xlsxwriter::TableStyle::Medium1,
+        "tablestylemedium2" | "medium2" => rust_xlsxwriter::TableStyle::Medium2,
+        "tablestylemedium3" | "medium3" => rust_xlsxwriter::TableStyle::Medium3,
+        "tablestylemedium4" | "medium4" => rust_xlsxwriter::TableStyle::Medium4,
+        "tablestylemedium5" | "medium5" => rust_xlsxwriter::TableStyle::Medium5,
+        "tablestylemedium6" | "medium6" => rust_xlsxwriter::TableStyle::Medium6,
+        "tablestylemedium7" | "medium7" => rust_xlsxwriter::TableStyle::Medium7,
+        "tablestylemedium8" | "medium8" => rust_xlsxwriter::TableStyle::Medium8,
+        "tablestylemedium9" | "medium9" => rust_xlsxwriter::TableStyle::Medium9,
+        "tablestylemedium10" | "medium10" => rust_xlsxwriter::TableStyle::Medium10,
+        "tablestyledark1" | "dark1" => rust_xlsxwriter::TableStyle::Dark1,
+        "tablestyledark2" | "dark2" => rust_xlsxwriter::TableStyle::Dark2,
+        "tablestyledark3" | "dark3" => rust_xlsxwriter::TableStyle::Dark3,
+        "tablestyledark4" | "dark4" => rust_xlsxwriter::TableStyle::Dark4,
+        "tablestyledark5" | "dark5" => rust_xlsxwriter::TableStyle::Dark5,
+        "tablestyledark6" | "dark6" => rust_xlsxwriter::TableStyle::Dark6,
+        "tablestyledark7" | "dark7" => rust_xlsxwriter::TableStyle::Dark7,
+        "tablestyledark8" | "dark8" => rust_xlsxwriter::TableStyle::Dark8,
+        "tablestyledark9" | "dark9" => rust_xlsxwriter::TableStyle::Dark9,
+        "tablestyledark10" | "dark10" => rust_xlsxwriter::TableStyle::Dark10,
+        "tablestyledark11" | "dark11" => rust_xlsxwriter::TableStyle::Dark11,
+        _ => rust_xlsxwriter::TableStyle::Medium9,
+    }
+}
+
+pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwriter::Format {
+    let mut format = rust_xlsxwriter::Format::new();
+    if let Some(font_color) = &style.font_color {
+        if let Some(color) = parse_xlsx_color(font_color) {
+            format = format.set_font_color(color);
+        }
+    }
+    if let Some(bg_color) = &style.bg_color {
+        if let Some(color) = parse_xlsx_color(bg_color) {
+            format = format.set_background_color(color);
+        }
+    }
+    if let Some(true) = style.bold {
+        format = format.set_bold();
+    }
+    if let Some(true) = style.italic {
+        format = format.set_italic();
+    }
+    if let Some(true) = style.underline {
+        format = format.set_underline(rust_xlsxwriter::FormatUnderline::Single);
+    }
+    if let Some(family) = &style.font_family {
+        format = format.set_font_name(family);
+    }
+    if let Some(size) = style.font_size {
+        format = format.set_font_size(size as f64);
+    }
+    format
+}
+
 pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
@@ -544,6 +647,9 @@ pub fn export_xlsx_data(
                 let col = &sheet.columns[col_idx];
                 for row_idx in 0..sheet.row_count() {
                     let cell_src = col.src.get(row_idx).cloned().unwrap_or_default();
+                    let style_opt = col.styles.get(row_idx).and_then(|s| s.as_ref());
+                    let format_opt = style_opt.map(build_xlsx_format);
+
                     if let Some(formula_src) = cell_src.strip_prefix('=') {
                         let mut formula = rust_xlsxwriter::Formula::new(formula_src);
                         if let Some(res_data) = col.data.get(row_idx) {
@@ -555,18 +661,51 @@ pub fn export_xlsx_data(
                                 }
                             }
                         }
-                        worksheet
-                            .write_formula(row_idx as u32, col_idx as u16, formula)
-                            .map_err(|e| format!("Failed to write Excel formula: {}", e))?;
+                        if let Some(ref rx_format) = format_opt {
+                            worksheet
+                                .write_formula_with_format(
+                                    row_idx as u32,
+                                    col_idx as u16,
+                                    formula,
+                                    rx_format,
+                                )
+                                .map_err(|e| format!("Failed to write Excel formula: {}", e))?;
+                        } else {
+                            worksheet
+                                .write_formula(row_idx as u32, col_idx as u16, formula)
+                                .map_err(|e| format!("Failed to write Excel formula: {}", e))?;
+                        }
                     } else if let Ok(val_f64) = cell_src.parse::<f64>() {
-                        worksheet
-                            .write_number(row_idx as u32, col_idx as u16, val_f64)
-                            .map_err(|e| format!("Failed to write Excel number: {}", e))?;
+                        if let Some(ref rx_format) = format_opt {
+                            worksheet
+                                .write_number_with_format(
+                                    row_idx as u32,
+                                    col_idx as u16,
+                                    val_f64,
+                                    rx_format,
+                                )
+                                .map_err(|e| format!("Failed to write Excel number: {}", e))?;
+                        } else {
+                            worksheet
+                                .write_number(row_idx as u32, col_idx as u16, val_f64)
+                                .map_err(|e| format!("Failed to write Excel number: {}", e))?;
+                        }
                     } else if let Ok(val_bool) = cell_src.parse::<bool>() {
-                        worksheet
-                            .write_boolean(row_idx as u32, col_idx as u16, val_bool)
-                            .map_err(|e| format!("Failed to write Excel boolean: {}", e))?;
-                    } else if !cell_src.is_empty() {
+                        if let Some(ref rx_format) = format_opt {
+                            worksheet
+                                .write_boolean_with_format(
+                                    row_idx as u32,
+                                    col_idx as u16,
+                                    val_bool,
+                                    rx_format,
+                                )
+                                .map_err(|e| format!("Failed to write Excel boolean: {}", e))?;
+                        } else {
+                            worksheet
+                                .write_boolean(row_idx as u32, col_idx as u16, val_bool)
+                                .map_err(|e| format!("Failed to write Excel boolean: {}", e))?;
+                        }
+                    } else if !cell_src.is_empty() || format_opt.is_some() {
                         let text = if cell_src.starts_with('"')
                             && cell_src.ends_with('"')
                             && cell_src.len() >= 2
@@ -575,9 +714,20 @@ pub fn export_xlsx_data(
                         } else {
                             cell_src.as_str()
                         };
-                        worksheet
-                            .write_string(row_idx as u32, col_idx as u16, text)
-                            .map_err(|e| format!("Failed to write Excel string: {}", e))?;
+                        if let Some(ref rx_format) = format_opt {
+                            worksheet
+                                .write_string_with_format(
+                                    row_idx as u32,
+                                    col_idx as u16,
+                                    text,
+                                    rx_format,
+                                )
+                                .map_err(|e| format!("Failed to write Excel string: {}", e))?;
+                        } else {
+                            worksheet
+                                .write_string(row_idx as u32, col_idx as u16, text)
+                                .map_err(|e| format!("Failed to write Excel string: {}", e))?;
+                        }
                     }
                 }
             }
@@ -595,11 +745,14 @@ pub fn export_xlsx_data(
                     .iter()
                     .map(|name| rust_xlsxwriter::TableColumn::new().set_header(name))
                     .collect();
-                let rx_table = rust_xlsxwriter::Table::new()
+                let mut rx_table = rust_xlsxwriter::Table::new()
                     .set_name(&table.name)
                     .set_header_row(table.has_header_row)
                     .set_total_row(table.has_totals_row)
                     .set_columns(&rx_columns);
+                if let Some(style_name) = &table.style_name {
+                    rx_table = rx_table.set_style(parse_xlsx_table_style(style_name));
+                }
                 worksheet
                     .add_table(
                         table.start_row as u32,
@@ -1306,11 +1459,11 @@ pub(crate) fn get_zip_file_content(
 /// empty (no `start()`/`end()`) for a table with zero data rows.
 /// `(has_header_row, has_totals_row, bounds)` where `bounds` is 0-based
 /// `(start_row, start_col, end_row, end_col)`.
-type TableMetadata = (bool, bool, Option<(usize, usize, usize, usize)>);
+type TableMetadata = (bool, bool, Option<(usize, usize, usize, usize)>, Option<String>);
 
 fn read_table_metadata_from_zip(buffer: &[u8], table_name: &str) -> TableMetadata {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(buffer)) else {
-        return (true, false, None);
+        return (true, false, None, None);
     };
     let table_files: Vec<String> = archive
         .file_names()
@@ -1324,23 +1477,37 @@ fn read_table_metadata_from_zip(buffer: &[u8], table_name: &str) -> TableMetadat
         };
         let mut reader = quick_xml::Reader::from_str(&xml_content);
         let mut buf = Vec::new();
+        let mut target_found = false;
+        let mut header_row_count = 1;
+        let mut totals_row_count = 0;
+        let mut table_ref = None;
+        let mut style_name = None;
+
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(ref e))
-                | Ok(quick_xml::events::Event::Empty(ref e))
-                    if e.local_name().as_ref() == b"table" =>
-                {
-                    let display_name = get_attr(e, b"displayName").unwrap_or_default();
-                    if display_name == table_name {
-                        let header_row_count = get_attr(e, b"headerRowCount")
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .unwrap_or(1);
-                        let totals_row_count = get_attr(e, b"totalsRowCount")
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .unwrap_or(0);
-                        let table_ref = get_attr(e, b"ref")
-                            .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
-                        return (header_row_count != 0, totals_row_count != 0, table_ref);
+                | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    let local_name = e.local_name();
+                    if local_name.as_ref() == b"table" {
+                        let display_name = get_attr(e, b"displayName").unwrap_or_default();
+                        if display_name == table_name {
+                            target_found = true;
+                            header_row_count = get_attr(e, b"headerRowCount")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(1);
+                            totals_row_count = get_attr(e, b"totalsRowCount")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(0);
+                            table_ref = get_attr(e, b"ref")
+                                .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
+                            if let Some(s) = get_attr(e, b"styleName") {
+                                style_name = Some(s);
+                            }
+                        }
+                    } else if target_found && local_name.as_ref() == b"tableStyleInfo" {
+                        if let Some(s) = get_attr(e, b"name") {
+                            style_name = Some(s);
+                        }
                     }
                 }
                 Ok(quick_xml::events::Event::Eof) | Err(_) => break,
@@ -1348,8 +1515,11 @@ fn read_table_metadata_from_zip(buffer: &[u8], table_name: &str) -> TableMetadat
             }
             buf.clear();
         }
+        if target_found {
+            return (header_row_count != 0, totals_row_count != 0, table_ref, style_name);
+        }
     }
-    (true, false, None)
+    (true, false, None, None)
 }
 
 /// Derives a stable chart id from its sheet name and position within that

@@ -15,6 +15,7 @@ pub mod pivot;
 pub mod pivot_xlsx;
 pub mod shared_vec;
 pub mod stats;
+pub mod style;
 pub mod table;
 pub mod text;
 pub mod vba;
@@ -34,5 +35,6 @@ pub use pivot::{
     PivotSource, PivotTable, PivotValueField, compute_pivot, value_field_labels,
 };
 pub use shared_vec::SharedVec;
+pub use style::CellStyle;
 pub use table::ExcelTable;
 pub use vba::{VbaModule, VbaModuleKind, VbaProject, validate_vba_module_name};

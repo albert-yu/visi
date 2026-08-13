@@ -59,6 +59,9 @@ pub enum Commands {
     /// Manage VBA macro modules (list, add, remove, rename, set-source)
     Macro(MacroArgs),
 
+    /// Manage cell styles (color, fill background, bold, italic, font) and table themes
+    Style(StyleArgs),
+
     /// Export a worksheet to CSV, TSV, or JSON format
     Export(ExportArgs),
 }
@@ -189,6 +192,34 @@ pub struct SetArgs {
     /// Recalculate formulas after setting values (enabled by default)
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub eval: bool,
+
+    /// Text/font color in Hex format (e.g. "#FF0000") or color name ("red", "blue")
+    #[arg(long = "font-color", alias = "color")]
+    pub font_color: Option<String>,
+
+    /// Background fill color in Hex format (e.g. "#00FF00") or color name ("green", "yellow")
+    #[arg(long = "bg-color", alias = "bg")]
+    pub bg_color: Option<String>,
+
+    /// Enable bold text style
+    #[arg(long)]
+    pub bold: bool,
+
+    /// Enable italic text style
+    #[arg(long)]
+    pub italic: bool,
+
+    /// Enable underline text style
+    #[arg(long)]
+    pub underline: bool,
+
+    /// Font family name (e.g. "Arial", "Calibri", "Courier New")
+    #[arg(long = "font-family")]
+    pub font_family: Option<String>,
+
+    /// Font size in points (e.g. 11, 12, 14)
+    #[arg(long = "font-size")]
+    pub font_size: Option<u16>,
 }
 
 #[derive(Args, Debug)]
@@ -496,6 +527,8 @@ pub enum TableSubcommands {
     Resize(TableResizeArgs),
     /// Rename one column of an Excel Table
     RenameColumn(TableRenameColumnArgs),
+    /// Modify visual style theme of an Excel Table
+    Style(StyleTableArgs),
 }
 
 #[derive(Args, Debug)]
@@ -527,6 +560,9 @@ pub struct TableAddArgs {
     /// Reserve the range's last row as a totals row
     #[arg(long)]
     pub totals_row: bool,
+    /// Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1")
+    #[arg(long)]
+    pub style: Option<String>,
     /// Write updated workbook to target output file
     #[arg(short, long)]
     pub output: Option<String>,
@@ -955,4 +991,94 @@ pub struct ExportArgs {
     /// Recalculate formulas before exporting (enabled by default)
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub eval: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct StyleArgs {
+    #[command(subcommand)]
+    pub command: StyleSubcommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StyleSubcommands {
+    /// Modify cell font color, background color, font styles, and family/size
+    Cell(StyleCellArgs),
+    /// Modify visual style theme of an Excel Table
+    Table(StyleTableArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct StyleCellArgs {
+    /// Input Excel file path
+    pub file: String,
+
+    /// Target sheet name (defaults to first sheet or sheet prefix in cell/range)
+    #[arg(short, long)]
+    pub sheet: Option<String>,
+
+    /// Target cell coordinate in A1 notation (e.g. A1)
+    #[arg(short, long)]
+    pub cell: Option<String>,
+
+    /// Target range in A1 notation (e.g. A1:C10)
+    #[arg(short, long)]
+    pub range: Option<String>,
+
+    /// Text/font color in Hex format (e.g. "#FF0000") or color name ("red", "blue")
+    #[arg(long = "font-color", alias = "color")]
+    pub font_color: Option<String>,
+
+    /// Background fill color in Hex format (e.g. "#00FF00") or color name ("green", "yellow")
+    #[arg(long = "bg-color", alias = "bg")]
+    pub bg_color: Option<String>,
+
+    /// Enable bold text style
+    #[arg(long)]
+    pub bold: bool,
+
+    /// Enable italic text style
+    #[arg(long)]
+    pub italic: bool,
+
+    /// Enable underline text style
+    #[arg(long)]
+    pub underline: bool,
+
+    /// Font family name (e.g. "Arial", "Calibri", "Courier New")
+    #[arg(long = "font-family")]
+    pub font_family: Option<String>,
+
+    /// Font size in points (e.g. 11, 12, 14)
+    #[arg(long = "font-size")]
+    pub font_size: Option<u16>,
+
+    /// Write updated workbook to target output file path
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct StyleTableArgs {
+    /// Input Excel file path
+    pub file: String,
+
+    /// Name of the target Excel Table
+    #[arg(short, long)]
+    pub name: String,
+
+    /// Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1", "TableStyleDark11")
+    #[arg(short, long)]
+    pub style: String,
+
+    /// Write updated workbook to target output file path
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Save updated workbook in-place
+    #[arg(short = 'i', long)]
+    pub in_place: bool,
 }
