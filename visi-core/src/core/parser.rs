@@ -641,7 +641,7 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                 // string (e.g. `="\`) would otherwise push `i` one past
                 // `chars.len()`, so the final `chars[last_idx..i]` slice
                 // below panics -- clamp instead of blindly skipping two
-                // chars. Found via libvisi/fuzz's formula_eval target.
+                // chars. Found via visi-core/fuzz's formula_eval target.
                 i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
@@ -2408,7 +2408,7 @@ mod tests {
 
     #[test]
     fn test_compile_formula_never_panics_on_unterminated_quote_ending_in_backslash() {
-        // Regression for a crash found via libvisi/fuzz's formula_eval
+        // Regression for a crash found via visi-core/fuzz's formula_eval
         // target within seconds of adding it (#26 -- the harness had zero
         // formula-level fuzz coverage before): a `\` as the very last
         // character of an unterminated quoted string (e.g. `="\`) pushed

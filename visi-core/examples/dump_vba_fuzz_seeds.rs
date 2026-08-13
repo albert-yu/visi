@@ -7,10 +7,10 @@
 //! with `cargo run --example dump_vba_fuzz_seeds` and re-run whenever the
 //! synthetic project shape changes.
 
-use libvisi::core::vba::{VbaModule, VbaModuleKind, VbaProject};
-use libvisi::core::vba_xlsx::build_vba_project_bin;
 use std::fs;
 use std::path::Path;
+use visi_core::core::vba::{VbaModule, VbaModuleKind, VbaProject};
+use visi_core::core::vba_xlsx::build_vba_project_bin;
 
 fn main() {
     let out_dir = Path::new("fuzz/seeds/vba_import");

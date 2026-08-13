@@ -1,6 +1,6 @@
 //! Filesystem and stdio access for [`WorkbookManager`].
 //!
-//! The workbook model itself lives in `libvisi` and is deliberately
+//! The workbook model itself lives in `visi-core` and is deliberately
 //! byte-oriented, so that it stays usable when embedded somewhere without a
 //! filesystem (wasm, for instance). The path- and stdio-based conventions
 //! this CLI needs -- including clig.dev's `-` meaning stdin/stdout -- are
@@ -9,13 +9,13 @@
 //! [`WorkbookManager`] is re-exported so `visi::engine::WorkbookManager`
 //! keeps resolving for existing callers.
 
-pub use libvisi::{SheetSummary, WorkbookManager, WorkbookSummary};
+pub use visi_core::{SheetSummary, WorkbookManager, WorkbookSummary};
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-/// Path- and stdio-based loading and saving, layered over `libvisi`'s
+/// Path- and stdio-based loading and saving, layered over `visi-core`'s
 /// byte-oriented [`WorkbookManager::load_bytes`]/[`WorkbookManager::save_bytes`].
 ///
 /// A `path_str` of `-` means stdin (loading) or stdout (saving).

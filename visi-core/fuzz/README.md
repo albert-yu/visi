@@ -1,6 +1,6 @@
 # Crash-hunting fuzz targets
 
-`cargo-fuzz` (libFuzzer) harness for the places in `libvisi` that parse
+`cargo-fuzz` (libFuzzer) harness for the places in `visi-core` that parse
 completely untrusted input -- a `.xlsm`/`.bin` or a formula string someone
 else authored, not anything this codebase produced itself. This is a
 different kind of fuzzing than `../../fuzz/` at the repo root: that one is
@@ -39,7 +39,7 @@ cargo install cargo-fuzz
 
 ## Running
 
-From `libvisi/`:
+From `visi-core/`:
 
 ```bash
 cargo +nightly fuzz run ovba_decompress
@@ -78,14 +78,14 @@ flooding the checked-in seeds with hundreds of generated files on the very
 first run. Regenerate the seeds themselves (distinct from the corpus) with:
 
 ```bash
-cargo run -p libvisi --example dump_vba_fuzz_seeds
+cargo run -p visi-core --example dump_vba_fuzz_seeds
 ```
 
 ## What's covered elsewhere
 
 `decompress`'s roundtrip property (`decompress(compress(x)) == x`) and its
 never-panics guarantee on arbitrary bytes are also checked via `proptest` in
-`core::ovba::tests` as part of the normal `cargo test -p libvisi` run --
+`core::ovba::tests` as part of the normal `cargo test -p visi-core` run --
 useful for CI and bisecting, where a libFuzzer corpus isn't practical to
 carry around. This `fuzz/` crate is for deeper, longer-running exploration
 a property test's fixed small sample sizes won't reach.

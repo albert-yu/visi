@@ -817,7 +817,7 @@ impl Sheet {
                 // the fix just above), that quadratic-in-width blowup was
                 // the difference between finishing in under a second and
                 // taking tens of seconds to minutes -- found via the same
-                // libvisi/fuzz formula_eval run (#26).
+                // visi-core/fuzz formula_eval run (#26).
                 let mut seen_col_deps: HashSet<usize> = HashSet::new();
 
                 let mut results = Vec::new();
@@ -846,7 +846,7 @@ impl Sheet {
                             // itself one level deeper each pass --
                             // unbounded growth that only stops at a stack
                             // overflow in recursive Clone/Drop, found via
-                            // libvisi/fuzz's formula_eval target (#26).
+                            // visi-core/fuzz's formula_eval target (#26).
                             // Blank matches this engine's existing
                             // convention for an unresolvable self-read
                             // elsewhere (e.g. ISBLANK(GET(...)) on an
@@ -2922,7 +2922,7 @@ impl Sheet {
     /// absolute markers and an optional `'quoted sheet name'!` prefix.
     /// Deliberately small and local rather than shared with
     /// `visi/src/utils.rs`'s equivalent parser (`parse_cell_ref`/
-    /// `parse_range_ref`): `libvisi` cannot depend on the `visi` crate
+    /// `parse_range_ref`): `visi-core` cannot depend on the `visi` crate
     /// (the dependency direction is the other way), so this necessarily
     /// duplicates that logic in miniature.
     fn parse_a1_reference(text: &str) -> Option<(Option<String>, usize, usize, usize, usize)> {

@@ -1,4 +1,4 @@
-// High-precision statistical functions for libvisi
+// High-precision statistical functions for visi-core
 // Implements Excel-compatible statistical distributions, summary measures, linear regression, and criteria functions.
 
 use std::cmp::Ordering;

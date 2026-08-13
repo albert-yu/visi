@@ -11,9 +11,9 @@ cargo test --workspace                  # all unit + integration tests
 cargo clippy --workspace                # lints (code carries #[allow(clippy::...)] in places)
 cargo fmt
 
-# A single test / module (engine tests live inside libvisi's lib target)
-cargo test -p libvisi test_fuzz_cell_reference_zero_coercion
-cargo test -p libvisi --lib core::engine::tests::rounding
+# A single test / module (engine tests live inside visi-core's lib target)
+cargo test -p visi-core test_fuzz_cell_reference_zero_coercion
+cargo test -p visi-core --lib core::engine::tests::rounding
 cargo test -p visi --test cli_tests
 ```
 
@@ -29,26 +29,26 @@ python3 fuzz/fuzz_excel.py --seed 48291 --iterations 1     # reproduce a specifi
 
 Failures land in `fuzz_results/failures/fail_iter_<N>_seed_<SEED>/` as `source.xlsx` / `visi_out.xlsx` / `excel_out.xlsx`. See `fuzz/README.md` for the Excel-parity edge cases the harness is built around (cached `<v>` values, 1900 leap-year bug, `_xlfn.` prefixes, float tolerance).
 
-Crash/panic fuzzing of the VBA import path (Rust, `libvisi/fuzz/`, separate from the Python differential harness above):
+Crash/panic fuzzing of the VBA import path (Rust, `visi-core/fuzz/`, separate from the Python differential harness above):
 
 ```bash
 cargo install cargo-fuzz                                          # needs a nightly toolchain
-cd libvisi && cargo +nightly fuzz run ovba_decompress
+cd visi-core && cargo +nightly fuzz run ovba_decompress
 mkdir -p fuzz/corpus/vba_import
 cargo +nightly fuzz run vba_import fuzz/corpus/vba_import fuzz/seeds/vba_import   # seed corpus gets past the CFB-magic-bytes gate
 ```
 
-See `libvisi/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties are also covered by `proptest` cases in `cargo test -p libvisi`, no nightly needed.
+See `visi-core/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties are also covered by `proptest` cases in `cargo test -p visi-core`, no nightly needed.
 
 ## Architecture
 
 Cargo workspace, edition 2024:
 
-- **`libvisi`** — the engine. Built as `rlib` **and `cdylib`**, so it is meant to stay embeddable (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm.
+- **`visi-core`** — the engine, published to crates.io as `visi-core` (the directory matches). Built as `rlib` **and `cdylib`**, so it is meant to stay embeddable (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm — the browser JS backend is behind the **`wasm` feature** (`getrandom/js`), off by default because a library must not force a global getrandom backend on its consumers.
 - **`visi`** — clap-based CLI. `cli.rs` is the arg surface, `main.rs` holds one `handle_*` fn per subcommand, `engine.rs` wraps everything in `WorkbookManager`.
   - be sure to follow [Command Line Interface Guidelines](https://clig.dev) when making changes to the CLI
 
-### Data model (`libvisi/src/core/engine/`)
+### Data model (`visi-core/src/core/engine/`)
 
 A `Sheet` is **column-oriented**: `columns: Vec<DataColumn>`, each with parallel per-row vectors:
 
@@ -90,7 +90,7 @@ Structured references (`Sales[Amount]`, `[@Amount]`, `Table[#Headers]`) resolve 
 
 Table names are unique **workbook-wide** (enforced in `WorkbookManager`), and lookups are case-insensitive. Renaming a table or a table column cascades into formula *text* across the whole workbook via `parser::rewrite_structured_table_reference` (called from `WorkbookManager::rewrite_table_references`, then re-evaluated) — mirroring Excel. `parser::render_structured_ref_text` is shared by `serialize_formula` and the rename rewriter so the canonical bracket syntax stays in sync between them.
 
-### Pivot tables (`libvisi/src/core/pivot.rs`, `pivot_xlsx.rs`)
+### Pivot tables (`visi-core/src/core/pivot.rs`, `pivot_xlsx.rs`)
 
 A `PivotTable` is workbook-level (like `Chart`), not sheet-scoped like `ExcelTable`, since its source and destination ranges can live on different sheets; `WorkbookManager.pivot_tables: Vec<PivotTable>` holds them. `PivotSource` is either an `ExcelTable` name (re-resolved by name on every refresh, so table renames/resizes are picked up automatically) or a raw sheet range.
 
@@ -101,7 +101,7 @@ Neither xlsx library used here has pivot table support: calamine doesn't expose 
 - **Export** (`inject_pivot_tables`) post-processes the zip `export_xlsx_data` already produced — rust_xlsxwriter has no hook for extra parts — by re-opening it with the `zip` crate, editing `[Content_Types].xml` / `xl/workbook.xml` (`<pivotCaches>`) / `xl/_rels/workbook.xml.rels` / the destination worksheet's `.rels`, and writing new `pivotCacheDefinition`/`pivotCacheRecords`/`pivotTable` parts, then rewriting the whole zip. `rowItems`/`colItems` encode Excel's leading-field repeat suppression (`<i r="N">` = "the first N fields are unchanged from the previous row") plus `t="default"`/`t="grand"` subtotal/grand-total markers — get this wrong and Excel still opens the file (`refreshOnLoad="1"` lets it silently rebuild the cache) but may misrender the grid. Verified against `openpyxl` (a strict independent OOXML reader) rather than real Excel, since driving Excel via AppleScript needs a one-time interactive automation-permission grant this environment couldn't complete — re-verify with the `fuzz/` Excel driver or manually in Excel before trusting further pivot XML changes.
 - **Import** (`import_pivot_tables`) reconstructs each `PivotTable`'s source/destination/row/col/value fields from that XML — this is not just fidelity, it's load-bearing: the CLI is a fresh process per invocation, so a pivot table definition only survives `pivot add-field` in a later command because it round-trips through this xlsx parsing. Filter-field *selections* are not reconstructed (they reset to "all") since that would require trusting index-based item references against data that may have changed; subtotal toggles default back to enabled.
 
-### xlsx I/O (`libvisi/src/core/xlsx.rs`)
+### xlsx I/O (`visi-core/src/core/xlsx.rs`)
 
 Import uses **calamine**, export uses **rust_xlsxwriter** — two different libraries with different models, so round-tripping is asymmetric and worth checking after changes.
 
@@ -116,7 +116,7 @@ Follows clig.dev. `-` means stdin/stdout for the file argument. Writes require e
 
 ## Tests
 
-- `libvisi/src/core/engine/tests/unit.rs` — hand-written engine tests.
-- `libvisi/src/core/engine/tests/{aggregate,logical,math,rounding,text}.rs` — **regression cases harvested from the differential fuzzer**, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell. When the Python harness finds an Excel mismatch, minimize it and add it here.
-- `libvisi/src/core/table.rs`, `pivot.rs`, and `xlsx.rs` have inline `#[cfg(test)] mod tests` for table CRUD, pivot computation/grouping, and xlsx round-tripping (including a pivot table round-trip through the hand-rolled OOXML).
+- `visi-core/src/core/engine/tests/unit.rs` — hand-written engine tests.
+- `visi-core/src/core/engine/tests/{aggregate,logical,math,rounding,text}.rs` — **regression cases harvested from the differential fuzzer**, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell. When the Python harness finds an Excel mismatch, minimize it and add it here.
+- `visi-core/src/core/table.rs`, `pivot.rs`, and `xlsx.rs` have inline `#[cfg(test)] mod tests` for table CRUD, pivot computation/grouping, and xlsx round-tripping (including a pivot table round-trip through the hand-rolled OOXML).
 - `visi/tests/cli_tests.rs` — integration tests that drive `WorkbookManager` (the same API the CLI handlers call) through real file round-trips.

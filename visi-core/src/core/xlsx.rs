@@ -1834,7 +1834,7 @@ mod tests {
 
     #[test]
     fn test_xlsx_zero_data_row_table_import_export_cycle() {
-        // Regression test for a real crash found via libvisi's pivot-table
+        // Regression test for a real crash found via visi-core's pivot-table
         // fuzz testing: exporting an Excel Table with a header row but zero
         // data rows, then reimporting it, used to panic inside calamine's
         // `Xlsx::table_by_name` ("invalid range bounds") -- unrelated to

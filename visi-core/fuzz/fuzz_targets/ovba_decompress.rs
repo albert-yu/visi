@@ -9,5 +9,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = libvisi::core::ovba::decompress(data);
+    let _ = visi_core::core::ovba::decompress(data);
 });

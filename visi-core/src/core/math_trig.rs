@@ -1,4 +1,4 @@
-// High-precision Math and Trigonometry functions for libvisi
+// High-precision Math and Trigonometry functions for visi-core
 // Implements Excel-compatible trigonometric, hyperbolic, matrix, matrix inversion, series, combinatorics, and matrix/array math.
 
 // ============================================================================

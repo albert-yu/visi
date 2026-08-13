@@ -1,0 +1,41 @@
+[package]
+name = "visi-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Embeddable spreadsheet engine: Excel formula compilation and evaluation, dependency-tracked recalculation, and .xlsx import/export"
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/visi-core"
+readme = "README.md"
+keywords = ["excel", "xlsx", "spreadsheet", "formula", "ooxml"]
+categories = ["parser-implementations", "encoding", "data-structures"]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+# For `wasm32-unknown-unknown` in a browser: routes `getrandom` through the JS
+# crypto API. Enable this only from a final binary -- getrandom's backend is a
+# global choice, so a library that turns it on forces it on every consumer.
+wasm = ["getrandom/js"]
+
+[dependencies]
+calamine = "0.36"
+cfb = "0.14"
+getrandom = "0.2"
+libm = "0.2"
+log = "0.4"
+quick-xml = "0.36"
+rand = "0.8"
+regex = "1"
+rust_xlsxwriter = "0.75"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+web-time = "1.1"
+zip = { version = "2.1", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+proptest = "1"

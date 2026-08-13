@@ -73,7 +73,7 @@ python3 fuzz/fuzz_excel.py --driver mock --iterations 5
 ### Financial functions (`ExcelFuzzGenerator.generate_financial_formula`)
 
 The 27 TVM/depreciation Financial functions (`PV`/`FV`/`PMT`/`RATE`/`IRR`/
-`XIRR`/`DDB`/etc. -- see `libvisi/src/core/finance.rs`) get their own
+`XIRR`/`DDB`/etc. -- see `visi-core/src/core/finance.rs`) get their own
 generator method rather than feeding into `generate_formula`'s recursive
 `gen_expr` tree: their arguments have specific meanings (a rate has to
 stay small and positive, a period has to stay within `[1, nper]`) that

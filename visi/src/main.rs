@@ -1,9 +1,7 @@
 //! `visi`: Command line interface for the visi spreadsheet application.
-//! Consumes `libvisi` to read, evaluate, update, and export Excel (.xlsx) files.
+//! Consumes `visi-core` to read, evaluate, update, and export Excel (.xlsx) files.
 
 use clap::Parser;
-use libvisi::core::chart::ChartType;
-use libvisi::core::{PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
@@ -18,6 +16,8 @@ use visi::utils::{
     EXIT_ENGINE_ERROR, EXIT_IO_ERROR, EXIT_USAGE_ERROR, col_idx_to_letters, exit_with_error,
     parse_cell_ref, parse_col_spec, parse_range_ref, parse_row_spec,
 };
+use visi_core::core::chart::ChartType;
+use visi_core::core::{PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
 
 fn main() {
     let cli = Cli::parse();
@@ -150,7 +150,7 @@ fn handle_read(args: ReadArgs) {
         let val_str = get_cell_display_val(sheet, row, col, args.raw);
         if args.format == OutputFormat::Json {
             let raw_src = sheet
-                .get_src(&libvisi::core::CellRef::new(row, col))
+                .get_src(&visi_core::core::CellRef::new(row, col))
                 .cloned()
                 .unwrap_or_default();
             let json_out = json!({
@@ -258,7 +258,7 @@ fn handle_set(args: SetArgs, quiet: bool) {
         wb.set_cell(*s_idx, *row, *col, val.clone());
     }
 
-    let style = libvisi::core::CellStyle {
+    let style = visi_core::core::CellStyle {
         font_color: args.font_color,
         bg_color: args.bg_color,
         bold: if args.bold { Some(true) } else { None },
@@ -742,7 +742,7 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
 /// "2") or an existing column name (case-insensitive), returning a 0-based
 /// index relative to the table.
 fn resolve_table_column_index(
-    table: &libvisi::core::ExcelTable,
+    table: &visi_core::core::ExcelTable,
     spec: &str,
 ) -> Result<usize, String> {
     let trimmed = spec.trim();
@@ -995,7 +995,7 @@ fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
         exit_with_error(e, EXIT_IO_ERROR);
     });
 
-    let style = libvisi::core::CellStyle {
+    let style = visi_core::core::CellStyle {
         font_color: args.font_color,
         bg_color: args.bg_color,
         bold: if args.bold { Some(true) } else { None },
@@ -1049,9 +1049,10 @@ fn handle_style_table(args: StyleTableArgs, quiet: bool) {
         exit_with_error(e, EXIT_IO_ERROR);
     });
 
-    wb.set_table_style(&args.name, &args.style).unwrap_or_else(|e| {
-        exit_with_error(e, EXIT_ENGINE_ERROR);
-    });
+    wb.set_table_style(&args.name, &args.style)
+        .unwrap_or_else(|e| {
+            exit_with_error(e, EXIT_ENGINE_ERROR);
+        });
 
     let save_path = resolve_output_path(args.output, args.in_place, &args.file);
     wb.save_file(&save_path).unwrap_or_else(|e| {

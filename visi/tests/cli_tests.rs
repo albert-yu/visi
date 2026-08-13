@@ -115,7 +115,7 @@ fn test_workbook_create_and_formula_evaluation() {
     let file_path = temp_dir.join("test_formulas_eval.xlsx");
     let file_str = file_path.to_str().unwrap();
 
-    let mut initial_sheet = libvisi::core::Sheet::new(libvisi::core::SheetInit {
+    let mut initial_sheet = visi_core::core::Sheet::new(visi_core::core::SheetInit {
         id: None,
         name: Some("Sheet1".to_string()),
         rows: 3,
@@ -127,7 +127,7 @@ fn test_workbook_create_and_formula_evaluation() {
     initial_sheet.set_cell_src(0, 1, "=A1 + A2".to_string());
     initial_sheet.set_cell_src(1, 1, "=SUM(A1:A2)".to_string());
 
-    let bytes = libvisi::export_xlsx_data(&[initial_sheet], &[], &[], None).unwrap();
+    let bytes = visi_core::export_xlsx_data(&[initial_sheet], &[], &[], None).unwrap();
     fs::write(&file_path, bytes).unwrap();
 
     // Load with WorkbookManager and evaluate
@@ -135,8 +135,8 @@ fn test_workbook_create_and_formula_evaluation() {
     wb.evaluate().unwrap();
 
     let sheet = &wb.sheets[0];
-    let b1_val = sheet.get_result_data(&libvisi::core::CellRef::new(0, 1));
-    let b2_val = sheet.get_result_data(&libvisi::core::CellRef::new(1, 1));
+    let b1_val = sheet.get_result_data(&visi_core::core::CellRef::new(0, 1));
+    let b2_val = sheet.get_result_data(&visi_core::core::CellRef::new(1, 1));
 
     assert_eq!(b1_val.to_string(), "30");
     assert_eq!(b2_val.to_string(), "30");
@@ -145,8 +145,8 @@ fn test_workbook_create_and_formula_evaluation() {
     wb.set_cell(0, 0, 0, "50".to_string());
     wb.evaluate().unwrap();
 
-    let b1_val_updated = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 1));
-    let b2_val_updated = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(1, 1));
+    let b1_val_updated = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 1));
+    let b2_val_updated = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(1, 1));
 
     assert_eq!(b1_val_updated.to_string(), "70");
     assert_eq!(b2_val_updated.to_string(), "70");
@@ -185,7 +185,7 @@ fn test_workbook_table_crud_and_evaluation() {
 
     wb.set_cell(0, 0, 2, "=SUM(Sales[Amount])".to_string());
     wb.evaluate().unwrap();
-    let total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    let total = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 2));
     assert_eq!(total.to_string(), "30");
 
     // Rename a column and the table itself. Like Excel, both cascade into
@@ -198,10 +198,10 @@ fn test_workbook_table_crud_and_evaluation() {
         vec!["Name", "Total"]
     );
     let src_after_col_rename = wb.sheets[0]
-        .get_src(&libvisi::core::CellRef::new(0, 2))
+        .get_src(&visi_core::core::CellRef::new(0, 2))
         .cloned();
     assert_eq!(src_after_col_rename.as_deref(), Some("=SUM(Sales[Total])"));
-    let total_after_col_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    let total_after_col_rename = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 2));
     assert_eq!(total_after_col_rename.to_string(), "30");
 
     wb.rename_table("Sales", "Revenue").unwrap();
@@ -209,10 +209,10 @@ fn test_workbook_table_crud_and_evaluation() {
     assert!(wb.find_table("Revenue").is_some());
 
     let src_after_rename = wb.sheets[0]
-        .get_src(&libvisi::core::CellRef::new(0, 2))
+        .get_src(&visi_core::core::CellRef::new(0, 2))
         .cloned();
     assert_eq!(src_after_rename.as_deref(), Some("=SUM(Revenue[Total])"));
-    let total_after_rename = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    let total_after_rename = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 2));
     assert_eq!(total_after_rename.to_string(), "30");
 
     // Save and reload: the table definition and the structured-reference
@@ -225,7 +225,8 @@ fn test_workbook_table_crud_and_evaluation() {
     assert_eq!(table.columns, vec!["Name", "Total"]);
 
     reloaded.evaluate().unwrap();
-    let total_after_reload = reloaded.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 2));
+    let total_after_reload =
+        reloaded.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 2));
     assert_eq!(total_after_reload.to_string(), "30");
 
     reloaded.delete_table("Revenue").unwrap();
@@ -237,7 +238,7 @@ fn test_workbook_table_crud_and_evaluation() {
 
 #[test]
 fn test_workbook_vba_crud_and_roundtrip() {
-    use libvisi::core::VbaModuleKind;
+    use visi_core::core::VbaModuleKind;
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_vba_crud.xlsm");
@@ -358,7 +359,7 @@ fn test_workbook_vba_crud_and_roundtrip() {
 
 #[test]
 fn test_workbook_vba_this_workbook_module_needs_no_sheet_binding() {
-    use libvisi::core::VbaModuleKind;
+    use visi_core::core::VbaModuleKind;
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_vba_this_workbook.xlsm");
@@ -414,7 +415,7 @@ fn test_workbook_vba_this_workbook_module_needs_no_sheet_binding() {
 
 #[test]
 fn test_workbook_pivot_crud_and_computation() {
-    use libvisi::core::{PivotAggregation, PivotArea};
+    use visi_core::core::{PivotAggregation, PivotArea};
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_pivot_crud.xlsx");
@@ -454,9 +455,9 @@ fn test_workbook_pivot_crud_and_computation() {
 
     // East = 10+5 = 15, West = 30+40 = 70, Grand Total = 85, materialized
     // as plain values at the pivot's destination (column E, 0-based col 4).
-    let east = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(1, 5));
-    let west = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(2, 5));
-    let grand_total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(3, 5));
+    let east = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(1, 5));
+    let west = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(2, 5));
+    let grand_total = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(3, 5));
     assert_eq!(east.to_string(), "15");
     assert_eq!(west.to_string(), "70");
     assert_eq!(grand_total.to_string(), "85");
@@ -482,7 +483,7 @@ fn test_workbook_pivot_crud_and_computation() {
             Some(PivotAggregation::Count),
         )
         .unwrap();
-    let east_count = reloaded.sheets[0].get_result_data(&libvisi::core::CellRef::new(2, 6));
+    let east_count = reloaded.sheets[0].get_result_data(&visi_core::core::CellRef::new(2, 6));
     assert_eq!(east_count.to_string(), "2");
 
     reloaded.delete_pivot_table("SalesPivot").unwrap();
@@ -494,7 +495,7 @@ fn test_workbook_pivot_crud_and_computation() {
 
 #[test]
 fn test_getpivotdata_formula_resolves_against_rendered_pivot() {
-    use libvisi::core::{PivotAggregation, PivotArea};
+    use visi_core::core::{PivotAggregation, PivotArea};
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_getpivotdata.xlsx");
@@ -550,24 +551,24 @@ fn test_getpivotdata_formula_resolves_against_rendered_pivot() {
     );
     wb.evaluate().unwrap();
 
-    let east = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(0, 8));
+    let east = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 8));
     assert_eq!(east.to_string(), "15");
 
     // No field/item criteria at all means the grand total.
-    let grand_total = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(1, 8));
+    let grand_total = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(1, 8));
     assert_eq!(grand_total.to_string(), "85");
 
     // An item that doesn't exist in the pivot is a #REF! error, matching
     // real Excel's GETPIVOTDATA.
-    let bad_item = wb.sheets[0].get_result_data(&libvisi::core::CellRef::new(2, 8));
-    assert!(matches!(bad_item, libvisi::core::ResultData::Error(ref e) if e == "#REF!"));
+    let bad_item = wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(2, 8));
+    assert!(matches!(bad_item, visi_core::core::ResultData::Error(ref e) if e == "#REF!"));
 
     let _ = fs::remove_file(file_path);
 }
 
 #[test]
 fn test_workbook_chart_edit_and_round_trip() {
-    use libvisi::core::chart::ChartType;
+    use visi_core::core::chart::ChartType;
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_chart_edit.xlsx");
@@ -675,7 +676,7 @@ fn test_workbook_chart_edit_and_round_trip() {
 
 #[test]
 fn test_pivot_field_area_reassignment_evicts_from_previous_area() {
-    use libvisi::core::{PivotAggregation, PivotArea};
+    use visi_core::core::{PivotAggregation, PivotArea};
 
     // Matches real Excel's PivotField.Orientation semantics (verified via
     // the win32com fuzz driver): a field can only live in one of
@@ -753,7 +754,7 @@ fn test_pivot_field_area_reassignment_evicts_from_previous_area() {
 
 #[test]
 fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
-    use libvisi::core::{CellRef, PivotAggregation, PivotArea};
+    use visi_core::core::{CellRef, PivotAggregation, PivotArea};
 
     // Verified against real Excel: a filter/page field always renders as
     // its own row above the row/col header grid ("FieldName" | "(All)" or
@@ -891,19 +892,19 @@ fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
 
     assert_eq!(
         wb.sheets[0]
-            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .get_result_data(&visi_core::core::CellRef::new(0, 0))
             .to_string(),
         "1"
     );
     assert_eq!(
         wb.sheets[2]
-            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .get_result_data(&visi_core::core::CellRef::new(0, 0))
             .to_string(),
         "3"
     );
     assert_eq!(
         wb.sheets[0]
-            .get_result_data(&libvisi::core::CellRef::new(0, 1))
+            .get_result_data(&visi_core::core::CellRef::new(0, 1))
             .to_string(),
         "3"
     );
@@ -942,19 +943,19 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
 
     assert_eq!(
         wb.sheets[0]
-            .get_result_data(&libvisi::core::CellRef::new(0, 1))
+            .get_result_data(&visi_core::core::CellRef::new(0, 1))
             .to_string(),
         "20"
     );
     assert_eq!(
         wb.sheets[1]
-            .get_result_data(&libvisi::core::CellRef::new(0, 0))
+            .get_result_data(&visi_core::core::CellRef::new(0, 0))
             .to_string(),
         "21"
     );
     assert_eq!(
         wb.sheets[0]
-            .get_result_data(&libvisi::core::CellRef::new(0, 2))
+            .get_result_data(&visi_core::core::CellRef::new(0, 2))
             .to_string(),
         "63"
     );
@@ -963,7 +964,7 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
 #[test]
 fn test_cross_sheet_circular_reference_terminates_without_hanging() {
     // #26 flags an absence of circular-reference testing; this is the
-    // cross-sheet counterpart to libvisi's own self-reference/multi-cell
+    // cross-sheet counterpart to visi-core's own self-reference/multi-cell
     // cycle tests, exercised through WorkbookManager::evaluate() (the
     // fixed 3-pass loop) rather than a single Sheet::commit call. A cycle
     // here is naturally bounded by the fixed pass count, but nothing
@@ -988,9 +989,9 @@ fn test_cross_sheet_circular_reference_terminates_without_hanging() {
     );
 
     for (sheet_idx, label) in [(0, "First!A1"), (1, "Second!A1")] {
-        match wb.sheets[sheet_idx].get_result_data(&libvisi::core::CellRef::new(0, 0)) {
-            libvisi::core::ResultData::Float(f) => assert!(f.is_finite(), "{label} not finite"),
-            libvisi::core::ResultData::Integer(_) => {}
+        match wb.sheets[sheet_idx].get_result_data(&visi_core::core::CellRef::new(0, 0)) {
+            visi_core::core::ResultData::Float(f) => assert!(f.is_finite(), "{label} not finite"),
+            visi_core::core::ResultData::Integer(_) => {}
             other => panic!("expected a finite numeric result for {label}, got {other:?}"),
         }
     }
@@ -1011,7 +1012,7 @@ fn test_coordinate_parsing() {
 
 #[test]
 fn test_cell_style_setting_and_xlsx_round_trip() {
-    use libvisi::core::CellStyle;
+    use visi_core::core::CellStyle;
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_cell_styles.xlsx");
@@ -1079,7 +1080,7 @@ fn test_style_cell_ref_sheet_prefix_overrides_sheet_flag() {
     // That resolution used to live inside WorkbookManager, which parsed the
     // A1 string itself; it now happens in the CLI, since the workbook API is
     // index-based. This pins the behavior across that boundary move.
-    use libvisi::core::CellStyle;
+    use visi_core::core::CellStyle;
 
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_style_sheet_prefix.xlsx");
@@ -1135,7 +1136,8 @@ fn test_table_style_theme_setting_and_xlsx_round_trip() {
 
     wb.add_table(None, "SalesTable", 0, 0, 1, 1, true, false)
         .unwrap();
-    wb.set_table_style("SalesTable", "TableStyleMedium9").unwrap();
+    wb.set_table_style("SalesTable", "TableStyleMedium9")
+        .unwrap();
 
     assert_eq!(
         wb.get_table_style("SalesTable").unwrap(),

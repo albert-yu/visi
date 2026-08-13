@@ -1,4 +1,4 @@
-// High-precision Text functions for libvisi
+// High-precision Text functions for visi-core
 // Implements Excel-compatible string manipulation, unicode, formatting, splitting, joining, and search routines.
 
 pub fn arraytotext(items: &[String], format: Option<f64>) -> Result<String, String> {

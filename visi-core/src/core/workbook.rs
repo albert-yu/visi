@@ -16,6 +16,7 @@
 //! top via its own `WorkbookFile` trait.
 
 use crate::core::parser::col_idx_to_letters;
+use crate::core::xlsx::{export_xlsx_data, import_xlsx_data};
 use crate::core::{
     ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
     PivotTable, PivotValueField, VbaModule, VbaModuleKind, VbaProject,
@@ -24,7 +25,6 @@ use crate::core::{
     engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
     validate_vba_module_name,
 };
-use crate::core::xlsx::{export_xlsx_data, import_xlsx_data};
 
 pub struct SheetSummary {
     pub name: String,
@@ -122,7 +122,7 @@ impl WorkbookManager {
         Ok(wb)
     }
 
-    /// Recalculate all formulas in all sheets using libvisi engine
+    /// Recalculate all formulas in all sheets using visi-core engine
     pub fn evaluate(&mut self) -> Result<(), String> {
         if self.sheets.is_empty() {
             return Ok(());

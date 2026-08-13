@@ -1,4 +1,4 @@
-// High-precision Information, Database, Lookup, Logical, Web, and Cube functions for libvisi
+// High-precision Information, Database, Lookup, Logical, Web, and Cube functions for visi-core
 
 use crate::core::engine::ResultData;
 

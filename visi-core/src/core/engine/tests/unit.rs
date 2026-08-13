@@ -1391,7 +1391,7 @@ fn test_multi_cell_circular_chain_terminates_without_hanging() {
     }
 }
 
-/// Regression for a stack-overflow/hang found via libvisi/fuzz's
+/// Regression for a stack-overflow/hang found via visi-core/fuzz's
 /// formula_eval target within its first extended run (#26 -- zero
 /// formula-level Rust fuzz coverage existed before that target). A bare,
 /// unaggregated range reference that includes the very cell its own

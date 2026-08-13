@@ -114,7 +114,7 @@ class ExcelFuzzGenerator:
     # generated deterministically once per LOGIC_EXTRA_FUNCTIONS entry
     # (not randomly), so leaving it in this list would corrupt or
     # mismatch on every single fuzz iteration. Its correctness is instead
-    # verified by libvisi's own Rust unit tests (see
+    # verified by visi-core's own Rust unit tests (see
     # test_let_binds_names_in_sequence_and_rejects_duplicate_names in
     # engine/tests/new_functions.rs).
     LOGIC_EXTRA_FUNCTIONS = [
@@ -213,7 +213,7 @@ class ExcelFuzzGenerator:
     # strength is not the trigger: holding the offsets fixed and sweeping
     # the slope from 0 to 4 leaves the answer at 4 throughout.) Comparing
     # against that is asserting a specific heuristic, not correctness, so
-    # detection is covered by libvisi's own unit tests -- on the patterns
+    # detection is covered by visi-core's own unit tests -- on the patterns
     # where Excel's answer *is* the true period -- and every function below
     # is handed an explicit season length instead.
     ETS_FUNCTIONS = [
@@ -260,7 +260,7 @@ class ExcelFuzzGenerator:
     #     recognize it (`_xludf.LAMBDA`, `#NAME?`) -- an unfixable-either-
     #     way formula authoring limitation, not a visi bug.
     # Their expected values are instead verified by hand-calculated
-    # arithmetic / Microsoft's documented SCAN example in libvisi's own
+    # arithmetic / Microsoft's documented SCAN example in visi-core's own
     # Rust unit tests (see engine/tests/new_functions.rs).
     LAMBDA_FUNCTIONS = []
     # CELL/INFO (narrow info_type subset implemented) and SHEET (a known,
@@ -283,7 +283,7 @@ class ExcelFuzzGenerator:
     # its vector form requires an ascending-sorted lookup array or its
     # result is documented by Microsoft as unpredictable, and this
     # generator's plain-value columns are unsorted random data -- verified
-    # correct against real Excel on sorted data instead, in libvisi's own
+    # correct against real Excel on sorted data instead, in visi-core's own
     # Rust unit tests (see engine/tests/new_functions.rs). XMATCH is fuzzed
     # in its default exact-match mode only (well-defined regardless of
     # sort order), looking up a value known to be present so both engines
@@ -1318,7 +1318,7 @@ class ExcelFuzzGenerator:
         # that keeps Excel trustworthy. visi's own accuracy is pinned
         # directly instead, against those high-precision references, by
         # test_besselj_stays_accurate_where_excel_does_not in
-        # libvisi/src/core/engine/tests/extended.rs.
+        # visi-core/src/core/engine/tests/extended.rs.
         if fn == "COMPLEX":
             suf = random.choice(["i", "j"])
             return f'=COMPLEX({random.randint(-9, 9)}, {random.randint(-9, 9)}, "{suf}")'

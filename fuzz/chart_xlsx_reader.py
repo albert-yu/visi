@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Reads chart objects back out of an .xlsx file via `openpyxl` and normalizes
-them into plain dicts comparable against libvisi's `Chart` struct fields
+them into plain dicts comparable against visi-core's `Chart` struct fields
 (`chart_type`, `data_range`, `title`, `xlabel`, `ylabel`, `show_legend`).
 
 This is an independent-reader fidelity check: `openpyxl` implements OOXML
@@ -85,7 +85,7 @@ def read_charts(xlsx_path):
     show_legend}.
 
     Deliberately single-series only (reads `chart.series[0]`), matching the
-    single-range model of libvisi's `Chart` struct -- multi-series charts
+    single-range model of visi-core's `Chart` struct -- multi-series charts
     are out of scope for both the engine and this fuzzing harness.
     """
     import openpyxl

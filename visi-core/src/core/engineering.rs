@@ -1,4 +1,4 @@
-// High-precision Engineering functions for libvisi
+// High-precision Engineering functions for visi-core
 // Implements Excel-compatible Bessel functions, bitwise operations, number base conversions (BIN/OCT/DEC/HEX with 2's complement), complex number math, unit conversions, delta & step functions.
 
 // ============================================================================

@@ -1,7 +1,7 @@
-# Missing Excel Formulas in libvisi
+# Missing Excel Formulas in visi-core
 
 A tracking list of standard Microsoft Excel functions (as documented in Excel
-formula reference) and their implementation status in `libvisi`.
+formula reference) and their implementation status in `visi-core`.
 
 Last updated: 2026-08-11
 
@@ -10,10 +10,10 @@ Last updated: 2026-08-11
 ## Summary
 
 - Microsoft-documented functions: **522**
-- Genuinely implemented in libvisi: **507**
+- Genuinely implemented in visi-core: **507**
 - Missing or non-functional: **15**
 
-libvisi implements `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
+visi-core implements `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
 `STR` — these are engine-specific extensions, not Excel functions, so they
 aren't counted above in either total.
 
@@ -41,10 +41,10 @@ aren't counted above in either total.
   `NEGBINOMDIST`, `NORMDIST`, `NORMINV`, `NORMSDIST`, `NORMSINV`,
   `PERCENTILE`, `PERCENTRANK`, `POISSON`, `QUARTILE`, `RANK`, `STDEV`,
   `STDEVP`, `TDIST`, `TINV`, `TTEST`, `VAR`, `VARP`, `WEIBULL`, `ZTEST`) —
-  verified directly against `libvisi/src/core/engine/sheet.rs`: every one
+  verified directly against `visi-core/src/core/engine/sheet.rs`: every one
   is already an alias on the same match arm as its modern name (e.g.
   `"BETA.DIST" | "BETADIST" => { ... }`). These were simply missing from
-  this file's own "Implemented" list, not missing from libvisi. The 39th,
+  this file's own "Implemented" list, not missing from visi-core. The 39th,
   `JIS`, was a genuine gap (see below) and has since been implemented.
 - `SHEET()` is a known, documented approximation: it always returns `1`,
   since this engine has no notion of a sheet's true ordinal position within
@@ -54,7 +54,7 @@ aren't counted above in either total.
   isn't threaded through; the argument form (`COLUMN(A1)`, `ROW(A1:A5)`) is
   fully implemented.
 - `TRANSPOSE` is genuinely implemented and hand-verified correct (see
-  `libvisi/src/core/engine/tests/new_functions.rs`), but could not be
+  `visi-core/src/core/engine/tests/new_functions.rs`), but could not be
   confirmed against real Microsoft Excel via this repo's differential
   fuzzing harness: every authoring variant tried (bare, `_xlfn.`,
   `_xlfn._xlws.`, standalone, nested in `SUM`/`INDEX`) gave real Excel
@@ -160,7 +160,7 @@ implemented (`ACCRINT`, `ACCRINTM`, `AMORDEGRC`, `AMORLINC`, `COUPDAYBS`,
 `DURATION`, `INTRATE`, `MDURATION`, `ODDFPRICE`, `ODDFYIELD`, `ODDLPRICE`,
 `ODDLYIELD`, `PRICE`, `PRICEDISC`, `PRICEMAT`, `RECEIVED`, `TBILLEQ`,
 `TBILLPRICE`, `TBILLYIELD`, `YIELD`, `YIELDDISC`, `YIELDMAT`) — see
-`libvisi/src/core/finance.rs`.
+`visi-core/src/core/finance.rs`.
 
 ### Add-in / legacy (2 — intentionally unsupported, not missing work)
 
@@ -179,16 +179,16 @@ computing the real result, or reports the data source as unavailable)
 - **Cube (7)**: CUBEKPIMEMBER, CUBEMEMBER, CUBEMEMBERPROPERTY,
   CUBERANKEDMEMBER, CUBESET, CUBESETCOUNT, CUBEVALUE — in real Excel these
   all query a live OLAP (Analysis Services) connection using MDX tuple/set
-  expressions (e.g. `[Product].[Category].[Bikes]`); libvisi has no OLAP
+  expressions (e.g. `[Product].[Category].[Bikes]`); visi-core has no OLAP
   connection concept and no MDX parser, so there's no local data these
   formulas could compute a real result from. Genuinely implementing them
-  would mean inventing libvisi-specific semantics (e.g. treating the
+  would mean inventing visi-core-specific semantics (e.g. treating the
   `connection` argument as an `ExcelTable` name and member expressions as
   column/value references) rather than matching real Excel/SSAS behavior —
   a scope decision intentionally left unmade rather than guessed at. Left
   as stubs; not attempted.
 - **Web service (1)**: WEBSERVICE — needs a blocking HTTP client, which
-  conflicts with `libvisi/core`'s "no IO assumptions, wasm-targetable"
+  conflicts with `visi-core/core`'s "no IO assumptions, wasm-targetable"
   rule; would need a non-default Cargo feature gating an HTTP dependency
   rather than an unconditional one. Not attempted. (`FILTERXML` is now
   implemented locally — see `core/xml.rs` — since XPath-over-a-literal-

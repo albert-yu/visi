@@ -1,4 +1,4 @@
-//! `libvisi`: Core logic for the visi spreadsheet application.
+//! `visi-core`: Core logic for the visi spreadsheet application.
 //! Designed for embedding in other applications (C, C++, Python, NodeJS, etc.)
 //! and consumption by the `visi` CLI binary.
 //!
@@ -10,7 +10,7 @@
 //! documentation before reaching for [`core::engine::Sheet`] directly.
 //!
 //! ```no_run
-//! use libvisi::WorkbookManager;
+//! use visi_core::WorkbookManager;
 //!
 //! # fn main() -> Result<(), String> {
 //! let bytes = std::fs::read("book.xlsx").map_err(|e| e.to_string())?;

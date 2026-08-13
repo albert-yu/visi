@@ -1,4 +1,4 @@
-// High-precision Date and Time functions for libvisi
+// High-precision Date and Time functions for visi-core
 // Implements Excel-compatible serial date calculations, 1900 leap year bug support, day/month/year extractions, and workday/networkdays routines.
 
 pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
