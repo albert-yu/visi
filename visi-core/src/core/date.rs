@@ -1,24 +1,13 @@
-//! Date serial arithmetic and date-pattern detection.
+//! Recognizing dates written as text, and converting them to Excel serials.
 //!
-//! Only [`parse_date`] and [`date_to_excel_serial`] are wired up (from
-//! `engine::sheet`'s literal coercion). The series-fill half of this module --
-//! `try_fill_date`, `try_fill_weekday`, `try_fill_month`, `detect_*_pattern`,
-//! `add_days`, `add_months`, `format_date` -- implements Excel's fill-handle
-//! extrapolation but nothing calls it yet. It was public before this module
-//! was sealed, which is why it never tripped `dead_code`. Kept because it is
-//! the substance of a fill-handle feature; delete it if that is not coming.
-#![allow(dead_code)]
-
-const WEEKDAYS_FULL: [&str; 7] = [
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-];
-const WEEKDAYS_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+//! [`parse_date`] infers both the date and the [`DateFormat`] it was written
+//! in; [`date_to_excel_serial`] converts to Excel's day count, reproducing the
+//! 1900 leap-year bug. `engine::sheet`'s literal coercion is the caller.
+//!
+//! The `DateFormat` half of `parse_date`'s return is currently discarded by
+//! that caller -- it exists for a formatter that would render a date back in
+//! the notation it was typed in. Tests pin the detection so it stays correct
+//! until something uses it.
 
 const MONTHS_FULL: [&str; 12] = [
     "January",
@@ -63,59 +52,6 @@ pub fn detect_case(s: &str) -> StringCase {
     }
 }
 
-pub fn apply_case(s: &str, case: StringCase) -> String {
-    match case {
-        StringCase::Lower => s.to_lowercase(),
-        StringCase::Upper => s.to_uppercase(),
-        StringCase::Title => {
-            let mut chars = s.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
-            }
-        }
-        StringCase::Original => s.to_string(),
-    }
-}
-
-pub fn try_fill_weekday(src: &str, offset: i32) -> Option<String> {
-    let src_lower = src.to_lowercase();
-    for (idx, &day) in WEEKDAYS_FULL.iter().enumerate() {
-        if day.to_lowercase() == src_lower {
-            let new_idx = ((idx as i32 + offset) % 7 + 7) % 7;
-            let case = detect_case(src);
-            return Some(apply_case(WEEKDAYS_FULL[new_idx as usize], case));
-        }
-    }
-    for (idx, &day) in WEEKDAYS_SHORT.iter().enumerate() {
-        if day.to_lowercase() == src_lower {
-            let new_idx = ((idx as i32 + offset) % 7 + 7) % 7;
-            let case = detect_case(src);
-            return Some(apply_case(WEEKDAYS_SHORT[new_idx as usize], case));
-        }
-    }
-    None
-}
-
-pub fn try_fill_month(src: &str, offset: i32) -> Option<String> {
-    let src_lower = src.to_lowercase();
-    for (idx, &month) in MONTHS_FULL.iter().enumerate() {
-        if month.to_lowercase() == src_lower {
-            let new_idx = ((idx as i32 + offset) % 12 + 12) % 12;
-            let case = detect_case(src);
-            return Some(apply_case(MONTHS_FULL[new_idx as usize], case));
-        }
-    }
-    for (idx, &month) in MONTHS_SHORT.iter().enumerate() {
-        if month.to_lowercase() == src_lower {
-            let new_idx = ((idx as i32 + offset) % 12 + 12) % 12;
-            let case = detect_case(src);
-            return Some(apply_case(MONTHS_SHORT[new_idx as usize], case));
-        }
-    }
-    None
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleDate {
     pub year: i32,
@@ -140,48 +76,6 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
         }
         _ => 0,
     }
-}
-
-pub fn add_days(mut date: SimpleDate, mut days: i32) -> SimpleDate {
-    if days == 0 {
-        return date;
-    }
-    if days > 0 {
-        while days > 0 {
-            let dim = days_in_month(date.year, date.month);
-            let days_left_in_month = dim - date.day + 1;
-            if days < days_left_in_month as i32 {
-                date.day += days as u32;
-                break;
-            } else {
-                days -= days_left_in_month as i32;
-                date.day = 1;
-                date.month += 1;
-                if date.month > 12 {
-                    date.month = 1;
-                    date.year += 1;
-                }
-            }
-        }
-    } else {
-        let mut days_to_sub = -days;
-        while days_to_sub > 0 {
-            let days_available_in_month = date.day;
-            if days_to_sub < days_available_in_month as i32 {
-                date.day -= days_to_sub as u32;
-                break;
-            } else {
-                days_to_sub -= days_available_in_month as i32;
-                date.month -= 1;
-                if date.month == 0 {
-                    date.month = 12;
-                    date.year -= 1;
-                }
-                date.day = days_in_month(date.year, date.month);
-            }
-        }
-    }
-    date
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,21 +141,6 @@ pub enum DateFormat {
         month_case: StringCase,
         month_full: bool,
     }, // e.g. 2026-Jun -> Year-Month (assumes Day 1)
-}
-
-pub fn add_months(date: SimpleDate, months: i32) -> SimpleDate {
-    let total_months = date.year * 12 + (date.month - 1) as i32 + months;
-    let mut new_year = total_months / 12;
-    let mut new_month = total_months % 12 + 1;
-    if new_month <= 0 {
-        new_month += 12;
-        new_year -= 1;
-    }
-    SimpleDate {
-        year: new_year,
-        month: new_month as u32,
-        day: 1, // Month-based formats always assume Day 1
-    }
 }
 
 fn find_month_word(part: &str) -> Option<(u32, bool)> {
@@ -652,204 +531,6 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
     None
 }
 
-pub fn format_date(date: SimpleDate, format: &DateFormat) -> String {
-    match format {
-        DateFormat::Ymd { sep } => {
-            format!(
-                "{:04}{}{:02}{}{:02}",
-                date.year, sep, date.month, sep, date.day
-            )
-        }
-        DateFormat::Mdy { sep, year_len } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            format!(
-                "{:02}{}{:02}{}{}",
-                date.month, sep, date.day, sep, formatted_year
-            )
-        }
-        DateFormat::Dmy { sep, year_len } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            format!(
-                "{:02}{}{:02}{}{}",
-                date.day, sep, date.month, sep, formatted_year
-            )
-        }
-        DateFormat::DMmmY {
-            sep,
-            year_len,
-            month_case,
-            month_full,
-        } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!(
-                "{:02}{}{}{}{}",
-                date.day, sep, formatted_month, sep, formatted_year
-            )
-        }
-        DateFormat::MmmDY {
-            sep,
-            year_len,
-            month_case,
-            month_full,
-        } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!(
-                "{}{}{:02}{}{}",
-                formatted_month, sep, date.day, sep, formatted_year
-            )
-        }
-        DateFormat::YMmmD {
-            sep,
-            year_len,
-            month_case,
-            month_full,
-        } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!(
-                "{}{}{}{}{:02}",
-                formatted_year, sep, formatted_month, sep, date.day
-            )
-        }
-        DateFormat::Md { sep } => {
-            format!("{:02}{}{:02}", date.month, sep, date.day)
-        }
-        DateFormat::My { sep, year_len } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            format!("{:02}{}{}", date.month, sep, formatted_year)
-        }
-        DateFormat::DMmm {
-            sep,
-            month_case,
-            month_full,
-        } => {
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!("{:02}{}{}", date.day, sep, formatted_month)
-        }
-        DateFormat::MmmD {
-            sep,
-            month_case,
-            month_full,
-        } => {
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!("{}{}{:02}", formatted_month, sep, date.day)
-        }
-        DateFormat::MmmY {
-            sep,
-            year_len,
-            month_case,
-            month_full,
-        } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!("{}{}{}", formatted_month, sep, formatted_year)
-        }
-        DateFormat::YMmm {
-            sep,
-            year_len,
-            month_case,
-            month_full,
-        } => {
-            let formatted_year = if *year_len == 2 {
-                format!("{:02}", date.year % 100)
-            } else {
-                format!("{:04}", date.year)
-            };
-            let month_list = if *month_full {
-                &MONTHS_FULL
-            } else {
-                &MONTHS_SHORT
-            };
-            let month_name = month_list[(date.month - 1) as usize];
-            let formatted_month = apply_case(month_name, *month_case);
-            format!("{}{}{}", formatted_year, sep, formatted_month)
-        }
-    }
-}
-
-pub fn try_fill_date(src: &str, offset: i32) -> Option<String> {
-    let (date, format) = parse_date(src)?;
-
-    let is_month_based = matches!(
-        &format,
-        DateFormat::My { .. } | DateFormat::MmmY { .. } | DateFormat::YMmm { .. }
-    );
-
-    let new_date = if is_month_based {
-        add_months(date, offset)
-    } else {
-        add_days(date, offset)
-    };
-
-    Some(format_date(new_date, &format))
-}
-
 pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
     if date.year < 1900 {
         return 0.0;
@@ -868,426 +549,213 @@ pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
     days as f64
 }
 
-pub fn date_to_days(date: SimpleDate) -> i32 {
-    let mut days = 0;
-    // Years
-    for y in 1..date.year {
-        days += if is_leap_year(y) { 366 } else { 365 };
-    }
-    // Months
-    for m in 1..date.month {
-        days += days_in_month(date.year, m) as i32;
-    }
-    // Days
-    days += date.day as i32;
-    days
-}
-
-pub fn days_to_date(mut days: i32) -> SimpleDate {
-    let mut year = 1;
-    loop {
-        let y_days = if is_leap_year(year) { 366 } else { 365 };
-        if days <= y_days {
-            break;
-        }
-        days -= y_days;
-        year += 1;
-    }
-
-    let mut month = 1;
-    loop {
-        let m_days = days_in_month(year, month) as i32;
-        if days <= m_days {
-            break;
-        }
-        days -= m_days;
-        month += 1;
-    }
-
-    SimpleDate {
-        year,
-        month,
-        day: days as u32,
-    }
-}
-
-pub fn parse_weekday(s: &str) -> Option<(usize, bool)> {
-    let trimmed = s.trim().to_lowercase();
-    for (i, w) in WEEKDAYS_FULL.iter().enumerate() {
-        if w.to_lowercase() == trimmed {
-            return Some((i, false));
-        }
-    }
-    for (i, w) in WEEKDAYS_SHORT.iter().enumerate() {
-        if w.to_lowercase() == trimmed {
-            return Some((i, true));
-        }
-    }
-    None
-}
-
-pub fn detect_weekday_pattern(
-    vals: &[String],
-    target_idx: usize,
-    case_type: StringCase,
-) -> Option<String> {
-    if vals.len() < 2 {
-        return None;
-    }
-    let mut idxs = Vec::new();
-    let mut is_short = true;
-    for s in vals {
-        let (idx, short) = parse_weekday(s)?;
-        idxs.push(idx as isize);
-        is_short = short;
-    }
-
-    let mut diffs = Vec::new();
-    for w in idxs.windows(2) {
-        diffs.push((w[1] - w[0]).rem_euclid(7));
-    }
-    if diffs.is_empty() || !diffs.windows(2).all(|w| w[0] == w[1]) {
-        return None;
-    }
-    let step = diffs[0];
-    let next_idx = (idxs[0] + target_idx as isize * step).rem_euclid(7) as usize;
-
-    let weekday_list = if is_short {
-        &WEEKDAYS_SHORT
-    } else {
-        &WEEKDAYS_FULL
-    };
-    let mut result = weekday_list[next_idx].to_string();
-
-    match case_type {
-        StringCase::Upper => {
-            result = result.to_uppercase();
-        }
-        StringCase::Lower => {
-            result = result.to_lowercase();
-        }
-        _ => {}
-    }
-    Some(result)
-}
-
-pub fn parse_month(s: &str) -> Option<(usize, bool)> {
-    let trimmed = s.trim().to_lowercase();
-    for (i, m) in MONTHS_FULL.iter().enumerate() {
-        if m.to_lowercase() == trimmed {
-            return Some((i, false));
-        }
-    }
-    for (i, m) in MONTHS_SHORT.iter().enumerate() {
-        if m.to_lowercase() == trimmed {
-            return Some((i, true));
-        }
-    }
-    None
-}
-
-pub fn detect_month_pattern(
-    vals: &[String],
-    target_idx: usize,
-    case_type: StringCase,
-) -> Option<String> {
-    if vals.len() < 2 {
-        return None;
-    }
-    let mut idxs = Vec::new();
-    let mut is_short = true;
-    for s in vals {
-        let (idx, short) = parse_month(s)?;
-        idxs.push(idx as isize);
-        is_short = short;
-    }
-
-    let mut diffs = Vec::new();
-    for w in idxs.windows(2) {
-        diffs.push((w[1] - w[0]).rem_euclid(12));
-    }
-    if diffs.is_empty() || !diffs.windows(2).all(|w| w[0] == w[1]) {
-        return None;
-    }
-    let step = diffs[0];
-    let next_idx = (idxs[0] + target_idx as isize * step).rem_euclid(12) as usize;
-
-    let month_list = if is_short {
-        &MONTHS_SHORT
-    } else {
-        &MONTHS_FULL
-    };
-    let mut result = month_list[next_idx].to_string();
-
-    match case_type {
-        StringCase::Upper => {
-            result = result.to_uppercase();
-        }
-        StringCase::Lower => {
-            result = result.to_lowercase();
-        }
-        _ => {}
-    }
-    Some(result)
-}
-
-pub fn date_to_months(date: SimpleDate) -> i32 {
-    (date.year - 1) * 12 + (date.month - 1) as i32
-}
-
-pub fn months_to_date(months: i32, day: u32) -> SimpleDate {
-    let year = months / 12 + 1;
-    let month = (months % 12) + 1;
-    SimpleDate {
-        year,
-        month: month as u32,
-        day: day.min(days_in_month(year, month as u32)),
-    }
-}
-
-pub fn detect_date_pattern(vals: &[String], target_idx: usize) -> Option<String> {
-    if vals.len() < 2 {
-        return None;
-    }
-    let mut dates = Vec::new();
-    let mut formats = Vec::new();
-    for s in vals {
-        let (date, format) = parse_date(s)?;
-        dates.push(date);
-        formats.push(format);
-    }
-
-    let is_month_based = matches!(
-        &formats[0],
-        DateFormat::My { .. } | DateFormat::MmmY { .. } | DateFormat::YMmm { .. }
-    );
-
-    let next_date = if is_month_based {
-        let months: Vec<i32> = dates.iter().map(|d| date_to_months(*d)).collect();
-        let step_months = (months[months.len() - 1] - months[0]) as f64 / (months.len() - 1) as f64;
-        let next_months = (months[0] as f64 + target_idx as f64 * step_months).round() as i32;
-        months_to_date(next_months, dates[0].day)
-    } else {
-        let days: Vec<i32> = dates.iter().map(|d| date_to_days(*d)).collect();
-        let step_days = (days[days.len() - 1] - days[0]) as f64 / (days.len() - 1) as f64;
-        let next_days = (days[0] as f64 + target_idx as f64 * step_days).round() as i32;
-        days_to_date(next_days)
-    };
-
-    Some(format_date(next_date, &formats[0]))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every case pins both the parsed date and the [`DateFormat`] that
+    /// `parse_date` inferred. The format half used to be checked by feeding it
+    /// back through a `format_date` that nothing shipped; asserting the enum
+    /// directly covers the same detection logic without the dead round-trip.
     #[test]
-    fn test_date_parsing_and_formatting() {
-        // Test YMD
-        let parsed = parse_date("2026-06-22");
-        assert!(parsed.is_some());
-        let (date, format) = parsed.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "2026-06-22");
+    fn test_date_parsing_and_format_detection() {
+        let cases: &[(&str, SimpleDate, DateFormat)] = &[
+            (
+                "2026-06-22",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Ymd { sep: '-' },
+            ),
+            (
+                "2026/06/22",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Ymd { sep: '/' },
+            ),
+            (
+                "06-22-2026",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Mdy {
+                    sep: '-',
+                    year_len: 4,
+                },
+            ),
+            (
+                "22-06-2026",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Dmy {
+                    sep: '-',
+                    year_len: 4,
+                },
+            ),
+            (
+                "06/22/26",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Mdy {
+                    sep: '/',
+                    year_len: 2,
+                },
+            ),
+            // 2-digit years below the pivot roll back into the 1900s.
+            (
+                "06/22/99",
+                SimpleDate {
+                    year: 1999,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Mdy {
+                    sep: '/',
+                    year_len: 2,
+                },
+            ),
+            (
+                "22-Jun-2026",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::DMmmY {
+                    sep: '-',
+                    year_len: 4,
+                    month_case: StringCase::Title,
+                    month_full: false,
+                },
+            ),
+            (
+                "22-June-2026",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::DMmmY {
+                    sep: '-',
+                    year_len: 4,
+                    month_case: StringCase::Title,
+                    month_full: true,
+                },
+            ),
+            (
+                "Jun-22-2026",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::MmmDY {
+                    sep: '-',
+                    year_len: 4,
+                    month_case: StringCase::Title,
+                    month_full: false,
+                },
+            ),
+            // 2-part forms infer the missing component.
+            (
+                "6/22",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::Md { sep: '/' },
+            ),
+            (
+                "22-Jun",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::DMmm {
+                    sep: '-',
+                    month_case: StringCase::Title,
+                    month_full: false,
+                },
+            ),
+            (
+                "Jun-22",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                DateFormat::MmmD {
+                    sep: '-',
+                    month_case: StringCase::Title,
+                    month_full: false,
+                },
+            ),
+            (
+                "6/2026",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 1,
+                },
+                DateFormat::My {
+                    sep: '/',
+                    year_len: 4,
+                },
+            ),
+            (
+                "Jun-26",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 1,
+                },
+                DateFormat::MmmY {
+                    sep: '-',
+                    year_len: 2,
+                    month_case: StringCase::Title,
+                    month_full: false,
+                },
+            ),
+            (
+                "2026-Jun",
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 1,
+                },
+                DateFormat::YMmm {
+                    sep: '-',
+                    year_len: 4,
+                    month_case: StringCase::Title,
+                    month_full: false,
+                },
+            ),
+        ];
 
-        let parsed_slash = parse_date("2026/06/22");
-        assert!(parsed_slash.is_some());
-        let (date, format) = parsed_slash.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "2026/06/22");
+        for (src, want_date, want_format) in cases {
+            let (date, format) = parse_date(src).unwrap_or_else(|| panic!("{src} did not parse"));
+            assert_eq!(date, *want_date, "date mismatch for {src}");
+            assert_eq!(format, *want_format, "format mismatch for {src}");
+        }
+    }
 
-        // Test MDY
-        let parsed_mdy = parse_date("06-22-2026");
-        assert!(parsed_mdy.is_some());
-        let (date, format) = parsed_mdy.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "06-22-2026");
-
-        // Test DMY (unambiguous day > 12)
-        let parsed_dmy = parse_date("22-06-2026");
-        assert!(parsed_dmy.is_some());
-        let (date, format) = parsed_dmy.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "22-06-2026");
-
-        // Test 2-digit years MDY
-        let parsed_2digit = parse_date("06/22/26");
-        assert!(parsed_2digit.is_some());
-        let (date, format) = parsed_2digit.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "06/22/26");
-
-        // Test 2-digit years older century
-        let parsed_2digit_old = parse_date("06/22/99");
-        assert!(parsed_2digit_old.is_some());
-        let (date, format) = parsed_2digit_old.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 1999,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "06/22/99");
-
-        // Test DMmmY (word month)
-        let parsed_word_month = parse_date("22-Jun-2026");
-        assert!(parsed_word_month.is_some());
-        let (date, format) = parsed_word_month.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "22-Jun-2026");
-
-        let parsed_full_month = parse_date("22-June-2026");
-        assert!(parsed_full_month.is_some());
-        let (date, format) = parsed_full_month.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "22-June-2026");
-
-        // Test MmmDY (month first word format)
-        let parsed_month_first = parse_date("Jun-22-2026");
-        assert!(parsed_month_first.is_some());
-        let (date, format) = parsed_month_first.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "Jun-22-2026");
-
-        // Test 2-part Month-Day (assumed year 2026)
-        let parsed_2part_md = parse_date("6/22");
-        assert!(parsed_2part_md.is_some());
-        let (date, format) = parsed_2part_md.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "06/22");
-
-        let parsed_2part_dmmm = parse_date("22-Jun");
-        assert!(parsed_2part_dmmm.is_some());
-        let (date, format) = parsed_2part_dmmm.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "22-Jun");
-
-        let parsed_2part_mmmd = parse_date("Jun-22");
-        assert!(parsed_2part_mmmd.is_some());
-        let (date, format) = parsed_2part_mmmd.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }
-        );
-        assert_eq!(format_date(date, &format), "Jun-22");
-
-        // Test 2-part Month-Year (assumed day 1)
-        let parsed_2part_my = parse_date("6/2026");
-        assert!(parsed_2part_my.is_some());
-        let (date, format) = parsed_2part_my.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 1
-            }
-        );
-        assert_eq!(format_date(date, &format), "06/2026");
-
-        let parsed_2part_mmmy = parse_date("Jun-26");
-        assert!(parsed_2part_mmmy.is_some());
-        let (date, format) = parsed_2part_mmmy.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 1
-            }
-        );
-        assert_eq!(format_date(date, &format), "Jun-26");
-
-        let parsed_2part_ymmm = parse_date("2026-Jun");
-        assert!(parsed_2part_ymmm.is_some());
-        let (date, format) = parsed_2part_ymmm.unwrap();
-        assert_eq!(
-            date,
-            SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 1
-            }
-        );
-        assert_eq!(format_date(date, &format), "2026-Jun");
-
-        // Test invalid dates (should fail validation)
+    #[test]
+    fn test_invalid_dates_do_not_parse() {
         assert!(parse_date("2026-02-30").is_none());
         assert!(parse_date("2025-02-29").is_none()); // non-leap year
         assert!(parse_date("13/22/2026").is_none()); // invalid month
@@ -1295,70 +763,32 @@ mod tests {
     }
 
     #[test]
-    fn test_date_addition() {
-        let date = SimpleDate {
-            year: 2026,
-            month: 6,
-            day: 22,
-        };
-
-        // Test positive day offset crossing month boundaries
+    fn test_date_to_excel_serial() {
+        // Excel's epoch: 1900-01-01 is serial 1.
         assert_eq!(
-            add_days(date, 10),
-            SimpleDate {
-                year: 2026,
-                month: 7,
-                day: 2
-            }
+            date_to_excel_serial(SimpleDate {
+                year: 1900,
+                month: 1,
+                day: 1
+            }),
+            1.0
         );
-        // Test negative day offset crossing month boundaries
+        // Excel's deliberate 1900 leap-year bug means 1900-03-01 is 61, not 60.
         assert_eq!(
-            add_days(date, -23),
-            SimpleDate {
-                year: 2026,
-                month: 5,
-                day: 30
-            }
-        );
-        // Test leap year day addition
-        let leap_date = SimpleDate {
-            year: 2024,
-            month: 2,
-            day: 28,
-        };
-        assert_eq!(
-            add_days(leap_date, 1),
-            SimpleDate {
-                year: 2024,
-                month: 2,
-                day: 29
-            }
-        );
-        assert_eq!(
-            add_days(leap_date, 2),
-            SimpleDate {
-                year: 2024,
+            date_to_excel_serial(SimpleDate {
+                year: 1900,
                 month: 3,
                 day: 1
-            }
+            }),
+            61.0
         );
-
-        // Test month addition
         assert_eq!(
-            add_months(date, 2),
-            SimpleDate {
+            date_to_excel_serial(SimpleDate {
                 year: 2026,
-                month: 8,
-                day: 1
-            }
-        );
-        assert_eq!(
-            add_months(date, -7),
-            SimpleDate {
-                year: 2025,
-                month: 11,
-                day: 1
-            }
+                month: 6,
+                day: 22
+            }),
+            46195.0
         );
     }
 }
