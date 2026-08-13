@@ -26,17 +26,34 @@ behave correctly — prefer it over reaching for `core::engine::Sheet` directly.
 ```rust,no_run
 use visi_core::WorkbookManager;
 
-fn main() -> Result<(), String> {
-    let bytes = std::fs::read("book.xlsx").map_err(|e| e.to_string())?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read("book.xlsx")?;
     let mut wb = WorkbookManager::load_bytes(&bytes)?;
 
     // 0-based (row, col); A1 notation is a boundary concern.
     wb.set_cell(0, 0, 0, "=SUM(Sheet2!A1:A10)".to_string());
     wb.evaluate()?;
 
-    std::fs::write("out.xlsx", wb.save_bytes()?).map_err(|e| e.to_string())?;
+    std::fs::write("out.xlsx", wb.save_bytes()?)?;
     Ok(())
 }
+```
+
+Fallible calls return `visi_core::Error`, which implements `std::error::Error`.
+Failures that name a workbook object carry an `ObjectKind`, so you can react
+without parsing message text:
+
+```rust,no_run
+# use visi_core::{Error, ObjectKind, WorkbookManager};
+# fn f(wb: &mut WorkbookManager) -> Result<(), Box<dyn std::error::Error>> {
+match wb.rename_sheet("Sheet1", "Data") {
+    Err(Error::NotFound { kind: ObjectKind::Sheet, name, .. }) => {
+        eprintln!("no sheet called {name}");
+    }
+    other => other?,
+}
+# Ok(())
+# }
 ```
 
 ## What it does
@@ -63,9 +80,12 @@ fn main() -> Result<(), String> {
 
 ## Stability
 
-Pre-1.0: the public API is still moving, and the `core` module currently
-re-exports more internals than are intended to be supported long-term.
-Pin a minor version.
+Pre-1.0: the public API is still moving. Pin a minor version.
+
+The modules implementing Excel's function library (statistics, text, financial,
+engineering, date/time, the formula parser and AST) are crate-private — what is
+re-exported from the crate root and from `core` is the intended surface.
+`Error` is `#[non_exhaustive]`, so match it with a `_` arm.
 
 ## License
 

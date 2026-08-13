@@ -6,8 +6,11 @@ pub const EXIT_IO_ERROR: i32 = 2;
 pub const EXIT_ENGINE_ERROR: i32 = 3;
 
 /// Exit the program with a specific exit code and print error message to stderr.
-pub fn exit_with_error(msg: impl AsRef<str>, code: i32) -> ! {
-    eprintln!("Error: {}", msg.as_ref());
+///
+/// Takes anything `Display`, so `&str`, `String` and `visi_core::Error` all
+/// pass straight through.
+pub fn exit_with_error(msg: impl std::fmt::Display, code: i32) -> ! {
+    eprintln!("Error: {}", msg);
     process::exit(code);
 }
 

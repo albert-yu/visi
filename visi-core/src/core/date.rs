@@ -1,3 +1,14 @@
+//! Date serial arithmetic and date-pattern detection.
+//!
+//! Only [`parse_date`] and [`date_to_excel_serial`] are wired up (from
+//! `engine::sheet`'s literal coercion). The series-fill half of this module --
+//! `try_fill_date`, `try_fill_weekday`, `try_fill_month`, `detect_*_pattern`,
+//! `add_days`, `add_months`, `format_date` -- implements Excel's fill-handle
+//! extrapolation but nothing calls it yet. It was public before this module
+//! was sealed, which is why it never tripped `dead_code`. Kept because it is
+//! the substance of a fill-handle feature; delete it if that is not coming.
+#![allow(dead_code)]
+
 const WEEKDAYS_FULL: [&str; 7] = [
     "Monday",
     "Tuesday",

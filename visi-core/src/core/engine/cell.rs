@@ -76,10 +76,12 @@ pub struct TextCellRef {
     pub char_offset: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
     UnknownFunction(String),
 }
+
+impl std::error::Error for EvalError {}
 
 impl std::fmt::Display for EvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -89,9 +91,17 @@ impl std::fmt::Display for EvalError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
     EvalError(EvalError),
+}
+
+impl std::error::Error for EngineError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            EngineError::EvalError(err) => Some(err),
+        }
+    }
 }
 
 impl std::fmt::Display for EngineError {

@@ -1,29 +1,31 @@
-pub mod actions;
+pub(crate) mod actions;
 pub mod chart;
-pub mod date;
-pub mod date_fn;
+pub(crate) mod date;
+pub(crate) mod date_fn;
 pub mod engine;
-pub mod engineering;
-pub mod ets;
-pub mod extended_fn;
-pub mod finance;
-pub mod formula;
-pub mod math_trig;
+pub(crate) mod engineering;
+pub(crate) mod ets;
+pub(crate) mod extended_fn;
+pub(crate) mod finance;
+pub(crate) mod formula;
+pub(crate) mod math_trig;
+#[doc(hidden)]
 pub mod ovba;
-pub mod parser;
+pub(crate) mod parser;
 pub mod pivot;
-pub mod pivot_xlsx;
-pub mod shared_vec;
-pub mod stats;
+pub(crate) mod pivot_xlsx;
+pub(crate) mod shared_vec;
+pub(crate) mod stats;
 pub mod style;
 pub mod table;
-pub mod text;
+pub(crate) mod text;
 pub mod vba;
-pub mod vba_synth;
+pub(crate) mod vba_synth;
+#[doc(hidden)]
 pub mod vba_xlsx;
 pub mod workbook;
 pub mod xlsx;
-pub mod xml;
+pub(crate) mod xml;
 
 pub use actions::SheetAction;
 pub use engine::{
@@ -31,6 +33,7 @@ pub use engine::{
     ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id, get_word_boundaries_from_str,
 };
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
+pub use parser::{col_idx_to_letters, parse_a1_coordinates};
 pub use pivot::{
     PivotAggregation, PivotArea, PivotBodyRow, PivotField, PivotFilterField, PivotGrid,
     PivotSource, PivotTable, PivotValueField, compute_pivot, value_field_labels,

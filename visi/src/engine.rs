@@ -44,19 +44,19 @@ impl WorkbookFile for WorkbookManager {
             fs::read(path_str).map_err(|e| format!("Failed to read file '{}': {}", path_str, e))?
         };
 
-        Self::load_bytes(&buffer)
+        Self::load_bytes(&buffer).map_err(|e| e.to_string())
     }
 
     fn load_file_or_create(path_str: &str) -> Result<Self, String> {
         if path_str != "-" && !Path::new(path_str).exists() {
-            Self::new_empty()
+            Self::new_empty().map_err(|e| e.to_string())
         } else {
             Self::load_file(path_str)
         }
     }
 
     fn save_file(&self, path_str: &str) -> Result<(), String> {
-        let bytes = self.save_bytes()?;
+        let bytes = self.save_bytes().map_err(|e| e.to_string())?;
 
         if path_str == "-" {
             io::stdout()

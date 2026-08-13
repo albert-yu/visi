@@ -27,14 +27,33 @@ fn text_cell_src(s: &str) -> String {
 }
 
 /// `(imported sheets, charts, pivot tables, VBA project)`.
-type ImportedXlsxData = (
+pub type ImportedXlsxData = (
     Vec<ImportedSheet>,
     Vec<crate::core::chart::Chart>,
     Vec<crate::core::pivot::PivotTable>,
     Option<crate::core::vba::VbaProject>,
 );
 
+/// Read a `.xlsx` file from memory into sheets, charts, pivot tables and an
+/// optional VBA project.
+///
+/// `existing_sheets` lets the importer keep column ids stable when reloading
+/// a workbook it already has in hand; pass `&[]` for a cold load.
+/// `progress_callback` is invoked as `(index, total, sheet_name)`.
+///
+/// # Errors
+///
+/// Returns [`Error::Xlsx`] if the buffer is not a readable `.xlsx` container
+/// or a part of it fails to parse.
 pub fn import_xlsx_data(
+    buffer: &[u8],
+    existing_sheets: &[Sheet],
+    progress_callback: impl FnMut(usize, usize, &str),
+) -> crate::Result<ImportedXlsxData> {
+    import_xlsx_data_raw(buffer, existing_sheets, progress_callback).map_err(crate::Error::Xlsx)
+}
+
+pub(crate) fn import_xlsx_data_raw(
     buffer: &[u8],
     existing_sheets: &[Sheet],
     mut progress_callback: impl FnMut(usize, usize, &str),
@@ -571,7 +590,25 @@ pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwrit
     format
 }
 
+/// Serialize sheets, charts, pivot tables and an optional VBA project into a
+/// `.xlsx` file in memory.
+///
+/// Formulas are written with their cached results, so readers that do not
+/// recalculate (Excel on open, `openpyxl`) still see values.
+///
+/// # Errors
+///
+/// Returns [`Error::Xlsx`] if the workbook cannot be serialized.
 pub fn export_xlsx_data(
+    sheets: &[Sheet],
+    charts: &[crate::core::chart::Chart],
+    pivots: &[crate::core::pivot::PivotTable],
+    vba: Option<&crate::core::vba::VbaProject>,
+) -> crate::Result<Vec<u8>> {
+    export_xlsx_data_raw(sheets, charts, pivots, vba).map_err(crate::Error::Xlsx)
+}
+
+pub(crate) fn export_xlsx_data_raw(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
     pivots: &[crate::core::pivot::PivotTable],

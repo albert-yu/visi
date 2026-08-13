@@ -47,6 +47,17 @@ Cargo workspace, edition 2024:
 - **`visi-core`** — the engine, published to crates.io as `visi-core` (the directory matches). Built as `rlib` **and `cdylib`**, so it is meant to stay embeddable (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm — the browser JS backend is behind the **`wasm` feature** (`getrandom/js`), off by default because a library must not force a global getrandom backend on its consumers.
 - **`visi`** — clap-based CLI. `cli.rs` is the arg surface, `main.rs` holds one `handle_*` fn per subcommand, `engine.rs` wraps everything in `WorkbookManager`.
   - be sure to follow [Command Line Interface Guidelines](https://clig.dev) when making changes to the CLI
+  - the CLI keeps its own `Result<_, String>` style internally and converts at the boundary (`exit_with_error` takes `impl Display`)
+
+The two crates version independently: `visi` is at the workspace version, `visi-core` pins its own (`0.1.0`) since it is newer to crates.io.
+
+### Public API surface
+
+Not everything in `core` is public. The modules implementing Excel's function library — `stats`, `math_trig`, `text`, `date_fn`, `date`, `engineering`, `finance`, `extended_fn`, `ets`, `xml`, `vba_synth`, `pivot_xlsx`, `parser`, `formula`, `actions`, `shared_vec` — are `pub(crate)`; their types reach users only through the curated `pub use` list at the bottom of `core/mod.rs`. `ovba` and `vba_xlsx` are `#[doc(hidden)] pub` because `visi-core/fuzz` and the `dump_vba_fuzz_seeds` example need them, not because they are supported.
+
+**When adding a public item, ask whether it belongs in that re-export list.** Anything reachable from `core`'s `pub use` is a semver commitment.
+
+Fallible public API returns `crate::Error` (`src/error.rs`), not `String`: an `#[non_exhaustive]` enum with `NotFound`/`AlreadyExists`/`NameTaken`/`InvalidName` carrying an `ObjectKind` so callers can branch without parsing text. Lower layers (Excel Table and pivot internals) still produce `String` and are wrapped in `Error::InvalidArgument` at the `workbook.rs` boundary — carve real variants out of it as those layers get typed. Formula-evaluation internals deliberately keep `Result<_, String>`, where the string is an Excel error code like `#VALUE!`, not a Rust error.
 
 ### Data model (`visi-core/src/core/engine/`)
 

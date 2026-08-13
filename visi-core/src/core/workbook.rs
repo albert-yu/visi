@@ -25,6 +25,7 @@ use crate::core::{
     engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
     validate_vba_module_name,
 };
+use crate::{Error, ObjectKind};
 
 pub struct SheetSummary {
     pub name: String,
@@ -82,9 +83,9 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 
 impl WorkbookManager {
     /// Load Excel workbook from bytes buffer
-    pub fn load_bytes(buffer: &[u8]) -> Result<Self, String> {
+    pub fn load_bytes(buffer: &[u8]) -> crate::Result<Self> {
         let (imported_tables, charts, pivot_tables, vba_project) =
-            import_xlsx_data(buffer, &[], |_, _, _| {}).map_err(|e| e.to_string())?;
+            import_xlsx_data(buffer, &[], |_, _, _| {})?;
 
         let sheets = imported_tables.into_iter().map(|it| it.sheet).collect();
         Ok(Self {
@@ -100,18 +101,17 @@ impl WorkbookManager {
     /// The byte-level counterpart to [`Self::load_bytes`]. Callers that want
     /// to read or write an actual file supply their own IO -- the `visi` CLI
     /// does so through its `WorkbookFile` trait.
-    pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+    pub fn save_bytes(&self) -> crate::Result<Vec<u8>> {
         export_xlsx_data(
             &self.sheets,
             &self.charts,
             &self.pivot_tables,
             self.vba_project.as_ref(),
         )
-        .map_err(|e| e.to_string())
     }
 
     /// A new workbook containing a single empty sheet named `Sheet1`.
-    pub fn new_empty() -> Result<Self, String> {
+    pub fn new_empty() -> crate::Result<Self> {
         let mut wb = Self {
             sheets: Vec::new(),
             charts: Vec::new(),
@@ -123,7 +123,7 @@ impl WorkbookManager {
     }
 
     /// Recalculate all formulas in all sheets using visi-core engine
-    pub fn evaluate(&mut self) -> Result<(), String> {
+    pub fn evaluate(&mut self) -> crate::Result<()> {
         if self.sheets.is_empty() {
             return Ok(());
         }
@@ -169,9 +169,9 @@ impl WorkbookManager {
     }
 
     /// Find index of sheet by name, or return default index 0 if name is None.
-    pub fn find_sheet_index(&self, name_opt: Option<&str>) -> Result<usize, String> {
+    pub fn find_sheet_index(&self, name_opt: Option<&str>) -> crate::Result<usize> {
         if self.sheets.is_empty() {
-            return Err("Workbook contains no sheets".to_string());
+            return Err(Error::EmptyWorkbook);
         }
 
         match name_opt {
@@ -185,10 +185,10 @@ impl WorkbookManager {
                 } else {
                     let available: Vec<String> =
                         self.sheets.iter().map(|s| s.name.clone()).collect();
-                    Err(format!(
-                        "Sheet '{}' not found. Available sheets: {}",
-                        name,
-                        available.join(", ")
+                    Err(Error::not_found_among(
+                        ObjectKind::Sheet,
+                        name.to_string(),
+                        available,
                     ))
                 }
             }
@@ -251,7 +251,7 @@ impl WorkbookManager {
         row: usize,
         col: usize,
         style: crate::core::CellStyle,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let sheet_idx = self.find_sheet_index(sheet_name)?;
         self.sheets[sheet_idx].update_cell_style(row, col, |s| s.merge(&style));
         Ok(())
@@ -266,9 +266,11 @@ impl WorkbookManager {
         end_row: usize,
         end_col: usize,
         style: crate::core::CellStyle,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         if end_row < start_row || end_col < start_col {
-            return Err("Range end must not precede its start".to_string());
+            return Err(Error::InvalidRange(
+                "range end must not precede its start".to_string(),
+            ));
         }
         let sheet_idx = self.find_sheet_index(sheet_name)?;
         for r in start_row..=end_row {
@@ -285,12 +287,12 @@ impl WorkbookManager {
         sheet_name: Option<&str>,
         row: usize,
         col: usize,
-    ) -> Result<Option<crate::core::CellStyle>, String> {
+    ) -> crate::Result<Option<crate::core::CellStyle>> {
         let sheet_idx = self.find_sheet_index(sheet_name)?;
         Ok(self.sheets[sheet_idx].get_cell_style(row, col).cloned())
     }
 
-    pub fn set_table_style(&mut self, table_name: &str, style_name: &str) -> Result<(), String> {
+    pub fn set_table_style(&mut self, table_name: &str, style_name: &str) -> crate::Result<()> {
         for sheet in &mut self.sheets {
             for table in &mut sheet.tables {
                 if table.name.eq_ignore_ascii_case(table_name) {
@@ -299,10 +301,10 @@ impl WorkbookManager {
                 }
             }
         }
-        Err(format!("Excel Table '{}' not found", table_name))
+        Err(Error::not_found(ObjectKind::Table, table_name.to_string()))
     }
 
-    pub fn get_table_style(&self, table_name: &str) -> Result<Option<String>, String> {
+    pub fn get_table_style(&self, table_name: &str) -> crate::Result<Option<String>> {
         for sheet in &self.sheets {
             for table in &sheet.tables {
                 if table.name.eq_ignore_ascii_case(table_name) {
@@ -310,7 +312,7 @@ impl WorkbookManager {
                 }
             }
         }
-        Err(format!("Excel Table '{}' not found", table_name))
+        Err(Error::not_found(ObjectKind::Table, table_name.to_string()))
     }
 
     /// Update cell source / value at (row, col)
@@ -321,55 +323,58 @@ impl WorkbookManager {
     }
 
     /// Insert row at 0-based index
-    pub fn insert_row(&mut self, sheet_idx: usize, row_idx: usize) -> Result<(), String> {
+    pub fn insert_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
         let sheet = &mut self.sheets[sheet_idx];
         sheet.insert_row(row_idx);
         Ok(())
     }
 
     /// Delete row at 0-based index
-    pub fn delete_row(&mut self, sheet_idx: usize, row_idx: usize) -> Result<(), String> {
+    pub fn delete_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
         let sheet = &mut self.sheets[sheet_idx];
         if row_idx >= sheet.row_count() {
-            return Err(format!(
-                "Row index {} is out of bounds (sheet has {} rows)",
-                row_idx + 1,
-                sheet.row_count()
-            ));
+            return Err(Error::OutOfBounds {
+                what: "row",
+                index: row_idx,
+                len: sheet.row_count(),
+            });
         }
         sheet.delete_row(row_idx);
         Ok(())
     }
 
     /// Insert column at 0-based index
-    pub fn insert_col(&mut self, sheet_idx: usize, col_idx: usize) -> Result<(), String> {
+    pub fn insert_col(&mut self, sheet_idx: usize, col_idx: usize) -> crate::Result<()> {
         let sheet = &mut self.sheets[sheet_idx];
         sheet.insert_col(col_idx);
         Ok(())
     }
 
     /// Delete column at 0-based index
-    pub fn delete_col(&mut self, sheet_idx: usize, col_idx: usize) -> Result<(), String> {
+    pub fn delete_col(&mut self, sheet_idx: usize, col_idx: usize) -> crate::Result<()> {
         let sheet = &mut self.sheets[sheet_idx];
         if col_idx >= sheet.col_count() {
-            return Err(format!(
-                "Column index {} is out of bounds (sheet has {} columns)",
-                col_idx + 1,
-                sheet.col_count()
-            ));
+            return Err(Error::OutOfBounds {
+                what: "column",
+                index: col_idx,
+                len: sheet.col_count(),
+            });
         }
         sheet.delete_col(col_idx);
         Ok(())
     }
 
     /// Add new sheet with specified name
-    pub fn add_sheet(&mut self, name: &str) -> Result<(), String> {
+    pub fn add_sheet(&mut self, name: &str) -> crate::Result<()> {
         if self
             .sheets
             .iter()
             .any(|s| s.name.eq_ignore_ascii_case(name))
         {
-            return Err(format!("Sheet '{}' already exists", name));
+            return Err(Error::AlreadyExists {
+                kind: ObjectKind::Sheet,
+                name: name.to_string(),
+            });
         }
 
         let mut columns = Vec::new();
@@ -395,17 +400,17 @@ impl WorkbookManager {
     }
 
     /// Delete sheet by name
-    pub fn delete_sheet(&mut self, name: &str) -> Result<(), String> {
+    pub fn delete_sheet(&mut self, name: &str) -> crate::Result<()> {
         let idx = self.find_sheet_index(Some(name))?;
         if self.sheets.len() <= 1 {
-            return Err("Cannot delete the only sheet in the workbook".to_string());
+            return Err(Error::LastSheetInWorkbook);
         }
         self.sheets.remove(idx);
         Ok(())
     }
 
     /// Rename sheet
-    pub fn rename_sheet(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
+    pub fn rename_sheet(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         let idx = self.find_sheet_index(Some(old_name))?;
         if self
             .sheets
@@ -413,7 +418,10 @@ impl WorkbookManager {
             .enumerate()
             .any(|(i, s)| i != idx && s.name.eq_ignore_ascii_case(new_name))
         {
-            return Err(format!("Sheet name '{}' is already taken", new_name));
+            return Err(Error::NameTaken {
+                kind: ObjectKind::Sheet,
+                name: new_name.to_string(),
+            });
         }
         self.sheets[idx].name = new_name.to_string();
         Ok(())
@@ -428,7 +436,7 @@ impl WorkbookManager {
         range: String,
         title: Option<String>,
         anchor: Option<(usize, usize)>,
-    ) -> Result<u64, String> {
+    ) -> crate::Result<u64> {
         let _ = self.find_sheet_index(Some(sheet_name))?;
         let id = generate_unique_id();
         let name = format!("Chart {}", self.charts.len() + 1);
@@ -467,12 +475,12 @@ impl WorkbookManager {
         ylabel: Option<Option<String>>,
         show_legend: Option<bool>,
         anchor: Option<(usize, usize)>,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let chart = self
             .charts
             .iter_mut()
             .find(|c| c.id == id)
-            .ok_or_else(|| format!("Chart with ID {} not found", id))?;
+            .ok_or_else(|| Error::not_found(ObjectKind::Chart, id.to_string()))?;
         if let Some(name) = name {
             chart.name = name;
         }
@@ -516,7 +524,7 @@ impl WorkbookManager {
     /// Creates an empty, entirely synthetic VBA project (see
     /// `VbaProject::new_empty`) if this workbook doesn't already have one.
     /// Idempotent.
-    pub fn ensure_vba_project(&mut self) -> Result<(), String> {
+    pub fn ensure_vba_project(&mut self) -> crate::Result<()> {
         if self.vba_project.is_some() {
             return Ok(());
         }
@@ -539,20 +547,27 @@ impl WorkbookManager {
         kind: VbaModuleKind,
         source: String,
         bound_sheet_id: Option<u64>,
-    ) -> Result<(), String> {
-        validate_vba_module_name(&name)?;
+    ) -> crate::Result<()> {
+        validate_vba_module_name(&name).map_err(|reason| Error::InvalidName {
+            kind: ObjectKind::VbaModule,
+            name: name.clone(),
+            reason,
+        })?;
         let is_this_workbook = kind == VbaModuleKind::Document && name == "ThisWorkbook";
         if kind == VbaModuleKind::Document && !is_this_workbook {
             let sheet_id = bound_sheet_id
-                .ok_or_else(|| "Document modules require a bound sheet".to_string())?;
+                .ok_or_else(|| Error::Vba("document modules require a bound sheet".to_string()))?;
             if !self.sheets.iter().any(|s| s.id == sheet_id) {
-                return Err(format!("Sheet id {} not found", sheet_id));
+                return Err(Error::not_found(ObjectKind::Sheet, sheet_id.to_string()));
             }
         }
         self.ensure_vba_project()?;
         let project = self.vba_project.as_mut().unwrap();
         if project.module_name_taken(&name) {
-            return Err(format!("Module '{}' already exists", name));
+            return Err(Error::AlreadyExists {
+                kind: ObjectKind::VbaModule,
+                name: name.to_string(),
+            });
         }
         if kind == VbaModuleKind::Document
             && bound_sheet_id.is_some()
@@ -561,7 +576,7 @@ impl WorkbookManager {
                 .iter()
                 .any(|m| m.kind == VbaModuleKind::Document && m.bound_sheet_id == bound_sheet_id)
         {
-            return Err("That sheet already has a bound document module".to_string());
+            return Err(Error::DocumentModuleExists);
         }
         // Donate p-code prefix bytes and a module cookie from any existing
         // module in this same project -- proven (via a scratchpad
@@ -598,45 +613,52 @@ impl WorkbookManager {
         Ok(())
     }
 
-    pub fn remove_vba_module(&mut self, name: &str) -> Result<(), String> {
+    pub fn remove_vba_module(&mut self, name: &str) -> crate::Result<()> {
         let project = self
             .vba_project
             .as_mut()
-            .ok_or("Workbook has no VBA project")?;
+            .ok_or_else(|| Error::Vba("workbook has no VBA project".to_string()))?;
         let before = project.modules.len();
         project
             .modules
             .retain(|m| !m.name.eq_ignore_ascii_case(name));
         if project.modules.len() == before {
-            return Err(format!("Module '{}' not found", name));
+            return Err(Error::not_found(ObjectKind::VbaModule, name.to_string()));
         }
         Ok(())
     }
 
-    pub fn rename_vba_module(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
-        validate_vba_module_name(new_name)?;
+    pub fn rename_vba_module(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
+        validate_vba_module_name(new_name).map_err(|reason| Error::InvalidName {
+            kind: ObjectKind::VbaModule,
+            name: new_name.to_string(),
+            reason,
+        })?;
         let project = self
             .vba_project
             .as_mut()
-            .ok_or("Workbook has no VBA project")?;
+            .ok_or_else(|| Error::Vba("workbook has no VBA project".to_string()))?;
         if !old_name.eq_ignore_ascii_case(new_name) && project.module_name_taken(new_name) {
-            return Err(format!("Module '{}' already exists", new_name));
+            return Err(Error::AlreadyExists {
+                kind: ObjectKind::VbaModule,
+                name: new_name.to_string(),
+            });
         }
         let module = project
             .find_module_mut(old_name)
-            .ok_or_else(|| format!("Module '{}' not found", old_name))?;
+            .ok_or_else(|| Error::not_found(ObjectKind::VbaModule, old_name))?;
         module.name = new_name.to_string();
         Ok(())
     }
 
-    pub fn set_vba_module_source(&mut self, name: &str, source: String) -> Result<(), String> {
+    pub fn set_vba_module_source(&mut self, name: &str, source: String) -> crate::Result<()> {
         let project = self
             .vba_project
             .as_mut()
-            .ok_or("Workbook has no VBA project")?;
+            .ok_or_else(|| Error::Vba("workbook has no VBA project".to_string()))?;
         let module = project
             .find_module_mut(name)
-            .ok_or_else(|| format!("Module '{}' not found", name))?;
+            .ok_or_else(|| Error::not_found(ObjectKind::VbaModule, name))?;
         module.source = source;
         // Invalidate the cached compressed form -- see
         // VbaModule::cached_compressed_source -- since it no longer matches
@@ -646,12 +668,12 @@ impl WorkbookManager {
     }
 
     /// Delete chart by u64 ID
-    pub fn delete_chart(&mut self, id: u64) -> Result<(), String> {
+    pub fn delete_chart(&mut self, id: u64) -> crate::Result<()> {
         if let Some(pos) = self.charts.iter().position(|c| c.id == id) {
             self.charts.remove(pos);
             Ok(())
         } else {
-            Err(format!("Chart with ID {} not found", id))
+            Err(Error::not_found(ObjectKind::Chart, id.to_string()))
         }
     }
 
@@ -672,11 +694,11 @@ impl WorkbookManager {
             .collect()
     }
 
-    fn find_table_sheet_index(&self, name: &str) -> Result<usize, String> {
+    fn find_table_sheet_index(&self, name: &str) -> crate::Result<usize> {
         self.sheets
             .iter()
             .position(|s| s.find_table(name).is_some())
-            .ok_or_else(|| format!("Table '{}' not found", name))
+            .ok_or_else(|| Error::not_found(ObjectKind::Table, name))
     }
 
     fn table_name_taken(&self, name: &str) -> bool {
@@ -699,35 +721,47 @@ impl WorkbookManager {
         end_col: usize,
         has_header_row: bool,
         has_totals_row: bool,
-    ) -> Result<u64, String> {
+    ) -> crate::Result<u64> {
         if self.table_name_taken(name) {
-            return Err(format!("Table '{}' already exists", name));
+            return Err(Error::AlreadyExists {
+                kind: ObjectKind::Table,
+                name: name.to_string(),
+            });
         }
         let idx = self.find_sheet_index(sheet_name)?;
-        self.sheets[idx].add_table(
-            name.to_string(),
-            start_row,
-            start_col,
-            end_row,
-            end_col,
-            has_header_row,
-            has_totals_row,
-        )
+        self.sheets[idx]
+            .add_table(
+                name.to_string(),
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                has_header_row,
+                has_totals_row,
+            )
+            .map_err(Error::InvalidArgument)
     }
 
     /// Delete a table by name (leaves the underlying cell contents alone).
-    pub fn delete_table(&mut self, name: &str) -> Result<(), String> {
+    pub fn delete_table(&mut self, name: &str) -> crate::Result<()> {
         let idx = self.find_table_sheet_index(name)?;
-        self.sheets[idx].delete_table_by_name(name)
+        self.sheets[idx]
+            .delete_table_by_name(name)
+            .map_err(Error::InvalidArgument)
     }
 
     /// Rename a table.
-    pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
+    pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         if !old_name.eq_ignore_ascii_case(new_name) && self.table_name_taken(new_name) {
-            return Err(format!("Table name '{}' is already taken", new_name));
+            return Err(Error::NameTaken {
+                kind: ObjectKind::Table,
+                name: new_name.to_string(),
+            });
         }
         let idx = self.find_table_sheet_index(old_name)?;
-        self.sheets[idx].rename_table(old_name, new_name)?;
+        self.sheets[idx]
+            .rename_table(old_name, new_name)
+            .map_err(Error::InvalidArgument)?;
         // Excel updates every structured reference to a renamed table, so a
         // formula like `=SUM(Sales[Amount])` keeps working after "Sales" is
         // renamed; match that instead of silently breaking those formulas.
@@ -769,9 +803,11 @@ impl WorkbookManager {
         name: &str,
         new_end_row: usize,
         new_end_col: usize,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let idx = self.find_table_sheet_index(name)?;
-        self.sheets[idx].resize_table(name, new_end_row, new_end_col)
+        self.sheets[idx]
+            .resize_table(name, new_end_row, new_end_col)
+            .map_err(Error::InvalidArgument)
     }
 
     /// Rename one column (0-based, relative to the table) of a table.
@@ -780,18 +816,19 @@ impl WorkbookManager {
         table_name: &str,
         col_index: usize,
         new_name: &str,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let idx = self.find_table_sheet_index(table_name)?;
         let old_col_name = self.sheets[idx]
             .find_table(table_name)
             .and_then(|t| t.columns.get(col_index).cloned())
             .ok_or_else(|| {
-                format!(
-                    "Column index {} out of bounds for table '{}'",
-                    col_index, table_name
-                )
+                Error::InvalidArgument(format!(
+                    "column index {col_index} out of bounds for table '{table_name}'"
+                ))
             })?;
-        self.sheets[idx].rename_table_column(table_name, col_index, new_name)?;
+        self.sheets[idx]
+            .rename_table_column(table_name, col_index, new_name)
+            .map_err(Error::InvalidArgument)?;
         // As with rename_table, keep dependent formulas working across the
         // rename instead of leaving them referencing the old column name.
         self.rewrite_table_references(table_name, None, Some((&old_col_name, new_name)));
@@ -805,11 +842,11 @@ impl WorkbookManager {
             .find(|p| p.name.eq_ignore_ascii_case(name))
     }
 
-    fn find_pivot_table_index(&self, name: &str) -> Result<usize, String> {
+    fn find_pivot_table_index(&self, name: &str) -> crate::Result<usize> {
         self.pivot_tables
             .iter()
             .position(|p| p.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| format!("Pivot table '{}' not found", name))
+            .ok_or_else(|| Error::not_found(ObjectKind::PivotTable, name))
     }
 
     /// List every pivot table in the workbook.
@@ -836,12 +873,15 @@ impl WorkbookManager {
         dest_col: usize,
         grand_totals_row: bool,
         grand_totals_col: bool,
-    ) -> Result<u64, String> {
+    ) -> crate::Result<u64> {
         if self.pivot_table_name_taken(name) {
-            return Err(format!("Pivot table '{}' already exists", name));
+            return Err(Error::AlreadyExists {
+                kind: ObjectKind::PivotTable,
+                name: name.to_string(),
+            });
         }
         self.find_table(source_table_name)
-            .ok_or_else(|| format!("Table '{}' not found", source_table_name))?;
+            .ok_or_else(|| Error::not_found(ObjectKind::Table, source_table_name))?;
         let dest_idx = self.find_sheet_index(dest_sheet_name)?;
         let id = generate_unique_id();
         self.pivot_tables.push(PivotTable {
@@ -882,9 +922,12 @@ impl WorkbookManager {
         dest_col: usize,
         grand_totals_row: bool,
         grand_totals_col: bool,
-    ) -> Result<u64, String> {
+    ) -> crate::Result<u64> {
         if self.pivot_table_name_taken(name) {
-            return Err(format!("Pivot table '{}' already exists", name));
+            return Err(Error::AlreadyExists {
+                kind: ObjectKind::PivotTable,
+                name: name.to_string(),
+            });
         }
         let src_idx = self.find_sheet_index(source_sheet_name)?;
         let dest_idx = self.find_sheet_index(dest_sheet_name)?;
@@ -917,7 +960,7 @@ impl WorkbookManager {
 
     /// Deletes a pivot table definition and clears its last rendered output
     /// range (leaves the source data untouched).
-    pub fn delete_pivot_table(&mut self, name: &str) -> Result<(), String> {
+    pub fn delete_pivot_table(&mut self, name: &str) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(name)?;
         let pivot = self.pivot_tables.remove(idx);
         if let (Some(end_row), Some(end_col)) =
@@ -930,9 +973,12 @@ impl WorkbookManager {
     }
 
     /// Renames a pivot table (names are unique workbook-wide, like tables).
-    pub fn rename_pivot_table(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
+    pub fn rename_pivot_table(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         if !old_name.eq_ignore_ascii_case(new_name) && self.pivot_table_name_taken(new_name) {
-            return Err(format!("Pivot table name '{}' is already taken", new_name));
+            return Err(Error::NameTaken {
+                kind: ObjectKind::PivotTable,
+                name: new_name.to_string(),
+            });
         }
         let idx = self.find_pivot_table_index(old_name)?;
         self.pivot_tables[idx].name = new_name.to_string();
@@ -958,7 +1004,7 @@ impl WorkbookManager {
         area: PivotArea,
         column: &str,
         aggregation: Option<PivotAggregation>,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(pivot_name)?;
         if !matches!(area, PivotArea::Value) {
             let pivot = &mut self.pivot_tables[idx];
@@ -995,7 +1041,7 @@ impl WorkbookManager {
         pivot_name: &str,
         area: PivotArea,
         column: &str,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(pivot_name)?;
         let removed = match area {
             PivotArea::Row => remove_pivot_field(&mut self.pivot_tables[idx].row_fields, column),
@@ -1016,9 +1062,9 @@ impl WorkbookManager {
             }
         };
         if !removed {
-            return Err(format!(
-                "Field '{}' not found in that area of pivot table '{}'",
-                column, pivot_name
+            return Err(Error::not_found(
+                ObjectKind::PivotField,
+                format!("{column}' in pivot table '{pivot_name}"),
             ));
         }
         self.refresh_pivot_table(pivot_name)
@@ -1031,16 +1077,16 @@ impl WorkbookManager {
         pivot_name: &str,
         column: &str,
         values: Option<Vec<String>>,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(pivot_name)?;
         let field = self.pivot_tables[idx]
             .filter_fields
             .iter_mut()
             .find(|f| f.column.eq_ignore_ascii_case(column))
             .ok_or_else(|| {
-                format!(
-                    "Filter field '{}' not found on pivot table '{}'",
-                    column, pivot_name
+                Error::not_found(
+                    ObjectKind::PivotField,
+                    format!("{column}' on pivot table '{pivot_name}"),
                 )
             })?;
         field.selected_values = values;
@@ -1051,20 +1097,24 @@ impl WorkbookManager {
     /// plain values onto its destination sheet. Like Excel, a pivot table
     /// only updates on an explicit refresh, never automatically as its
     /// source data changes.
-    pub fn refresh_pivot_table(&mut self, pivot_name: &str) -> Result<(), String> {
+    pub fn refresh_pivot_table(&mut self, pivot_name: &str) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(pivot_name)?;
         let pivot = self.pivot_tables[idx].clone();
         let dest_idx = self
             .sheets
             .iter()
             .position(|s| s.id == pivot.dest_sheet_id)
-            .ok_or_else(|| "Pivot table's destination sheet no longer exists".to_string())?;
+            .ok_or_else(|| {
+                Error::InvalidArgument(
+                    "pivot table's destination sheet no longer exists".to_string(),
+                )
+            })?;
 
         let grid: Option<PivotGrid> = if pivot.value_fields.is_empty() {
             None
         } else {
             let sheet_refs: Vec<&Sheet> = self.sheets.iter().collect();
-            Some(compute_pivot(&sheet_refs, &pivot)?)
+            Some(compute_pivot(&sheet_refs, &pivot).map_err(Error::InvalidArgument)?)
         };
 
         // Clear the previously rendered area first, since a refresh can
