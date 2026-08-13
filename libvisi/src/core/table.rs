@@ -26,9 +26,16 @@ pub struct ExcelTable {
     /// `start_col..=end_col`. Kept in sync with the header row's cell text
     /// (when `has_header_row` is true) by the CRUD methods in this file.
     pub columns: Vec<String>,
+    /// Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1", or custom theme)
+    #[serde(default)]
+    pub style_name: Option<String>,
 }
 
 impl ExcelTable {
+    pub fn set_style_name(&mut self, style_name: Option<String>) {
+        self.style_name = style_name;
+    }
+
     pub fn row_count(&self) -> usize {
         self.end_row - self.start_row + 1
     }
@@ -221,6 +228,7 @@ impl Sheet {
             has_header_row,
             has_totals_row,
             columns,
+            style_name: None,
         });
         Ok(id)
     }

@@ -9410,6 +9410,78 @@ impl Sheet {
         }
     }
 
+    /// Ensure sheet has at least target_row+1 rows and target_col+1 columns
+    pub fn ensure_capacity(&mut self, target_row: usize, target_col: usize) {
+        let current_rows = self.row_count();
+        let needed_rows = target_row + 1;
+        let final_rows = current_rows.max(needed_rows);
+
+        while self.columns.len() <= target_col {
+            let col_idx = self.columns.len();
+            let mut col = DataColumn::new(final_rows);
+            col.name = crate::core::parser::col_idx_to_letters(col_idx);
+            self.columns.push(col);
+        }
+
+        if final_rows > current_rows {
+            for col in &mut self.columns {
+                while col.src.len() < final_rows {
+                    col.src.push(String::new());
+                    col.compiled_src
+                        .push(crate::core::CompiledFormula::default());
+                    col.data.push(ResultData::None);
+                    col.styles.push(None);
+                }
+            }
+        }
+    }
+
+    pub fn get_cell_style(&self, row: usize, col: usize) -> Option<&crate::core::CellStyle> {
+        self.columns
+            .get(col)
+            .and_then(|column| column.styles.get(row))
+            .and_then(|opt| opt.as_ref())
+    }
+
+    pub fn set_cell_style(&mut self, row: usize, col: usize, style: crate::core::CellStyle) {
+        self.ensure_capacity(row, col);
+        if let Some(column) = self.columns.get_mut(col) {
+            if row < column.styles.len() {
+                if style.is_empty() {
+                    column.styles[row] = None;
+                } else {
+                    column.styles[row] = Some(style);
+                }
+            }
+        }
+    }
+
+    pub fn update_cell_style<F>(&mut self, row: usize, col: usize, f: F)
+    where
+        F: FnOnce(&mut crate::core::CellStyle),
+    {
+        self.ensure_capacity(row, col);
+        if let Some(column) = self.columns.get_mut(col) {
+            if row < column.styles.len() {
+                let mut current = column.styles[row].clone().unwrap_or_default();
+                f(&mut current);
+                if current.is_empty() {
+                    column.styles[row] = None;
+                } else {
+                    column.styles[row] = Some(current);
+                }
+            }
+        }
+    }
+
+    pub fn clear_cell_style(&mut self, row: usize, col: usize) {
+        if let Some(column) = self.columns.get_mut(col) {
+            if row < column.styles.len() {
+                column.styles[row] = None;
+            }
+        }
+    }
+
     /// Insert a new empty row at the specified index
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
@@ -9422,6 +9494,7 @@ impl Sheet {
                     .compiled_src
                     .push(crate::core::CompiledFormula::default());
                 column.data.push(ResultData::None);
+                column.styles.push(None);
             }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
@@ -9436,6 +9509,7 @@ impl Sheet {
                     .compiled_src
                     .insert(index, crate::core::CompiledFormula::default());
                 column.data.insert(index, ResultData::None);
+                column.styles.insert(index, None);
             }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
@@ -9452,6 +9526,9 @@ impl Sheet {
                 column.src.remove(index);
                 column.compiled_src.remove(index);
                 column.data.remove(index);
+                if index < column.styles.len() {
+                    column.styles.remove(index);
+                }
                 // Adjust dirty indices
                 column.dirty_indices.retain(|&i| i != index);
                 for i in 0..column.dirty_indices.len() {
