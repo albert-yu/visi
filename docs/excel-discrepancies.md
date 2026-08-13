@@ -338,6 +338,39 @@ output.
 
 ---
 
+## 14. Empty-string cell vs. blank cell — *fixed in the comparator*
+
+Excel distinguishes a cell holding the empty string from a cell holding
+nothing; visi does not, deliberately and consistently — `ISBLANK("")` is
+TRUE, `COUNTA` skips it, and `rust_xlsxwriter` collapses an empty string to
+a blank cell on write (`store_string` turns `""` into `write_blank`).
+
+The harness generates short strings from an alphabet that includes a space,
+so it sometimes produces a cell containing only whitespace. OOXML strips
+whitespace-only `<t>` content unless the element carries
+`xml:space="preserve"`, which `openpyxl` does not emit, so *neither* engine
+recovers the space: Excel keeps an empty-string cell (a `<t/>` entry in the
+shared strings) and visi writes no cell at all. Both mean "nothing here".
+
+This surfaced as a spurious failure:
+
+```
+Cell C8 on sheet1: visi=None | Excel= (Formula: None)
+```
+
+The comparator already had the right rule — `values_equal` treats `None` and
+a whitespace-only string as equal — but `compare` never reached it when the
+cell was *absent* from visi's output rather than present-and-empty. That path
+guarded on `val is not None`, so a blank-equivalent value was reported as
+"Missing in visi output" while the identical disagreement between two
+*present* cells was tolerated. The two paths now apply the same rule.
+
+Note this is narrow: it only excuses a value that is blank-equivalent. A cell
+genuinely missing from either side still fails, so real data loss on import
+or export is still caught.
+
+---
+
 ## Fixed, not excluded
 
 For contrast, these looked like Excel divergences during investigation and
