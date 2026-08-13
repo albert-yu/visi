@@ -371,6 +371,34 @@ or export is still caught.
 
 ---
 
+## 15. MOD with a divisor far larger than the dividend — *Excel is wrong*
+
+When `|d|` is enormous relative to `|n|` and the signs differ, Excel returns
+`0` where the remainder is not zero:
+
+```
+MOD(36, POWER(-327.3, 69))    visi -3.3984E+173   Excel 0
+MOD(1, -10^37)                visi -1E+37         Excel 0
+```
+
+Both engines agree on the same shape at ordinary magnitudes — `MOD(5, -3)` is
+`-1` in both, and so is `MOD(5, -1E10)` = `-9999999995` — so this is not a
+disagreement about the definition. `MOD(n, d) = n - d*INT(n/d)` gives
+`INT(n/d) = -1` for every one of these, hence a remainder of `d + n`, which
+sits inside `(d, 0]` exactly as a remainder must.
+
+A remainder of `0` would require `d` to divide `n` exactly, and it cannot:
+`0 < |n| < |d|`. Excel's answer is unreachable from its own documented
+formula, so this is Excel losing the small operand rather than visi being
+imprecise, and visi keeps the mathematically correct value.
+
+Note this is *not* the same as the deliberate `#NUM!` cutoff already in
+`MOD` for large **quotients** (`MOD(28^31, 3)`), which is a real Excel
+behavior visi reproduces. Here the quotient is vanishingly small; it is the
+result that is large.
+
+---
+
 ## Fixed, not excluded
 
 For contrast, these looked like Excel divergences during investigation and
