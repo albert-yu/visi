@@ -12,7 +12,19 @@ pub struct ImportedSheet {
 /// so a text cell like "1" stays text instead of becoming the number 1.
 fn text_cell_src(s: &str) -> String {
     if s.is_empty() {
-        return String::new();
+        // A *string* cell holding the empty string. Excel keeps that distinct
+        // from a blank cell -- TYPE is 2 (text) not 1, ISBLANK is FALSE,
+        // COUNTA counts it, and it compares as text -- so it takes the
+        // quoted-empty spelling that `commit` reads back as `String("")`.
+        // Leaving the src empty would rebuild it as a blank cell and lose all
+        // of that.
+        //
+        // Reaching here usually means the cell held only whitespace: OOXML
+        // strips whitespace-only `<t>` content unless the element carries
+        // `xml:space="preserve"`, and calamine reports the remainder as an
+        // empty string rather than as `Data::Empty`. Excel strips it the same
+        // way, and likewise keeps a text cell.
+        return "\"\"".to_string();
     }
     // Excel handed us a *string* cell, so anything the engine's literal
     // parser would otherwise claim -- numbers, booleans, and dates such as
@@ -2025,6 +2037,47 @@ mod tests {
     /// notation goes out as the cell's `numFmt` and comes back from it. The
     /// CLI is a fresh process per invocation, so this round trip is the only
     /// thing that makes a date still look like one on the next command.
+    /// A worksheet string cell that arrives as the empty string has to stay
+    /// a *text* cell rather than becoming blank: Excel reports TYPE 2 and a
+    /// text comparison for it, and a fuzz grid containing one disagreed with
+    /// Excel in three separate formulas while visi rebuilt it as blank.
+    ///
+    /// This is reached in practice via whitespace: OOXML strips whitespace-only
+    /// `<t>` content that is not marked `xml:space="preserve"` -- which
+    /// `openpyxl` omits -- so calamine reports what is left as `String("")`
+    /// rather than as `Data::Empty`. Excel strips it the same way and likewise
+    /// keeps a text cell. (visi's own writer *does* emit `xml:space`, so a
+    /// space survives a visi-to-visi round trip; this covers the other case.)
+    #[test]
+    fn test_empty_string_cell_stays_text_not_blank() {
+        // The src spelling an empty string cell has to take, so `commit`
+        // rebuilds it as text. A bare empty src would mean a blank cell.
+        assert_eq!(text_cell_src(""), "\"\"");
+        assert_eq!(text_cell_src(" "), " ");
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 2,
+            cols: 1,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, text_cell_src(""));
+        sheet.commit(None).unwrap();
+
+        assert!(
+            matches!(
+                sheet.get_result_data(&crate::core::CellRef::new(0, 0)),
+                crate::core::ResultData::String(ref s) if s.is_empty()
+            ),
+            "an empty string cell must stay an empty *string*, not become blank"
+        );
+        // The control: a genuinely empty src really is blank.
+        assert!(matches!(
+            sheet.get_result_data(&crate::core::CellRef::new(1, 0)),
+            crate::core::ResultData::None
+        ));
+    }
+
     #[test]
     fn test_xlsx_date_notation_survives_round_trip() {
         let mut sheet = Sheet::new(crate::core::SheetInit {

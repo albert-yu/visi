@@ -1978,13 +1978,9 @@ impl Sheet {
     fn counta_helper(&self, arg: &ResultData) -> usize {
         match arg {
             ResultData::None => 0,
-            ResultData::String(s) => {
-                if s.is_empty() {
-                    0
-                } else {
-                    1
-                }
-            }
+            // COUNTA counts every non-blank value, and the empty string is a
+            // value -- Excel counts both a text cell holding "" and a formula
+            // that returned "".
             ResultData::List(list) => {
                 let mut count = 0;
                 for item in list {
@@ -7900,7 +7896,9 @@ impl Sheet {
                 }
                 match &evaluated_args[0] {
                     ResultData::None => Ok(ResultData::Boolean(true)),
-                    ResultData::String(s) => Ok(ResultData::Boolean(s.is_empty())),
+                    // Only an *absent* value is blank. A cell holding the
+                    // empty string is text, and so is a formula that returned
+                    // "" -- Excel reports ISBLANK as FALSE for both.
                     _ => Ok(ResultData::Boolean(false)),
                 }
             }
