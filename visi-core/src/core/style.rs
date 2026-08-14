@@ -1,3 +1,5 @@
+//! Per-cell formatting.
+
 use serde::{Deserialize, Serialize};
 
 /// Cell formatting style attributes (font color, background color, font styles, font family, font size).
@@ -26,10 +28,13 @@ pub struct CellStyle {
 }
 
 impl CellStyle {
+    /// A style with nothing set.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Whether no attribute is set. An empty style is stored as no style at
+    /// all rather than kept around.
     pub fn is_empty(&self) -> bool {
         self.font_color.is_none()
             && self.bg_color.is_none()
@@ -41,6 +46,10 @@ impl CellStyle {
             && self.num_format.is_none()
     }
 
+    /// Overlays `other` onto this style, attribute by attribute.
+    ///
+    /// Only the attributes `other` actually sets are copied, so merging a
+    /// style that just sets `bold` leaves an existing font color alone.
     pub fn merge(&mut self, other: &CellStyle) {
         if other.font_color.is_some() {
             self.font_color = other.font_color.clone();

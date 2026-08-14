@@ -1,3 +1,6 @@
+//! The `Sheet` type: a worksheet's cells, its formula evaluation, and the
+//! dependency-tracked recalculation over them.
+
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use web_time::Instant;
@@ -76,38 +79,95 @@ impl<'a> LetScope<'a> {
     }
 }
 
+/// Which way a fill or selection extends from its anchor cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Direction {
+    /// No direction; the operation is a no-op.
     None,
+    /// Toward row 0.
     Up,
+    /// Toward the last row.
     Down,
+    /// Toward column 0.
     Left,
+    /// Toward the last column.
     Right,
 }
 
-/// Represents a sheet in a spreadsheet.
+/// One worksheet: a grid of cells, the formulas over them, and the dependency
+/// graph that keeps them up to date.
+///
+/// # Coordinates
+///
+/// Everything here is **0-based `(row, col)`**. A1 notation exists only at the
+/// parser and CLI boundaries -- see [`parse_a1_coordinates`] and
+/// [`col_idx_to_letters`] to convert.
+///
+/// # Naming trap
+///
+/// A `Sheet` is informally called a "table" in places (a new one is named
+/// `table_1`, and `Context::add_table` registers one). That is *not* an
+/// [`ExcelTable`], which is a ListObject -- a named rectangular range *on* a
+/// sheet -- and lives in [`Sheet::tables`].
+///
+/// # Storage
+///
+/// Storage is column-oriented: each [`DataColumn`] keeps the raw user text,
+/// the computed values and the compiled formulas in three parallel vectors
+/// that must stay the same length. The row and column insert/delete paths
+/// maintain that invariant by hand, so a new one has to do the same.
+///
+/// # Recalculation
+///
+/// [`Sheet::commit`] recomputes the dirty cells and propagates through
+/// [`Dependency::Local`] and [`Dependency::LocalColumn`] edges only.
+/// Cross-sheet edges are `WorkbookManager::evaluate`'s job, and evaluating a
+/// formula with a remote reference requires a [`Context`] -- without one it
+/// errors.
+///
+/// [`parse_a1_coordinates`]: crate::core::parse_a1_coordinates
+/// [`col_idx_to_letters`]: crate::core::col_idx_to_letters
+/// [`ExcelTable`]: crate::core::table::ExcelTable
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sheet {
+    /// Workbook-unique identifier. Formulas compile references against this
+    /// rather than the name, which is what makes a rename non-destructive.
     #[serde(default = "generate_unique_id")]
     pub id: u64,
+    /// Display name, as it appears in a cross-sheet reference.
     pub name: String,
+    /// The cells, one entry per column. Row `r` of column `c` is
+    /// `columns[c]`'s entry `r`.
     pub columns: Vec<DataColumn>,
+    /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
+    /// Forward edges: which cells must be recomputed when a dependency
+    /// changes. Rebuilt from the formulas, so not serialized.
     #[serde(skip, default)]
     pub dependencies: HashMap<Dependency, HashSet<CellRef>>,
+    /// Reverse edges: what each cell currently reads, so its old edges can be
+    /// dropped when its formula changes. Rebuilt, so not serialized.
     #[serde(skip, default)]
     pub dependencies_rev: HashMap<CellRef, HashSet<Dependency>>,
+    /// Edits made since the last commit, for callers that want to observe or
+    /// replay them.
     #[serde(skip)]
     pub uncommitted_actions: Vec<crate::core::SheetAction>,
 }
 
+/// Arguments for [`Sheet::new`]. [`Default`] gives a 10x5 sheet with a
+/// generated id and the name `table_1`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SheetInit {
+    /// Identifier to use; `None` generates a fresh one.
     #[serde(default)]
     pub id: Option<u64>,
+    /// Name to use; `None` means `table_1`.
     pub name: Option<String>,
+    /// Rows to allocate.
     pub rows: usize,
+    /// Columns to allocate.
     pub cols: usize,
 }
 
@@ -134,6 +194,8 @@ enum BlankPolicy {
 }
 
 impl Sheet {
+    /// Creates a sheet of `args.rows` x `args.cols` empty cells, every one of
+    /// them queued as a pending edit so the first [`Sheet::commit`] sees them.
     pub fn new(args: SheetInit) -> Sheet {
         let SheetInit {
             id,
@@ -172,6 +234,12 @@ impl Sheet {
         }
     }
 
+    /// Rebuilds what serialization drops.
+    ///
+    /// Only the raw source text is persisted, so this resizes the value and
+    /// compiled-formula vectors back to match it -- restoring the
+    /// same-length invariant -- and marks everything dirty. Call it after
+    /// deserializing, before [`Sheet::commit`].
     pub fn setup_after_deserialization(&mut self) {
         for col in &mut self.columns {
             let size = col.src.len();
@@ -181,7 +249,14 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    pub fn get_all_tables_for_compilation(&self, context: Option<&Context>) -> Vec<Sheet> {
+    /// Every sheet a formula on this one could refer to -- this sheet first,
+    /// then the rest of `context` -- as the name-to-id lookup table that
+    /// `compile_formula` resolves references against.
+    ///
+    /// "Tables" here means sheets, not [`ExcelTable`]s.
+    ///
+    /// [`ExcelTable`]: crate::core::table::ExcelTable
+    pub(crate) fn get_all_tables_for_compilation(&self, context: Option<&Context>) -> Vec<Sheet> {
         let mut list = vec![self.clone()];
         let mut seen = std::collections::HashSet::new();
         seen.insert(self.id);
@@ -196,6 +271,10 @@ impl Sheet {
         list
     }
 
+    /// Queues every cell for recomputation on the next [`Sheet::commit`].
+    ///
+    /// This is how cross-sheet staleness is handled: `WorkbookManager` cannot
+    /// tell which cells a remote edit reached, so it marks whole sheets.
     pub fn mark_all_dirty(&mut self) {
         for col in &mut self.columns {
             col.dirty_indices.clear();
@@ -417,7 +496,14 @@ impl Sheet {
         Ok(updated_cells)
     }
 
-    /// Mark cells as dirty if they depend on the given dependency
+    /// Marks every cell that reads `dep` as dirty, so the next
+    /// [`Sheet::commit`] recomputes it.
+    ///
+    /// The targeted counterpart to [`Sheet::mark_all_dirty`], for an embedder
+    /// driving cross-sheet propagation itself: [`Sheet::commit`] returns the
+    /// cells it changed, and feeding each one back to the other sheets as a
+    /// [`Dependency::Remote`] invalidates just what actually read them.
+    /// `WorkbookManager::evaluate` takes the blunter route instead.
     pub fn invalidate_dependency(&mut self, dep: &Dependency) {
         if let Some(dependents) = self.dependencies.get(dep) {
             for dependent in dependents {
@@ -431,6 +517,18 @@ impl Sheet {
         }
     }
 
+    /// Evaluates cell source text without storing it, as
+    /// [`Sheet::eval`] does, but from the point of view of `(row, col)`.
+    ///
+    /// The position is what makes relative constructs work -- a structured
+    /// reference like `[@Amount]` means "this row", so it needs to know which
+    /// row is asking. Pass `None` for both when there is no anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EngineError`] if the formula cannot be parsed. An *Excel*
+    /// error is not a Rust error: `=1/0` succeeds, returning
+    /// `ResultData::Error("#DIV/0!")`.
     pub fn eval_with_row(
         &self,
         input: &str,
@@ -456,6 +554,18 @@ impl Sheet {
         }
     }
 
+    /// Evaluates cell source text against this sheet without storing it,
+    /// returning the value and the references it read.
+    ///
+    /// Text with a leading `=` is a formula; anything else is parsed as a
+    /// literal. `context` supplies the other sheets, and is required for a
+    /// cross-sheet reference to resolve.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EngineError`] if the formula cannot be parsed. An *Excel*
+    /// error is not a Rust error: `=1/0` succeeds, returning
+    /// `ResultData::Error("#DIV/0!")`.
     pub fn eval(
         &self,
         input: &str,
@@ -1168,7 +1278,13 @@ impl Sheet {
         a_low.len().cmp(&b_low.len())
     }
 
-    pub fn clean_float(val: f64) -> f64 {
+    /// Snaps a float to its 15-significant-digit rounding when the two are
+    /// within floating-point noise of each other, so accumulated error does
+    /// not leak into a result Excel would show as exact.
+    ///
+    /// Left alone if the rounding moves the value by more than that, and for
+    /// zero and non-finite values.
+    pub(crate) fn clean_float(val: f64) -> f64 {
         if val == 0.0 || !val.is_finite() {
             return val;
         }
@@ -1184,7 +1300,16 @@ impl Sheet {
         val
     }
 
-    pub fn to_f64(&self, val: &ResultData) -> Option<f64> {
+    /// Coerces a value to a number the way an Excel arithmetic operator does:
+    /// a blank is 0, a boolean is 0 or 1, and text is converted if it reads as
+    /// a number or a date (a date becoming its serial).
+    ///
+    /// `None` for text that is not numeric and for every other value,
+    /// including errors -- callers turn that into `#VALUE!`.
+    ///
+    /// Not every function coerces this way; the stricter families reject text
+    /// and booleans outright.
+    pub(crate) fn to_f64(&self, val: &ResultData) -> Option<f64> {
         match val {
             ResultData::None => Some(0.0),
             ResultData::Float(f) => Some(*f),
@@ -9162,6 +9287,12 @@ impl Sheet {
         }
     }
 
+    /// The raw text typed into a cell -- `"10"`, `"=SUM(A1:A2)"` -- or `None`
+    /// if the cell is outside the sheet's allocated grid.
+    ///
+    /// This is the input, not the result; see [`Sheet::get_result_data`] for
+    /// the computed value and `Sheet::get_display_string` for what a user
+    /// should see.
     pub fn get_src(&self, cell: &CellRef) -> Option<&String> {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -9171,6 +9302,8 @@ impl Sheet {
         }
     }
 
+    /// [`Sheet::get_src`] with an out-of-range cell flattened to an owned
+    /// empty string.
     pub fn get_src_str(&self, cell: &CellRef) -> String {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -9180,17 +9313,29 @@ impl Sheet {
         }
     }
 
+    /// [`Sheet::get_src`] as a borrowed `&str`, for callers that only read.
     pub fn get_src_str_ref(&self, cell: &CellRef) -> Option<&str> {
         let col = self.columns.get(cell.col)?;
         col.src.get(cell.row).map(|s| s.as_str())
     }
 
+    /// The word surrounding `char_offset` in a cell's source text, as a
+    /// half-open range of character (not byte) indices -- what an editor needs
+    /// for word-wise selection. See [`get_word_boundaries_from_str`].
     pub fn get_word_boundaries(&self, cell: &CellRef, char_offset: usize) -> (usize, usize) {
         let text = self.get_src_str(cell);
         get_word_boundaries_from_str(&text, char_offset)
     }
 }
 
+/// The word surrounding `char_offset` in `text`, as a half-open range of
+/// character indices.
+///
+/// A "word" is a run of alphanumerics and underscores, a run of whitespace, or
+/// a run of punctuation -- so double-clicking in a formula selects a function
+/// name or a cell reference rather than the whole line. An offset at the end
+/// of the text, or one just past a word onto whitespace, selects the word to
+/// its left.
 pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, usize) {
     if text.is_empty() {
         return (0, 0);
@@ -9249,6 +9394,15 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
     (start, end)
 }
 impl Sheet {
+    /// The computed value of a cell, or [`ResultData::None`] if it is empty
+    /// or outside the sheet's allocated grid.
+    ///
+    /// Reflects the last [`Sheet::commit`]; a cell edited since then still
+    /// reads as its old value.
+    ///
+    /// A date reads back as the plain numeric serial it is. Rendering it in
+    /// the notation the cell carries is `Sheet::get_display_string`'s job, and
+    /// only its -- do not format a `ResultData` directly if a user will see it.
     pub fn get_result_data(&self, cell: &CellRef) -> ResultData {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -9358,6 +9512,12 @@ impl Sheet {
         }
     }
 
+    /// Inserts text into a cell's source at a character offset, as typing
+    /// into it would, then recompiles and marks it dirty.
+    ///
+    /// This is a text edit within one cell, not a range insert; see
+    /// [`Sheet::insert_row`] and [`Sheet::insert_col`] for the structural
+    /// operations. Out-of-range positions are ignored.
     pub fn insert(&mut self, pos: TextCellRef, input: &str) {
         let TextCellRef {
             row,
@@ -9403,6 +9563,12 @@ impl Sheet {
         self.delete(start, end);
     }
 
+    /// Deletes the text between two positions, recompiling and dirtying every
+    /// cell it touches.
+    ///
+    /// Within a single cell this removes a character range; spanning cells it
+    /// truncates the first, clears those in between and trims the last.
+    /// Ignored if `end` precedes `start`.
     pub fn delete(&mut self, start: TextCellRef, end: TextCellRef) {
         // Validate positions are in correct order
         if start.col > end.col || (start.col == end.col && start.row > end.row) {
@@ -9463,6 +9629,10 @@ impl Sheet {
         }
     }
 
+    /// Grows the sheet by one empty row or column on the given side.
+    ///
+    /// [`Direction::None`] does nothing. Rows are unbounded, but sideways
+    /// growth stops once the sheet has 26 columns.
     pub fn extend(&mut self, direction: Direction) {
         if self.columns.is_empty() {
             return;
@@ -9548,6 +9718,10 @@ impl Sheet {
         }
     }
 
+    /// The style set on a cell, or `None` if it has none.
+    ///
+    /// This is where a date cell's `num_format` lives -- the notation half of
+    /// a date, the value half being the serial in the cell.
     pub fn get_cell_style(&self, row: usize, col: usize) -> Option<&crate::core::CellStyle> {
         self.columns
             .get(col)
@@ -9555,6 +9729,8 @@ impl Sheet {
             .and_then(|opt| opt.as_ref())
     }
 
+    /// Replaces a cell's style, growing the sheet if the cell is past its
+    /// current bounds. An empty style is stored as no style at all.
     pub fn set_cell_style(&mut self, row: usize, col: usize, style: crate::core::CellStyle) {
         self.ensure_capacity(row, col);
         if let Some(column) = self.columns.get_mut(col) {
@@ -9568,6 +9744,10 @@ impl Sheet {
         }
     }
 
+    /// Mutates a cell's style in place, starting from the default if it has
+    /// none, so one attribute can be changed without disturbing the others.
+    ///
+    /// Grows the sheet if needed; a style left empty is dropped.
     pub fn update_cell_style<F>(&mut self, row: usize, col: usize, f: F)
     where
         F: FnOnce(&mut crate::core::CellStyle),
@@ -9586,6 +9766,7 @@ impl Sheet {
         }
     }
 
+    /// Removes a cell's style. Unlike the setters, this never grows the sheet.
     pub fn clear_cell_style(&mut self, row: usize, col: usize) {
         if let Some(column) = self.columns.get_mut(col) {
             if row < column.styles.len() {
@@ -9631,6 +9812,12 @@ impl Sheet {
         }
     }
 
+    /// Deletes a row, shifting the rows below it up.
+    ///
+    /// Removes the entry from all three parallel per-row vectors together,
+    /// which is what keeps them the same length, and rebases the dirty queue.
+    /// Out-of-range indices are ignored. Everything is marked dirty, since
+    /// formulas above the deleted row may refer to it.
     pub fn delete_row(&mut self, index: usize) {
         let row_count = self.row_count();
         if index < row_count {
@@ -9658,6 +9845,9 @@ impl Sheet {
         }
     }
 
+    /// Deletes a column, shifting the columns to its right left.
+    ///
+    /// Out-of-range indices are ignored; everything is marked dirty.
     pub fn delete_col(&mut self, index: usize) {
         if index < self.columns.len() {
             self.columns.remove(index);
@@ -9694,10 +9884,13 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
+    /// Allocated rows, taken from the first column -- every column has the
+    /// same length.
     pub fn row_count(&self) -> usize {
         self.columns.first().map(|c| c.src.len()).unwrap_or(0)
     }
 
+    /// Allocated columns.
     pub fn col_count(&self) -> usize {
         self.columns.len()
     }

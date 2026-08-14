@@ -42,11 +42,20 @@ const MONTHS_SHORT: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+/// How a month name was capitalized in the text a date was typed as.
+///
+/// A format code cannot carry casing, so this rides alongside
+/// [`DateFormat::to_format_code`] and is lost on a round trip through a
+/// worksheet -- as it is in Excel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StringCase {
+    /// All lowercase, as in `22-jun-2026`.
     Lower,
+    /// All uppercase, as in `22-JUN-2026`.
     Upper,
+    /// Leading capital, rest lowercase: `22-Jun-2026`. The default.
     Title,
+    /// Mixed in some other way; rendered as the canonical title case.
     Original,
 }
 
@@ -67,10 +76,18 @@ pub fn detect_case(s: &str) -> StringCase {
     }
 }
 
+/// A calendar date, with no time-of-day and no timezone.
+///
+/// Only an intermediate: cells hold an Excel serial, not a `SimpleDate`. This
+/// is what [`parse_date`] produces and what [`date_to_excel_serial`] consumes,
+/// so the calendar arithmetic happens in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleDate {
+    /// Full year, four digits -- a two-digit year is widened by [`parse_date`].
     pub year: i32,
+    /// Month, 1-12.
     pub month: u32,
+    /// Day of month, 1-31.
     pub day: u32,
 }
 
@@ -93,69 +110,125 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+/// The notation a date was written in: field order, separator, year width and
+/// month-name spelling.
+///
+/// This is *detection* output, not the storage form. A cell stores an Excel
+/// serial plus the format code this lowers to (`CellStyle::num_format`), which
+/// is why a `DateFormat` can express a little more than survives a save --
+/// month-name casing has no format-code equivalent, and zero-padding of a
+/// numeric month or day is not recorded at all, so `06/22/2026` and
+/// `6/22/2026` are the same variant and both render unpadded.
+///
+/// The two-part variants fill in the missing field: a month/day pair takes
+/// `parse_date`'s default year, a month/year pair takes day 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DateFormat {
-    // 3-part formats
+    /// Year-month-day, all numeric: `2026-06-22`.
     Ymd {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-    }, // e.g. 2026-06-22
+    },
+    /// Month-day-year, all numeric: `06/22/2026`, `6/22/26`.
     Mdy {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-    }, // e.g. 06/22/2026
+    },
+    /// Day-month-year, all numeric: `22-06-2026`.
     Dmy {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-    }, // e.g. 22-06-2026
+    },
+    /// Day, month name, year: `22-Jun-2026`, `22-June-26`.
     DMmmY {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. 22-Jun-2026, 22-June-26
+    },
+    /// Month name, day, year: `Jun-22-2026`, `June-22-26`.
     MmmDY {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. Jun-22-2026, June-22-26
+    },
+    /// Year, month name, day: `2026-Jun-22`.
     YMmmD {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. 2026-Jun-22
+    },
 
-    // 2-part formats (Assumed Year or Day)
+    /// Numeric month and day, year assumed: `6/22`.
     Md {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-    }, // e.g. 6/22 -> Month-Day (assumes DEFAULT_YEAR)
+    },
+    /// Numeric month and year, day assumed to be the 1st: `6/2026`.
     My {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-    }, // e.g. 6/2026 -> Month-Year (assumes Day 1)
+    },
+    /// Day then month name, year assumed: `22-Jun`.
     DMmm {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. 22-Jun -> Day-Month (assumes DEFAULT_YEAR)
+    },
+    /// Month name then day, year assumed: `Jun-22`.
     MmmD {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. Jun-22 -> Month-Day (assumes DEFAULT_YEAR)
+    },
+    /// Month name then year, day assumed to be the 1st: `Jun-2026`.
     MmmY {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. Jun-2026 -> Month-Year (assumes Day 1)
+    },
+    /// Year then month name, day assumed to be the 1st: `2026-Jun`.
     YMmm {
+        /// Character separating the fields, `-` or `/`.
         sep: char,
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
+        /// Casing the month name was typed in.
         month_case: StringCase,
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
-    }, // e.g. 2026-Jun -> Year-Month (assumes Day 1)
+    },
 }
 
 impl DateFormat {
@@ -362,6 +435,18 @@ fn parse_digits(part: &str) -> Option<i32> {
     }
 }
 
+/// Recognizes a date written as text, returning both the date and the
+/// notation it was written in.
+///
+/// Returns `None` for anything that is not a date, which is how
+/// `Sheet::commit` decides whether a literal becomes a plain number or a
+/// number carrying a date format. Text that merely *looks* like a date is
+/// therefore quoted on import (`xlsx::text_cell_src`) to keep it text.
+///
+/// Recognizes `-` and `/` as separators, two- and three-part forms, and
+/// month names in either spelling; a two-digit year below 30 is read as
+/// 20xx, otherwise 19xx. Day and month are validated against the calendar,
+/// so `2/30/2026` is not a date.
 pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
     const DEFAULT_YEAR: i32 = 2026;
 
@@ -726,6 +811,12 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
     None
 }
 
+/// Converts a date to Excel's day count, where 1 is 1900-01-01.
+///
+/// Reproduces Excel's 1900 leap-year bug -- serial 60 is the nonexistent
+/// 1900-02-29 -- by adding a day for every date after 1900-02-28, which is
+/// what makes serials agree with Excel's for every date a workbook is likely
+/// to contain. Dates before 1900 have no serial and return `0.0`.
 pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
     if date.year < 1900 {
         return 0.0;

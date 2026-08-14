@@ -1,9 +1,19 @@
+//! Reading and writing `.xlsx` files.
+//!
+//! Import goes through `calamine` and export through `rust_xlsxwriter` -- two
+//! libraries with different models, so a round trip is not symmetric and is
+//! worth checking after changes. Export writes each formula together with its
+//! cached result, so a reader that does not recalculate still sees values.
+
 use crate::core::{DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;
 
+/// A worksheet read out of an `.xlsx` file.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportedSheet {
+    /// The sheet, with its cells, styles and any Excel Tables on it. Its
+    /// values are already committed, so it can be read without evaluating.
     pub sheet: Sheet,
 }
 
@@ -59,7 +69,7 @@ pub type ImportedXlsxData = (
 ///
 /// # Errors
 ///
-/// Returns [`Error::Xlsx`] if the buffer is not a readable `.xlsx` container
+/// Returns [`crate::Error::Xlsx`] if the buffer is not a readable `.xlsx` container
 /// or a part of it fails to parse.
 pub fn import_xlsx_data(
     buffer: &[u8],
@@ -670,7 +680,7 @@ pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwrit
 ///
 /// # Errors
 ///
-/// Returns [`Error::Xlsx`] if the workbook cannot be serialized.
+/// Returns [`crate::Error::Xlsx`] if the workbook cannot be serialized.
 pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],

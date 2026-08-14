@@ -21,6 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 
+/// What kind of VBA module a [`VbaModule`] is, which decides how it binds to
+/// the workbook.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VbaModuleKind {
     /// A `.bas`-equivalent module with no host object binding.
@@ -40,6 +42,7 @@ pub enum VbaModuleKind {
 pub struct VbaModule {
     /// VB_Name -- must satisfy `validate_vba_module_name`.
     pub name: String,
+    /// What kind of module this is, and so how it binds to the workbook.
     pub kind: VbaModuleKind,
     /// Plain VBA source text (no compression, no Attribute-line management
     /// beyond what the caller writes -- callers are expected to include the
@@ -93,6 +96,8 @@ fn default_module_cookie() -> u16 {
 }
 
 impl VbaModule {
+    /// Whether this is a document module -- `ThisWorkbook` or a worksheet's
+    /// code-behind -- as opposed to a standard or class module.
     pub fn is_document(&self) -> bool {
         self.kind == VbaModuleKind::Document
     }
@@ -109,6 +114,8 @@ pub struct VbaProject {
     /// must correspond to this exact ID or Excel reports the whole project
     /// "unviewable" (a real finding from the POC, not a hypothetical).
     pub project_id: String,
+    /// The project's modules, in no particular order. Names are unique
+    /// case-insensitively.
     pub modules: Vec<VbaModule>,
     /// The full original `vbaProject.bin` bytes this project was imported
     /// from, or (for a project created fresh in this session)
@@ -154,18 +161,22 @@ impl VbaProject {
         }
     }
 
+    /// Finds a module by name, matched case-insensitively as VBA does.
     pub fn find_module(&self, name: &str) -> Option<&VbaModule> {
         self.modules
             .iter()
             .find(|m| m.name.eq_ignore_ascii_case(name))
     }
 
+    /// [`VbaProject::find_module`], mutably.
     pub fn find_module_mut(&mut self, name: &str) -> Option<&mut VbaModule> {
         self.modules
             .iter_mut()
             .find(|m| m.name.eq_ignore_ascii_case(name))
     }
 
+    /// Whether a module of this name already exists, matched
+    /// case-insensitively.
     pub fn module_name_taken(&self, name: &str) -> bool {
         self.find_module(name).is_some()
     }

@@ -1,3 +1,21 @@
+//! Pivot table definitions and the pure function that computes one.
+//!
+//! A [`PivotTable`] is a *definition*: where the records come from, which
+//! fields go in the row, column, value and filter areas, and where the result
+//! should land. [`compute_pivot`] turns that definition plus the workbook's
+//! sheets into a [`PivotGrid`], a display-ready set of header and body rows.
+//!
+//! Computing a grid never touches a sheet. Writing one into cells is
+//! `WorkbookManager::refresh_pivot_table`'s job, and -- as in Excel -- it only
+//! happens when something asks for it: **nothing recomputes a pivot table
+//! implicitly**, not `Sheet::commit` and not `WorkbookManager::evaluate`, so
+//! editing the source data leaves the rendered grid stale until a refresh.
+//! Every CRUD operation on a pivot definition refreshes explicitly afterward.
+//!
+//! Unlike an [`ExcelTable`](crate::core::table::ExcelTable), which is scoped
+//! to one sheet, a pivot table is workbook-level: its source and destination
+//! ranges may live on different sheets, so `WorkbookManager` owns the list.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -9,14 +27,22 @@ use crate::core::engine::{CellRef, ResultData, Sheet};
 /// whose first row is treated as column headers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PivotSource {
+    /// An `ExcelTable`, resolved by name on every refresh.
     Table {
+        /// The table's name, matched case-insensitively workbook-wide.
         name: String,
     },
+    /// A raw rectangular range, whose first row supplies the field names.
     Range {
+        /// Sheet the range lives on.
         sheet_id: u64,
+        /// First row of the range, 0-based, and the header row.
         start_row: usize,
+        /// First column of the range, 0-based.
         start_col: usize,
+        /// Last row of the range, 0-based and inclusive.
         end_row: usize,
+        /// Last column of the range, 0-based and inclusive.
         end_col: usize,
     },
 }
@@ -25,15 +51,27 @@ pub enum PivotSource {
 /// field; the five most commonly used ones plus the numeric-only count.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PivotAggregation {
+    /// Total of the numeric values.
     Sum,
+    /// How many non-blank values there are, text included.
     Count,
+    /// How many values are numbers.
     CountNumbers,
+    /// Mean of the numeric values.
     Average,
+    /// Largest numeric value.
     Max,
+    /// Smallest numeric value.
     Min,
 }
 
 impl PivotAggregation {
+    /// The caption Excel uses for this aggregation in a value field's default
+    /// label ("Sum of Amount").
+    ///
+    /// [`PivotAggregation::CountNumbers`] shares `Count`'s caption, which is
+    /// why two such fields on one column collide and get disambiguated by
+    /// [`value_field_labels`].
     pub fn label(&self) -> &'static str {
         match self {
             PivotAggregation::Sum => "Sum",
@@ -49,6 +87,9 @@ impl PivotAggregation {
         }
     }
 
+    /// Parses a user-supplied aggregation name, ignoring case, spaces,
+    /// underscores and hyphens, and accepting the common short forms (`avg`,
+    /// `countnums`, `maximum`). `None` if it names nothing.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().replace(['_', '-', ' '], "").as_str() {
             "sum" => Some(Self::Sum),
@@ -65,6 +106,7 @@ impl PivotAggregation {
 /// One field placed in the Row or Column area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotField {
+    /// Name of the source column to group by, matched against the header row.
     pub column: String,
     /// Whether a subtotal line is emitted for this field when it isn't the
     /// innermost field in its area (Excel's per-field "Subtotals" toggle).
@@ -72,6 +114,7 @@ pub struct PivotField {
 }
 
 impl PivotField {
+    /// A field on `column` with subtotals enabled, Excel's default.
     pub fn new(column: impl Into<String>) -> Self {
         Self {
             column: column.into(),
@@ -83,12 +126,17 @@ impl PivotField {
 /// One field placed in the Values area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotValueField {
+    /// Name of the source column to aggregate, matched against the header row.
     pub column: String,
+    /// How the column's values are summarized.
     pub aggregation: PivotAggregation,
+    /// Overrides the default "Sum of Amount" caption. A custom name is used
+    /// verbatim and takes no part in [`value_field_labels`]' disambiguation.
     pub custom_name: Option<String>,
 }
 
 impl PivotValueField {
+    /// A value field on `column` with the default caption.
     pub fn new(column: impl Into<String>, aggregation: PivotAggregation) -> Self {
         Self {
             column: column.into(),
@@ -97,6 +145,9 @@ impl PivotValueField {
         }
     }
 
+    /// This field's caption considered on its own, ignoring any collision
+    /// with the pivot's other value fields. Use [`value_field_labels`] to
+    /// caption a whole list the way Excel would.
     pub fn label(&self) -> String {
         self.custom_name
             .clone()
@@ -179,12 +230,18 @@ pub fn value_field_labels(value_fields: &[PivotValueField]) -> Vec<String> {
 /// One field placed in the Filter (Page) area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotFilterField {
+    /// Name of the source column to filter on, matched against the header row.
     pub column: String,
     /// `None` means every value is allowed (no filtering applied yet).
+    ///
+    /// Not reconstructed on xlsx import -- a selection resets to "all",
+    /// since restoring it would mean trusting index-based item references
+    /// against source data that may since have changed.
     pub selected_values: Option<Vec<String>>,
 }
 
 impl PivotFilterField {
+    /// A filter field on `column` with nothing filtered out yet.
     pub fn new(column: impl Into<String>) -> Self {
         Self {
             column: column.into(),
@@ -197,9 +254,14 @@ impl PivotFilterField {
 /// add/remove-field CRUD operations.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PivotArea {
+    /// Groups down the left edge; adds to `PivotTable::row_fields`.
     Row,
+    /// Groups across the top; adds to `PivotTable::col_fields`.
     Column,
+    /// Aggregated data; adds to `PivotTable::value_fields`.
     Value,
+    /// Restricts which source records take part; adds to
+    /// `PivotTable::filter_fields`.
     Filter,
 }
 
@@ -210,22 +272,36 @@ pub enum PivotArea {
 /// destination ranges may live on different sheets.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotTable {
+    /// Workbook-unique identifier, stable across renames.
     pub id: u64,
+    /// Display name, unique workbook-wide.
     pub name: String,
+    /// Where the records come from.
     pub source: PivotSource,
+    /// Sheet the grid is written to, which need not be the source's sheet.
     pub dest_sheet_id: u64,
+    /// Top-left row of the output grid, 0-based.
     pub dest_row: usize,
+    /// Top-left column of the output grid, 0-based.
     pub dest_col: usize,
+    /// Fields grouped down the left edge, outermost first.
     pub row_fields: Vec<PivotField>,
+    /// Fields grouped across the top, outermost first.
     pub col_fields: Vec<PivotField>,
+    /// Fields aggregated into the body. At least one is required for
+    /// [`compute_pivot`] to succeed.
     pub value_fields: Vec<PivotValueField>,
+    /// Fields restricting which source records take part.
     pub filter_fields: Vec<PivotFilterField>,
+    /// Whether a grand-total row is appended below the body.
     pub grand_totals_row: bool,
+    /// Whether a grand-total column is appended to the right of the body.
     pub grand_totals_col: bool,
     /// Bottom-right corner of the last rendered output grid, so a refresh
     /// that produces a smaller grid can clear the now-stale cells.
     #[serde(default)]
     pub last_output_end_row: Option<usize>,
+    /// Column half of that corner; see [`PivotTable::last_output_end_row`].
     #[serde(default)]
     pub last_output_end_col: Option<usize>,
 }
@@ -268,7 +344,11 @@ pub struct PivotGrid {
     /// One `(field name, "(All)" | "(Multiple Items)")` pair per filter
     /// field, in the order they were added.
     pub filter_rows: Vec<(String, String)>,
+    /// The column-header block above the body: one row per column field,
+    /// plus a value-field row when there is more than one value field.
     pub header_rows: Vec<Vec<String>>,
+    /// The body, one entry per output row, subtotal and grand-total rows
+    /// included.
     pub body_rows: Vec<PivotBodyRow>,
     /// Total width in columns (row-label columns + data columns), used by
     /// the caller to know how large a range to clear/allocate. Always >= 2,
@@ -279,14 +359,18 @@ pub struct PivotGrid {
     /// exporter can reconstruct a native `pivotTableDefinition`'s
     /// `rowItems`/`colItems` without re-deriving the grouping itself.
     pub row_axis: Vec<PivotAxisItem>,
+    /// Column half of that axis pair; see [`PivotGrid::row_axis`].
     pub col_axis: Vec<PivotAxisItem>,
 }
 
+/// One row of a computed pivot's body: its row-field labels and its
+/// aggregated values.
 #[derive(Debug, Clone)]
 pub struct PivotBodyRow {
     /// One entry per row field (or a single "Grand Total" entry when there
     /// are no row fields); blank entries mean "same as the row above".
     pub row_labels: Vec<String>,
+    /// Whether this row is the grand total rather than a data or subtotal row.
     pub is_grand_total: bool,
     /// One entry per data column, aligned with the last `header_rows` row.
     pub values: Vec<ResultData>,
@@ -297,8 +381,11 @@ pub struct PivotBodyRow {
 /// pseudo-group rather than a real leaf group.
 #[derive(Debug, Clone)]
 pub struct PivotAxisItem {
+    /// One entry per field in this axis, `None` past this group's own depth.
     pub labels: Vec<Option<String>>,
+    /// Whether this is a subtotal pseudo-group rather than a leaf group.
     pub is_subtotal: bool,
+    /// Whether this is the axis's grand-total pseudo-group.
     pub is_grand_total: bool,
 }
 
@@ -314,6 +401,8 @@ impl PivotGrid {
         }
     }
 
+    /// Total height in rows, filter rows and spacer included -- what the
+    /// caller needs to allocate or clear at the pivot's `dest_row` anchor.
     pub fn height(&self) -> usize {
         self.grid_row_offset() + self.header_rows.len() + self.body_rows.len()
     }
@@ -659,6 +748,20 @@ pub(crate) fn column_index(names: &[String], target: &str) -> Result<usize, Stri
 /// Computes a pivot table's result grid from the current state of `sheets`.
 /// Pure and read-only: callers materialize the returned `PivotGrid` into
 /// sheet cells themselves.
+/// Computes `pivot` against `sheets`, returning a display-ready grid.
+///
+/// Pure: it reads source records, applies the filter fields, groups by the
+/// row and column fields, aggregates the value fields, and returns the
+/// result. Nothing is written -- materializing the grid into cells is
+/// `WorkbookManager::refresh_pivot_table`'s job.
+///
+/// `sheets` must include both the source's sheet and, for a
+/// [`PivotSource::Table`] source, whichever sheet carries that table.
+///
+/// # Errors
+///
+/// Returns a message if the source cannot be resolved, if a named field is
+/// not among the source's columns, or if the pivot has no value fields.
 pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid, String> {
     let (sheet, col_names, sheet_cols, data_rows) = resolve_source(sheets, &pivot.source)?;
 

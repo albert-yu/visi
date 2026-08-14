@@ -27,24 +27,56 @@ use crate::core::{
 };
 use crate::{Error, ObjectKind};
 
+/// A single sheet's line in a [`WorkbookSummary`].
 pub struct SheetSummary {
+    /// The sheet's name.
     pub name: String,
+    /// Allocated rows.
     pub row_count: usize,
+    /// Allocated columns.
     pub col_count: usize,
+    /// How many of its cells hold a formula rather than a literal.
     pub formula_count: usize,
 }
 
+/// An overview of a workbook's shape, for reporting rather than editing.
 pub struct WorkbookSummary {
+    /// The file the workbook was loaded from, as the caller named it.
     pub file_name: String,
+    /// How many sheets it has.
     pub sheet_count: usize,
+    /// How many charts it has.
     pub chart_count: usize,
+    /// One entry per sheet, in workbook order.
     pub sheets: Vec<SheetSummary>,
 }
 
+/// A whole workbook: its sheets, charts, pivot tables and VBA project, and the
+/// operations that span more than one of them.
+///
+/// The entry point to this crate, and the layer an embedder should drive.
+/// Two behaviors are only correct at this level:
+///
+/// - **Cross-sheet formulas.** [`Sheet::commit`] propagates local dependencies
+///   only; [`WorkbookManager::evaluate`] is what carries values between
+///   sheets.
+/// - **Pivot tables.** Nothing recomputes one implicitly.
+///   [`WorkbookManager::refresh_pivot_table`] is the only thing that writes a
+///   computed grid into cells.
+///
+/// Editing the [`Sheet`]s directly is allowed -- the fields are public -- but
+/// skips both, so cross-sheet formulas and pivot output go stale silently.
 pub struct WorkbookManager {
+    /// The worksheets, in workbook order. Cell coordinates within them are
+    /// 0-based.
     pub sheets: Vec<Sheet>,
+    /// The charts. Workbook-level rather than sheet-scoped; which sheet a
+    /// chart is drawn on comes from its `data_range`.
     pub charts: Vec<Chart>,
+    /// The pivot table definitions. Workbook-level, since a pivot's source and
+    /// destination may be on different sheets.
     pub pivot_tables: Vec<PivotTable>,
+    /// The VBA project, if the workbook has macros.
     pub vba_project: Option<VbaProject>,
 }
 
@@ -292,6 +324,12 @@ impl WorkbookManager {
         Ok(self.sheets[sheet_idx].get_cell_style(row, col).cloned())
     }
 
+    /// Sets an Excel Table's visual style, looking the table up by name
+    /// across every sheet.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] if no table in the workbook has that name.
     pub fn set_table_style(&mut self, table_name: &str, style_name: &str) -> crate::Result<()> {
         for sheet in &mut self.sheets {
             for table in &mut sheet.tables {
@@ -304,6 +342,11 @@ impl WorkbookManager {
         Err(Error::not_found(ObjectKind::Table, table_name.to_string()))
     }
 
+    /// An Excel Table's visual style, or `None` if it has none set.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] if no table in the workbook has that name.
     pub fn get_table_style(&self, table_name: &str) -> crate::Result<Option<String>> {
         for sheet in &self.sheets {
             for table in &sheet.tables {
@@ -509,6 +552,7 @@ impl WorkbookManager {
         Ok(())
     }
 
+    /// Whether the workbook carries a VBA project.
     pub fn has_vba_project(&self) -> bool {
         self.vba_project.is_some()
     }
@@ -613,6 +657,12 @@ impl WorkbookManager {
         Ok(())
     }
 
+    /// Removes a VBA module by name, matched case-insensitively.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Vba`] if the workbook has no VBA project, or
+    /// [`Error::NotFound`] if it has no module by that name.
     pub fn remove_vba_module(&mut self, name: &str) -> crate::Result<()> {
         let project = self
             .vba_project
@@ -628,6 +678,18 @@ impl WorkbookManager {
         Ok(())
     }
 
+    /// Renames a VBA module.
+    ///
+    /// Renames only the module; VBA source that calls into it is not
+    /// rewritten, so a module referenced by name elsewhere will no longer
+    /// resolve.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidName`] if `new_name` is not a valid VBA identifier,
+    /// [`Error::AlreadyExists`] if another module already has it,
+    /// [`Error::Vba`] if the workbook has no VBA project, or
+    /// [`Error::NotFound`] if it has no module called `old_name`.
     pub fn rename_vba_module(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         validate_vba_module_name(new_name).map_err(|reason| Error::InvalidName {
             kind: ObjectKind::VbaModule,
@@ -651,6 +713,16 @@ impl WorkbookManager {
         Ok(())
     }
 
+    /// Replaces a VBA module's source text.
+    ///
+    /// The caller supplies the whole module body, including its
+    /// `Attribute VB_Name = "..."` line, matching how real Excel-authored
+    /// module streams are shaped.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Vba`] if the workbook has no VBA project, or
+    /// [`Error::NotFound`] if it has no module by that name.
     pub fn set_vba_module_source(&mut self, name: &str, source: String) -> crate::Result<()> {
         let project = self
             .vba_project

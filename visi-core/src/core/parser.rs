@@ -84,6 +84,11 @@ pub enum EvalToken {
     },
 }
 
+/// Renders a 0-based column index as its A1 column letters: 0 is `A`, 25 is
+/// `Z`, 26 is `AA`.
+///
+/// One half of the boundary between the engine's 0-based `(row, col)` and the
+/// A1 notation users type; [`parse_a1_coordinates`] is the other.
 pub fn col_idx_to_letters(mut col: usize) -> String {
     let mut letters = String::new();
     loop {
@@ -97,6 +102,14 @@ pub fn col_idx_to_letters(mut col: usize) -> String {
     letters
 }
 
+/// Converts an already-split A1 reference into a 0-based `(row, col)`.
+///
+/// `col_str` is the letters and `row_str` the digits, so `("B", "3")` gives
+/// `(2, 1)`. Case-insensitive, and non-alphabetic characters in `col_str` are
+/// skipped.
+///
+/// Lenient rather than validating: an unparseable row, or a row or column of
+/// 0, clamps to index 0 instead of failing.
 pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
     let mut col = 0;
     for c in col_str.chars() {

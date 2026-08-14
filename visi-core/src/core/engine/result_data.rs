@@ -1,14 +1,39 @@
+//! The value type a cell evaluates to.
+
 use serde::{Deserialize, Serialize};
 
+/// What a cell holds once it has been evaluated.
+///
+/// There is deliberately **no date variant**. As in Excel, a date is a plain
+/// numeric serial and the notation it was typed in lives on the cell, as
+/// `CellStyle::num_format` -- so `ISNUMBER` is true for a date, `SUM` counts
+/// it, and every numeric path works on it untouched. Only rendering consults
+/// the format, through `Sheet::get_display_string`.
+///
+/// An Excel error is a *value*, not a Rust error: `=1/0` evaluates
+/// successfully to `Error("#DIV/0!")`. See [`EngineError`] for the failures
+/// that are not values.
+///
+/// [`EngineError`]: crate::core::EngineError
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResultData {
+    /// A blank cell. Coerces to 0 or `""` depending on what reads it.
     None,
+    /// `TRUE` or `FALSE`.
     Boolean(bool),
+    /// A whole number.
     Integer(i64),
+    /// A number that is not a whole number, or one too large for an `i64`.
+    /// A date is a `Float` holding its Excel serial.
     Float(f64),
+    /// Text.
     String(String),
+    /// An ordered sequence, for the engine-specific functions that return one.
+    /// Not an Excel array.
     List(Vec<ResultData>),
+    /// Key/value pairs, for the engine-specific functions that return them.
     Dict(Vec<(ResultData, ResultData)>),
+    /// An Excel error value, held as its code: `#DIV/0!`, `#VALUE!`, `#N/A`.
     Error(String),
 }
 
@@ -71,7 +96,7 @@ fn round_digits_half_up(digits: &str, exp: i32, keep: usize) -> (String, i32) {
     (out, exp)
 }
 
-pub fn format_excel_number(f: f64) -> String {
+pub(crate) fn format_excel_number(f: f64) -> String {
     if f == 0.0 {
         return "0".to_string();
     }
