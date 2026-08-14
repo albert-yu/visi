@@ -23,3 +23,12 @@ __pycache__
 # AppleScript driver (paste fuzz/BuildFuzzPivot.bas into it) -- a compiled
 # binary asset each developer authors locally, not a generated build output.
 fuzz/pivot_macro_template.xlsm
+
+# Python extension module built from visi-python by `maturin develop`.
+# `maturin develop` installs into the active venv (already ignored), but an
+# in-tree or custom --target-dir build leaves artifacts here.
+*.so
+*.pyd
+*.dylib
+*.egg-info/
+visi-python/target/

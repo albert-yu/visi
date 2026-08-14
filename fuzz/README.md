@@ -16,8 +16,9 @@ This directory contains a differential fuzzing test harness designed to generate
                     ┌───────────────────┴───────────────────┐
                     ▼                                       ▼
     ┌───────────────────────────────┐       ┌───────────────────────────────┐
-    │          visi eval            │       │        Microsoft Excel        │
-    │ (Updates cached <v> XML tags) │       │ (AppleScript / COM Automation)│
+    │   visi  (visi_core bindings   │       │        Microsoft Excel        │
+    │      in-process, or the CLI)  │       │ (AppleScript / COM Automation)│
+    │ (Updates cached <v> XML tags) │       │                               │
     └───────────────┬───────────────┘       └───────────────┬───────────────┘
                     │                                       │
             Produces visi_out.xlsx                  Produces excel_out.xlsx
@@ -42,13 +43,83 @@ This directory contains a differential fuzzing test harness designed to generate
 ## Setup & Requirements
 
 ### 1. Requirements
-- Python 3.8+
-- `openpyxl` (for generating `.xlsx` test files):
+- Python 3.9+, from the project venv — **not** system Python, since
+  `maturin develop` installs into whichever venv is active:
   ```bash
+  source fuzz/venv/bin/activate
   pip install -r fuzz/requirements.txt
   ```
-- Compiled `visi` binary (`cargo build --release`)
+- The `visi_core` bindings (see below), and/or a compiled `visi` binary
+  (`cargo build --release`)
 - Microsoft Excel (macOS or Windows) for actual Excel execution.
+
+### 2. In-process bindings (recommended)
+
+The fuzzers drive visi through `visi-python`, a pyo3 extension module binding
+`visi-core` directly, rather than spawning the `visi` CLI once per operation.
+That matters most for `fuzz_pivot.py`, which used to run one process per pivot
+field — building a pivot table cost 5–8 full `.xlsx` load/save cycles.
+
+```bash
+source fuzz/venv/bin/activate
+maturin develop -m visi-python/Cargo.toml --release
+```
+
+Rebuild after any change to `visi-core`, or you will be fuzzing a stale engine.
+
+Each fuzzer takes `--backend {auto,bindings,subprocess}`. The default `auto`
+uses the bindings when `import visi_core` succeeds and falls back to the CLI
+with a warning otherwise. The run banner prints which was chosen — check it
+before reading timings.
+
+**Use `--backend subprocess` to triage a crash.** Under `bindings` the engine
+shares this process: a Rust panic surfaces as a catchable `PanicException`, but
+an abort or a stack overflow (plausible — the formula parser is recursive
+descent and the generator emits deeply nested expressions) takes the whole run
+down and loses every iteration's progress. Under `subprocess` it costs one
+iteration and still saves the reproducing files.
+
+### Bindings/CLI equivalence
+
+The two backends must stay observationally identical, and they duplicate a
+little logic to do it (`edit_chart`'s clear-vs-set flags, `add_pivot_field`'s
+post-add subtotal mutation). Nothing else would notice that drifting:
+
+```bash
+pytest fuzz/test_backend_parity.py visi-python/tests/
+```
+
+It runs both backends over freshly generated workbooks at fixed seeds, plus any
+`fuzz_results/failures/*/source.xlsx` lying around locally, and diffs the parsed
+output — content, not bytes, since `docProps/core.xml` carries a timestamp and
+ids are random. The generated seeds are the real coverage; `fuzz_results/` is
+gitignored and usually empty.
+
+One pivot state is reachable only through the bindings API:
+`Workbook.set_pivot_filter(name, col, [])` selects *nothing*, which `visi pivot
+filter` cannot express (it takes a non-empty comma list or `--clear`). It is
+not fuzzed, because real Excel cannot represent it either — Excel refuses to
+hide a page field's last visible `PivotItem`, so `BuildFuzzPivot.bas` falls back
+to leaving the field unfiltered at `(All)`. `PivotFuzzGenerator` therefore
+always selects at least one value, and both driver backends leave an empty
+selection unapplied if one reaches them anyway. The engine behavior itself is
+asserted directly, in `test_empty_filter_selection_is_bindings_only`.
+
+### Why the oracle still parses the written `.xlsx`
+
+`XLSXEvaluatedReader` reads real `.xlsx` bytes, never the bindings' in-memory
+cells, and `read_evaluated_cells_bytes` exists only to skip a redundant *disk
+read* of bytes visi just produced — it is the same parser on the same bytes.
+
+Reading values out of the engine instead would stop exercising
+`export_xlsx_data`: the cached `<v>` tags, shared strings, `t="e"` error cells,
+and pivot's hand-rolled `inject_pivot_tables` zip rewriting. That is a large
+share of what this harness exists to check. For the same reason the pivot and
+chart drivers still round-trip the workbook between mutations — in memory now,
+via `Workbook.roundtrip()`, but through the identical import/export code the
+CLI ran.
+
+`Workbook.get_cell` is for *minimizing* a failure, never for deciding one.
 
 ---
 
@@ -58,17 +129,40 @@ This directory contains a differential fuzzing test harness designed to generate
 
 ```bash
 # macOS with Microsoft Excel installed in /Applications
-python3 fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
+python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 
 # Windows
-python3 fuzz/fuzz_excel.py --driver win32com --iterations 50
+python fuzz/fuzz_excel.py --driver win32com --iterations 50
 
 # Custom CLI or script runner
-python3 fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runner" --iterations 10
+python fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runner" --iterations 10
 
-# Mock Mode (runs test pipeline without invoking Excel binary)
-python3 fuzz/fuzz_excel.py --driver mock --iterations 5
+# Smoke mode -- no Excel, no comparison. See below.
+python fuzz/fuzz_excel.py --driver mock --iterations 5
 ```
+
+### `--driver mock` is a smoke test, not a weak oracle
+
+There is no Excel in mock mode, so **nothing is compared**. Each iteration
+generates a workbook, runs visi over it, and checks only that visi wrote an
+`.xlsx` that parses and has content. It exits 0 unless something crashed or
+produced unreadable output, and writes no failure artifacts otherwise.
+
+That is deliberately less than it used to do, because what it used to do was
+not meaningful. Mock copied the *unevaluated* source workbook and compared
+visi against it as though it were Excel's answer. openpyxl writes no cached
+`<v>` for a formula cell, so all 360 formula cells of a default 530-cell grid
+read as `None` on the "Excel" side: a guaranteed 100% mismatch, exit 1 on every
+run, and one failure-artifact directory per iteration. The genuine signal --
+did visi crash? did it emit a corrupt file? -- was invisible underneath it.
+
+So mock is for what this README always claimed: exercising the pipeline
+(generate → visi → read → report) on a machine with no Excel automation, and
+hunting crashes over a large volume of generated formulas. Both work without an
+oracle. Neither works with a fake one.
+
+`--driver auto` resolves to mock on any platform that is not macOS or Windows,
+so this is also what a Linux run does.
 
 ### Financial functions (`ExcelFuzzGenerator.generate_financial_formula`)
 
@@ -170,7 +264,7 @@ Pivot tables get their own script rather than a mode inside `fuzz_excel.py`, bec
 4. Reuses `XLSXEvaluatedReader`/`DifferentialComparator` from `fuzz_excel.py` unchanged to compare the two engines' materialized output cells, since both write plain literal values into the destination range.
 
 ```bash
-python3 fuzz/fuzz_pivot.py --driver mock --iterations 5                      # smoke-test the pipeline, no Excel needed
+python fuzz/fuzz_pivot.py --driver mock --iterations 5                       # smoke test, no Excel and no comparison
 python3 fuzz/fuzz_pivot.py --excel-path "/Applications/Microsoft Excel.app" --iterations 1 --seed 1
 ```
 
@@ -199,7 +293,7 @@ Charts get their own script for the same reason pivot tables do: Excel must *act
 4. Compares the two engines' resulting chart structure -- type, category/value ranges, title, axis labels, legend -- via `chart_xlsx_reader.read_charts`, a new `openpyxl`-based reader module (`ChartComparator`, not the cell-based comparator above).
 
 ```bash
-python3 fuzz/fuzz_chart.py --driver mock --iterations 5                      # smoke-test the pipeline, no Excel needed
+python fuzz/fuzz_chart.py --driver mock --iterations 5                       # smoke test, no Excel and no comparison
 python3 fuzz/fuzz_chart.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20 --seed 1
 ```
 

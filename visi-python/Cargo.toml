@@ -1,0 +1,40 @@
+[package]
+name = "visi-python"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Python bindings for visi-core, for the fuzz harness"
+homepage.workspace = true
+repository.workspace = true
+# Development-only: this exists so `fuzz/`'s differential harness can drive the
+# engine in-process. It is not a supported distribution channel for visi-core.
+publish = false
+
+[lib]
+# The Python module name. Deliberately not `visi`: the repo root holds a `visi/`
+# directory with no `__init__.py`, which PEP 420 makes a valid implicit
+# namespace package, so `import visi` from the repo root resolves to the CLI
+# crate's source directory and silently shadows this module.
+name = "visi_core"
+crate-type = ["cdylib"]
+
+[features]
+# `extension-module` is deliberately NOT in `default`. It leaves the libpython
+# symbols undefined -- correct for the .so maturin builds and loads into an
+# interpreter, but it makes `cargo test`'s test-harness binary fail to link
+# with undefined `_PyModule_Create2` (pyo3#340), which would break
+# `cargo test --workspace`. maturin turns it on via pyproject.toml.
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+# Aliased: this crate's own lib is named `visi_core` (the Python module name),
+# so an unaliased `visi-core` dependency would be shadowed by the crate itself
+# and `visi_core::WorkbookManager` would resolve to our own root.
+visi_engine = { package = "visi-core", path = "../visi-core", version = "0.1.0" }
+pyo3 = { version = "0.29", features = ["abi3-py39"] }
+
+# cargo-dist walks every workspace member; this one ships no binaries.
+[package.metadata.dist]
+dist = false

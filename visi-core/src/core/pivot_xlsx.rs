@@ -12,11 +12,14 @@
 //! wires up the required relationships/content-types so Excel recognizes
 //! and can refresh the range as a real PivotTable.
 //!
-//! Import only reconstructs each `PivotTable`'s source, destination, and
-//! row/column/value field assignments (subtotal toggles default back on,
-//! and filter selections reset to "all") -- enough for `visi pivot`
-//! CLI commands to keep editing a pivot table across process invocations,
-//! which is the primary reason this needs to round-trip at all.
+//! Import reconstructs each `PivotTable`'s source, destination, and
+//! row/column/value field assignments, including each field's subtotal toggle
+//! (recovered from whether its `<item t="default"/>` placeholder is present).
+//! Filter *selections* are the one thing that does not survive: they reset to
+//! "all", since restoring them would mean trusting index-based item references
+//! against source data that may since have changed. That is enough for `visi
+//! pivot` CLI commands to keep editing a pivot table across process
+//! invocations, which is the primary reason this needs to round-trip at all.
 
 use crate::core::engine::{CellRef, ResultData, Sheet};
 use crate::core::parser::col_idx_to_letters;

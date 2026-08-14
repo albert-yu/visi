@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import io
 import math
 import os
 import random
@@ -2091,30 +2092,17 @@ class ExcelFuzzGenerator:
 # 2. Execution Drivers (visi & Microsoft Excel)
 # -----------------------------------------------------------------------------
 
-class VisiDriver:
-    """Invokes the `visi` executable to recalculate formulas and save the updated workbook."""
-    def __init__(self, binary_path):
-        self.binary_path = binary_path
-        if not os.path.exists(self.binary_path):
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            rel_path = os.path.join(project_root, "target", "release", "visi")
-            dbg_path = os.path.join(project_root, "target", "debug", "visi")
-            if os.path.exists(rel_path) and os.path.exists(dbg_path):
-                if os.path.getmtime(dbg_path) > os.path.getmtime(rel_path):
-                    self.binary_path = dbg_path
-                else:
-                    self.binary_path = rel_path
-            elif os.path.exists(rel_path):
-                self.binary_path = rel_path
-            elif os.path.exists(dbg_path):
-                self.binary_path = dbg_path
-
-    def run(self, input_file, output_file):
-        """Runs `visi eval input.xlsx --output output.xlsx`."""
-        cmd = [self.binary_path, "eval", input_file, "--output", output_file]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(f"visi failed with code {res.returncode}:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
+# `VisiDriver` moved to visi_driver.py, which drives visi either through the
+# in-process `visi_core` bindings or through the CLI. Re-exported here because
+# reverse_engineer_financial.py imports it (and ExcelDriver, and
+# XLSXEvaluatedReader) from this module.
+from visi_driver import (  # noqa: E402,F401
+    VisiDriver,
+    add_backend_arg,
+    bindings_available,
+    bindings_hint,
+    resolve_visi_binary,
+)
 
 
 class ExcelDriver:
@@ -2222,13 +2210,27 @@ class XLSXEvaluatedReader:
             'normalized_val': parsed python object
         }
         """
+        if not os.path.exists(file_path):
+            return {}
+        with open(file_path, 'rb') as f:
+            return XLSXEvaluatedReader.read_evaluated_cells_bytes(f.read(), source=file_path)
+
+    @staticmethod
+    def read_evaluated_cells_bytes(data, source="<bytes>"):
+        """The same parse, from an in-memory .xlsx.
+
+        Deliberately the identical code path -- only where the zip comes from
+        differs -- so this stays an *independent* reader of what visi actually
+        wrote. It is not a shortcut around visi's exporter: reading values out
+        of the engine's memory instead would stop exercising
+        `export_xlsx_data`, the cached `<v>` tags, shared strings, and (for
+        pivots) the hand-rolled OOXML injection, which is a large share of what
+        the differential harness exists to check.
+        """
         results = {}
 
-        if not os.path.exists(file_path):
-            return results
-
         try:
-            with zipfile.ZipFile(file_path, 'r') as z:
+            with zipfile.ZipFile(io.BytesIO(data), 'r') as z:
                 # 1. Load shared strings table if present
                 shared_strings = []
                 if 'xl/sharedStrings.xml' in z.namelist():
@@ -2283,7 +2285,7 @@ class XLSXEvaluatedReader:
                                 'val': normalized_val
                             }
         except Exception as e:
-            print(f"Warning: Failed to read OpenXML from {file_path}: {e}")
+            print(f"Warning: Failed to read OpenXML from {source}: {e}")
 
         return results
 
@@ -2323,6 +2325,45 @@ class XLSXEvaluatedReader:
                 return f_val
             except ValueError:
                 return raw_val
+
+
+# -----------------------------------------------------------------------------
+# 3b. Smoke mode (--driver mock)
+# -----------------------------------------------------------------------------
+#
+# The mock Excel driver copies the *unevaluated* source workbook and calls it
+# Excel's output. openpyxl writes no cached <v> for a formula cell, so every
+# formula cell reads as None on the "Excel" side -- 360 of 530 cells in a
+# default grid. Comparing against that isn't a weak oracle, it's a guaranteed
+# 100% mismatch, and the harness used to report it as such: exit 1 every run,
+# plus a failure-artifact directory per iteration.
+#
+# So mock does not get compared. What it is actually for -- and what
+# fuzz/README.md has always called it -- is a smoke test of the pipeline
+# (generate -> visi -> read -> report) on a machine with no Excel automation,
+# and a crash hunt over a large volume of generated formulas. Both work
+# without an oracle; neither works with a fake one, because the real signal is
+# invisible among the guaranteed noise.
+
+SMOKE_BANNER = (
+    "[mock] No Excel: running as a pipeline smoke test. Output is checked for "
+    "readability only,\n        not correctness -- there is nothing to compare "
+    "against. Crashes still fail the run."
+)
+
+
+def smoke_check(items, what="cells"):
+    """The most that can be asserted with no oracle: visi wrote an .xlsx that
+    parses and has content. Catches a corrupt or empty export, which is a real
+    failure mode and one the comparison path would never reach.
+
+    `items` is whatever that fuzzer reads back -- a cell dict, or a chart list.
+
+    Returns (ok, reason).
+    """
+    if not items:
+        return False, f"visi produced no readable {what}"
+    return True, ""
 
 
 # -----------------------------------------------------------------------------
@@ -2526,7 +2567,8 @@ def main():
     parser = argparse.ArgumentParser(description="Differential fuzzing test harness for visi vs Microsoft Excel.")
     parser.add_argument("--excel-path", help="Path to Microsoft Excel binary or application bundle (e.g. '/Applications/Microsoft Excel.app').")
     parser.add_argument("--driver", choices=["auto", "applescript", "win32com", "cli", "mock"], default="auto", help="Excel execution driver.")
-    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary.")
+    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary (used by the subprocess backend).")
+    add_backend_arg(parser)
     parser.add_argument("--iterations", type=int, default=10, help="Number of fuzz iterations to run.")
     parser.add_argument("--rows", type=int, default=10, help="Number of rows per sheet.")
     parser.add_argument("--cols", type=int, default=5, help="Number of columns per sheet.")
@@ -2548,17 +2590,24 @@ def main():
     os.makedirs(failures_dir, exist_ok=True)
 
     generator = ExcelFuzzGenerator(seed=args.seed)
-    visi_driver = VisiDriver(binary_path=args.visi_path)
+    visi_driver = VisiDriver(binary_path=args.visi_path, backend=args.backend)
+    # Only warn when the fallback was involuntary. Asking for --backend
+    # subprocess on purpose is not something to nag about.
+    if args.backend == "auto" and visi_driver.backend != "bindings":
+        print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelDriver(excel_path=args.excel_path, driver_type=args.driver)
     comparator = DifferentialComparator(strict_error_class=args.strict_error_class)
+    smoke_mode = excel_driver.driver_type == "mock"
 
     print("=====================================================================")
     print("        visi vs. Microsoft Excel Differential Fuzzing Harness       ")
     print("=====================================================================")
     print(f" Iterations : {args.iterations}")
     print(f" Grid Size  : {args.rows}x{args.cols}")
-    print(f" Visi Path  : {visi_driver.binary_path}")
+    print(f" Visi       : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
+    if smoke_mode:
+        print(f" {SMOKE_BANNER}")
     print("=====================================================================\n")
 
     passed_count = 0
@@ -2579,13 +2628,36 @@ def main():
             iter_gen.create_fuzz_workbook(source_xlsx, num_rows=args.rows, num_cols=args.cols)
 
             # 2. Evaluate with visi
-            visi_driver.run(source_xlsx, visi_out_xlsx)
+            visi_bytes = visi_driver.run(source_xlsx, visi_out_xlsx)
 
-            # 3. Evaluate with Excel
-            excel_driver.run(source_xlsx, excel_out_xlsx)
+            # 3. Evaluate with Excel, if there is an Excel to evaluate with
+            if not smoke_mode:
+                excel_driver.run(source_xlsx, excel_out_xlsx)
 
-            # 4. Compare evaluated cell contents
-            visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_out_xlsx)
+            # 4. Compare evaluated cell contents. visi's output is parsed from
+            # the bytes it just wrote -- the same bytes now on disk in
+            # visi_out_xlsx, so this is a saved read, not a different oracle.
+            visi_cells = XLSXEvaluatedReader.read_evaluated_cells_bytes(
+                visi_bytes, source=visi_out_xlsx
+            )
+
+            if smoke_mode:
+                ok, reason = smoke_check(visi_cells)
+                if ok:
+                    passed_count += 1
+                    print(
+                        f" Iteration {i:3d}/{args.iterations} [OK] "
+                        f"(Seed: {iter_seed}, {len(visi_cells)} cells)"
+                    )
+                else:
+                    failed_count += 1
+                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(f"   {reason}")
+                    fail_case_dir = os.path.join(failures_dir, f"smoke_iter_{i}_seed_{iter_seed}")
+                    shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
+                    print(f"   Saved reproducing files to: {fail_case_dir}\n")
+                continue
+
             excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_out_xlsx)
 
             is_match, mismatches = comparator.compare(visi_cells, excel_cells)
@@ -2618,8 +2690,11 @@ def main():
 
     duration = time.time() - start_time
     print("\n=====================================================================")
-    print(f" Fuzzing Completed in {duration:.2f}s")
-    print(f" Passed : {passed_count}/{args.iterations}")
+    print(f" {'Smoke test' if smoke_mode else 'Fuzzing'} Completed in {duration:.2f}s")
+    if smoke_mode:
+        print(f" Ran    : {passed_count}/{args.iterations} without a crash")
+    else:
+        print(f" Passed : {passed_count}/{args.iterations}")
     print(f" Failed : {failed_count}/{args.iterations}")
     if comparator.error_class_only:
         print(

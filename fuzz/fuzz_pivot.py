@@ -61,7 +61,12 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fuzz_excel import XLSXEvaluatedReader, DifferentialComparator  # noqa: E402
+from fuzz_excel import (  # noqa: E402
+    SMOKE_BANNER,
+    DifferentialComparator,
+    XLSXEvaluatedReader,
+    smoke_check,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -214,12 +219,30 @@ class PivotFuzzGenerator:
         if random.random() < 0.5:
             fcol = random.choice(self.FILTERABLE_COLS)
             values = sorted(distinct[fcol])
-            # May legitimately come out empty -> filters out every record.
+            # Always at least one selected value. An empty selection means
+            # "select nothing", which real Excel cannot represent -- it
+            # refuses to hide a page field's last visible PivotItem (runtime
+            # error 1004), so BuildFuzzPivot.bas falls back to leaving the
+            # field unfiltered at "(All)". Emitting one made visi render an
+            # empty grid against Excel's full one and report every cell of it
+            # as a mismatch (iteration 5, seed 244209) -- an unrepresentable
+            # config, not an engine disagreement, the same class of bogus
+            # failure the `canonicalize` comment above describes. `values` is
+            # never empty itself: every filterable column gets a value (or
+            # "(blank)") on every one of the >= 1 generated rows.
             selected = [v for v in values if random.random() < 0.5]
+            if not selected:
+                selected = [random.choice(values)]
             filter_field = {"column": self.COL_NAMES[fcol], "values": selected}
 
         return {
             "source_range": source_range,
+            # The same block as 0-based inclusive (start_row, start_col,
+            # end_row, end_col), for the bindings backend, which takes indices
+            # rather than A1. Derived here beside `source_range` so the two
+            # cannot disagree, and so neither the driver nor visi-python needs
+            # an A1 parser of its own.
+            "source_bounds": (0, 0, num_rows, 5),
             "table_name": table_name,
             "row_fields": row_fields,
             "col_fields": col_fields,
@@ -236,6 +259,7 @@ class PivotFuzzGenerator:
 
 PIVOT_NAME = "FuzzPivot"
 DEST_CELL = "H1"  # two columns clear of the source block (A:F)
+DEST_RC = (0, 7)  # DEST_CELL as 0-based (row, col); must agree with it
 # One-time, human-created macro-enabled workbook containing BuildFuzzPivot.bas
 # -- see fuzz_pivot.py's module docstring for setup steps. Not checked in
 # (it's a compiled-macro binary asset a human authors once, not generated).
@@ -260,88 +284,13 @@ AGG_TO_WIN32COM_FUNCTION = {
 }
 
 
-class VisiPivotDriver:
-    """Builds a matching pivot table via the `visi pivot` CLI: `create`, then
-    repeated `add-field`/`filter`. Each mutating call auto-refreshes (see
-    `WorkbookManager::add_pivot_field`'s doc comment), so no explicit
-    `refresh` is needed -- this mirrors how a real user would build up a
-    pivot table incrementally.
-    """
-
-    def __init__(self, binary_path):
-        self.binary_path = binary_path
-        if not os.path.exists(self.binary_path):
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            rel_path = os.path.join(project_root, "target", "release", "visi")
-            dbg_path = os.path.join(project_root, "target", "debug", "visi")
-            if os.path.exists(rel_path) and os.path.exists(dbg_path):
-                if os.path.getmtime(dbg_path) > os.path.getmtime(rel_path):
-                    self.binary_path = dbg_path
-                else:
-                    self.binary_path = rel_path
-            elif os.path.exists(rel_path):
-                self.binary_path = rel_path
-            elif os.path.exists(dbg_path):
-                self.binary_path = dbg_path
-
-    def _run(self, args):
-        cmd = [self.binary_path, "pivot"] + args
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(
-                f"visi pivot {' '.join(args)} failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
-            )
-
-    def run(self, source_file, config, output_file):
-        shutil.copyfile(source_file, output_file)
-
-        create_args = ["create", output_file, "--name", PIVOT_NAME, "--dest", DEST_CELL, "-i"]
-        if config["table_name"]:
-            create_args += ["--source-table", config["table_name"]]
-        else:
-            create_args += ["--source-range", config["source_range"]]
-        if not config["grand_totals_row"]:
-            create_args.append("--no-grand-totals-row")
-        if not config["grand_totals_col"]:
-            create_args.append("--no-grand-totals-col")
-        self._run(create_args)
-
-        for f in config["row_fields"]:
-            args = ["add-field", output_file, "--name", PIVOT_NAME, "--area", "row",
-                    "--column", f["column"], "-i"]
-            if not f["subtotal"]:
-                args.append("--no-subtotal")
-            self._run(args)
-        for f in config["col_fields"]:
-            args = ["add-field", output_file, "--name", PIVOT_NAME, "--area", "column",
-                    "--column", f["column"], "-i"]
-            if not f["subtotal"]:
-                args.append("--no-subtotal")
-            self._run(args)
-        for f in config["value_fields"]:
-            self._run(
-                ["add-field", output_file, "--name", PIVOT_NAME, "--area", "value",
-                 "--column", f["column"], "--agg", f["agg"], "-i"]
-            )
-        if config["filter_field"]:
-            self._run(
-                ["add-field", output_file, "--name", PIVOT_NAME, "--area", "filter",
-                 "--column", config["filter_field"]["column"], "-i"]
-            )
-            values = config["filter_field"]["values"]
-            if values:
-                self._run(
-                    ["filter", output_file, "--name", PIVOT_NAME,
-                     "--column", config["filter_field"]["column"],
-                     "--values", ",".join(values), "-i"]
-                )
-            # else: the config wants "select nothing", but the CLI's
-            # `filter` command has no verb for an empty selection (only a
-            # comma list or `--clear`) -- leave the field unfiltered rather
-            # than attempting a config the CLI can't express. This is a gap
-            # in the CLI surface, not the fuzzer; Layer 1 (pivot.rs's Rust
-            # invariant fuzzer) already covers the empty-selection case
-            # directly against `PivotTable`/`compute_pivot`.
+# `VisiPivotDriver` moved to visi_driver.py, which drives visi either through
+# the in-process `visi_core` bindings or through the `visi pivot` CLI.
+from visi_driver import (  # noqa: E402,F401
+    VisiPivotDriver,
+    add_backend_arg,
+    bindings_hint,
+)
 
 
 class ExcelPivotDriver:
@@ -661,7 +610,8 @@ def main():
         "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto",
         help="Excel execution driver.",
     )
-    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary.")
+    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary (used by the subprocess backend).")
+    add_backend_arg(parser)
     parser.add_argument("--iterations", type=int, default=10, help="Number of fuzz iterations to run.")
     parser.add_argument("--rows", type=int, default=30, help="Max source data rows per iteration.")
     parser.add_argument(
@@ -676,9 +626,12 @@ def main():
     failures_dir = os.path.join(args.output_dir, "failures")
     os.makedirs(failures_dir, exist_ok=True)
 
-    visi_driver = VisiPivotDriver(binary_path=args.visi_path)
+    visi_driver = VisiPivotDriver(binary_path=args.visi_path, backend=args.backend)
+    if args.backend == "auto" and visi_driver.backend != "bindings":
+        print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelPivotDriver(excel_path=args.excel_path, driver_type=args.driver)
     comparator = DifferentialComparator()
+    smoke_mode = excel_driver.driver_type == "mock"
 
     print("=====================================================================")
     print("      visi vs. Microsoft Excel Pivot Table Differential Fuzzer       ")
@@ -686,8 +639,10 @@ def main():
     print(f" Iterations  : {args.iterations}")
     print(f" Max rows    : {args.rows}")
     print(f" Source mode : {args.source_mode}")
-    print(f" Visi Path   : {visi_driver.binary_path}")
+    print(f" Visi        : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
+    if smoke_mode:
+        print(f" {SMOKE_BANNER}")
     print("=====================================================================\n")
 
     passed_count = 0
@@ -714,10 +669,31 @@ def main():
 
             config = generator.generate(source_xlsx, num_rows=num_rows, use_table=use_table)
 
-            visi_driver.run(source_xlsx, config, visi_out_xlsx)
-            excel_driver.run(source_xlsx, config, excel_out_xlsx)
+            visi_driver.run(source_xlsx, config, visi_out_xlsx, PIVOT_NAME, DEST_CELL, DEST_RC)
+            if not smoke_mode:
+                excel_driver.run(source_xlsx, config, excel_out_xlsx)
 
             visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_out_xlsx)
+
+            if smoke_mode:
+                ok, reason = smoke_check(visi_cells)
+                if ok:
+                    passed_count += 1
+                    print(
+                        f" Iteration {i:3d}/{args.iterations} [OK] (Seed: {iter_seed},"
+                        f" rows: {num_rows}, table: {use_table}, {len(visi_cells)} cells)"
+                    )
+                else:
+                    failed_count += 1
+                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(f"   {reason}")
+                    fail_case_dir = os.path.join(
+                        failures_dir, f"pivot_smoke_iter_{i}_seed_{iter_seed}"
+                    )
+                    shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
+                    print(f"   Saved reproducing files to: {fail_case_dir}\n")
+                continue
+
             excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_out_xlsx)
 
             is_match, mismatches = comparator.compare(visi_cells, excel_cells)
@@ -749,8 +725,11 @@ def main():
 
     duration = time.time() - start_time
     print("\n=====================================================================")
-    print(f" Fuzzing Completed in {duration:.2f}s")
-    print(f" Passed : {passed_count}/{args.iterations}")
+    print(f" {'Smoke test' if smoke_mode else 'Fuzzing'} Completed in {duration:.2f}s")
+    if smoke_mode:
+        print(f" Ran    : {passed_count}/{args.iterations} without a crash")
+    else:
+        print(f" Passed : {passed_count}/{args.iterations}")
     print(f" Failed : {failed_count}/{args.iterations}")
     print("=====================================================================")
 
