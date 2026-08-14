@@ -1,0 +1,9 @@
+# No tag for visi-core. The Release workflow triggers on any tag matching
+# `**[0-9]+.[0-9]+.[0-9]+*`, which `visi-core-v0.1.1` matches -- and dist would
+# then fail the run, since it parses the crate name out of the tag and visi-core
+# is a library with no binaries to release.
+#
+# visi-core reaching crates.io does not depend on a tag anyway: publish-crates.yml
+# publishes whatever version is in this manifest if it is not already on the
+# registry. The version bump is the release; the `visi` tag is just what runs it.
+tag = false

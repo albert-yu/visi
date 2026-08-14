@@ -1,0 +1,5 @@
+# `visi` is the crate the release is named after, so it keeps the bare tag shape
+# the existing releases use (v0.1.0, v0.1.1, v0.1.2) and that dist's homebrew
+# formula and installers are built around. Without this, cargo-release would
+# default a workspace member to a `visi-` prefix.
+tag-prefix = ""
