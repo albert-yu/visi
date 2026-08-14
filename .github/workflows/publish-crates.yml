@@ -1,0 +1,110 @@
+# Publishes the workspace's library/CLI crates to crates.io.
+#
+# This is a dist *custom publish job*: it is invoked by release.yml (which dist
+# generates) because dist-workspace.toml lists `./publish-crates` in
+# `publish-jobs`, and it runs after the GitHub Release exists, alongside the
+# homebrew publish. dist has no built-in crates.io publisher.
+#
+# Two things make this more than a bare `cargo publish --workspace`:
+#
+# * `visi-core` versions independently of `visi` (see the comment in
+#   visi-core/Cargo.toml), so a `v0.1.3` tag does not imply a new `visi-core`.
+#   Each crate is therefore published only if the version in *its* manifest is
+#   not already on crates.io, which makes the job idempotent and lets either
+#   crate move on its own.
+# * `visi` depends on `visi-core` by version, so `visi-core` has to be on the
+#   registry (and be the version `visi` asks for) before `visi` can go up.
+name: Publish crates
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+  # Lets you re-run just this half of a release from the Actions tab if
+  # crates.io was down, a token had expired, or a version bump was missed.
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Package and verify without uploading"
+        type: boolean
+        default: false
+
+jobs:
+  publish-crates:
+    runs-on: "ubuntu-22.04"
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+
+      # `visi = { version = "X" }` in visi/Cargo.toml is not checked by cargo
+      # against the local visi-core when both are in the workspace -- the path
+      # dependency wins locally. So a visi-core bump that forgets to bump the
+      # requirement would publish a `visi` pinned to the *old* visi-core, and
+      # nothing would fail. Catch it here instead.
+      - name: Check visi -> visi-core version requirement
+        run: |
+          set -euo pipefail
+          meta=$(cargo metadata --format-version 1 --no-deps)
+          core_version=$(jq -r '.packages[] | select(.name == "visi-core") | .version' <<<"$meta")
+          req=$(jq -r '.packages[] | select(.name == "visi") | .dependencies[] | select(.name == "visi-core") | .req' <<<"$meta")
+          echo "visi-core is $core_version; visi requires $req"
+          if [ "$req" != "^$core_version" ]; then
+            echo "::error::visi/Cargo.toml requires visi-core '$req' but visi-core is at $core_version. Bump the dependency version so the published visi depends on the visi-core released alongside it."
+            exit 1
+          fi
+
+      # Order matters: visi-core must be on the registry before visi's
+      # verification build can resolve it. `cargo publish` already polls the
+      # index until the new version is visible, so no manual sleep is needed.
+      - name: Publish
+        run: |
+          set -euo pipefail
+
+          DRY_RUN="${{ inputs.dry-run == true && '1' || '0' }}"
+
+          published() {
+            # 200 = this exact version exists, 404 = it does not. Anything else
+            # is crates.io having a bad day; fail rather than guess.
+            local code
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H 'User-Agent: visi-release (github.com/albert-yu/visi)' \
+              "https://crates.io/api/v1/crates/$1/$2")
+            case "$code" in
+              200) return 0 ;;
+              404) return 1 ;;
+              *) echo "::error::crates.io returned HTTP $code for $1@$2"; exit 1 ;;
+            esac
+          }
+
+          meta=$(cargo metadata --format-version 1 --no-deps)
+
+          for crate in visi-core visi; do
+            version=$(jq -r --arg c "$crate" \
+              '.packages[] | select(.name == $c) | .version' <<<"$meta")
+
+            if [ "$DRY_RUN" = "1" ]; then
+              echo "::group::dry-run $crate $version"
+              cargo publish -p "$crate" --dry-run --allow-dirty
+              echo "::endgroup::"
+              continue
+            fi
+
+            if published "$crate" "$version"; then
+              echo "$crate $version is already on crates.io; skipping"
+              continue
+            fi
+
+            echo "::group::publishing $crate $version"
+            cargo publish -p "$crate"
+            echo "::endgroup::"
+          done
