@@ -70,7 +70,9 @@ A `Sheet` is **column-oriented**: `columns: Vec<DataColumn>`, each with parallel
 - `compiled_src: SharedVec<CompiledFormula>` — cached compile output
 - `dirty_indices` — recompute queue
 
-Everything internal is **0-based `(row, col)`**; A1 notation exists only at the parser and CLI boundaries (`parser::col_idx_to_letters`, `visi/src/utils.rs`). `src`, `data`, and `compiled_src` must stay the same length — row/col insert/delete paths in `sheet.rs` maintain that invariant by hand.
+Everything internal is **0-based `(row, col)`**; A1 notation exists only at the parser and CLI boundaries (`parser::col_idx_to_letters`, `visi/src/utils.rs`). `src`, `data`, `compiled_src`, and `styles` must stay the same length, and every column of a sheet must have the same number of rows (`Sheet::row_count` reads only the first and assumes the rest match).
+
+Those four vectors and `Sheet::columns` are `pub(crate)`; outside the crate they are reachable read-only through `DataColumn`'s accessors (`len`, `src`, `value`, `compiled`, `style`) and `Sheet::columns()`. **Change a column's length only through `DataColumn`'s paired operations** — `push_row`, `insert_row`, `remove_row`, `drain_rows`, `resize_rows`, `rebuild_after_load` — which touch all four vectors together. Hand-maintaining them is what let `extend` and `delete` silently skip `styles`, which made a row added by `extend` unstylable and shifted every style below a deleted range onto the wrong row. `dirty_indices` is deliberately *not* part of the invariant: it is a recompute queue `commit` drains, and the paired operations rebase it for you.
 
 `ResultData` is the value type (`None`/`Boolean`/`Integer`/`Float`/`String`/`List`/`Dict`/`Error`). `result_data::format_excel_number` reproduces Excel's 15-significant-digit display rules — change it only with fuzz evidence.
 
