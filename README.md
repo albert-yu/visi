@@ -1,18 +1,26 @@
 # visi
 
-A high-performance Rust spreadsheet engine and
-developer-friendly CLI tool for reading, evaluating formulas in,
-and updating Excel (`.xlsx`) files.
+A high-performance spreadsheet engine for editing and evaluating Excel (`.xlsx`) files.
 
-`visi` is structured as a modular Cargo workspace containing:
-- **[`visi-core`](visi-core/)**: Core embedded spreadsheet engine providing Excel parsing, AST formula compilation, dependency resolution, execution engine, date calculations, chart metadata, and Excel (`.xlsx`) import/export. Usable as a library on its own — see [its README](visi-core/README.md).
-- **`visi`**: Command-line application adhering to [clig.dev](https://clig.dev) design guidelines for inspecting, editing, evaluating formulas in, and exporting Excel workbooks.
+My goals with this project are:
+
+1. Match Excel's execution behavior 100% (or, as much as possible without a UI)
+2. Go fast
+
+`visi` is structured follows:
+- **[`visi-core`](visi-core/)**: embeddedable spreadsheet engine providing Excel parsing, AST formula compilation, dependency resolution, execution engine, date calculations, chart metadata, and Excel (`.xlsx`) import/export, see [its README](visi-core/README.md).
+- **`visi`**: Command-line application using `visi-core` which can edit and execute Excel files headlessly
+
+Libraries such as `openpyxl` can author Excel workbooks, but they cannot evaluate formulas.
+`visi` aims for parity by using [fuzz testing](fuzz/README.md) and throwing
+LLM tokens at it.
 
 Minimum supported Rust version: **1.88**.
 
-## Installation
+## Installation (`visi`)
 
 ### Homebrew (macOS/Linux)
+
 ```bash
 brew install albert-yu/tap/visi
 ```
@@ -20,9 +28,11 @@ brew install albert-yu/tap/visi
 ### Building from Source
 
 #### Requirements
+
 - [Rust](https://www.rust-lang.org/) (2024 edition supported)
 
 #### Build Binary
+
 ```bash
 # Build dev binary
 cargo build --workspace
@@ -35,6 +45,7 @@ The compiled CLI executable will be located at `target/release/visi` (or `target
 ### Examples
 
 #### 1. Inspect Workbook Structure
+
 ```bash
 # Display summary of sheets, dimensions, and formula counts
 visi info data.xlsx
@@ -44,6 +55,7 @@ visi info data.xlsx --json
 ```
 
 #### 2. Read Sheet Contents, Ranges, or Cells
+
 ```bash
 # View first sheet as a formatted ASCII table in the terminal
 visi read data.xlsx
@@ -61,6 +73,7 @@ visi read data.xlsx --format json
 ```
 
 #### 3. Update Cells & Set Formulas
+
 ```bash
 # Set cell values and save to output file
 visi set data.xlsx --sheet Sheet1 --cell A1 --value 100 --output updated.xlsx
@@ -73,6 +86,7 @@ visi set data.xlsx -s Sheet2 -S B1="=Sheet1!A3 + 50" -i
 ```
 
 #### 4. Recalculate Formulas
+
 ```bash
 # Force recalculation of all formulas across all sheets and save in-place
 visi eval data.xlsx --in-place
@@ -82,6 +96,7 @@ visi eval data.xlsx --print --format table
 ```
 
 #### 5. Manage Worksheets
+
 ```bash
 # List sheets
 visi sheet list data.xlsx
@@ -97,6 +112,7 @@ visi sheet delete data.xlsx --name "OldSheet" -i
 ```
 
 #### 6. Manipulate Rows and Columns
+
 ```bash
 # Insert a new row at row 2 (1-based index)
 visi row insert data.xlsx --sheet Sheet1 --index 2 -i
@@ -112,6 +128,7 @@ visi col delete data.xlsx --sheet Sheet1 --index C -i
 ```
 
 #### 7. Export Sheet Data
+
 ```bash
 # Export sheet to CSV or JSON file
 visi export data.xlsx --sheet Sheet1 --format csv --output sheet1.csv
