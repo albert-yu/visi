@@ -736,6 +736,10 @@ fn test_paired_sums_error_only_when_a_range_holds_no_numbers() {
 }
 
 #[test]
+// The mpmath reference values below are kept at their full width rather than
+// truncated to the shortest round-tripping literal: the digits past f64 are
+// what the sub-ULP tolerances here are justified against.
+#[allow(clippy::excessive_precision)]
 fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
     // F.DIST.RT used to be computed as 1 - CDF. For a large F statistic
     // the CDF is within an ULP or two of 1, so that subtraction discarded
@@ -961,6 +965,9 @@ fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
 }
 
 #[test]
+// As above: the 60-digit mpmath references stay at full width so the ULP
+// claims in the comments can be checked against them.
+#[allow(clippy::excessive_precision)]
 fn test_incomplete_beta_prefactor_accuracy() {
     // The beta prefactor is computed from tgamma rather than as
     // exp(a*ln x + b*ln(1-x) - lbeta), which put the absolute error of a

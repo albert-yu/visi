@@ -687,6 +687,9 @@ fn test_mod_reports_num_once_the_quotient_stops_being_meaningful() {
 }
 
 #[test]
+// `exact` is a reference value carried at more digits than f64 holds, so it
+// can be read against the oracle that produced it; see the comment on it.
+#[allow(clippy::excessive_precision)]
 fn test_coupdaysnc_and_acoth_precision() {
     // COUPDAYSNC's span ends at a coupon date, so on basis 0 a month-end
     // coupon is pulled back to the 30th -- the same rule ODDLPRICE's
