@@ -1,0 +1,5 @@
+# visi-python is `publish = false` and exists only so fuzz/ can drive the engine
+# in-process. Its version number is not a thing anyone consumes, so it does not
+# take part in releases -- no bump, no tag. cargo-release still rewrites its
+# `visi-core` dependency requirement when visi-core moves, which is what matters.
+release = false

@@ -1,0 +1,32 @@
+# Version bumps and tagging, via `cargo release` (crate-ci/cargo-release).
+#
+#   cargo release patch --workspace          # dry run; shows every edit
+#   cargo release patch --workspace --execute
+#   cargo release patch -p visi --execute    # CLI-only change
+#   git push --follow-tags                   # this is what starts the release
+#
+# cargo-release's job here stops at "version bumped, commit made, tag written".
+# Pushing the tag is what starts .github/workflows/release.yml, which builds
+# the binaries, cuts the GitHub Release, updates the homebrew tap, and publishes
+# to crates.io.
+#
+# `visi-core` and `visi` version independently (see visi-core/Cargo.toml), but
+# they should generally be released together: bumping visi-core rewrites the
+# `visi-core = { version = "..." }` requirement in visi/Cargo.toml, and only a
+# `visi` tag starts the pipeline. Bumping visi-core alone is not *broken* --
+# publish-crates.yml publishes whatever is missing from crates.io on the next
+# release, so it catches up -- but it does not ship until then.
+
+# CI publishes (.github/workflows/publish-crates.yml). Doing it here as well
+# would upload from a laptop before the tag was pushed, and race the CI job.
+publish = false
+
+# Push the tag by hand, so there is a beat between "version bumped" and "the
+# release pipeline is running" -- and so a bad bump can be amended rather than
+# chased with a yanked release.
+push = false
+
+# This repo does not use conventional-commit prefixes; cargo-release's defaults
+# for both of these start with "chore: ".
+pre-release-commit-message = "Release {{version}}"
+tag-message = "Release {{crate_name}} version {{version}}"
