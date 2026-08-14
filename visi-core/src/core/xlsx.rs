@@ -2001,14 +2001,10 @@ mod tests {
     fn test_xlsx_import_export_cycle() {
         // Create a mock sheet
         let mut columns = Vec::new();
-        let mut col1 = DataColumn::new(2);
-        col1.name = "A".to_string();
-        col1.src = vec!["10".to_string(), "20".to_string()].into();
+        let col1 = DataColumn::from_src("A", vec!["10".to_string(), "20".to_string()]);
         columns.push(col1);
 
-        let mut col2 = DataColumn::new(2);
-        col2.name = "B".to_string();
-        col2.src = vec!["=A1 + A2".to_string(), "abc".to_string()].into();
+        let col2 = DataColumn::from_src("B", vec!["=A1 + A2".to_string(), "abc".to_string()]);
         columns.push(col2);
 
         let sheet = Sheet {
@@ -2121,9 +2117,7 @@ mod tests {
     /// Excel handed it over as a string cell, so it stays a string.
     #[test]
     fn test_xlsx_date_looking_text_stays_text() {
-        let mut col = DataColumn::new(1);
-        col.name = "A".to_string();
-        col.src = vec!["\"22-Jun\"".to_string()].into();
+        let col = DataColumn::from_src("A", vec!["\"22-Jun\"".to_string()]);
         let sheet = Sheet {
             id: 1,
             name: "Sheet1".to_string(),
@@ -2154,17 +2148,11 @@ mod tests {
         // column B's data to be silently stored at internal column 0 and
         // labeled "A" on import, making it unreachable by its true B1-style
         // reference and vanishing from column A entirely.
-        let mut col_a = DataColumn::new(2);
-        col_a.name = "A".to_string();
-        col_a.src = vec![String::new(), String::new()].into();
+        let col_a = DataColumn::from_src("A", vec![String::new(), String::new()]);
 
-        let mut col_b = DataColumn::new(2);
-        col_b.name = "B".to_string();
-        col_b.src = vec!["42".to_string(), "8".to_string()].into();
+        let col_b = DataColumn::from_src("B", vec!["42".to_string(), "8".to_string()]);
 
-        let mut col_c = DataColumn::new(2);
-        col_c.name = "C".to_string();
-        col_c.src = vec!["=B1 + B2".to_string(), String::new()].into();
+        let col_c = DataColumn::from_src("C", vec!["=B1 + B2".to_string(), String::new()]);
 
         let sheet = Sheet {
             id: 1,
@@ -2497,8 +2485,7 @@ mod tests {
         // Create an empty sheet (e.g., 5 columns, 10 rows, all empty strings)
         let mut columns = Vec::new();
         for _ in 0..5 {
-            let mut col = DataColumn::new(10);
-            col.src = vec![String::new(); 10].into();
+            let col = DataColumn::new(10);
             columns.push(col);
         }
 
@@ -2540,14 +2527,16 @@ mod tests {
         ] {
             // Create a sheet with data for the chart to reference
             let mut columns = Vec::new();
-            let mut col1 = DataColumn::new(3);
-            col1.name = "A".to_string();
-            col1.src = vec!["Cat1".to_string(), "Cat2".to_string(), "Cat3".to_string()].into();
+            let col1 = DataColumn::from_src(
+                "A",
+                vec!["Cat1".to_string(), "Cat2".to_string(), "Cat3".to_string()],
+            );
             columns.push(col1);
 
-            let mut col2 = DataColumn::new(3);
-            col2.name = "B".to_string();
-            col2.src = vec!["10".to_string(), "20".to_string(), "30".to_string()].into();
+            let col2 = DataColumn::from_src(
+                "B",
+                vec!["10".to_string(), "20".to_string(), "30".to_string()],
+            );
             columns.push(col2);
 
             let sheet = Sheet {
@@ -2619,9 +2608,10 @@ mod tests {
     #[test]
     fn test_xlsx_formula_v_caching() {
         let mut columns = Vec::new();
-        let mut col1 = DataColumn::new(3);
-        col1.name = "A".to_string();
-        col1.src = vec!["10".to_string(), "20".to_string(), "=A1 + A2".to_string()].into();
+        let mut col1 = DataColumn::from_src(
+            "A",
+            vec!["10".to_string(), "20".to_string(), "=A1 + A2".to_string()],
+        );
         col1.data
             .set(0, crate::core::engine::ResultData::Integer(10));
         col1.data
@@ -2657,9 +2647,7 @@ mod tests {
         // spreadsheet where the user typed "1" into a text-formatted cell)
         // must round-trip as text, not silently become the number 1.
         let mut columns = Vec::new();
-        let mut col1 = DataColumn::new(1);
-        col1.name = "A".to_string();
-        col1.src = vec!["\"1\"".to_string()].into();
+        let col1 = DataColumn::from_src("A", vec!["\"1\"".to_string()]);
         columns.push(col1);
 
         let sheet = Sheet {

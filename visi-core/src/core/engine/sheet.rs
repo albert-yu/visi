@@ -138,7 +138,11 @@ pub struct Sheet {
     pub name: String,
     /// The cells, one entry per column. Row `r` of column `c` is
     /// `columns[c]`'s entry `r`.
-    pub columns: Vec<DataColumn>,
+    ///
+    /// Every column has the same number of rows -- [`Sheet::row_count`] reads
+    /// only the first and assumes the rest match -- so the `Vec` itself is
+    /// crate-private. Read them through [`Sheet::columns`].
+    pub(crate) columns: Vec<DataColumn>,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
@@ -242,9 +246,7 @@ impl Sheet {
     /// deserializing, before [`Sheet::commit`].
     pub fn setup_after_deserialization(&mut self) {
         for col in &mut self.columns {
-            let size = col.src.len();
-            col.data.resize(size);
-            col.compiled_src = vec![crate::core::CompiledFormula::default(); size].into();
+            col.rebuild_after_load();
         }
         self.mark_all_dirty();
     }
@@ -9574,12 +9576,10 @@ impl Sheet {
                     }
                 }
                 // Handle multi-row deletion
-                else if start_index < column.src.len() {
+                else if start_index < column.len() {
                     // Delete complete rows between start and end
                     if end_index >= start_index {
-                        column.src.drain(start_index..=end_index);
-                        column.compiled_src.drain(start_index..=end_index);
-                        column.data.drain(start_index..=end_index);
+                        column.drain_rows(start_index..=end_index);
                     }
                 }
             }
@@ -9595,12 +9595,10 @@ impl Sheet {
                         column.src.len() - 1
                     };
 
-                    if start_index < column.src.len() {
+                    if start_index < column.len() {
                         // Delete rows in this column
                         if end_index >= start_index {
-                            column.src.drain(start_index..=end_index);
-                            column.compiled_src.drain(start_index..=end_index);
-                            column.data.drain(start_index..=end_index);
+                            column.drain_rows(start_index..=end_index);
                         }
                     }
                 }
@@ -9621,11 +9619,7 @@ impl Sheet {
         match direction {
             Direction::Up => {
                 for column in &mut self.columns {
-                    column.src.insert(0, String::new());
-                    column
-                        .compiled_src
-                        .insert(0, crate::core::CompiledFormula::default());
-                    column.data.insert(0, ResultData::None);
+                    column.insert_row(0);
                 }
                 self.uncommitted_actions
                     .push(crate::core::SheetAction::InsertRow {
@@ -9635,11 +9629,7 @@ impl Sheet {
             }
             Direction::Down => {
                 for column in &mut self.columns {
-                    column.src.push(String::new());
-                    column
-                        .compiled_src
-                        .push(crate::core::CompiledFormula::default());
-                    column.data.push(ResultData::None);
+                    column.push_row();
                 }
                 self.uncommitted_actions
                     .push(crate::core::SheetAction::InsertRow {
@@ -9686,13 +9676,7 @@ impl Sheet {
 
         if final_rows > current_rows {
             for col in &mut self.columns {
-                while col.src.len() < final_rows {
-                    col.src.push(String::new());
-                    col.compiled_src
-                        .push(crate::core::CompiledFormula::default());
-                    col.data.push(ResultData::None);
-                    col.styles.push(None);
-                }
+                col.resize_rows(final_rows);
             }
         }
     }
@@ -9761,12 +9745,7 @@ impl Sheet {
         if index >= row_count {
             // Append at the end
             for column in &mut self.columns {
-                column.src.push(String::new());
-                column
-                    .compiled_src
-                    .push(crate::core::CompiledFormula::default());
-                column.data.push(ResultData::None);
-                column.styles.push(None);
+                column.push_row();
             }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
@@ -9776,12 +9755,7 @@ impl Sheet {
         } else {
             // Insert at the specified index
             for column in &mut self.columns {
-                column.src.insert(index, String::new());
-                column
-                    .compiled_src
-                    .insert(index, crate::core::CompiledFormula::default());
-                column.data.insert(index, ResultData::None);
-                column.styles.insert(index, None);
+                column.insert_row(index);
             }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
@@ -9801,19 +9775,7 @@ impl Sheet {
         let row_count = self.row_count();
         if index < row_count {
             for column in &mut self.columns {
-                column.src.remove(index);
-                column.compiled_src.remove(index);
-                column.data.remove(index);
-                if index < column.styles.len() {
-                    column.styles.remove(index);
-                }
-                // Adjust dirty indices
-                column.dirty_indices.retain(|&i| i != index);
-                for i in 0..column.dirty_indices.len() {
-                    if column.dirty_indices[i] > index {
-                        column.dirty_indices[i] -= 1;
-                    }
-                }
+                column.remove_row(index);
             }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::DeleteRow {
@@ -9861,6 +9823,16 @@ impl Sheet {
                 });
         }
         self.mark_all_dirty();
+    }
+
+    /// The sheet's columns.
+    ///
+    /// Read-only: every column must keep the same number of rows, so growing
+    /// or replacing one from outside would desync the sheet. Use
+    /// [`Sheet::insert_col`], [`Sheet::delete_col`] and [`Sheet::extend`] to
+    /// change the shape.
+    pub fn columns(&self) -> &[DataColumn] {
+        &self.columns
     }
 
     /// Allocated rows, taken from the first column -- every column has the

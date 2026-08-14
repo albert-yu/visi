@@ -298,20 +298,20 @@ pub struct DataColumn {
     pub name: String,
     /// The computed values. Rebuilt on load, so not persisted.
     #[serde(skip, default)]
-    pub data: ColumnData,
+    pub(crate) data: ColumnData,
     /// The raw text of each cell, exactly as typed. The only representation
     /// that is persisted, and the one everything else is rebuilt from.
-    pub src: SharedVec<String>,
+    pub(crate) src: SharedVec<String>,
     /// Cached compile output for each cell. Rebuilt on load.
     #[serde(skip, default)]
-    pub compiled_src: SharedVec<CompiledFormula>,
+    pub(crate) compiled_src: SharedVec<CompiledFormula>,
     /// Rows awaiting recomputation. Drained by `Sheet::commit`.
     #[serde(skip, default)]
-    pub dirty_indices: SharedVec<usize>,
+    pub(crate) dirty_indices: SharedVec<usize>,
     /// Per-cell styling, `None` where a cell has none. Carries a date cell's
     /// number format.
     #[serde(default)]
-    pub styles: SharedVec<Option<crate::core::CellStyle>>,
+    pub(crate) styles: SharedVec<Option<crate::core::CellStyle>>,
 }
 
 pub(crate) struct ColumnPosition {
@@ -334,9 +334,168 @@ impl DataColumn {
         }
     }
 
+    /// Rows in the column. Every parallel vector has this length.
+    pub fn len(&self) -> usize {
+        self.src.len()
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.src.is_empty()
+    }
+
+    /// The raw text of a cell, exactly as typed, or `None` past the end.
+    pub fn src(&self, row: usize) -> Option<&str> {
+        self.src.get(row).map(String::as_str)
+    }
+
+    /// The computed value of a cell, or `None` past the end.
+    ///
+    /// Reflects the last `Sheet::commit`; a cell edited since then still
+    /// reads as its old value.
+    pub fn value(&self, row: usize) -> Option<ResultData> {
+        self.data.get(row)
+    }
+
+    /// The whole value column, for callers that want to work with the typed
+    /// representation rather than row by row.
+    pub fn values(&self) -> &ColumnData {
+        &self.data
+    }
+
+    /// A cell's compiled formula, or `None` past the end. A cell holding a
+    /// literal has an empty one rather than no entry.
+    pub fn compiled(&self, row: usize) -> Option<&CompiledFormula> {
+        self.compiled_src.get(row)
+    }
+
+    /// A cell's style, or `None` if it has none or is past the end.
+    pub fn style(&self, row: usize) -> Option<&crate::core::CellStyle> {
+        self.styles.get(row).and_then(Option::as_ref)
+    }
+
     pub(crate) fn mark_dirty(&mut self, row: usize) {
         if !self.dirty_indices.contains(&row) {
             self.dirty_indices.push(row);
+        }
+    }
+
+    /// A named column holding `src`, with every parallel vector sized to
+    /// match.
+    ///
+    /// The values start empty -- `Sheet::commit` is what fills them in from
+    /// the source text. Test-only: production builds sheets through
+    /// `Sheet::new` and `ensure_capacity`.
+    #[cfg(test)]
+    pub(crate) fn from_src(name: impl Into<String>, src: Vec<String>) -> Self {
+        let mut col = Self::new(src.len());
+        col.name = name.into();
+        col.src = src.into();
+        col
+    }
+
+    /// Rebuilds what serialization drops, restoring the length invariant.
+    ///
+    /// Only `src` and `styles` are persisted, and `styles` is optional, so a
+    /// workbook saved without it loads with a `styles` of length 0. Everything
+    /// is sized back to `src`, which is the authoritative length.
+    pub(crate) fn rebuild_after_load(&mut self) {
+        let size = self.src.len();
+        self.data.resize(size);
+        self.compiled_src = vec![CompiledFormula::default(); size].into();
+        self.styles.resize(size, None);
+    }
+
+    /// Appends an empty row to every parallel vector.
+    pub(crate) fn push_row(&mut self) {
+        self.src.push(String::new());
+        self.compiled_src.push(CompiledFormula::default());
+        self.data.push(ResultData::None);
+        self.styles.push(None);
+    }
+
+    /// Inserts an empty row at `index` in every parallel vector, shifting the
+    /// rows below it down. Appends if `index` is at or past the end.
+    pub(crate) fn insert_row(&mut self, index: usize) {
+        if index >= self.len() {
+            self.push_row();
+            return;
+        }
+        self.src.insert(index, String::new());
+        self.compiled_src.insert(index, CompiledFormula::default());
+        self.data.insert(index, ResultData::None);
+        self.styles.insert(index, None);
+        self.shift_dirty_after_insert(index, 1);
+    }
+
+    /// Removes row `index` from every parallel vector, shifting the rows below
+    /// it up. Ignored if `index` is past the end.
+    pub(crate) fn remove_row(&mut self, index: usize) {
+        if index >= self.len() {
+            return;
+        }
+        self.src.remove(index);
+        self.compiled_src.remove(index);
+        self.data.remove(index);
+        self.styles.remove(index);
+        self.drop_dirty_range(index, index + 1);
+    }
+
+    /// Removes a range of rows from every parallel vector.
+    ///
+    /// The range is clamped to the column's length, so an out-of-range end is
+    /// not an error.
+    pub(crate) fn drain_rows<R: std::ops::RangeBounds<usize>>(&mut self, range: R) {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&n) => n,
+            std::ops::Bound::Excluded(&n) => n + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&n) => n + 1,
+            std::ops::Bound::Excluded(&n) => n,
+            std::ops::Bound::Unbounded => self.len(),
+        };
+        let start = start.min(self.len());
+        let end = end.min(self.len());
+        if start >= end {
+            return;
+        }
+        self.src.drain(start..end);
+        self.compiled_src.drain(start..end);
+        self.data.drain(start..end);
+        self.styles.drain(start..end);
+        self.drop_dirty_range(start, end);
+    }
+
+    /// Grows or shrinks every parallel vector to `len` rows, filling with
+    /// empties when growing.
+    pub(crate) fn resize_rows(&mut self, len: usize) {
+        while self.len() < len {
+            self.push_row();
+        }
+        if self.len() > len {
+            self.drain_rows(len..);
+        }
+    }
+
+    /// Drops queued rows in `start..end` and rebases those below it.
+    fn drop_dirty_range(&mut self, start: usize, end: usize) {
+        let removed = end - start;
+        self.dirty_indices.retain(|&i| i < start || i >= end);
+        for i in self.dirty_indices.iter_mut() {
+            if *i >= end {
+                *i -= removed;
+            }
+        }
+    }
+
+    /// Rebases queued rows at or below `index` after an insert.
+    fn shift_dirty_after_insert(&mut self, index: usize, count: usize) {
+        for i in self.dirty_indices.iter_mut() {
+            if *i >= index {
+                *i += count;
+            }
         }
     }
 
@@ -350,24 +509,10 @@ impl DataColumn {
             } else {
                 self.src[index].insert_str(char_offset, input);
             }
-        } else if index == self.src.len() {
-            self.src.push(input.to_string());
-            self.compiled_src.push(CompiledFormula::default());
-            self.data.push(ResultData::None);
-            self.styles.push(None);
         } else {
-            let mut i = self.src.len();
-            while i < index {
-                self.src.push(String::new());
-                self.compiled_src.push(CompiledFormula::default());
-                self.data.push(ResultData::None);
-                self.styles.push(None);
-                i += 1;
-            }
-            self.src.push(input.to_string());
-            self.compiled_src.push(CompiledFormula::default());
-            self.data.push(ResultData::None);
-            self.styles.push(None);
+            // Grow to cover `index`, then write into the new last row.
+            self.resize_rows(index + 1);
+            self.src[index] = input.to_string();
         }
     }
 }

@@ -1537,3 +1537,156 @@ fn test_date_component_functions_do_not_inherit_the_date_format() {
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 2)), "6");
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 3)), "92390");
 }
+
+/// `src`, `data`, `compiled_src` and `styles` must all stay the same length.
+/// Asserts it across every column of a sheet.
+fn assert_columns_aligned(sheet: &Sheet, context: &str) {
+    for (idx, col) in sheet.columns.iter().enumerate() {
+        let len = col.len();
+        assert_eq!(
+            col.data.len(),
+            len,
+            "{context}: column {idx} data desynced from src"
+        );
+        assert_eq!(
+            col.compiled_src.len(),
+            len,
+            "{context}: column {idx} compiled_src desynced from src"
+        );
+        assert_eq!(
+            col.styles.len(),
+            len,
+            "{context}: column {idx} styles desynced from src"
+        );
+    }
+}
+
+fn bold() -> crate::core::CellStyle {
+    crate::core::CellStyle {
+        bold: Some(true),
+        ..Default::default()
+    }
+}
+
+/// `extend` used to grow `src`/`data`/`compiled_src` and leave `styles`
+/// behind, which made the new row unstylable: `set_cell_style` computed a
+/// row count from `src`, found nothing to grow, then silently dropped the
+/// style because the index was past `styles`' end.
+#[test]
+fn test_extend_down_keeps_styles_aligned() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 3,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.extend(Direction::Down);
+    assert_columns_aligned(&sheet, "after extend(Down)");
+
+    let last = sheet.row_count() - 1;
+    sheet.set_cell_style(last, 0, bold());
+    assert_eq!(
+        sheet.get_cell_style(last, 0).and_then(|s| s.bold),
+        Some(true),
+        "style set on the row extend() added was dropped"
+    );
+}
+
+#[test]
+fn test_extend_up_keeps_styles_aligned() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 3,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.set_cell_style(0, 0, bold());
+    sheet.extend(Direction::Up);
+    assert_columns_aligned(&sheet, "after extend(Up)");
+
+    // The styled row moved down one; the inserted row is unstyled.
+    assert_eq!(sheet.get_cell_style(0, 0).and_then(|s| s.bold), None);
+    assert_eq!(
+        sheet.get_cell_style(1, 0).and_then(|s| s.bold),
+        Some(true),
+        "extend(Up) did not shift styles down with their rows"
+    );
+}
+
+/// The multi-row branch of `delete` drained `src`/`data`/`compiled_src` but
+/// not `styles`, leaving every style below the deleted range attached to the
+/// wrong row.
+#[test]
+fn test_delete_rows_keeps_styles_aligned() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 4,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet.set_cell_style(3, 0, bold());
+
+    sheet.delete(
+        TextCellRef {
+            row: 0,
+            col: 0,
+            char_offset: 0,
+        },
+        TextCellRef {
+            row: 1,
+            col: 0,
+            char_offset: 0,
+        },
+    );
+    assert_columns_aligned(&sheet, "after delete of rows 0..=1");
+
+    // Two rows went, so the styled row 3 is now row 1.
+    assert_eq!(
+        sheet.get_cell_style(1, 0).and_then(|s| s.bold),
+        Some(true),
+        "styles did not shift up with their rows"
+    );
+}
+
+#[test]
+fn test_insert_and_delete_row_keep_columns_aligned() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 3,
+        cols: 2,
+        ..Default::default()
+    });
+    sheet.insert_row(1);
+    assert_columns_aligned(&sheet, "after insert_row(1)");
+    sheet.insert_row(99); // past the end: appends
+    assert_columns_aligned(&sheet, "after appending insert_row");
+    sheet.delete_row(0);
+    assert_columns_aligned(&sheet, "after delete_row(0)");
+    sheet.delete_row(99); // past the end: ignored
+    assert_columns_aligned(&sheet, "after out-of-range delete_row");
+}
+
+#[test]
+fn test_ensure_capacity_keeps_columns_aligned() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 2,
+        cols: 1,
+        ..Default::default()
+    });
+    sheet.set_cell_style(5, 3, bold());
+    assert_columns_aligned(&sheet, "after ensure_capacity grew the sheet");
+    assert_eq!(sheet.get_cell_style(5, 3).and_then(|s| s.bold), Some(true));
+}
+
+/// `styles` is `#[serde(default)]`, so a workbook serialized without it
+/// deserializes with an empty one. The load path has to size it back up.
+#[test]
+fn test_setup_after_deserialization_restores_styles_length() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 3,
+        cols: 2,
+        ..Default::default()
+    });
+    // Simulate a payload that carried no styles at all.
+    for col in &mut sheet.columns {
+        col.styles = Vec::new().into();
+    }
+    sheet.setup_after_deserialization();
+    assert_columns_aligned(&sheet, "after setup_after_deserialization");
+}
