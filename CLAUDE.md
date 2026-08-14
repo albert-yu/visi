@@ -17,15 +17,31 @@ cargo test -p visi-core --lib core::engine::tests::rounding
 cargo test -p visi --test cli_tests
 ```
 
-Differential fuzzing against real Microsoft Excel (Python, `fuzz/`):
+Differential fuzzing against real Microsoft Excel (Python, `fuzz/`). Use the venv,
+not system Python — `maturin develop` installs into whichever venv is active:
 
 ```bash
+source fuzz/venv/bin/activate
 pip install -r fuzz/requirements.txt
-cargo build --release                                     # harness defaults to ./target/release/visi
-python3 fuzz/fuzz_excel.py --driver mock --iterations 5    # no Excel needed; exercises the pipeline
-python3 fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
-python3 fuzz/fuzz_excel.py --seed 48291 --iterations 1     # reproduce a specific failure
+maturin develop -m visi-python/Cargo.toml --release      # the in-process bindings
+cargo build --release                                   # the CLI, for --backend subprocess
+
+python fuzz/fuzz_excel.py --driver mock --iterations 5   # no Excel needed; exercises the pipeline
+python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
+python fuzz/fuzz_excel.py --seed 48291 --iterations 1    # reproduce a specific failure
+
+pytest fuzz/test_backend_parity.py visi-python/tests/    # bindings must match the CLI
 ```
+
+Each fuzzer takes `--backend {auto,bindings,subprocess}`. `auto` prefers the
+bindings and falls back to the CLI with a warning. Reach for `subprocess` when
+triaging a crash: under `bindings` the engine shares the harness process, so a
+Rust abort or stack overflow takes the whole run down instead of one iteration.
+
+`cargo build --workspace` / `cargo test --workspace` include `visi-python`, which
+needs a `python3` on PATH to link. Without one, pass `--exclude visi-python` or set
+`PYO3_NO_PYTHON=1`; a bare `cargo build` / `cargo test` already skips it via
+`default-members`.
 
 Failures land in `fuzz_results/failures/fail_iter_<N>_seed_<SEED>/` as `source.xlsx` / `visi_out.xlsx` / `excel_out.xlsx`. See `fuzz/README.md` for the Excel-parity edge cases the harness is built around (cached `<v>` values, 1900 leap-year bug, `_xlfn.` prefixes, float tolerance).
 
@@ -44,10 +60,16 @@ See `visi-core/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties
 
 Cargo workspace, edition 2024:
 
-- **`visi-core`** — the engine, published to crates.io as `visi-core` (the directory matches). Plain `rlib` — it kept a `cdylib` crate-type for a while without a single `extern "C"` symbol behind it; if C/Python/Node embedding is ever wanted it belongs in a separate `visi-ffi` crate, since `crate-type` can't be feature-gated. Still meant to stay embeddable in the sense that matters (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm — the browser JS backend is behind the **`wasm` feature** (`getrandom/js`), off by default because a library must not force a global getrandom backend on its consumers.
+- **`visi-core`** — the engine, published to crates.io as `visi-core` (the directory matches). Plain `rlib` — it kept a `cdylib` crate-type for a while without a single `extern "C"` symbol behind it; embedding for another language belongs in a separate crate (as `visi-python` now does), since `crate-type` can't be feature-gated. Still meant to stay embeddable in the sense that matters (no CLI/IO assumptions in `core`). Uses `web-time` instead of `std::time` and `getrandom` for IDs so it can target wasm — the browser JS backend is behind the **`wasm` feature** (`getrandom/js`), off by default because a library must not force a global getrandom backend on its consumers.
 - **`visi`** — clap-based CLI. `cli.rs` is the arg surface, `main.rs` holds one `handle_*` fn per subcommand, `engine.rs` wraps everything in `WorkbookManager`.
   - be sure to follow [Command Line Interface Guidelines](https://clig.dev) when making changes to the CLI
   - the CLI keeps its own `Result<_, String>` style internally and converts at the boundary (`exit_with_error` takes `impl Display`)
+- **`visi-python`** — pyo3 bindings over `visi-core`, exposed to Python as the module `visi_core`. `crate-type = ["cdylib"]`, `abi3-py39`, `publish = false`; built with maturin for `fuzz/`, which drives the engine in-process instead of spawning the CLI per operation. Three things about it are load-bearing:
+  - It depends on **`visi-core` only**, never on `visi`. Where it has to mirror CLI behavior — `edit_chart`'s `--title`/`--clear-title` pair, and `add_pivot_field`'s post-add subtotal/label mutation (`visi/src/main.rs`'s AddField arm) — that mirroring is duplicated logic, and `fuzz/test_backend_parity.py` is the only thing that will notice it drifting.
+  - `extension-module` is **not** a default cargo feature. Turning it on breaks `cargo test --workspace`'s link step with an undefined `_PyModule_Create2`, whose message points nowhere near the cause. maturin enables it via `pyproject.toml`.
+  - The Python module is named `visi_core`, not `visi`: the repo root holds a `visi/` directory with no `__init__.py`, which PEP 420 makes an implicit namespace package, so `import visi` from the root resolves to the CLI crate's source directory.
+
+  Adding a binding is not a reason to widen `visi-core`'s public API — reach through the existing public fields, as `get_cell` does.
 
 The two crates version independently: `visi` is at the workspace version, `visi-core` pins its own (`0.1.0`) since it is newer to crates.io.
 
@@ -125,7 +147,7 @@ A `PivotTable` is workbook-level (like `Chart`), not sheet-scoped like `ExcelTab
 Neither xlsx library used here has pivot table support: calamine doesn't expose `xl/pivotCache/*` or `xl/pivotTables/*`, and rust_xlsxwriter has no writer for them at all. `pivot_xlsx.rs` hand-rolls both directions:
 
 - **Export** (`inject_pivot_tables`) post-processes the zip `export_xlsx_data` already produced — rust_xlsxwriter has no hook for extra parts — by re-opening it with the `zip` crate, editing `[Content_Types].xml` / `xl/workbook.xml` (`<pivotCaches>`) / `xl/_rels/workbook.xml.rels` / the destination worksheet's `.rels`, and writing new `pivotCacheDefinition`/`pivotCacheRecords`/`pivotTable` parts, then rewriting the whole zip. `rowItems`/`colItems` encode Excel's leading-field repeat suppression (`<i r="N">` = "the first N fields are unchanged from the previous row") plus `t="default"`/`t="grand"` subtotal/grand-total markers — get this wrong and Excel still opens the file (`refreshOnLoad="1"` lets it silently rebuild the cache) but may misrender the grid. Verified against `openpyxl` (a strict independent OOXML reader) rather than real Excel, since driving Excel via AppleScript needs a one-time interactive automation-permission grant this environment couldn't complete — re-verify with the `fuzz/` Excel driver or manually in Excel before trusting further pivot XML changes.
-- **Import** (`import_pivot_tables`) reconstructs each `PivotTable`'s source/destination/row/col/value fields from that XML — this is not just fidelity, it's load-bearing: the CLI is a fresh process per invocation, so a pivot table definition only survives `pivot add-field` in a later command because it round-trips through this xlsx parsing. Filter-field *selections* are not reconstructed (they reset to "all") since that would require trusting index-based item references against data that may have changed; subtotal toggles default back to enabled.
+- **Import** (`import_pivot_tables`) reconstructs each `PivotTable`'s source/destination/row/col/value fields from that XML, including per-field subtotal toggles (recovered from whether the field's `<item t="default"/>` placeholder is present) — this is not just fidelity, it's load-bearing: the CLI is a fresh process per invocation, so a pivot table definition only survives `pivot add-field` in a later command because it round-trips through this xlsx parsing. Filter-field *selections* are the one thing not reconstructed (they reset to "all"), since that would require trusting index-based item references against data that may have changed. **Anything that mutates a filter selection must therefore be the last step before saving** — a round trip past that point silently drops it.
 
 ### xlsx I/O (`visi-core/src/core/xlsx.rs`)
 

@@ -2,6 +2,15 @@
 members = [
     "visi-core",
     "visi",
+    "visi-python",
+]
+# `visi-python` is a pyo3 cdylib, so building it needs a Python interpreter on
+# PATH. Keeping it out of the default set means a bare `cargo build` / `cargo
+# test` never requires one; `--workspace` still picks it up, which is what
+# keeps it compiled and linted rather than left to rot.
+default-members = [
+    "visi-core",
+    "visi",
 ]
 resolver = "2"
 

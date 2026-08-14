@@ -16,8 +16,9 @@ This directory contains a differential fuzzing test harness designed to generate
                     ┌───────────────────┴───────────────────┐
                     ▼                                       ▼
     ┌───────────────────────────────┐       ┌───────────────────────────────┐
-    │          visi eval            │       │        Microsoft Excel        │
-    │ (Updates cached <v> XML tags) │       │ (AppleScript / COM Automation)│
+    │   visi  (visi_core bindings   │       │        Microsoft Excel        │
+    │      in-process, or the CLI)  │       │ (AppleScript / COM Automation)│
+    │ (Updates cached <v> XML tags) │       │                               │
     └───────────────┬───────────────┘       └───────────────┬───────────────┘
                     │                                       │
             Produces visi_out.xlsx                  Produces excel_out.xlsx
@@ -42,13 +43,78 @@ This directory contains a differential fuzzing test harness designed to generate
 ## Setup & Requirements
 
 ### 1. Requirements
-- Python 3.8+
-- `openpyxl` (for generating `.xlsx` test files):
+- Python 3.9+, from the project venv — **not** system Python, since
+  `maturin develop` installs into whichever venv is active:
   ```bash
+  source fuzz/venv/bin/activate
   pip install -r fuzz/requirements.txt
   ```
-- Compiled `visi` binary (`cargo build --release`)
+- The `visi_core` bindings (see below), and/or a compiled `visi` binary
+  (`cargo build --release`)
 - Microsoft Excel (macOS or Windows) for actual Excel execution.
+
+### 2. In-process bindings (recommended)
+
+The fuzzers drive visi through `visi-python`, a pyo3 extension module binding
+`visi-core` directly, rather than spawning the `visi` CLI once per operation.
+That matters most for `fuzz_pivot.py`, which used to run one process per pivot
+field — building a pivot table cost 5–8 full `.xlsx` load/save cycles.
+
+```bash
+source fuzz/venv/bin/activate
+maturin develop -m visi-python/Cargo.toml --release
+```
+
+Rebuild after any change to `visi-core`, or you will be fuzzing a stale engine.
+
+Each fuzzer takes `--backend {auto,bindings,subprocess}`. The default `auto`
+uses the bindings when `import visi_core` succeeds and falls back to the CLI
+with a warning otherwise. The run banner prints which was chosen — check it
+before reading timings.
+
+**Use `--backend subprocess` to triage a crash.** Under `bindings` the engine
+shares this process: a Rust panic surfaces as a catchable `PanicException`, but
+an abort or a stack overflow (plausible — the formula parser is recursive
+descent and the generator emits deeply nested expressions) takes the whole run
+down and loses every iteration's progress. Under `subprocess` it costs one
+iteration and still saves the reproducing files.
+
+### Bindings/CLI equivalence
+
+The two backends must stay observationally identical, and they duplicate a
+little logic to do it (`edit_chart`'s clear-vs-set flags, `add_pivot_field`'s
+post-add subtotal mutation). Nothing else would notice that drifting:
+
+```bash
+pytest fuzz/test_backend_parity.py visi-python/tests/
+```
+
+It runs both backends over every saved `fuzz_results/failures/*/source.xlsx`
+plus freshly generated workbooks, and diffs the parsed output — content, not
+bytes, since `docProps/core.xml` carries a timestamp and ids are random.
+
+One divergence is deliberate: `Workbook.set_pivot_filter(name, col, [])`
+selects *nothing*, a state `visi pivot filter` cannot express (it takes a
+non-empty comma list or `--clear`). So the bindings backend covers a pivot
+configuration the subprocess backend skips. Expect pass/fail counts on affected
+seeds to differ between backends for that reason — it is new coverage, not a
+regression.
+
+### Why the oracle still parses the written `.xlsx`
+
+`XLSXEvaluatedReader` reads real `.xlsx` bytes, never the bindings' in-memory
+cells, and `read_evaluated_cells_bytes` exists only to skip a redundant *disk
+read* of bytes visi just produced — it is the same parser on the same bytes.
+
+Reading values out of the engine instead would stop exercising
+`export_xlsx_data`: the cached `<v>` tags, shared strings, `t="e"` error cells,
+and pivot's hand-rolled `inject_pivot_tables` zip rewriting. That is a large
+share of what this harness exists to check. For the same reason the pivot and
+chart drivers still round-trip the workbook between mutations — in memory now,
+via `Workbook.roundtrip()`, but through the identical import/export code the
+CLI ran.
+
+`Workbook.get_cell` is for *minimizing* a failure, never for deciding one.
 
 ---
 

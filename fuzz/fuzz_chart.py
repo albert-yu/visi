@@ -133,73 +133,13 @@ class ChartFuzzGenerator:
 # -----------------------------------------------------------------------------
 
 
-class VisiChartDriver:
-    """Builds a chart via the `visi chart` CLI: `add`, then `edit` --
-    mirroring how a real user would create a chart and then tweak it, and
-    giving the new `chart edit` command (added alongside this fuzzer)
-    differential coverage against real Excel, not just `add`.
-    """
-
-    def __init__(self, binary_path):
-        self.binary_path = binary_path
-        if not os.path.exists(self.binary_path):
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            rel_path = os.path.join(project_root, "target", "release", "visi")
-            dbg_path = os.path.join(project_root, "target", "debug", "visi")
-            if os.path.exists(rel_path) and os.path.exists(dbg_path):
-                if os.path.getmtime(dbg_path) > os.path.getmtime(rel_path):
-                    self.binary_path = dbg_path
-                else:
-                    self.binary_path = rel_path
-            elif os.path.exists(rel_path):
-                self.binary_path = rel_path
-            elif os.path.exists(dbg_path):
-                self.binary_path = dbg_path
-
-    def _run(self, args):
-        cmd = [self.binary_path, "chart"] + args
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(
-                f"visi chart {' '.join(args)} failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
-            )
-        return res.stdout
-
-    def run(self, source_file, range_str, add_config, edit_config, output_file):
-        shutil.copyfile(source_file, output_file)
-
-        add_args = [
-            "add", output_file,
-            "--sheet", "Sheet1",
-            "--chart-type", add_config["chart_type"],
-            "--range", range_str,
-            "-i",
-        ]
-        if add_config["title"]:
-            add_args += ["--title", add_config["title"]]
-        self._run(add_args)
-
-        # `chart add` has no --json output of its own; look the new chart's
-        # id up via `chart list --json` (the only chart in the file).
-        list_out = self._run(["list", output_file, "--json"])
-        charts = json.loads(list_out)
-        chart_id = charts[0]["id"]
-
-        edit_args = ["edit", output_file, "--id", str(chart_id), "--chart-type", edit_config["chart_type"], "-i"]
-        if edit_config["title"]:
-            edit_args += ["--title", edit_config["title"]]
-        else:
-            edit_args.append("--clear-title")
-        if edit_config["xlabel"]:
-            edit_args += ["--xlabel", edit_config["xlabel"]]
-        else:
-            edit_args.append("--clear-xlabel")
-        if edit_config["ylabel"]:
-            edit_args += ["--ylabel", edit_config["ylabel"]]
-        else:
-            edit_args.append("--clear-ylabel")
-        edit_args.append("--show-legend" if edit_config["show_legend"] else "--hide-legend")
-        self._run(edit_args)
+# `VisiChartDriver` moved to visi_driver.py, which drives visi either through
+# the in-process `visi_core` bindings or through the `visi chart` CLI.
+from visi_driver import (  # noqa: E402,F401
+    VisiChartDriver,
+    add_backend_arg,
+    bindings_hint,
+)
 
 
 class ExcelChartDriver:
@@ -459,7 +399,8 @@ def main():
         "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto",
         help="Excel execution driver.",
     )
-    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary.")
+    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary (used by the subprocess backend).")
+    add_backend_arg(parser)
     parser.add_argument("--iterations", type=int, default=10, help="Number of fuzz iterations to run.")
     parser.add_argument("--rows", type=int, default=8, help="Max source data rows per iteration.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible fuzzing.")
@@ -470,7 +411,9 @@ def main():
     failures_dir = os.path.join(args.output_dir, "failures")
     os.makedirs(failures_dir, exist_ok=True)
 
-    visi_driver = VisiChartDriver(binary_path=args.visi_path)
+    visi_driver = VisiChartDriver(binary_path=args.visi_path, backend=args.backend)
+    if args.backend == "auto" and visi_driver.backend != "bindings":
+        print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelChartDriver(excel_path=args.excel_path, driver_type=args.driver)
     comparator = ChartComparator()
 
@@ -479,7 +422,7 @@ def main():
     print("=====================================================================")
     print(f" Iterations  : {args.iterations}")
     print(f" Max rows    : {args.rows}")
-    print(f" Visi Path   : {visi_driver.binary_path}")
+    print(f" Visi        : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
     print("=====================================================================\n")
 
