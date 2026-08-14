@@ -219,8 +219,20 @@ class PivotFuzzGenerator:
         if random.random() < 0.5:
             fcol = random.choice(self.FILTERABLE_COLS)
             values = sorted(distinct[fcol])
-            # May legitimately come out empty -> filters out every record.
+            # Always at least one selected value. An empty selection means
+            # "select nothing", which real Excel cannot represent -- it
+            # refuses to hide a page field's last visible PivotItem (runtime
+            # error 1004), so BuildFuzzPivot.bas falls back to leaving the
+            # field unfiltered at "(All)". Emitting one made visi render an
+            # empty grid against Excel's full one and report every cell of it
+            # as a mismatch (iteration 5, seed 244209) -- an unrepresentable
+            # config, not an engine disagreement, the same class of bogus
+            # failure the `canonicalize` comment above describes. `values` is
+            # never empty itself: every filterable column gets a value (or
+            # "(blank)") on every one of the >= 1 generated rows.
             selected = [v for v in values if random.random() < 0.5]
+            if not selected:
+                selected = [random.choice(values)]
             filter_field = {"column": self.COL_NAMES[fcol], "values": selected}
 
         return {

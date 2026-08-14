@@ -95,12 +95,15 @@ output — content, not bytes, since `docProps/core.xml` carries a timestamp and
 ids are random. The generated seeds are the real coverage; `fuzz_results/` is
 gitignored and usually empty.
 
-One divergence is deliberate: `Workbook.set_pivot_filter(name, col, [])`
-selects *nothing*, a state `visi pivot filter` cannot express (it takes a
-non-empty comma list or `--clear`). So the bindings backend covers a pivot
-configuration the subprocess backend skips. Expect pass/fail counts on affected
-seeds to differ between backends for that reason — it is new coverage, not a
-regression.
+One pivot state is reachable only through the bindings API:
+`Workbook.set_pivot_filter(name, col, [])` selects *nothing*, which `visi pivot
+filter` cannot express (it takes a non-empty comma list or `--clear`). It is
+not fuzzed, because real Excel cannot represent it either — Excel refuses to
+hide a page field's last visible `PivotItem`, so `BuildFuzzPivot.bas` falls back
+to leaving the field unfiltered at `(All)`. `PivotFuzzGenerator` therefore
+always selects at least one value, and both driver backends leave an empty
+selection unapplied if one reaches them anyway. The engine behavior itself is
+asserted directly, in `test_empty_filter_selection_is_bindings_only`.
 
 ### Why the oracle still parses the written `.xlsx`
 

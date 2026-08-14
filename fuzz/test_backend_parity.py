@@ -151,9 +151,6 @@ def test_pivot_parity(seed, use_table, tmp_path):
     src = str(tmp_path / "source.xlsx")
     config = PivotFuzzGenerator(seed=seed).generate(src, num_rows=8, use_table=use_table)
 
-    if _wants_empty_filter_selection(config):
-        pytest.skip("empty filter selection is bindings-only; see test below")
-
     cli_out = str(tmp_path / "cli.xlsx")
     bnd_out = str(tmp_path / "bnd.xlsx")
     VisiPivotDriver(backend="subprocess").run(
@@ -170,18 +167,17 @@ def test_pivot_parity(seed, use_table, tmp_path):
         assert cli_cells[key]["val"] == bnd_cells[key]["val"], key
 
 
-def _wants_empty_filter_selection(config):
-    ff = config.get("filter_field")
-    return bool(ff) and not ff.get("values")
-
-
 def test_empty_filter_selection_is_bindings_only(tmp_path):
-    """The one deliberate divergence, asserted rather than left implicit.
+    """`set_pivot_filter(name, col, [])` -- select nothing -- asserted here
+    because no driver exercises it.
 
     `visi pivot filter` takes a non-empty comma list or --clear, with no verb
-    for "select nothing", so the subprocess backend leaves such a field
-    unfiltered. The bindings can express it. If the CLI ever grows the verb,
-    this test should start failing and the skip in test_pivot_parity can go.
+    for "select nothing"; only the bindings API can express the state at all.
+    Neither backend of `VisiPivotDriver` applies it, though, and that is
+    deliberate: real Excel refuses to hide a page field's last visible item, so
+    an empty selection is a config the differential oracle cannot represent
+    (see VisiPivotDriver.run). This test is therefore the only coverage of the
+    engine behavior -- keep it even if the CLI grows the verb.
     """
     import visi_core
 

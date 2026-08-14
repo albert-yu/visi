@@ -21,9 +21,7 @@ important one:
      iteration.
 
 The two backends must stay observationally identical. That is not an
-aspiration, it is checked: see fuzz/test_backend_parity.py. The one deliberate
-exception is an empty pivot filter selection, which the CLI cannot express --
-see VisiPivotDriver.run.
+aspiration, it is checked: see fuzz/test_backend_parity.py.
 """
 
 import json
@@ -289,11 +287,18 @@ class VisiPivotDriver(_BaseDriver):
             # PivotFilterField.selected_values is not reconstructed on import,
             # so a round trip here would silently reset the filter to "all".
             #
-            # An empty list means "select nothing", which `visi pivot filter`
-            # cannot express -- it takes either a non-empty comma list or
-            # --clear. So this backend covers a configuration the subprocess
-            # backend skips.
-            wb.set_pivot_filter(pivot_name, column, config["filter_field"]["values"] or [])
+            # The empty-list guard is defensive: PivotFuzzGenerator no longer
+            # emits an empty selection (it means "select nothing", which real
+            # Excel cannot represent -- see the comment beside `selected` in
+            # fuzz_pivot.py), but a hand-written config still can, and
+            # applying one would compare visi's empty grid against Excel's
+            # full one. Leave such a field unfiltered, as BuildFuzzPivot.bas
+            # and the CLI backend below both do. The engine's empty-selection
+            # behavior is covered directly, in
+            # test_empty_filter_selection_is_bindings_only.
+            values = config["filter_field"]["values"]
+            if values:
+                wb.set_pivot_filter(pivot_name, column, values)
 
         wb.save(output_file)
 
@@ -345,4 +350,4 @@ class VisiPivotDriver(_BaseDriver):
             # else: the config wants "select nothing", which this backend
             # cannot express -- the CLI's `filter` verb takes a comma list or
             # --clear, with no verb for an empty selection. Leave the field
-            # unfiltered. The bindings backend does cover this case.
+            # unfiltered, same as the bindings path and BuildFuzzPivot.bas.
