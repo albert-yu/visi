@@ -72,6 +72,17 @@ Everything internal is **0-based `(row, col)`**; A1 notation exists only at the 
 
 `ResultData` is the value type (`None`/`Boolean`/`Integer`/`Float`/`String`/`List`/`Dict`/`Error`). `result_data::format_excel_number` reproduces Excel's 15-significant-digit display rules — change it only with fuzz evidence.
 
+### Dates are numbers with a format (`core/date.rs`)
+
+There is deliberately **no date value type**. As in Excel, a date cell holds a plain numeric serial and the notation it was typed in lives on the cell, as `CellStyle::num_format` (an Excel format code like `m/d/yy`). So `6/22/26` is `Float(46195)` — `ISNUMBER` is true, `SUM` counts it, every numeric path works untouched — and only rendering consults the format. A `ResultData::Date` variant was considered and rejected: the ~200 sites that match on `Float` all have catch-all arms, so any missed one would silently treat a date as non-numeric.
+
+- `commit` recognizes a literal via `date::parse_date` and records `DateFormat::to_format_code()`.
+- `Sheet::get_display_string` is the **only** place that renders a serial back to a date — show values through it, not by formatting `ResultData` directly.
+- `Sheet::inherited_date_format` gives `=A1+1` its operand's format. The rule keys off the *operator*, not the dependency count, because those come apart: `=YEAR(A1)` reads one date cell and returns a year. Only a bare cell ref and `+`/`-` with exactly one date side inherit; `=A1-A2` (a day count) and `=SUM(...)` deliberately do not.
+- `date::render_date_code` is shared with `TEXT()` so there is one date formatter. It scans token *runs* in one pass — successive string replacement corrupts month names, since `December` contains an `m` and `May` a `y`.
+- A format code cannot carry month-name casing, so `22-JUN-2026` round-trips through `format_date` but comes back title-cased through a worksheet — matching Excel. Zero-padding of a numeric month/day is likewise not recorded (`06/22/2026` → `6/22/2026`).
+- Text that merely looks like a date must be quoted to stay text (`xlsx::text_cell_src` does this for imported string cells).
+
 ### Formula pipeline
 
 Formula text goes through **two distinct representations**, which is the single most important thing to know before touching `parser.rs`:

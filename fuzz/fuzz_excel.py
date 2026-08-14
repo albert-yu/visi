@@ -2365,8 +2365,16 @@ class DifferentialComparator:
             v_cell = visi_cells.get(key)
             e_cell = excel_cells.get(key)
 
+            # A cell that is absent altogether is compared with the same
+            # blank-equivalence rule `values_equal` applies to a cell that is
+            # present but empty -- otherwise the two paths disagree with each
+            # other. Excel keeps a whitespace-only source cell as an
+            # empty-string cell (`<t/>` in the shared strings) where visi
+            # writes no cell at all, and both mean "nothing here"; visi treats
+            # blank and empty string as the same value throughout, down to
+            # ISBLANK("") being TRUE. A genuinely missing *value* still fails.
             if v_cell is None and e_cell is not None:
-                if e_cell['val'] is not None:
+                if not self.values_equal(None, e_cell['val']):
                     mismatches.append({
                         'key': key,
                         'reason': 'Missing in visi output',
@@ -2377,7 +2385,7 @@ class DifferentialComparator:
                 continue
 
             if e_cell is None and v_cell is not None:
-                if v_cell['val'] is not None:
+                if not self.values_equal(v_cell['val'], None):
                     mismatches.append({
                         'key': key,
                         'reason': 'Missing in Excel output',

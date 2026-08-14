@@ -1444,3 +1444,99 @@ fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
         other => panic!("expected a flat List result, got {other:?}"),
     }
 }
+
+/// A date literal is a *number* that displays as a date, exactly as in Excel:
+/// the value is the serial, so arithmetic and the numeric functions see it,
+/// and the notation survives only as the cell's number format.
+#[test]
+fn test_date_literal_becomes_a_serial_with_a_number_format() {
+    let mut sheet = create_sheet(&[["6/22/26", "=ISNUMBER(A1)"], ["22-Jun-2026", "=YEAR(A2)"]]);
+    sheet.commit(None).unwrap();
+
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 0)),
+        ResultData::Float(f) if f == 46195.0
+    ));
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 1)),
+        ResultData::Boolean(true)
+    ));
+    assert_eq!(
+        sheet.to_f64(&sheet.get_result_data(&CellRef::new(1, 1))),
+        Some(2026.0)
+    );
+
+    // ... and displays back in the notation it was typed in.
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "6/22/26");
+    assert_eq!(sheet.get_display_string(&CellRef::new(1, 0)), "22-Jun-2026");
+    assert_eq!(
+        sheet
+            .get_cell_style(0, 0)
+            .and_then(|s| s.num_format.clone()),
+        Some("m/d/yy".to_string())
+    );
+}
+
+/// Quoting is the escape hatch for text that happens to look like a date.
+#[test]
+fn test_quoted_date_text_stays_text() {
+    let mut sheet = create_sheet(&[["\"22-Jun\"", "=ISTEXT(A1)"]]);
+    sheet.commit(None).unwrap();
+
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 0)),
+        ResultData::String(ref s) if s == "22-Jun"
+    ));
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 1)),
+        ResultData::Boolean(true)
+    ));
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "22-Jun");
+    assert!(sheet.get_cell_style(0, 0).is_none());
+}
+
+/// A formula reading exactly one date cell inherits its notation, so `=A1+1`
+/// on a date shows the next day rather than a bare serial. Formulas that read
+/// two cells or a range do not -- a difference of dates is a count of days,
+/// and a sum of dates is nothing at all.
+#[test]
+fn test_date_format_inheritance_is_limited_to_single_cell_formulas() {
+    let mut sheet = create_sheet(&[
+        ["6/22/26", "=A1+1", "=A1-A2"],
+        ["22-Jun-2026", "=A2+10", "=SUM(A1:A2)"],
+    ]);
+    sheet.commit(None).unwrap();
+
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 1)), "6/23/26");
+    assert_eq!(sheet.get_display_string(&CellRef::new(1, 1)), "2-Jul-2026");
+    // Two cell references: a day count, left as a number.
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 2)), "0");
+    // A range reference: also left alone.
+    assert_eq!(sheet.get_display_string(&CellRef::new(1, 2)), "92390");
+}
+
+/// A number format that isn't a date format leaves rendering alone -- visi
+/// does not implement Excel's numeric format codes, and mangling a `0.00`
+/// cell into a date would be worse than ignoring it.
+#[test]
+fn test_non_date_number_format_does_not_affect_display() {
+    let mut sheet = create_sheet(&[["1234.5"]]);
+    sheet.commit(None).unwrap();
+    sheet.update_cell_style(0, 0, |style| {
+        style.num_format = Some("0.00".to_string());
+    });
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "1234.5");
+}
+
+/// Inheritance follows the operator, not the number of cells read: `=YEAR(A1)`
+/// touches exactly one date cell and returns a year, which must stay a plain
+/// number rather than being rendered as a 1905 date.
+#[test]
+fn test_date_component_functions_do_not_inherit_the_date_format() {
+    let mut sheet = create_sheet(&[["22-Jun-2026", "=YEAR(A1)", "=MONTH(A1)", "=A1*2"]]);
+    sheet.commit(None).unwrap();
+
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 1)), "2026");
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 2)), "6");
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 3)), "92390");
+}

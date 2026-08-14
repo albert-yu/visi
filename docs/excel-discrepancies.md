@@ -338,6 +338,67 @@ output.
 
 ---
 
+## 14. Empty-string cell vs. blank cell — *fixed in the comparator*
+
+Excel distinguishes a cell holding the empty string from a cell holding
+nothing; visi does not, deliberately and consistently — `ISBLANK("")` is
+TRUE, `COUNTA` skips it, and `rust_xlsxwriter` collapses an empty string to
+a blank cell on write (`store_string` turns `""` into `write_blank`).
+
+The harness generates short strings from an alphabet that includes a space,
+so it sometimes produces a cell containing only whitespace. OOXML strips
+whitespace-only `<t>` content unless the element carries
+`xml:space="preserve"`, which `openpyxl` does not emit, so *neither* engine
+recovers the space: Excel keeps an empty-string cell (a `<t/>` entry in the
+shared strings) and visi writes no cell at all. Both mean "nothing here".
+
+This surfaced as a spurious failure:
+
+```
+Cell C8 on sheet1: visi=None | Excel= (Formula: None)
+```
+
+The comparator already had the right rule — `values_equal` treats `None` and
+a whitespace-only string as equal — but `compare` never reached it when the
+cell was *absent* from visi's output rather than present-and-empty. That path
+guarded on `val is not None`, so a blank-equivalent value was reported as
+"Missing in visi output" while the identical disagreement between two
+*present* cells was tolerated. The two paths now apply the same rule.
+
+Note this is narrow: it only excuses a value that is blank-equivalent. A cell
+genuinely missing from either side still fails, so real data loss on import
+or export is still caught.
+
+---
+
+## 15. MOD with a divisor far larger than the dividend — *Excel is wrong*
+
+When `|d|` is enormous relative to `|n|` and the signs differ, Excel returns
+`0` where the remainder is not zero:
+
+```
+MOD(36, POWER(-327.3, 69))    visi -3.3984E+173   Excel 0
+MOD(1, -10^37)                visi -1E+37         Excel 0
+```
+
+Both engines agree on the same shape at ordinary magnitudes — `MOD(5, -3)` is
+`-1` in both, and so is `MOD(5, -1E10)` = `-9999999995` — so this is not a
+disagreement about the definition. `MOD(n, d) = n - d*INT(n/d)` gives
+`INT(n/d) = -1` for every one of these, hence a remainder of `d + n`, which
+sits inside `(d, 0]` exactly as a remainder must.
+
+A remainder of `0` would require `d` to divide `n` exactly, and it cannot:
+`0 < |n| < |d|`. Excel's answer is unreachable from its own documented
+formula, so this is Excel losing the small operand rather than visi being
+imprecise, and visi keeps the mathematically correct value.
+
+Note this is *not* the same as the deliberate `#NUM!` cutoff already in
+`MOD` for large **quotients** (`MOD(28^31, 3)`), which is a real Excel
+behavior visi reproduces. Here the quotient is vanishingly small; it is the
+result that is large.
+
+---
+
 ## Fixed, not excluded
 
 For contrast, these looked like Excel divergences during investigation and

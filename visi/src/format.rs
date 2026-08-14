@@ -9,8 +9,7 @@ pub fn get_cell_display_val(sheet: &Sheet, row: usize, col: usize, raw: bool) ->
     if raw {
         sheet.get_src(&cell_ref).cloned().unwrap_or_default()
     } else {
-        let res = sheet.get_result_data(&cell_ref);
-        let val_str = res.to_string();
+        let val_str = sheet.get_display_string(&cell_ref);
         if val_str.is_empty() {
             sheet.get_src(&cell_ref).cloned().unwrap_or_default()
         } else {

@@ -28,6 +28,10 @@ pub mod xlsx;
 pub(crate) mod xml;
 
 pub use actions::SheetAction;
+pub use date::{
+    DateFormat, SimpleDate, StringCase, date_to_excel_serial, excel_serial_to_date, format_date,
+    is_date_code, parse_date, render_date_code,
+};
 pub use engine::{
     CellRef, ColumnData, Context, DataColumn, Dependency, Direction, EngineError, RefType,
     ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id, get_word_boundaries_from_str,

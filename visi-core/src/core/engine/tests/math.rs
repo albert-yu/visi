@@ -610,3 +610,29 @@ fn test_fuzz_int_concatenate_month_two_digit_year_as_date() {
         other => panic!("Expected 12420 for B6, got {:?}", other),
     }
 }
+
+/// Scientific-notation literals evaluate inside formulas, not just as bare
+/// cell values. The lexer used to split `1E+5` into `1`, `E`, `+`, `5`, so
+/// every one of these was a parse error while Excel accepted them.
+#[test]
+fn test_scientific_notation_literals_evaluate() {
+    let sheet_src = [
+        ["=1E+5", "=2.5E-3", "=1E+5+1"],
+        ["=1e2*2", "=.5E3", "=SUM(1E1, 1E1)"],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+
+    let at = |r: usize, c: usize| {
+        let v = sheet.get_result_data(&CellRef::new(r, c));
+        sheet
+            .to_f64(&v)
+            .unwrap_or_else(|| panic!("not a number at ({r},{c}): {v:?}"))
+    };
+    assert_eq!(at(0, 0), 100000.0);
+    assert_eq!(at(0, 1), 0.0025);
+    assert_eq!(at(0, 2), 100001.0);
+    assert_eq!(at(1, 0), 200.0);
+    assert_eq!(at(1, 1), 500.0);
+    assert_eq!(at(1, 2), 20.0);
+}

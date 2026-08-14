@@ -2585,3 +2585,97 @@ fn test_fuzz_nested_logical_and_or_numeric_comparison() {
         other => panic!("Expected Boolean(true), got {:?}", other),
     }
 }
+
+/// The numeric value at a cell, for the empty-string tests below.
+fn numeric_at(sheet: &Sheet, row: usize, col: usize) -> f64 {
+    let value = sheet.get_result_data(&CellRef::new(row, col));
+    sheet
+        .to_f64(&value)
+        .unwrap_or_else(|| panic!("expected a number at ({row}, {col}), got {value:?}"))
+}
+
+/// An empty-string cell is *text*, not a blank cell.
+///
+/// Harvested from a differential-fuzz grid whose `G1` held a single space.
+/// OOXML strips whitespace-only `<t>` content that isn't marked
+/// `xml:space="preserve"`, so both engines see an empty string -- and Excel
+/// keeps it as a text cell. visi used to rebuild it as blank on import, which
+/// made three separate formulas in that one grid disagree with Excel at once:
+/// `TYPE(G1)` answered 1 instead of 2, `G1 < 100` answered TRUE instead of
+/// FALSE (text sorts above every number in Excel), and an `ISERROR` over a
+/// division by `AND(..., G1 < 100)` missed the `#DIV/0!` that Excel produced.
+#[test]
+fn test_fuzz_empty_string_cell_is_text_not_blank() {
+    let sheet_src = [
+        ["\"\"", "5", ""],
+        ["=TYPE(A1)", "=ISTEXT(A1)", "=ISBLANK(A1)"],
+        ["=A1<100", "=ISNUMBER(A1)", "=TYPE(C1)"],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+
+    // TYPE: 2 is text, 1 would be a number -- and a blank cell reads as 1.
+    assert_eq!(numeric_at(&sheet, 1, 0), 2.0);
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(1, 1)),
+        ResultData::Boolean(true)
+    ));
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(1, 2)),
+        ResultData::Boolean(false)
+    ));
+    // Text is greater than any number in Excel's ordering, so this is FALSE.
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(2, 0)),
+        ResultData::Boolean(false)
+    ));
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(2, 1)),
+        ResultData::Boolean(false)
+    ));
+    // The control: C1 really is blank, and a blank cell's TYPE is 1.
+    assert_eq!(numeric_at(&sheet, 2, 2), 1.0);
+}
+
+/// Excel is asymmetric here and visi mirrors it: a cell holding the empty
+/// string is counted by COUNTA *and* by COUNTBLANK, while ISBLANK reports it
+/// as not blank. COUNTBLANK is documented to include cells whose formula
+/// returned `""`; COUNTA counts it because it is a value.
+#[test]
+fn test_empty_string_counts_as_both_present_and_blank() {
+    let sheet_src = [
+        ["\"\"", "=COUNTA(A1)", "=COUNTBLANK(A1)"],
+        ["", "=COUNTA(A2)", "=COUNTBLANK(A2)"],
+        ["=IF(TRUE,\"\",\"x\")", "=COUNTA(A3)", "=COUNTBLANK(A3)"],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+
+    // A text cell holding "": present to COUNTA, blank to COUNTBLANK.
+    assert_eq!(numeric_at(&sheet, 0, 1), 1.0);
+    assert_eq!(numeric_at(&sheet, 0, 2), 1.0);
+    // A genuinely empty cell: counted by neither / only COUNTBLANK.
+    assert_eq!(numeric_at(&sheet, 1, 1), 0.0);
+    assert_eq!(numeric_at(&sheet, 1, 2), 1.0);
+    // A formula that returned "" behaves like the text cell.
+    assert_eq!(numeric_at(&sheet, 2, 1), 1.0);
+    assert_eq!(numeric_at(&sheet, 2, 2), 1.0);
+}
+
+/// The `ISERROR` shape from the same fuzz grid, reduced: `AND(...)` over a
+/// text cell yields FALSE, so the division is by zero. Getting `G1 < 100`
+/// wrong turned this from `#DIV/0!` into an ordinary number.
+#[test]
+fn test_fuzz_and_over_empty_string_cell_forces_div_by_zero() {
+    let sheet_src = [
+        ["\"\"", "\"HIt\"", "-78"],
+        ["=ISERROR((C1 + -16) / AND(B1 > 0, A1 < 100))", "", ""],
+    ];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(1, 0)),
+        ResultData::Boolean(true)
+    ));
+}

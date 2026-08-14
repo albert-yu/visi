@@ -266,6 +266,7 @@ fn handle_set(args: SetArgs, quiet: bool) {
         underline: if args.underline { Some(true) } else { None },
         font_family: args.font_family,
         font_size: args.font_size,
+        num_format: None,
     };
     if !style.is_empty() {
         for (s_idx, row, col, _) in &updates {
@@ -1003,6 +1004,7 @@ fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
         underline: if args.underline { Some(true) } else { None },
         font_family: args.font_family,
         font_size: args.font_size,
+        num_format: None,
     };
 
     if style.is_empty() {

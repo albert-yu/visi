@@ -1188,6 +1188,35 @@ pub fn rewrite_structured_table_reference(
     Some(result)
 }
 
+/// Extends a just-lexed number with a scientific-notation exponent, if one
+/// follows: `1E5`, `1E+5`, `2.5e-3`.
+///
+/// Only consumes the `e` when a digit actually follows it (after an optional
+/// sign), so a number butted against something else is left alone -- notably
+/// the `E` in a reference like `A1:E5`, where the digit run ends at the colon
+/// rather than at an `E`, and a bare trailing `E` that belongs to a name.
+fn take_number_exponent(chars: &[char], i: &mut usize, num_str: &mut String) {
+    if *i >= chars.len() || !matches!(chars[*i], 'e' | 'E') {
+        return;
+    }
+    let mut peek = *i + 1;
+    if peek < chars.len() && matches!(chars[peek], '+' | '-') {
+        peek += 1;
+    }
+    if peek >= chars.len() || !chars[peek].is_ascii_digit() {
+        return;
+    }
+    num_str.push('E');
+    if matches!(chars[*i + 1], '+' | '-') {
+        num_str.push(chars[*i + 1]);
+    }
+    *i = peek;
+    while *i < chars.len() && chars[*i].is_ascii_digit() {
+        num_str.push(chars[*i]);
+        *i += 1;
+    }
+}
+
 pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
     let chars: Vec<char> = input.chars().collect();
     let mut tokens = Vec::new();
@@ -1364,6 +1393,7 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
                     num_str.push(chars[i]);
                     i += 1;
                 }
+                take_number_exponent(&chars, &mut i, &mut num_str);
                 if let Ok(val) = num_str.parse::<f64>() {
                     tokens.push(EvalToken::Number(val));
                 } else {
@@ -1382,6 +1412,7 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
                 num_str.push(chars[i]);
                 i += 1;
             }
+            take_number_exponent(&chars, &mut i, &mut num_str);
             if let Ok(val) = num_str.parse::<f64>() {
                 tokens.push(EvalToken::Number(val));
             } else {
@@ -1906,6 +1937,47 @@ pub fn parse_excel_formula(input: &str) -> Result<Expr, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scientific-notation literals are numbers, not a number followed by a
+    /// name. The lexer used to stop at the digits, so `=1E+5` came apart into
+    /// `1`, `E`, `+`, `5` and the parser rejected the leftovers -- every form
+    /// below failed outright, while Excel accepts all of them.
+    #[test]
+    fn test_lex_scientific_notation_literals() {
+        for (src, want) in [
+            ("1E5", 1e5),
+            ("1E+5", 1e5),
+            ("1e5", 1e5),
+            ("2.5E-3", 2.5e-3),
+            (".5E3", 0.5e3),
+            ("1E+300", 1e300),
+        ] {
+            match lex_eval(src).unwrap().as_slice() {
+                [EvalToken::Number(got)] => {
+                    assert_eq!(*got, want, "{src} lexed to the wrong value")
+                }
+                other => panic!("{src} did not lex as a single number: {other:?}"),
+            }
+        }
+    }
+
+    /// The exponent is only consumed when a digit really follows, so an `E`
+    /// that belongs to something else is left alone -- notably the column
+    /// letter in a range like `A1:E5`, which must stay three tokens.
+    #[test]
+    fn test_lex_does_not_eat_e_that_starts_a_reference() {
+        let tokens = lex_eval("A1:E5").unwrap();
+        assert_eq!(
+            tokens.len(),
+            3,
+            "A1:E5 must stay ident/colon/ident, got {tokens:?}"
+        );
+        // A trailing `E` with no digits after it is not an exponent either.
+        assert!(matches!(
+            lex_eval("1E").unwrap().as_slice(),
+            [EvalToken::Number(n), _] if *n == 1.0
+        ));
+    }
 
     #[test]
     fn test_compile_and_serialize() {

@@ -437,14 +437,13 @@ fn format_date_text(val: f64, format_text: &str) -> Result<String, String> {
     if val < 0.0 {
         return Err("#VALUE!".to_string());
     }
-    let (y, m, d) = crate::core::date_fn::serial_to_ymd(val);
-    // Longest tokens first so "yyyy" isn't partially eaten by a "yy" pass.
-    let replaced = format_text
-        .replace("yyyy", &format!("{:04}", y))
-        .replace("yy", &format!("{:02}", y % 100))
-        .replace("mm", &format!("{:02}", m))
-        .replace("dd", &format!("{:02}", d));
-    Ok(replaced)
+    // Shared with `date::format_date`, so a date renders the same whether it
+    // reaches here through TEXT() or through a date-formatted cell.
+    Ok(crate::core::date::render_date_code(
+        crate::core::date::excel_serial_to_date(val),
+        format_text,
+        crate::core::date::StringCase::Title,
+    ))
 }
 
 /// A pragmatic subset of Excel's TEXT() number-format mini-language: `$`

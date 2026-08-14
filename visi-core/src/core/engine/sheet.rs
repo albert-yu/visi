@@ -256,6 +256,9 @@ impl Sheet {
                 last_log_time = Instant::now();
             }
 
+            // `Some(code)` when this cell's literal was recognized as a date;
+            // applied below, since detecting it only has `&self`.
+            let mut detected_num_format: Option<String> = None;
             let (result, new_deps, compiled_to_cache) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
                 if !src.starts_with('=') {
@@ -271,6 +274,14 @@ impl Sheet {
                         ResultData::Boolean(true)
                     } else if src.eq_ignore_ascii_case("false") {
                         ResultData::Boolean(false)
+                    } else if let Some((date, format)) =
+                        crate::core::date::parse_date(src.trim_matches(' '))
+                    {
+                        // Excel stores a typed date as a serial and remembers
+                        // the notation as the cell's number format, so `6/22/26`
+                        // is a number that happens to display as a date.
+                        detected_num_format = Some(format.to_format_code());
+                        ResultData::Float(crate::core::date::date_to_excel_serial(date))
                     } else {
                         ResultData::String(src.to_string())
                     };
@@ -326,6 +337,33 @@ impl Sheet {
                         .insert(cell_ref);
                 }
                 self.dependencies_rev.insert(cell_ref, new_deps_set);
+            }
+
+            // A recognized date literal carries its notation onto the cell,
+            // and a formula that shifts a date by a number inherits that
+            // date's -- `=A1+1` on a date displays as the next day, as in
+            // Excel, rather than as a bare serial.
+            let inherited = if detected_num_format.is_some()
+                || !matches!(result, ResultData::Float(_) | ResultData::Integer(_))
+            {
+                None
+            } else {
+                self.get_src_str_ref(&cell_ref)
+                    .and_then(|src| src.strip_prefix('='))
+                    .and_then(|body| crate::core::parser::parse_excel_formula(body).ok())
+                    .and_then(|ast| self.inherited_date_format(&ast))
+            };
+            // An explicit format the user (or an imported worksheet) already
+            // set wins, so re-entering a date does not clobber it.
+            if let Some(code) = detected_num_format.or(inherited) {
+                let existing = self
+                    .get_cell_style(cell_ref.row, cell_ref.col)
+                    .and_then(|s| s.num_format.clone());
+                if existing.is_none() {
+                    self.update_cell_style(cell_ref.row, cell_ref.col, |style| {
+                        style.num_format = Some(code);
+                    });
+                }
             }
 
             // Update data
@@ -1940,13 +1978,9 @@ impl Sheet {
     fn counta_helper(&self, arg: &ResultData) -> usize {
         match arg {
             ResultData::None => 0,
-            ResultData::String(s) => {
-                if s.is_empty() {
-                    0
-                } else {
-                    1
-                }
-            }
+            // COUNTA counts every non-blank value, and the empty string is a
+            // value -- Excel counts both a text cell holding "" and a formula
+            // that returned "".
             ResultData::List(list) => {
                 let mut count = 0;
                 for item in list {
@@ -7862,7 +7896,9 @@ impl Sheet {
                 }
                 match &evaluated_args[0] {
                     ResultData::None => Ok(ResultData::Boolean(true)),
-                    ResultData::String(s) => Ok(ResultData::Boolean(s.is_empty())),
+                    // Only an *absent* value is blank. A cell holding the
+                    // empty string is text, and so is a formula that returned
+                    // "" -- Excel reports ISBLANK as FALSE for both.
                     _ => Ok(ResultData::Boolean(false)),
                 }
             }
@@ -9220,6 +9256,82 @@ impl Sheet {
         } else {
             ResultData::None
         }
+    }
+
+    /// The date format a formula should inherit from the cells it reads, if
+    /// any -- Excel's "date plus a number is still a date" behavior.
+    ///
+    /// The rule is deliberately about the *operator*, not about how many
+    /// cells the formula touches, because those come apart: `=YEAR(A1)` reads
+    /// exactly one date cell and returns a year, which is emphatically not a
+    /// date. So only two shapes inherit:
+    ///
+    /// - a bare reference to a date cell (`=A1`), and
+    /// - adding or subtracting a non-date from one (`=A1+1`, `=1+A1`).
+    ///
+    /// Everything else -- a function call, a product, a difference of two
+    /// dates (which is a count of days) -- declines, leaving a plain number.
+    fn inherited_date_format(&self, ast: &crate::core::parser::Expr) -> Option<String> {
+        use crate::core::parser::{Expr, Op};
+        match ast {
+            Expr::CellRef {
+                sheet, row, col, ..
+            } if sheet.is_none() => self
+                .get_cell_style(*row, *col)
+                .and_then(|s| s.num_format.clone())
+                .filter(|code| crate::core::date::is_date_code(code)),
+            Expr::BinaryOp {
+                op: Op::Add | Op::Sub,
+                left,
+                right,
+            } => {
+                let left_fmt = self.inherited_date_format(left);
+                let right_fmt = self.inherited_date_format(right);
+                match (left_fmt, right_fmt) {
+                    // Exactly one side is a date: the other is an offset in
+                    // days, so the result stays that date's format.
+                    (Some(fmt), None) | (None, Some(fmt)) => Some(fmt),
+                    // Neither, or both (a day count) -- no date format.
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The cell's value as it should be shown, honoring the cell's number
+    /// format.
+    ///
+    /// A date cell holds a plain numeric serial, exactly as in Excel, so
+    /// rendering it as a date is a display-time concern: this is the only
+    /// place that turns 46195 back into `6/22/26`. Everything that shows a
+    /// value to a user should go through here rather than formatting
+    /// [`ResultData`] directly, which knows nothing about formats.
+    pub fn get_display_string(&self, cell: &CellRef) -> String {
+        let value = self.get_result_data(cell);
+        let Some(code) = self
+            .get_cell_style(cell.row, cell.col)
+            .and_then(|s| s.num_format.as_deref())
+        else {
+            return value.to_string();
+        };
+        if !crate::core::date::is_date_code(code) {
+            return value.to_string();
+        }
+        // Only a number is a date serial; text and errors render as-is.
+        let serial = match value {
+            ResultData::Float(f) => f,
+            ResultData::Integer(i) => i as f64,
+            _ => return value.to_string(),
+        };
+        if serial < 0.0 {
+            return value.to_string();
+        }
+        crate::core::date::render_date_code(
+            crate::core::date::excel_serial_to_date(serial),
+            code,
+            crate::core::date::StringCase::Title,
+        )
     }
 
     /// Updates the src text of a particular cell but does
