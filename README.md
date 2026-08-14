@@ -9,7 +9,7 @@ My goals with this project are:
 
 `visi` is structured follows:
 - **[`visi-core`](visi-core/)**: embeddedable spreadsheet engine providing Excel parsing, AST formula compilation, dependency resolution, execution engine, date calculations, chart metadata, and Excel (`.xlsx`) import/export, see [its README](visi-core/README.md).
-- **`visi`**: Command-line application using `visi-core` which can edit and execute Excel files headlessly
+- **[`visi`](visi/)**: Command-line application using `visi-core` which can edit and execute Excel files headlessly
 
 Libraries such as `openpyxl` can author Excel workbooks, but they cannot evaluate formulas.
 `visi` aims for parity by using [fuzz testing](fuzz/README.md) and throwing
