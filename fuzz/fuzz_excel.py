@@ -2328,6 +2328,45 @@ class XLSXEvaluatedReader:
 
 
 # -----------------------------------------------------------------------------
+# 3b. Smoke mode (--driver mock)
+# -----------------------------------------------------------------------------
+#
+# The mock Excel driver copies the *unevaluated* source workbook and calls it
+# Excel's output. openpyxl writes no cached <v> for a formula cell, so every
+# formula cell reads as None on the "Excel" side -- 360 of 530 cells in a
+# default grid. Comparing against that isn't a weak oracle, it's a guaranteed
+# 100% mismatch, and the harness used to report it as such: exit 1 every run,
+# plus a failure-artifact directory per iteration.
+#
+# So mock does not get compared. What it is actually for -- and what
+# fuzz/README.md has always called it -- is a smoke test of the pipeline
+# (generate -> visi -> read -> report) on a machine with no Excel automation,
+# and a crash hunt over a large volume of generated formulas. Both work
+# without an oracle; neither works with a fake one, because the real signal is
+# invisible among the guaranteed noise.
+
+SMOKE_BANNER = (
+    "[mock] No Excel: running as a pipeline smoke test. Output is checked for "
+    "readability only,\n        not correctness -- there is nothing to compare "
+    "against. Crashes still fail the run."
+)
+
+
+def smoke_check(items, what="cells"):
+    """The most that can be asserted with no oracle: visi wrote an .xlsx that
+    parses and has content. Catches a corrupt or empty export, which is a real
+    failure mode and one the comparison path would never reach.
+
+    `items` is whatever that fuzzer reads back -- a cell dict, or a chart list.
+
+    Returns (ok, reason).
+    """
+    if not items:
+        return False, f"visi produced no readable {what}"
+    return True, ""
+
+
+# -----------------------------------------------------------------------------
 # 4. Semantic Comparison Engine
 # -----------------------------------------------------------------------------
 
@@ -2558,6 +2597,7 @@ def main():
         print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelDriver(excel_path=args.excel_path, driver_type=args.driver)
     comparator = DifferentialComparator(strict_error_class=args.strict_error_class)
+    smoke_mode = excel_driver.driver_type == "mock"
 
     print("=====================================================================")
     print("        visi vs. Microsoft Excel Differential Fuzzing Harness       ")
@@ -2566,6 +2606,8 @@ def main():
     print(f" Grid Size  : {args.rows}x{args.cols}")
     print(f" Visi       : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
+    if smoke_mode:
+        print(f" {SMOKE_BANNER}")
     print("=====================================================================\n")
 
     passed_count = 0
@@ -2588,8 +2630,9 @@ def main():
             # 2. Evaluate with visi
             visi_bytes = visi_driver.run(source_xlsx, visi_out_xlsx)
 
-            # 3. Evaluate with Excel
-            excel_driver.run(source_xlsx, excel_out_xlsx)
+            # 3. Evaluate with Excel, if there is an Excel to evaluate with
+            if not smoke_mode:
+                excel_driver.run(source_xlsx, excel_out_xlsx)
 
             # 4. Compare evaluated cell contents. visi's output is parsed from
             # the bytes it just wrote -- the same bytes now on disk in
@@ -2597,6 +2640,24 @@ def main():
             visi_cells = XLSXEvaluatedReader.read_evaluated_cells_bytes(
                 visi_bytes, source=visi_out_xlsx
             )
+
+            if smoke_mode:
+                ok, reason = smoke_check(visi_cells)
+                if ok:
+                    passed_count += 1
+                    print(
+                        f" Iteration {i:3d}/{args.iterations} [OK] "
+                        f"(Seed: {iter_seed}, {len(visi_cells)} cells)"
+                    )
+                else:
+                    failed_count += 1
+                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(f"   {reason}")
+                    fail_case_dir = os.path.join(failures_dir, f"smoke_iter_{i}_seed_{iter_seed}")
+                    shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
+                    print(f"   Saved reproducing files to: {fail_case_dir}\n")
+                continue
+
             excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_out_xlsx)
 
             is_match, mismatches = comparator.compare(visi_cells, excel_cells)
@@ -2629,8 +2690,11 @@ def main():
 
     duration = time.time() - start_time
     print("\n=====================================================================")
-    print(f" Fuzzing Completed in {duration:.2f}s")
-    print(f" Passed : {passed_count}/{args.iterations}")
+    print(f" {'Smoke test' if smoke_mode else 'Fuzzing'} Completed in {duration:.2f}s")
+    if smoke_mode:
+        print(f" Ran    : {passed_count}/{args.iterations} without a crash")
+    else:
+        print(f" Passed : {passed_count}/{args.iterations}")
     print(f" Failed : {failed_count}/{args.iterations}")
     if comparator.error_class_only:
         print(

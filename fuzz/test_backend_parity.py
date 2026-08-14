@@ -8,9 +8,11 @@ clear-vs-set flags, `add_pivot_field`'s post-add subtotal mutation), and
 without a test that duplication drifts silently and the fuzzer starts
 measuring something other than what it reports.
 
-Corpus: every saved `fuzz_results/failures/*/source.xlsx` -- real inputs that
-already broke something once -- plus freshly generated workbooks at fixed
-seeds, so the test is still meaningful on a clean checkout.
+Corpus: freshly generated workbooks at fixed seeds, so this is fully
+self-contained on a clean checkout, plus any `fuzz_results/failures/*/source.xlsx`
+lying around locally. That second source is opportunistic and usually empty --
+`fuzz_results/` is gitignored, and only a genuine differential failure puts
+anything there. Do not rely on it for coverage.
 
 Comparison is over *parsed content*, never bytes: docProps/core.xml carries a
 creation timestamp and chart/pivot ids come from a random `generate_unique_id`,
@@ -77,7 +79,8 @@ def test_eval_parity_on_generated_workbooks(seed, tmp_path):
 
 
 @requires_cli
-@pytest.mark.parametrize("src", saved_failure_sources())
+@pytest.mark.skipif(not saved_failure_sources(), reason="no saved failures locally")
+@pytest.mark.parametrize("src", saved_failure_sources() or [None])
 def test_eval_parity_on_saved_failures(src, tmp_path):
     _assert_eval_parity(src, tmp_path)
 

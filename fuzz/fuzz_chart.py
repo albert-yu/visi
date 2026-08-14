@@ -47,6 +47,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chart_xlsx_reader import read_charts  # noqa: E402
+from fuzz_excel import SMOKE_BANNER, smoke_check  # noqa: E402
 
 # -----------------------------------------------------------------------------
 # 1. Source workbook + chart configuration generator
@@ -416,6 +417,7 @@ def main():
         print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelChartDriver(excel_path=args.excel_path, driver_type=args.driver)
     comparator = ChartComparator()
+    smoke_mode = excel_driver.driver_type == "mock"
 
     print("=====================================================================")
     print("         visi vs. Microsoft Excel Chart Differential Fuzzer          ")
@@ -424,6 +426,8 @@ def main():
     print(f" Max rows    : {args.rows}")
     print(f" Visi        : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
+    if smoke_mode:
+        print(f" {SMOKE_BANNER}")
     print("=====================================================================\n")
 
     passed_count = 0
@@ -444,6 +448,26 @@ def main():
             range_str, add_config, edit_config = generator.generate(source_xlsx, num_rows=num_rows)
 
             visi_driver.run(source_xlsx, range_str, add_config, edit_config, visi_out_xlsx)
+
+            if smoke_mode:
+                ok, reason = smoke_check(read_charts(visi_out_xlsx), what="charts")
+                if ok:
+                    passed_count += 1
+                    print(
+                        f" Iteration {i:3d}/{args.iterations} [OK] (Seed: {iter_seed},"
+                        f" type: {edit_config['chart_type']})"
+                    )
+                else:
+                    failed_count += 1
+                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(f"   {reason}")
+                    fail_case_dir = os.path.join(
+                        failures_dir, f"chart_smoke_iter_{i}_seed_{iter_seed}"
+                    )
+                    shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
+                    print(f"   Saved reproducing files to: {fail_case_dir}\n")
+                continue
+
             excel_driver.run(source_xlsx, range_str, edit_config, excel_out_xlsx)
 
             is_match, mismatches = comparator.compare(visi_out_xlsx, excel_out_xlsx)
@@ -475,8 +499,11 @@ def main():
 
     duration = time.time() - start_time
     print("\n=====================================================================")
-    print(f" Fuzzing Completed in {duration:.2f}s")
-    print(f" Passed : {passed_count}/{args.iterations}")
+    print(f" {'Smoke test' if smoke_mode else 'Fuzzing'} Completed in {duration:.2f}s")
+    if smoke_mode:
+        print(f" Ran    : {passed_count}/{args.iterations} without a crash")
+    else:
+        print(f" Passed : {passed_count}/{args.iterations}")
     print(f" Failed : {failed_count}/{args.iterations}")
     print("=====================================================================")
 

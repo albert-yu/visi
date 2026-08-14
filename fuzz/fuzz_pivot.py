@@ -61,7 +61,12 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fuzz_excel import XLSXEvaluatedReader, DifferentialComparator  # noqa: E402
+from fuzz_excel import (  # noqa: E402
+    SMOKE_BANNER,
+    DifferentialComparator,
+    XLSXEvaluatedReader,
+    smoke_check,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -614,6 +619,7 @@ def main():
         print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelPivotDriver(excel_path=args.excel_path, driver_type=args.driver)
     comparator = DifferentialComparator()
+    smoke_mode = excel_driver.driver_type == "mock"
 
     print("=====================================================================")
     print("      visi vs. Microsoft Excel Pivot Table Differential Fuzzer       ")
@@ -623,6 +629,8 @@ def main():
     print(f" Source mode : {args.source_mode}")
     print(f" Visi        : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
+    if smoke_mode:
+        print(f" {SMOKE_BANNER}")
     print("=====================================================================\n")
 
     passed_count = 0
@@ -650,9 +658,30 @@ def main():
             config = generator.generate(source_xlsx, num_rows=num_rows, use_table=use_table)
 
             visi_driver.run(source_xlsx, config, visi_out_xlsx, PIVOT_NAME, DEST_CELL, DEST_RC)
-            excel_driver.run(source_xlsx, config, excel_out_xlsx)
+            if not smoke_mode:
+                excel_driver.run(source_xlsx, config, excel_out_xlsx)
 
             visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_out_xlsx)
+
+            if smoke_mode:
+                ok, reason = smoke_check(visi_cells)
+                if ok:
+                    passed_count += 1
+                    print(
+                        f" Iteration {i:3d}/{args.iterations} [OK] (Seed: {iter_seed},"
+                        f" rows: {num_rows}, table: {use_table}, {len(visi_cells)} cells)"
+                    )
+                else:
+                    failed_count += 1
+                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(f"   {reason}")
+                    fail_case_dir = os.path.join(
+                        failures_dir, f"pivot_smoke_iter_{i}_seed_{iter_seed}"
+                    )
+                    shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
+                    print(f"   Saved reproducing files to: {fail_case_dir}\n")
+                continue
+
             excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_out_xlsx)
 
             is_match, mismatches = comparator.compare(visi_cells, excel_cells)
@@ -684,8 +713,11 @@ def main():
 
     duration = time.time() - start_time
     print("\n=====================================================================")
-    print(f" Fuzzing Completed in {duration:.2f}s")
-    print(f" Passed : {passed_count}/{args.iterations}")
+    print(f" {'Smoke test' if smoke_mode else 'Fuzzing'} Completed in {duration:.2f}s")
+    if smoke_mode:
+        print(f" Ran    : {passed_count}/{args.iterations} without a crash")
+    else:
+        print(f" Passed : {passed_count}/{args.iterations}")
     print(f" Failed : {failed_count}/{args.iterations}")
     print("=====================================================================")
 

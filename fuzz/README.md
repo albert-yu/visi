@@ -89,9 +89,11 @@ post-add subtotal mutation). Nothing else would notice that drifting:
 pytest fuzz/test_backend_parity.py visi-python/tests/
 ```
 
-It runs both backends over every saved `fuzz_results/failures/*/source.xlsx`
-plus freshly generated workbooks, and diffs the parsed output — content, not
-bytes, since `docProps/core.xml` carries a timestamp and ids are random.
+It runs both backends over freshly generated workbooks at fixed seeds, plus any
+`fuzz_results/failures/*/source.xlsx` lying around locally, and diffs the parsed
+output — content, not bytes, since `docProps/core.xml` carries a timestamp and
+ids are random. The generated seeds are the real coverage; `fuzz_results/` is
+gitignored and usually empty.
 
 One divergence is deliberate: `Workbook.set_pivot_filter(name, col, [])`
 selects *nothing*, a state `visi pivot filter` cannot express (it takes a
@@ -124,17 +126,40 @@ CLI ran.
 
 ```bash
 # macOS with Microsoft Excel installed in /Applications
-python3 fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
+python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 
 # Windows
-python3 fuzz/fuzz_excel.py --driver win32com --iterations 50
+python fuzz/fuzz_excel.py --driver win32com --iterations 50
 
 # Custom CLI or script runner
-python3 fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runner" --iterations 10
+python fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runner" --iterations 10
 
-# Mock Mode (runs test pipeline without invoking Excel binary)
-python3 fuzz/fuzz_excel.py --driver mock --iterations 5
+# Smoke mode -- no Excel, no comparison. See below.
+python fuzz/fuzz_excel.py --driver mock --iterations 5
 ```
+
+### `--driver mock` is a smoke test, not a weak oracle
+
+There is no Excel in mock mode, so **nothing is compared**. Each iteration
+generates a workbook, runs visi over it, and checks only that visi wrote an
+`.xlsx` that parses and has content. It exits 0 unless something crashed or
+produced unreadable output, and writes no failure artifacts otherwise.
+
+That is deliberately less than it used to do, because what it used to do was
+not meaningful. Mock copied the *unevaluated* source workbook and compared
+visi against it as though it were Excel's answer. openpyxl writes no cached
+`<v>` for a formula cell, so all 360 formula cells of a default 530-cell grid
+read as `None` on the "Excel" side: a guaranteed 100% mismatch, exit 1 on every
+run, and one failure-artifact directory per iteration. The genuine signal --
+did visi crash? did it emit a corrupt file? -- was invisible underneath it.
+
+So mock is for what this README always claimed: exercising the pipeline
+(generate → visi → read → report) on a machine with no Excel automation, and
+hunting crashes over a large volume of generated formulas. Both work without an
+oracle. Neither works with a fake one.
+
+`--driver auto` resolves to mock on any platform that is not macOS or Windows,
+so this is also what a Linux run does.
 
 ### Financial functions (`ExcelFuzzGenerator.generate_financial_formula`)
 
@@ -236,7 +261,7 @@ Pivot tables get their own script rather than a mode inside `fuzz_excel.py`, bec
 4. Reuses `XLSXEvaluatedReader`/`DifferentialComparator` from `fuzz_excel.py` unchanged to compare the two engines' materialized output cells, since both write plain literal values into the destination range.
 
 ```bash
-python3 fuzz/fuzz_pivot.py --driver mock --iterations 5                      # smoke-test the pipeline, no Excel needed
+python fuzz/fuzz_pivot.py --driver mock --iterations 5                       # smoke test, no Excel and no comparison
 python3 fuzz/fuzz_pivot.py --excel-path "/Applications/Microsoft Excel.app" --iterations 1 --seed 1
 ```
 
@@ -265,7 +290,7 @@ Charts get their own script for the same reason pivot tables do: Excel must *act
 4. Compares the two engines' resulting chart structure -- type, category/value ranges, title, axis labels, legend -- via `chart_xlsx_reader.read_charts`, a new `openpyxl`-based reader module (`ChartComparator`, not the cell-based comparator above).
 
 ```bash
-python3 fuzz/fuzz_chart.py --driver mock --iterations 5                      # smoke-test the pipeline, no Excel needed
+python fuzz/fuzz_chart.py --driver mock --iterations 5                       # smoke test, no Excel and no comparison
 python3 fuzz/fuzz_chart.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20 --seed 1
 ```
 
