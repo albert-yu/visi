@@ -710,13 +710,10 @@ fn test_cross_table_dependency_propagation() {
     let updated_cells_1 = table1.commit(None).unwrap();
     assert!(updated_cells_1.contains(&CellRef::new(0, 0)));
 
-    for cell in updated_cells_1 {
-        let dep = Dependency::Remote {
-            sheet: "Sheet1".to_string(),
-            cell,
-        };
-        table2.invalidate_dependency(&dep);
-    }
+    // `commit` propagates local dependencies only, so Sheet2 has no idea
+    // Sheet1 moved. Marking it wholesale is how `WorkbookManager::evaluate`
+    // drives cross-sheet propagation.
+    table2.mark_all_dirty();
 
     let mut context = Context::new();
     context.add_table("Sheet1".to_string(), &table1);

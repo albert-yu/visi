@@ -57,6 +57,8 @@ Not everything in `core` is public. The modules implementing Excel's function li
 
 **When adding a public item, ask whether it belongs in that re-export list.** Anything reachable from `core`'s `pub use` is a semver commitment.
 
+`lib.rs` carries `#![warn(missing_docs)]`, so a new public item without a doc comment warns. Note the lint's blind spot: it fires on the item's *definition site*, so it says nothing about a `pub` item inside a `pub(crate)` module even when a `pub use` re-exports it into the public API. Sealing a module therefore silences the lint without actually shrinking the surface — check with `cargo doc` (and `-W unnameable_types`, which catches a type that stays reachable through a public field or variant but can no longer be named).
+
 Fallible public API returns `crate::Error` (`src/error.rs`), not `String`: an `#[non_exhaustive]` enum with `NotFound`/`AlreadyExists`/`NameTaken`/`InvalidName` carrying an `ObjectKind` so callers can branch without parsing text. Lower layers (Excel Table and pivot internals) still produce `String` and are wrapped in `Error::InvalidArgument` at the `workbook.rs` boundary — carve real variants out of it as those layers get typed. Formula-evaluation internals deliberately keep `Result<_, String>`, where the string is an Excel error code like `#VALUE!`, not a Rust error.
 
 ### Data model (`visi-core/src/core/engine/`)

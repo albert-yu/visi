@@ -1,3 +1,9 @@
+//! Excel Tables (ListObjects): named sub-ranges of a worksheet.
+//!
+//! Not to be confused with a [`Sheet`], which this codebase informally calls a
+//! "table" in places. An [`ExcelTable`] lives *on* a sheet and may cover only
+//! part of it.
+
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Sheet, generate_unique_id};
@@ -13,14 +19,25 @@ use crate::core::engine::{Sheet, generate_unique_id};
 /// exactly like a real Excel Table can occupy only part of a worksheet.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExcelTable {
+    /// Workbook-unique identifier, stable across renames.
     pub id: u64,
+    /// The table's name, as a structured reference spells it. Unique
+    /// workbook-wide and matched case-insensitively.
     pub name: String,
+    /// The sheet this table occupies part of.
     pub sheet_id: u64,
+    /// Topmost row of the range, 0-based -- the header row when there is one.
     pub start_row: usize,
+    /// Leftmost column of the range, 0-based.
     pub start_col: usize,
+    /// Bottommost row of the range, 0-based and inclusive -- the totals row
+    /// when there is one.
     pub end_row: usize,
+    /// Rightmost column of the range, 0-based and inclusive.
     pub end_col: usize,
+    /// Whether the first row is a header rather than data.
     pub has_header_row: bool,
+    /// Whether the last row is a totals row rather than data.
     pub has_totals_row: bool,
     /// Column names, in sheet-column order, one per column in
     /// `start_col..=end_col`. Kept in sync with the header row's cell text
@@ -32,14 +49,17 @@ pub struct ExcelTable {
 }
 
 impl ExcelTable {
+    /// Sets the table's visual style, or clears it with `None`.
     pub fn set_style_name(&mut self, style_name: Option<String>) {
         self.style_name = style_name;
     }
 
+    /// Total rows in the range, header and totals rows included.
     pub fn row_count(&self) -> usize {
         self.end_row - self.start_row + 1
     }
 
+    /// Columns in the range.
     pub fn col_count(&self) -> usize {
         self.end_col - self.start_col + 1
     }
@@ -55,10 +75,14 @@ impl ExcelTable {
         self.end_row - usize::from(self.has_totals_row)
     }
 
+    /// The header row's sheet-row index, or `None` if the table has no
+    /// header.
     pub fn header_row(&self) -> Option<usize> {
         self.has_header_row.then_some(self.start_row)
     }
 
+    /// The totals row's sheet-row index, or `None` if the table has no
+    /// totals row.
     pub fn totals_row(&self) -> Option<usize> {
         self.has_totals_row.then_some(self.end_row)
     }
@@ -122,12 +146,15 @@ fn check_duplicate_column_names(columns: &[String]) -> Result<(), String> {
 }
 
 impl Sheet {
+    /// Finds a table on this sheet by name, matched case-insensitively as
+    /// Excel does.
     pub fn find_table(&self, name: &str) -> Option<&ExcelTable> {
         self.tables
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
+    /// [`Sheet::find_table`], mutably.
     pub fn find_table_mut(&mut self, name: &str) -> Option<&mut ExcelTable> {
         self.tables
             .iter_mut()
@@ -233,6 +260,12 @@ impl Sheet {
         Ok(id)
     }
 
+    /// Removes a table definition from this sheet, leaving the cells it
+    /// covered untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if no table on this sheet has that name.
     pub fn delete_table_by_name(&mut self, name: &str) -> Result<(), String> {
         if let Some(pos) = self
             .tables
@@ -249,6 +282,18 @@ impl Sheet {
         }
     }
 
+    /// Renames a table on this sheet.
+    ///
+    /// Renaming here does *not* rewrite the formulas that reference the table
+    /// -- that cascade is `WorkbookManager::rename_table`'s job, and it is
+    /// what keeps `Sales[Amount]` pointing at the renamed table. Prefer that
+    /// entry point unless you are rewriting the references yourself.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the new name is not a valid table name, if
+    /// another table on this sheet already has it, or if no table on this
+    /// sheet has `old_name`.
     pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
         validate_table_name(new_name)?;
         if self.tables.iter().any(|t| {

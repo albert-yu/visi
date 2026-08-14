@@ -56,6 +56,13 @@
 //! Excel's function library are crate-private -- what is re-exported here and
 //! from [`core`] is the intended surface.
 
+#![warn(missing_docs)]
+
+/// The engine's modules: sheets and cells, Excel Tables, pivot tables,
+/// charts, styling, VBA, and `.xlsx` I/O.
+///
+/// The curated re-exports at this module's root are the intended surface.
+/// Modules implementing Excel's function library are crate-private.
 pub mod core;
 mod error;
 
