@@ -496,27 +496,6 @@ impl Sheet {
         Ok(updated_cells)
     }
 
-    /// Marks every cell that reads `dep` as dirty, so the next
-    /// [`Sheet::commit`] recomputes it.
-    ///
-    /// The targeted counterpart to [`Sheet::mark_all_dirty`], for an embedder
-    /// driving cross-sheet propagation itself: [`Sheet::commit`] returns the
-    /// cells it changed, and feeding each one back to the other sheets as a
-    /// [`Dependency::Remote`] invalidates just what actually read them.
-    /// `WorkbookManager::evaluate` takes the blunter route instead.
-    pub fn invalidate_dependency(&mut self, dep: &Dependency) {
-        if let Some(dependents) = self.dependencies.get(dep) {
-            for dependent in dependents {
-                // Mark as dirty so commit will pick it up
-                if let Some(col) = self.columns.get_mut(dependent.col)
-                    && !col.dirty_indices.contains(&dependent.row)
-                {
-                    col.dirty_indices.push(dependent.row);
-                }
-            }
-        }
-    }
-
     /// Evaluates cell source text without storing it, as
     /// [`Sheet::eval`] does, but from the point of view of `(row, col)`.
     ///
