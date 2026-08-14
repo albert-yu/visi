@@ -222,6 +222,11 @@ fn test_datedif_counts_only_completed_intervals() {
 }
 
 #[test]
+// The expected values are the 30-digit reference evaluations the comment
+// below describes. They are kept at full width on purpose: the digits past
+// f64 are what make them checkable against the oracle, and truncating to
+// the shortest round-tripping literal would hide where they came from.
+#[allow(clippy::excessive_precision)]
 fn test_besselj_stays_accurate_where_excel_does_not() {
     // Differential fuzzing flagged BESSELJ as a mismatch against real
     // Excel for larger arguments -- but arbitrating the two against

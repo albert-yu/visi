@@ -394,13 +394,13 @@ impl Sheet {
     /// current bounds. An empty style is stored as no style at all.
     pub fn set_cell_style(&mut self, row: usize, col: usize, style: crate::core::CellStyle) {
         self.ensure_capacity(row, col);
-        if let Some(column) = self.columns.get_mut(col) {
-            if row < column.styles.len() {
-                if style.is_empty() {
-                    column.styles[row] = None;
-                } else {
-                    column.styles[row] = Some(style);
-                }
+        if let Some(column) = self.columns.get_mut(col)
+            && row < column.styles.len()
+        {
+            if style.is_empty() {
+                column.styles[row] = None;
+            } else {
+                column.styles[row] = Some(style);
             }
         }
     }
@@ -414,25 +414,25 @@ impl Sheet {
         F: FnOnce(&mut crate::core::CellStyle),
     {
         self.ensure_capacity(row, col);
-        if let Some(column) = self.columns.get_mut(col) {
-            if row < column.styles.len() {
-                let mut current = column.styles[row].clone().unwrap_or_default();
-                f(&mut current);
-                if current.is_empty() {
-                    column.styles[row] = None;
-                } else {
-                    column.styles[row] = Some(current);
-                }
+        if let Some(column) = self.columns.get_mut(col)
+            && row < column.styles.len()
+        {
+            let mut current = column.styles[row].clone().unwrap_or_default();
+            f(&mut current);
+            if current.is_empty() {
+                column.styles[row] = None;
+            } else {
+                column.styles[row] = Some(current);
             }
         }
     }
 
     /// Removes a cell's style. Unlike the setters, this never grows the sheet.
     pub fn clear_cell_style(&mut self, row: usize, col: usize) {
-        if let Some(column) = self.columns.get_mut(col) {
-            if row < column.styles.len() {
-                column.styles[row] = None;
-            }
+        if let Some(column) = self.columns.get_mut(col)
+            && row < column.styles.len()
+        {
+            column.styles[row] = None;
         }
     }
 

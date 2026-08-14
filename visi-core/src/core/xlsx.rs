@@ -574,10 +574,10 @@ pub(crate) fn parse_xlsx_color(color_str: &str) -> Option<rust_xlsxwriter::Color
         if let Ok(rgb) = u32::from_str_radix(trimmed, 16) {
             return Some(rust_xlsxwriter::Color::RGB(rgb));
         }
-    } else if trimmed.len() == 8 {
-        if let Ok(rgb) = u32::from_str_radix(&trimmed[2..], 16) {
-            return Some(rust_xlsxwriter::Color::RGB(rgb));
-        }
+    } else if trimmed.len() == 8
+        && let Ok(rgb) = u32::from_str_radix(&trimmed[2..], 16)
+    {
+        return Some(rust_xlsxwriter::Color::RGB(rgb));
     }
     None
 }
@@ -641,15 +641,15 @@ fn date_serial_for_export(
 
 pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwriter::Format {
     let mut format = rust_xlsxwriter::Format::new();
-    if let Some(font_color) = &style.font_color {
-        if let Some(color) = parse_xlsx_color(font_color) {
-            format = format.set_font_color(color);
-        }
+    if let Some(font_color) = &style.font_color
+        && let Some(color) = parse_xlsx_color(font_color)
+    {
+        format = format.set_font_color(color);
     }
-    if let Some(bg_color) = &style.bg_color {
-        if let Some(color) = parse_xlsx_color(bg_color) {
-            format = format.set_background_color(color);
-        }
+    if let Some(bg_color) = &style.bg_color
+        && let Some(color) = parse_xlsx_color(bg_color)
+    {
+        format = format.set_background_color(color);
     }
     if let Some(true) = style.bold {
         format = format.set_bold();
