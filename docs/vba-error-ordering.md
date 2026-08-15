@@ -171,23 +171,115 @@ inside `not`'s boolean branch, the second falls into the bitwise one because
 only one side is a `Boolean`. Covered by
 `the_words_true_and_false_coerce_on_the_integer_path_only`.
 
+## String against number, in full
+
+This was the last hard question, and it took four attempts. The rule:
+
+| Numeric side | String side | Behaviour |
+| --- | --- | --- |
+| statically typed (`CLng` and the other numeric `C*` conversions) | anything | the **whole** string must parse; error 13 otherwise |
+| constant | constant | the string's numeric **prefix** is used, as `Val` takes it; error 13 if there is no prefix at all |
+| constant | runtime | same prefix rule, but no prefix falls back to the ordering below rather than erroring |
+| runtime | constant | plain **string** comparison, the number rendered with `CStr` |
+| runtime | runtime | a number sorts **before** any string, whatever the values |
+
+Prefix coercion is what finally separated the pair that had defeated three
+earlier models:
+
+| Expression | Excel | Why |
+| --- | --- | --- |
+| `(Not 2!) <= ("1.5" & False)` | `True` | `"1.5False"` has the numeric prefix `1.5` |
+| `(-True) <> (True & &HFF)` | error 13 | `"True255"` has no numeric prefix |
+
+Structurally those two are identical -- same operator family, same side for
+the string, same literal-versus-constant-expression shape on each side, both
+strings built by `&` from two literals. Only the *content* of the string
+separates them, which is not something a structural model could ever have
+reached.
+
+One supporting rule: **`Null` is not foldable**, so nothing containing it is
+constant. `(False & Null) = (0.1 / -2.5)` is `False` rather than an error
+because the string side is not constant and therefore falls back.
+
+### Four failed models, kept so they are not retried
+
+1. *`&` is never constant-folded.* Net negative on its own: 2093 against 2096
+   across seven seeds, fixing one case and breaking three.
+2. *Any statically-typed numeric partner is strict, including `Len`.* `Len`
+   has a documented `As Long` signature, and `("abc" & va) <> Len(CStr("Z"))`
+   still does not error while the same shape against `CLng` does.
+3. *`^` with a String operand is strict.* `"255" ^ 255` and
+   `StrReverse(255) ^ 1.5E54` are both `INF`, exactly as their numeric
+   equivalents. The case that looked like evidence had a base of `"1E+2923"`,
+   where the real rule was that the *conversion* overflows.
+4. *Strictness depends on literal versus constant expression.* This scored
+   best of the structural models and is still wrong; it was replaced by
+   prefix coercion, which is about the string's content instead.
+
 ## What is left
 
-The long tail is error-code disagreements of the same shape as §2–§4: both
-engines fault on one expression and report different numbers, because they
-coerce its subexpressions in a different order. Examples from unseen seeds:
-`ERR|94` where Excel says `ERR|13`, `ERR|6` where Excel says `ERR|5`,
-`ERR|13` where Excel says `ERR|94`.
+Roughly 1-2% on seeds never tuned against. **Those are the honest numbers**,
+and the gap from the tuned ones is the same overfitting trap this document
+opened with:
 
-Each needs its own probe — which is tractable but not derivable, and the
-pattern so far is that guessing at one of these gets it backwards about half
-the time. The workflow that has worked every round:
+| Seeds used during this work | 300, 300, 300, 300, 300, 299, 299 of 300 |
+| --- | --- |
+| **Seeds never used** | **293, 297 of 300** |
 
-1. Run `python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <unseen>`.
-2. Reduce a mismatch to the smallest expression that reproduces it.
-3. Put that expression, and the neighbouring cases that would discriminate
-   between plausible rules, into a probe modelled on
-   [`vba_ordering_probe.bas`](../fuzz/vba_ordering_probe.bas) — and check
-   whether the probe's own rendering can confound the answer, as §5's did.
-4. Implement, add a unit test naming the Excel result, re-run on several
-   seeds.
+### The outstanding cases
+
+Twelve, across four seeds, reproducible with
+`python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <seed>`:
+
+| Case | visi | Excel |
+| --- | --- | --- |
+| `s2024/4` | error 13 | `Double 0.0001` |
+| `s2024/103` | error 13 | `Boolean True` |
+| `s2024/145` | `String "False"` | `String "True"` |
+| `s2024/162` | error 13 | error 11 |
+| `s2024/171` | `Integer -255` | `Double 3` |
+| `s2024/299` | error 13 | error 11 |
+| `s2024/52` | `String "xx2"` | error 13 |
+| `s31337/119` | error 11 | error 13 |
+| `s31337/123` | error 13 | `Double 0.1` |
+| `s31337/147` | `Long 1` | error 13 |
+| `s555/219` | `Integer 255` | error 6 |
+| `s777/298` | `Boolean True` | error 6 |
+
+Nine of the twelve are error-code disagreements or a spurious error on one
+side, which is the same family as everything resolved above: both engines
+fault on one expression and disagree about which fault surfaces, or one
+coerces where the other refuses.
+
+### One unverified lead
+
+`s2024/4` contains `Empty + "a"`, which visi makes error 13 -- `Empty` enters
+arithmetic as a numeric zero, so the `"a"` has to coerce and cannot. The
+obvious hypothesis is that **`Empty + <string>` concatenates**, `Empty` taking
+the other operand's type rather than forcing a numeric context, which would
+make it `"a"`.
+
+That is a guess and is **deliberately not implemented**. It fits the shape of
+the `Empty` rules already measured (`Empty + 1` is the `Integer` 1,
+`Empty & "a"` is `"a"`, `Empty = 0` and `Empty = ""` are both `True`), but
+this document records four separate models that fitted the cases in front of
+them and were wrong. Probe it before touching `value::add`.
+
+### The workflow that has resolved every one so far
+
+1. Run the fuzzer on a seed you have **not** tuned against.
+2. Reduce to the smallest expression that reproduces it. If that stalls,
+   instrument the generated procedure statement by statement and diff the
+   intermediate `TypeName|CStr` values against Excel's -- that is how the
+   prefix rule was finally cornered, after inspection had failed.
+3. Probe with the neighbouring cases that would discriminate between
+   plausible rules, and check whether the probe's own rendering can confound
+   the answer. Observe a possibly-`Null` result with `IsNull`, never `CStr`:
+   `CStr(Null)` is itself error 94, and that confound produced two separate
+   false conclusions in this work.
+4. Implement **one change at a time**. Bundling three regressed six of seven
+   seeds and had to be unpicked afterwards; split up, one of the three turned
+   out to be net-negative on its own.
+5. Re-run on several seeds, including ones not used while developing the fix.
+   A fix that improves the tuned seeds and leaves fresh ones unchanged is
+   still a real fix; one that only moves the tuned seeds is overfitting.

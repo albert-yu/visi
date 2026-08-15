@@ -396,10 +396,19 @@ impl Interpreter {
                 case_else,
                 ..
             } => {
+                // A constant String subject compares as text, even against
+                // numeric cases -- `Select Case "32768abc"` takes
+                // `Case 2 To 5` because "32768abc" sorts between "2" and "5".
+                // The same string in a *variable* does not, and the plain `=`
+                // operator does not either (`"" = 0` is error 13, while
+                // `Select Case ""` against `Case 0` is simply no match). All
+                // measured; Select Case genuinely has its own comparison.
+                let subject_is_const_text = is_constant(subject);
                 let subject = self.eval(subject, frame)?;
+                let text_compare = subject_is_const_text && matches!(subject, Variant::Str(_));
                 for case in cases {
                     for m in &case.matches {
-                        if self.case_matches(&subject, m, frame)? {
+                        if self.case_matches(&subject, m, frame, text_compare)? {
                             return self.exec_block(&case.body, frame);
                         }
                     }
@@ -479,15 +488,30 @@ impl Interpreter {
         subject: &Variant,
         m: &CaseMatch,
         frame: &mut Frame,
+        text_compare: bool,
     ) -> VResult<bool> {
+        // See `Stmt::SelectCase` for why a constant String subject compares
+        // as text.
+        let cmp =
+            |lhs: &Variant, rhs: &Variant, kind: Operand| -> VResult<Option<std::cmp::Ordering>> {
+                if text_compare {
+                    return Ok(Some(lhs.to_vba_string()?.cmp(&rhs.to_vba_string()?)));
+                }
+                value::compare_ctx(lhs, rhs, Operand::Runtime, kind)
+            };
         Ok(match m {
             CaseMatch::Value(e) => {
                 let v = self.eval(e, frame)?;
-                // The subject is always a runtime value here; the case value
-                // carries its own constant-ness, which is what makes
-                // `Select Case "10"` match `Case 10`.
-                value::compare_ctx(subject, &v, Operand::Runtime, operand_kind(e))?
-                    == Some(std::cmp::Ordering::Equal)
+                // A Boolean subject compares its cases as Booleans, which is
+                // why `Select Case True` matches `Case 1` -- True is -1, so a
+                // numeric comparison would not. Measured; the range form does
+                // *not* do this (`Case 2 To 5` still misses True).
+                if matches!(subject, Variant::Boolean(_)) && !v.is_null() {
+                    return Ok(subject.to_bool()? == v.to_bool()?);
+                }
+                // The case value carries its own constant-ness, which is what
+                // makes `Select Case "10"` match `Case 10`.
+                cmp(subject, &v, operand_kind(e))? == Some(std::cmp::Ordering::Equal)
             }
             CaseMatch::Range(lo_e, hi_e) => {
                 // A `To` range matches a Null subject, which no other case
@@ -500,14 +524,14 @@ impl Interpreter {
                 }
                 let lo = self.eval(lo_e, frame)?;
                 let hi = self.eval(hi_e, frame)?;
-                let a = value::compare_ctx(subject, &lo, Operand::Runtime, operand_kind(lo_e))?;
-                let b = value::compare_ctx(subject, &hi, Operand::Runtime, operand_kind(hi_e))?;
+                let a = cmp(subject, &lo, operand_kind(lo_e))?;
+                let b = cmp(subject, &hi, operand_kind(hi_e))?;
                 matches!(a, Some(o) if o != std::cmp::Ordering::Less)
                     && matches!(b, Some(o) if o != std::cmp::Ordering::Greater)
             }
             CaseMatch::Is(op, e) => {
                 let v = self.eval(e, frame)?;
-                let ord = value::compare_ctx(subject, &v, Operand::Runtime, operand_kind(e))?;
+                let ord = cmp(subject, &v, operand_kind(e))?;
                 match ord {
                     None => false,
                     Some(o) => compare_with(*op, o),
@@ -674,9 +698,16 @@ impl Interpreter {
 
             Expr::Unary { op, expr, .. } => {
                 let v = self.eval(expr, frame)?;
+                // Unary sign promotes on overflow at runtime and does not
+                // between constants, exactly as the binary operators do.
+                let mode = if is_constant(expr) {
+                    ArithMode::Constant
+                } else {
+                    ArithMode::Promote
+                };
                 match op {
-                    UnOp::Neg => value::neg(&v),
-                    UnOp::Pos => value::pos(&v),
+                    UnOp::Neg => value::neg(&v, mode),
+                    UnOp::Pos => value::pos(&v, mode),
                     UnOp::Not => value::not(&v),
                 }
             }
@@ -839,6 +870,10 @@ fn compare_with(op: BinOp, ord: std::cmp::Ordering) -> bool {
 /// arithmetic over it overflows or promotes.
 fn is_constant(e: &Expr) -> bool {
     match e {
+        // `Null` is not foldable, so nothing containing it is constant.
+        // `(False & Null) = (0.1 / -2.5)` is simply False, where the same
+        // comparison with a foldable string is error 13.
+        Expr::Literal(Literal::Null) => false,
         Expr::Literal(_) => true,
         Expr::Paren { expr, .. } => is_constant(expr),
         Expr::Unary { expr, .. } => is_constant(expr),
@@ -847,13 +882,64 @@ fn is_constant(e: &Expr) -> bool {
     }
 }
 
+/// Intrinsics whose return type is declared numeric rather than `Variant`.
+///
+/// This matters for comparison, not for arithmetic. `value::compare_ctx`'s
+/// "constant" case is really "the compiler knows this side's numeric type
+/// statically", and a call to one of these qualifies just as a literal does:
+/// `(1.5 & "abc") <> CLng(a)` is error 13, while `(1.5 & "abc") <> a` with
+/// `a = -1` compares fine, because `a` is a `Variant` and the runtime
+/// number-sorts-before-string rule applies instead. Measured.
+/// Only the numeric `C*` conversions, whose declared return types are
+/// unambiguous. `Len` was in this list on the strength of its documented
+/// `As Long` signature and had to come out: `("abc" & va) <> Len(CStr("Z"))`
+/// does *not* error, while the same shape against `CLng` does.
+const STATICALLY_NUMERIC: &[&str] = &["cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte"];
+
 /// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
-    if is_constant(e) {
-        Operand::Const
-    } else {
-        Operand::Runtime
+    let statically_numeric = matches!(
+        e,
+        Expr::Call { target, .. }
+            if matches!(target.as_ref(), Expr::Ident { name, .. }
+                if STATICALLY_NUMERIC.contains(&name.to_ascii_lowercase().as_str()))
+    );
+    match e {
+        Expr::Literal(_) => Operand::Literal,
+        // A parenthesised or signed literal is still just a literal.
+        Expr::Paren { expr, .. } | Expr::Unary { expr, .. }
+            if matches!(**expr, Expr::Literal(_)) =>
+        {
+            Operand::Literal
+        }
+        _ if is_constant(e) => Operand::ConstExpr,
+        _ if statically_numeric => Operand::Static,
+        _ => Operand::Runtime,
     }
+}
+
+/// The one constant-folding quirk this interpreter reproduces.
+///
+/// `True Mod "12"` is the **Boolean** `False`, and `True \ "12"` is `True`,
+/// where the same expressions with either operand in a variable give the
+/// ordinary `Long` results. The model that fits every measurement is that
+/// when the *left* operand is a constant `Boolean` and the right is a
+/// constant `String`, `\` and `Mod` convert **both** sides with `CBool` and
+/// return a `Boolean`.
+///
+/// Confirmed against eighteen cases, including the ones that pin down how
+/// narrow it is: `"12" Mod True` is `Long 0` (so it is left-specific),
+/// `True Mod 12` is `Integer -1` (so the partner must be a String),
+/// `a = True : a Mod "12"` is `Long -1` (so both must be constants), and
+/// `True And "12"` is `Long 12` (so it is only `\` and `Mod`).
+/// `True Mod "0"` is error 11, which the CBool conversion explains: `"0"`
+/// becomes `False`, i.e. zero.
+fn constant_bool_int_op(op: BinOp, a: &Variant, b: &Variant, mode: ArithMode) -> Option<()> {
+    (mode == ArithMode::Constant
+        && matches!(op, BinOp::IntDiv | BinOp::Mod)
+        && matches!(a, Variant::Boolean(_))
+        && matches!(b, Variant::Str(_)))
+    .then_some(())
 }
 
 fn eval_binary(
@@ -864,6 +950,15 @@ fn eval_binary(
     kinds: (Operand, Operand),
 ) -> VResult<Variant> {
     use BinOp::*;
+    if constant_bool_int_op(op, a, b, mode).is_some() {
+        let l: i64 = if a.to_bool()? { -1 } else { 0 };
+        let r: i64 = if b.to_bool()? { -1 } else { 0 };
+        if r == 0 {
+            return Err(VbaError::div_by_zero());
+        }
+        let v = if op == IntDiv { l / r } else { l % r };
+        return Ok(Variant::Boolean(v != 0));
+    }
     match op {
         Add => value::add(a, b, mode),
         Sub => value::sub(a, b, mode),
@@ -1390,6 +1485,56 @@ mod tests {
             "Boolean|True"
         );
 
+        // A call whose return type is declared numeric counts as statically
+        // typed, exactly as a literal does -- see `STATICALLY_NUMERIC`.
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = ((1.5 & \"abc\") <> CLng(a))"),
+            "ERR|13"
+        );
+        // The same comparison against a plain Variant uses the runtime rule
+        // and does not error.
+        assert_eq!(
+            run("    Dim a\n    a = -1\n    F = ((1.5 & \"abc\") <> a)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = (\"Z\" <> a)"),
+            "Boolean|True"
+        );
+
+        // Against a numeric constant the string is coerced by its numeric
+        // *prefix*, as Val takes it -- which is what separates these two,
+        // identical by every structural property: "1.5False" has the prefix
+        // 1.5, "True255" has none.
+        assert_eq!(expr("(Not 2!) <= (\"1.5\" & False)"), "Boolean|True");
+        assert_eq!(expr("(-True) <> (True & &HFF)"), "ERR|13");
+        assert_eq!(expr("\"False\" = -0.04"), "ERR|13");
+        assert_eq!(expr("\"1.5abc\" > 1"), "Boolean|True");
+        // Null is not foldable, so nothing containing it is constant, and
+        // this falls back to the runtime ordering instead of erroring.
+        assert_eq!(expr("(False & Null) = (0.1 / -2.5)"), "Boolean|False");
+
+        // A statically-typed numeric partner is strict whatever the string
+        // side looks like -- but only the C* conversions qualify. `Len` does
+        // not, despite its documented `As Long` signature.
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = ((1.5 & \"abc\") <> CLng(a))"),
+            "ERR|13"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 1\n    F = ((\"abc\" & a) <> Len(CStr(\"Z\")))"),
+            "Boolean|True"
+        );
+
+        // A Boolean partner converts the string with CBool, so the words
+        // compare as booleans. A numeric partner does not: `"True" = -1` is
+        // error 13.
+        assert_eq!(
+            run("    Dim a\n    a = \"True\"\n    F = (a = True)"),
+            "Boolean|True"
+        );
+        assert_eq!(expr("\"True\" = -1"), "ERR|13");
+
         // Both variables: a number sorts before a string, whatever it is.
         // This is the row that defeats every simpler theory -- "1.5" and 1.5
         // are equal both numerically and textually, and Excel says False.
@@ -1400,6 +1545,62 @@ mod tests {
         assert_eq!(
             run("    Dim a, b\n    a = \"2\"\n    b = 10\n    F = (a > b)"),
             "Boolean|True"
+        );
+    }
+
+    /// A `Select Case` whose subject is a *constant* string compares as
+    /// text, even against numeric cases -- and the same string held in a
+    /// variable does not. Both halves measured; the split is the same
+    /// constant-vs-runtime one the arithmetic and comparison rules have.
+    #[test]
+    fn a_constant_string_select_subject_compares_as_text() {
+        let sel = |subject: &str| {
+            format!(
+                "    Dim r\n    Select Case {subject}\n    Case 2 To 5\n        r = \"range\"\n    \
+                 Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        // Constant subjects: "32768abc" sorts between "2" and "5" as text.
+        assert_eq!(run(&sel("\"32768abc\"")), "String|range");
+        assert_eq!(run(&sel("(32768 & \"abc\")")), "String|range");
+        assert_eq!(run(&sel("\"3\"")), "String|range");
+        assert_eq!(run(&sel("\"abc\"")), "String|else");
+        assert_eq!(run(&sel("\"7\"")), "String|else");
+        assert_eq!(run(&sel("\"1x\"")), "String|else");
+        assert_eq!(run(&sel("\"\"")), "String|else");
+        // Numeric constant subjects are unaffected.
+        assert_eq!(run(&sel("3")), "String|range");
+        assert_eq!(run(&sel("7")), "String|else");
+
+        // The same strings in a *variable* use the numeric rule instead, so
+        // "32768abc" no longer matches while "3" still does.
+        let sel_var = |value: &str| {
+            format!(
+                "    Dim a, r\n    a = {value}\n    Select Case a\n    Case 2 To 5\n        \
+                 r = \"range\"\n    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(run(&sel_var("\"32768abc\"")), "String|else");
+        assert_eq!(run(&sel_var("\"3\"")), "String|range");
+        assert_eq!(run(&sel_var("\"7\"")), "String|else");
+        assert_eq!(run(&sel_var("\"abc\"")), "String|else");
+    }
+
+    #[test]
+    fn a_constant_string_subject_also_governs_value_and_is_cases() {
+        let sel = |cases: &str| {
+            format!(
+                "    Dim r\n    Select Case \"abc\"\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(
+            run(&sel("    Case 3\n        r = \"value\"\n")),
+            "String|else"
+        );
+        // "abc" >= "2" as text, so this one matches.
+        assert_eq!(
+            run(&sel("    Case Is >= 2\n        r = \"is\"\n")),
+            "String|is"
         );
     }
 
@@ -1529,13 +1730,135 @@ mod tests {
         );
     }
 
+    /// Which operators coerce a `Null`'s partner before propagating, and
+    /// which short-circuit. Measured in both directions with `IsNull`.
     #[test]
-    fn null_propagates_only_after_the_other_operand_coerces() {
-        // `"abc" - Null` is error 13, not Null: the type mismatch is found
-        // before the Null short-circuits.
-        assert_eq!(expr("\"abc\" - Null"), "ERR|13");
+    fn only_plus_short_circuits_past_a_bad_partner() {
+        // `+` alone returns Null without looking at the other side --
+        // plausibly because it cannot tell addition from concatenation
+        // without inspecting both, so it gives up first.
+        assert_eq!(expr("IsNull(Null + \"Z\")"), "Boolean|True");
+        assert_eq!(expr("IsNull(\"Z\" + Null)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Null + \"12\")"), "Boolean|True");
+
+        // Every other operator coerces the partner, and a bad string wins.
+        for e in [
+            "\"Z\" - Null",
+            "Null - \"Z\"",
+            "\"Z\" * Null",
+            "\"Z\" / Null",
+            "\"Z\" ^ Null",
+            "\"Z\" Mod Null",
+            "Null Mod \"Z\"",
+            "\"Z\" \\ Null",
+            "\"Z\" And Null",
+            "Null Or \"Z\"",
+        ] {
+            assert_eq!(expr(e), "ERR|13", "for {e}");
+        }
+
+        // `&` keeps the non-Null side rather than propagating at all.
+        assert_eq!(expr("\"Z\" & Null"), "String|Z");
+
+        // A well-formed partner still propagates.
         assert_eq!(expr("IsNull(1 - Null)"), "Boolean|True");
-        assert_eq!(expr("IsNull(Null - 1)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Null Mod 3)"), "Boolean|True");
+    }
+
+    #[test]
+    fn unary_sign_promotes_on_overflow_at_runtime() {
+        // Same constant-vs-runtime split the binary operators have.
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = (-(Not a))"),
+            "Double|2147483648"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = TypeName(-(Not a))"),
+            "String|Double"
+        );
+        // Integer widens to Long the same way.
+        assert_eq!(
+            run("    Dim a\n    a = 32767\n    F = (-(Not a))"),
+            "Long|32768"
+        );
+    }
+
+    #[test]
+    fn a_boolean_select_subject_compares_its_cases_as_booleans() {
+        // `Select Case True` matches `Case 1`, which a numeric comparison
+        // would not: True is -1. Measured. The range form does not do this.
+        let sel = |subject: &str, cases: &str| {
+            format!(
+                "    Dim r\n    Select Case {subject}\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(
+            run(&sel("IsNumeric(0)", "    Case 0, 1\n        r = \"a\"\n")),
+            "String|a"
+        );
+        assert_eq!(
+            run(&sel("(1 = 2)", "    Case 0, 1\n        r = \"a\"\n")),
+            "String|a"
+        );
+        assert_eq!(
+            run(&sel("(1 = 1)", "    Case 0\n        r = \"a\"\n")),
+            "String|else"
+        );
+        // Ranges still compare numerically, so True (-1) misses 2 To 5.
+        assert_eq!(
+            run(&sel("(1 = 1)", "    Case 2 To 5\n        r = \"a\"\n")),
+            "String|else"
+        );
+    }
+
+    /// The constant-folding quirk in `constant_bool_int_op`, with the
+    /// negative controls that pin down how narrow it is.
+    #[test]
+    fn a_constant_boolean_over_a_constant_string_folds_to_a_boolean() {
+        assert_eq!(expr("True Mod \"12\""), "Boolean|False");
+        assert_eq!(expr("True \\ \"12\""), "Boolean|True");
+        assert_eq!(expr("False \\ \"12\""), "Boolean|False");
+        // "0" becomes False, i.e. zero, so these divide by zero.
+        assert_eq!(expr("True Mod \"0\""), "ERR|11");
+        assert_eq!(expr("True \\ \"0\""), "ERR|11");
+
+        // Left-specific.
+        assert_eq!(expr("\"12\" Mod True"), "Long|0");
+        assert_eq!(expr("\"12\" \\ True"), "Long|-12");
+        // The partner has to be a String.
+        assert_eq!(expr("True Mod 12"), "Integer|-1");
+        assert_eq!(expr("True \\ 12"), "Integer|0");
+        // Both have to be constants.
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = (a Mod \"12\")"),
+            "Long|-1"
+        );
+        assert_eq!(
+            run("    Dim b\n    b = \"12\"\n    F = (True Mod b)"),
+            "Long|-1"
+        );
+        // Only `\\` and `Mod`.
+        assert_eq!(expr("True And \"12\""), "Long|12");
+        assert_eq!(expr("True Or \"12\""), "Long|-1");
+        assert_eq!(expr("True Eqv \"12\""), "Long|12");
+    }
+
+    #[test]
+    fn integer_operators_process_the_left_operand_first() {
+        // Which error surfaces depends on the order: the left operand
+        // overflowing a Long beats a bad string on the right, and vice versa.
+        assert_eq!(
+            run("    Dim a\n    a = \"32768100000\"\n    F = (a Mod \"Double\")"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"Double\"\n    F = (a Mod \"32768100000\")"),
+            "ERR|13"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"32768100000\"\n    F = (a Mod 3)"),
+            "ERR|6"
+        );
     }
 
     /// The whole `Null` table, from a sweep of every intrinsic against real
@@ -1618,13 +1941,6 @@ mod tests {
     }
 
     #[test]
-    fn val_types_its_result_like_a_literal() {
-        assert_eq!(expr("Val(255)"), "Integer|255");
-        assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
-        assert_eq!(expr("Val(\"100000\")"), "Long|100000");
-    }
-
-    #[test]
     fn the_words_true_and_false_coerce_on_the_integer_path_only() {
         // Measured. The integer/logical path accepts them as -1 and 0; the
         // floating-point path has never heard of them.
@@ -1639,6 +1955,15 @@ mod tests {
         // `Not` keeps it a Boolean, because both sides of the operation are
         // one; `Xor` with a number goes bitwise and yields an Integer.
         assert_eq!(expr("Not \"True\""), "Boolean|False");
+
+        // But the fold does not apply when the *other* side is already a
+        // Boolean, which is the one shape where Excel refuses.
+        assert_eq!(expr("True Eqv \"True\""), "ERR|13");
+        assert_eq!(expr("True Eqv CStr(True)"), "ERR|13");
+        assert_eq!(
+            run("    Dim a\n    a = 3.75\n    F = (IsNumeric(a) Eqv CStr(True))"),
+            "ERR|13"
+        );
 
         // The floating-point path still rejects them.
         for e in [
@@ -1657,6 +1982,29 @@ mod tests {
     }
 
     #[test]
+    fn a_string_outside_double_range_fails_to_convert() {
+        // Error 6 from the *conversion*, not a quiet infinity -- and not the
+        // 13 an unparseable string gives.
+        assert_eq!(
+            run("    Dim a\n    a = \"1E+2923\"\n    F = (a ^ 255)"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"1E400\"\n    F = (a + 1)"),
+            "ERR|6"
+        );
+        // The power itself still overflows to infinity happily.
+        assert_eq!(
+            run("    Dim a\n    a = \"255\"\n    F = (a ^ 255)"),
+            "Double|INF"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
+            "Double|INF"
+        );
+    }
+
+    #[test]
     fn an_empty_string_never_coerces_to_a_number() {
         // Measured across every operator: `"" - 3`, `"" + 3`, `"" * 3`,
         // `"" \ 3`, `"" And 1`, `Not ""` and `CDbl("")` are all error 13.
@@ -1670,6 +2018,83 @@ mod tests {
         ] {
             assert_eq!(expr(e), "ERR|13", "for {e}");
         }
+    }
+
+    #[test]
+    fn val_always_returns_a_double() {
+        // Measured directly. A previous version typed the result like a
+        // literal, inferred from a fuzz case where `Val` may never have run.
+        assert_eq!(expr("Val(255)"), "Double|255");
+        assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
+        assert_eq!(expr("Val(\"100000\")"), "Double|100000");
+        assert_eq!(run("    Dim a\n    a = 1%\n    F = Val(a)"), "Double|1");
+    }
+
+    #[test]
+    fn a_zero_base_with_a_negative_exponent_is_an_error() {
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = -1\n    F = (a ^ b)"),
+            "ERR|5"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = -246\n    F = (a ^ b)"),
+            "ERR|5"
+        );
+        // Zero and positive exponents are fine, as is a negative exponent
+        // over a non-zero base.
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = 0\n    F = (a ^ b)"),
+            "Double|1"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = 2\n    F = (a ^ b)"),
+            "Double|0"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 2\n    b = -2\n    F = (a ^ b)"),
+            "Double|0.25"
+        );
+    }
+
+    #[test]
+    fn logical_operators_range_check_their_operands_too() {
+        // Same rule as `\\` and `Mod`: the operands must fit a Long.
+        assert_eq!(expr("True Or \"2147483648\""), "ERR|6");
+        assert_eq!(expr("1 And \"2147483648\""), "ERR|6");
+        // Operands that round into a Long are fine.
+        assert_eq!(expr("True Or \"3.752147483647\""), "Long|-1");
+        assert_eq!(expr("1 And \"12\""), "Long|0");
+    }
+
+    #[test]
+    fn int_div_and_mod_range_check_their_operands_not_just_the_result() {
+        // `254 Mod "22147483647"` is error 6 even though the answer is 254:
+        // the operand is not a Long. Checking only the result let it through.
+        assert_eq!(
+            run("    Dim a, b\n    a = 254\n    b = \"22147483647\"\n    F = (a Mod b)"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 254\n    b = \"22147483647\"\n    F = (a \\ b)"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 3000000000#\n    b = 3\n    F = (a Mod b)"),
+            "ERR|6"
+        );
+        // Operands that do fit a Long still work.
+        assert_eq!(
+            run("    Dim a, b\n    a = 254\n    b = 2147483647\n    F = (a Mod b)"),
+            "Long|254"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 40000\n    b = 3\n    F = (a Mod b)"),
+            "Long|1"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 40000\n    b = 3\n    F = (a \\ b)"),
+            "Long|13333"
+        );
     }
 
     #[test]

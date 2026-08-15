@@ -399,6 +399,29 @@ fn logical_operand(v: &Variant) -> Variant {
     }
 }
 
+/// The pair of operands for a logical operator, with the `"True"`/`"False"`
+/// fold applied only where Excel applies it.
+///
+/// The fold does **not** happen when the other side is already a `Boolean`:
+/// `"True" Xor 1` is `-2`, but `True Eqv "True"` is error 13. Folding
+/// unconditionally made the second one succeed.
+fn logical_pair(lhs: &Variant, rhs: &Variant) -> (Variant, Variant) {
+    let l_bool = matches!(lhs, Variant::Boolean(_));
+    let r_bool = matches!(rhs, Variant::Boolean(_));
+    (
+        if r_bool {
+            lhs.clone()
+        } else {
+            logical_operand(lhs)
+        },
+        if l_bool {
+            rhs.clone()
+        } else {
+            logical_operand(rhs)
+        },
+    )
+}
+
 /// Round-half-to-even, which is what every VBA numeric conversion uses.
 ///
 /// Probe cases 55--59: `CLng(0.5)` is `0`, `CLng(1.5)` is `2`, `CLng(2.5)`
@@ -446,9 +469,37 @@ pub fn parse_vba_number(s: &str) -> VResult<f64> {
     }
     // VBA's `D` exponent marker is equivalent to `E`.
     let normalised = t.replace(['d', 'D'], "e");
-    normalised
+    let value = normalised
         .parse::<f64>()
-        .map_err(|_| VbaError::type_mismatch())
+        .map_err(|_| VbaError::type_mismatch())?;
+    // A string whose value is outside Double range fails to *convert* --
+    // error 6, not 13, and not a quiet infinity. `a = "1E+2923" : a ^ 255`
+    // is error 6 for this reason, while `a = "255" : a ^ 255` is INF: the
+    // power overflows happily, the conversion does not.
+    if !value.is_finite() {
+        return Err(VbaError::overflow());
+    }
+    Ok(value)
+}
+
+/// The longest leading run of `s` that parses as a number, as `Val` takes it.
+///
+/// Comparison against a numeric *constant* coerces the string this way rather
+/// than demanding the whole string parse, which is what separates
+/// `(Not 2!) <= ("1.5" & False)` -- `"1.5False"` has the numeric prefix
+/// `1.5`, so the comparison succeeds -- from `(-True) <> (True & &HFF)`,
+/// where `"True255"` has none and the comparison is error 13.
+pub fn numeric_prefix(s: &str) -> Option<f64> {
+    let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut best = None;
+    for (i, _) in t.char_indices() {
+        if let Ok(v) = t[..=i].parse::<f64>()
+            && v.is_finite()
+        {
+            best = Some(v);
+        }
+    }
+    best
 }
 
 /// Renders a number the way VBA's `CStr` does.
@@ -522,6 +573,11 @@ fn format_currency(scaled: i64) -> String {
 /// strings does `+` concatenate.
 pub fn add(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
+        // `+` alone does *not* coerce the other operand first: `Null + "Z"`
+        // is Null, while `Null - "Z"` is error 13. The likely reason is that
+        // `+` is overloaded -- it cannot know whether it is addition or
+        // concatenation without inspecting both sides -- so it short-circuits
+        // before deciding. Measured in both directions.
         return Ok(Variant::Null);
     }
     if let (Variant::Str(a), Variant::Str(b)) = (lhs, rhs) {
@@ -615,23 +671,41 @@ fn zip3(a: Option<i64>, b: Option<i64>, class: NumClass) -> Option<(i64, i64, Nu
 /// Rounds both operands to integers and decides the result class, shared by
 /// `\` and `Mod`.
 fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i64>, NumClass)> {
-    if lhs.is_null() || rhs.is_null() {
+    // Each operand is coerced, rounded and range-checked in turn, left
+    // before right, because which error surfaces depends on the order:
+    // `"32768100000" Mod "Double"` is error 6 (the left overflows a Long)
+    // while `"Double" Mod "32768100000"` is error 13. Coercing both and then
+    // checking both reported the wrong one.
+    //
+    // A Null operand does not short-circuit past its partner either:
+    // `Null Mod "Z"` is error 13, not Null.
+    fn one(v: &Variant) -> VResult<Option<i64>> {
+        if v.is_null() {
+            return Ok(None);
+        }
+        let r = bankers_round(v.to_f64()?);
+        if !r.is_finite() || r < i32::MIN as f64 || r > i32::MAX as f64 {
+            return Err(VbaError::overflow());
+        }
+        Ok(Some(r as i64))
+    }
+
+    // The `"True"`/`"False"` fold has to happen *before* coercion, or the
+    // words would fail `to_f64` on the way in: `"True" \\ 1` is -1.
+    let (l, r) = logical_pair(lhs, rhs);
+
+    let a = one(&l)?;
+    let b = one(&r)?;
+    if a.is_none() || b.is_none() {
         return Ok((None, None, NumClass::Long));
     }
-    // `\\` and `Mod` are integer operations, so they accept the words too:
-    // `"True" \\ 1` is -1.
-    let (lhs, rhs) = (&logical_operand(lhs), &logical_operand(rhs));
+
     // A non-integral operand forces Long; two small integers stay Integer.
-    let class = match Variant::arith_type(lhs, rhs)? {
+    let class = match Variant::arith_type(&l, &r)? {
         NumClass::Integer => NumClass::Integer,
         _ => NumClass::Long,
     };
-    let a = bankers_round(lhs.to_f64()?);
-    let b = bankers_round(rhs.to_f64()?);
-    if !a.is_finite() || !b.is_finite() || a.abs() > i64::MAX as f64 || b.abs() > i64::MAX as f64 {
-        return Err(VbaError::overflow());
-    }
-    Ok((Some(a as i64), Some(b as i64), class))
+    Ok((a, b, class))
 }
 
 /// `^`, which is always `Double`.
@@ -653,6 +727,12 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     // raises error 5 rather than returning NaN. Found by fuzz/fuzz_vba.py via
     // `(-1) ^ 1.5`, which this used to return as a quiet NaN.
     if base < 0.0 && exp.fract() != 0.0 {
+        return Err(VbaError::invalid_call());
+    }
+    // `0 ^ -1` has no value either, and is the same error. `0 ^ 0` is 1 and
+    // `0 ^ 2` is 0, so it is specifically a negative exponent over a zero
+    // base.
+    if base == 0.0 && exp < 0.0 {
         return Err(VbaError::invalid_call());
     }
     let r = base.powf(exp);
@@ -694,8 +774,8 @@ fn arith(
 ) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
         // Null propagates, but only *after* the other operand has been
-        // coerced: `"abc" - Null` is error 13, not Null. Measured -- the
-        // type mismatch is detected before the Null short-circuits.
+        // coerced: `"Z" - Null` is error 13, not Null. `+` is the one
+        // exception -- see `add`.
         if !lhs.is_null() {
             lhs.to_f64()?;
         }
@@ -717,22 +797,24 @@ fn arith(
 }
 
 /// Unary `-`.
-pub fn neg(v: &Variant) -> VResult<Variant> {
+pub fn neg(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
     }
     // Boolean negation widens to Integer: `-True` is 1.
     let class = v.num_class().ok_or_else(VbaError::invalid_null)?;
-    Variant::pack(-v.to_f64()?, class)
+    // Promotes on overflow at runtime, like the binary operators:
+    // `a = 2147483647 : -(Not a)` is the Double 2147483648, not an overflow.
+    Variant::pack_mode(-v.to_f64()?, class, mode)
 }
 
 /// Unary `+`, which still coerces to a number.
-pub fn pos(v: &Variant) -> VResult<Variant> {
+pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
     }
     let class = v.num_class().ok_or_else(VbaError::invalid_null)?;
-    Variant::pack(v.to_f64()?, class)
+    Variant::pack_mode(v.to_f64()?, class, mode)
 }
 
 /// `Not`, which is bitwise on numbers and logical on `Boolean`s.
@@ -760,17 +842,32 @@ pub fn not(v: &Variant) -> VResult<Variant> {
 /// `5 And 3` is the `Integer` `1` -- the operation is bitwise unless both
 /// operands are already `Boolean`.
 pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VResult<Variant> {
-    if lhs.is_null() || rhs.is_null() {
-        return Ok(Variant::Null);
-    }
     // `"True" Xor 1` is -2: the integer path accepts the words.
-    let (lhs, rhs) = (&logical_operand(lhs), &logical_operand(rhs));
+    let (l, r) = logical_pair(lhs, rhs);
+    let (lhs, rhs) = (&l, &r);
     if let (Variant::Boolean(a), Variant::Boolean(b)) = (lhs, rhs) {
         let r = f(if *a { -1 } else { 0 }, if *b { -1 } else { 0 });
         return Ok(Variant::Boolean(r != 0));
     }
-    let a = bankers_round(lhs.to_f64()?);
-    let b = bankers_round(rhs.to_f64()?);
+    // Each operand is coerced and range-checked in turn, left before right,
+    // and a Null does not short-circuit past its partner: `Null And "Z"` is
+    // error 13. Same rule as `int_operands`, for the same measured reason.
+    let one = |v: &Variant| -> VResult<Option<f64>> {
+        if v.is_null() {
+            return Ok(None);
+        }
+        let r = bankers_round(v.to_f64()?);
+        // The operands have to fit a Long, as `\\` and `Mod` require:
+        // `True Or "2147483648"` is error 6 even though the answer would fit.
+        if !r.is_finite() || r < i32::MIN as f64 || r > i32::MAX as f64 {
+            return Err(VbaError::overflow());
+        }
+        Ok(Some(r))
+    };
+    let (a, b) = (one(lhs)?, one(rhs)?);
+    let (Some(a), Some(b)) = (a, b) else {
+        return Ok(Variant::Null);
+    };
     let class = match Variant::arith_type(lhs, rhs)? {
         NumClass::Integer => NumClass::Integer,
         _ => NumClass::Long,
@@ -855,10 +952,24 @@ fn three_valued(lhs: &Variant, rhs: &Variant, deciding: bool) -> VResult<Option<
 /// makes the rules look contradictory until you separate the cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
-    /// A literal, or an expression built only from literals.
-    Const,
+    /// A plain literal. Only this makes the *string* side of a comparison
+    /// strict; a constant expression that merely evaluates to a string does
+    /// not.
+    Literal,
+    /// An expression built only from literals. Counts as constant on the
+    /// numeric side, but not as a literal on the string side.
+    ConstExpr,
+    /// A call whose return type is declared numeric, so the compiler knows
+    /// the type statically without the value being constant.
+    Static,
     /// Anything involving a variable.
     Runtime,
+}
+
+impl Operand {
+    fn is_const(self) -> bool {
+        matches!(self, Operand::Literal | Operand::ConstExpr)
+    }
 }
 
 /// Comparison, returning `None` when either side is `Null`.
@@ -915,21 +1026,30 @@ pub fn compare_ctx(
             } else {
                 (rhs_kind, lhs_kind)
             };
-            let parsed = parse_vba_number(text);
+            // A Boolean partner converts the string with `CBool` rather than
+            // numerically: `a = "True"` makes `a = True` come out True, while
+            // `"True" = -1` -- a numeric partner -- is error 13.
+            if matches!(other, Variant::Boolean(_)) && bool_word(text).is_some() {
+                let a = bool_word(text).unwrap_or(false);
+                let b = other.to_bool()?;
+                let ord = a.cmp(&b);
+                return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
+            }
 
-            let ord = if str_kind == Operand::Const && num_kind == Operand::Const {
-                // Constant folding: a string that will not parse is error 13.
-                let a = parsed?;
-                let b = numeric(other)?;
-                cmp_f64(a, b)
-            } else if num_kind == Operand::Const {
-                match parsed {
-                    Ok(a) => cmp_f64(a, numeric(other)?),
-                    // Falls through to the runtime ordering rather than
-                    // erroring, unlike the all-constant case.
-                    Err(_) => Ordering::Greater,
+            // Against a *statically typed* numeric partner the whole string
+            // must parse; against a numeric constant only a leading run need
+            // parse, as `Val` takes it.
+            let ord = if num_kind == Operand::Static {
+                cmp_f64(parse_vba_number(text)?, numeric(other)?)
+            } else if num_kind.is_const() {
+                match numeric_prefix(text) {
+                    Some(a) => cmp_f64(a, numeric(other)?),
+                    // No numeric prefix at all. A constant string is an
+                    // error; a runtime one falls back to the ordering below.
+                    None if str_kind.is_const() => return Err(VbaError::type_mismatch()),
+                    None => Ordering::Greater,
                 }
-            } else if str_kind == Operand::Const {
+            } else if str_kind.is_const() {
                 text.as_str().cmp(other.to_vba_string()?.as_str())
             } else {
                 // Both runtime: the number sorts first, whatever it is.
@@ -1305,7 +1425,10 @@ mod tests {
         // Positive zero stays unsigned.
         assert_eq!(format_number(0.0), "0");
         assert_eq!(format_number(-0.4 + 0.4), "0");
-        assert_eq!(shows(&neg(&Variant::Double(0.0)).unwrap()), "Double|-0");
+        assert_eq!(
+            shows(&neg(&Variant::Double(0.0), ArithMode::Constant).unwrap()),
+            "Double|-0"
+        );
     }
 
     #[test]
