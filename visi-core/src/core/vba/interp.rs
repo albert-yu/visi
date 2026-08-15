@@ -396,10 +396,19 @@ impl Interpreter {
                 case_else,
                 ..
             } => {
+                // A constant String subject compares as text, even against
+                // numeric cases -- `Select Case "32768abc"` takes
+                // `Case 2 To 5` because "32768abc" sorts between "2" and "5".
+                // The same string in a *variable* does not, and the plain `=`
+                // operator does not either (`"" = 0` is error 13, while
+                // `Select Case ""` against `Case 0` is simply no match). All
+                // measured; Select Case genuinely has its own comparison.
+                let subject_is_const_text = is_constant(subject);
                 let subject = self.eval(subject, frame)?;
+                let text_compare = subject_is_const_text && matches!(subject, Variant::Str(_));
                 for case in cases {
                     for m in &case.matches {
-                        if self.case_matches(&subject, m, frame)? {
+                        if self.case_matches(&subject, m, frame, text_compare)? {
                             return self.exec_block(&case.body, frame);
                         }
                     }
@@ -479,15 +488,23 @@ impl Interpreter {
         subject: &Variant,
         m: &CaseMatch,
         frame: &mut Frame,
+        text_compare: bool,
     ) -> VResult<bool> {
+        // See `Stmt::SelectCase` for why a constant String subject compares
+        // as text.
+        let cmp =
+            |lhs: &Variant, rhs: &Variant, kind: Operand| -> VResult<Option<std::cmp::Ordering>> {
+                if text_compare {
+                    return Ok(Some(lhs.to_vba_string()?.cmp(&rhs.to_vba_string()?)));
+                }
+                value::compare_ctx(lhs, rhs, Operand::Runtime, kind)
+            };
         Ok(match m {
             CaseMatch::Value(e) => {
                 let v = self.eval(e, frame)?;
-                // The subject is always a runtime value here; the case value
-                // carries its own constant-ness, which is what makes
-                // `Select Case "10"` match `Case 10`.
-                value::compare_ctx(subject, &v, Operand::Runtime, operand_kind(e))?
-                    == Some(std::cmp::Ordering::Equal)
+                // The case value carries its own constant-ness, which is what
+                // makes `Select Case "10"` match `Case 10`.
+                cmp(subject, &v, operand_kind(e))? == Some(std::cmp::Ordering::Equal)
             }
             CaseMatch::Range(lo_e, hi_e) => {
                 // A `To` range matches a Null subject, which no other case
@@ -500,14 +517,14 @@ impl Interpreter {
                 }
                 let lo = self.eval(lo_e, frame)?;
                 let hi = self.eval(hi_e, frame)?;
-                let a = value::compare_ctx(subject, &lo, Operand::Runtime, operand_kind(lo_e))?;
-                let b = value::compare_ctx(subject, &hi, Operand::Runtime, operand_kind(hi_e))?;
+                let a = cmp(subject, &lo, operand_kind(lo_e))?;
+                let b = cmp(subject, &hi, operand_kind(hi_e))?;
                 matches!(a, Some(o) if o != std::cmp::Ordering::Less)
                     && matches!(b, Some(o) if o != std::cmp::Ordering::Greater)
             }
             CaseMatch::Is(op, e) => {
                 let v = self.eval(e, frame)?;
-                let ord = value::compare_ctx(subject, &v, Operand::Runtime, operand_kind(e))?;
+                let ord = cmp(subject, &v, operand_kind(e))?;
                 match ord {
                     None => false,
                     Some(o) => compare_with(*op, o),
@@ -1400,6 +1417,62 @@ mod tests {
         assert_eq!(
             run("    Dim a, b\n    a = \"2\"\n    b = 10\n    F = (a > b)"),
             "Boolean|True"
+        );
+    }
+
+    /// A `Select Case` whose subject is a *constant* string compares as
+    /// text, even against numeric cases -- and the same string held in a
+    /// variable does not. Both halves measured; the split is the same
+    /// constant-vs-runtime one the arithmetic and comparison rules have.
+    #[test]
+    fn a_constant_string_select_subject_compares_as_text() {
+        let sel = |subject: &str| {
+            format!(
+                "    Dim r\n    Select Case {subject}\n    Case 2 To 5\n        r = \"range\"\n    \
+                 Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        // Constant subjects: "32768abc" sorts between "2" and "5" as text.
+        assert_eq!(run(&sel("\"32768abc\"")), "String|range");
+        assert_eq!(run(&sel("(32768 & \"abc\")")), "String|range");
+        assert_eq!(run(&sel("\"3\"")), "String|range");
+        assert_eq!(run(&sel("\"abc\"")), "String|else");
+        assert_eq!(run(&sel("\"7\"")), "String|else");
+        assert_eq!(run(&sel("\"1x\"")), "String|else");
+        assert_eq!(run(&sel("\"\"")), "String|else");
+        // Numeric constant subjects are unaffected.
+        assert_eq!(run(&sel("3")), "String|range");
+        assert_eq!(run(&sel("7")), "String|else");
+
+        // The same strings in a *variable* use the numeric rule instead, so
+        // "32768abc" no longer matches while "3" still does.
+        let sel_var = |value: &str| {
+            format!(
+                "    Dim a, r\n    a = {value}\n    Select Case a\n    Case 2 To 5\n        \
+                 r = \"range\"\n    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(run(&sel_var("\"32768abc\"")), "String|else");
+        assert_eq!(run(&sel_var("\"3\"")), "String|range");
+        assert_eq!(run(&sel_var("\"7\"")), "String|else");
+        assert_eq!(run(&sel_var("\"abc\"")), "String|else");
+    }
+
+    #[test]
+    fn a_constant_string_subject_also_governs_value_and_is_cases() {
+        let sel = |cases: &str| {
+            format!(
+                "    Dim r\n    Select Case \"abc\"\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(
+            run(&sel("    Case 3\n        r = \"value\"\n")),
+            "String|else"
+        );
+        // "abc" >= "2" as text, so this one matches.
+        assert_eq!(
+            run(&sel("    Case Is >= 2\n        r = \"is\"\n")),
+            "String|is"
         );
     }
 
