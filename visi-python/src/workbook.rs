@@ -15,9 +15,11 @@ use std::path::PathBuf;
 
 use visi_engine::WorkbookManager;
 use visi_engine::core::chart::ChartType;
-use visi_engine::core::{CellRef, PivotArea, col_idx_to_letters, value_field_labels};
+use visi_engine::core::{
+    CellRef, PivotArea, VbaModuleKind, col_idx_to_letters, value_field_labels,
+};
 
-use crate::enums::{parse_chart_type, parse_pivot_agg, parse_pivot_area};
+use crate::enums::{parse_chart_type, parse_pivot_agg, parse_pivot_area, parse_vba_module_kind};
 use crate::errors::{Wrapped, invalid_argument};
 use crate::value::result_to_py;
 
@@ -528,6 +530,100 @@ impl Workbook {
             }
             d.set_item("filter_selections", selections)?;
 
+            out.push(d);
+        }
+        PyList::new(py, out)
+    }
+
+    // ---- VBA macro modules ----------------------------------------------
+
+    /// Whether the workbook carries a VBA project at all.
+    fn has_macros(&self) -> bool {
+        self.inner.has_vba_project()
+    }
+
+    /// Adds a VBA module, mirroring `visi macro add`.
+    ///
+    /// `kind` is `"standard"`, `"class"` or `"document"`. `sheet` names the
+    /// sheet a document module binds to and is required for `"document"` --
+    /// except for `ThisWorkbook`, which isn't tied to a specific sheet. This
+    /// resolve-sheet-name-to-id-then-special-case-ThisWorkbook step is the
+    /// CLI behaviour (`visi/src/main.rs`'s Add arm) duplicated here, in the
+    /// same way `edit_chart` and `add_pivot_field` are; `visi-core` takes the
+    /// id, not the name.
+    ///
+    /// `source` is written verbatim -- callers include their own
+    /// `Attribute VB_Name = "..."` line, matching how real Excel-authored
+    /// module streams are shaped, and nothing reconciles it against `name`.
+    ///
+    /// Excel only loads macros from a `.xlsm`, so save the result with that
+    /// extension. Unlike the CLI, which refuses any other extension outright,
+    /// this does not police the filename -- `save_bytes` has no filename to
+    /// police, and a fuzz harness writing to a temp path shouldn't have to
+    /// care.
+    #[pyo3(signature = (name, source, *, kind="standard", sheet=None))]
+    fn add_macro(
+        &mut self,
+        name: &str,
+        source: &str,
+        kind: &str,
+        sheet: Option<&str>,
+    ) -> PyResult<()> {
+        let kind = parse_vba_module_kind(kind)?;
+        let bound_sheet_id = match (kind, sheet) {
+            (VbaModuleKind::Document, Some(sheet_name)) => {
+                let idx = self.sheet_idx(Some(sheet_name))?;
+                Some(self.inner.sheets[idx].id)
+            }
+            (VbaModuleKind::Document, None) if name == "ThisWorkbook" => None,
+            (VbaModuleKind::Document, None) => {
+                return Err(invalid_argument(
+                    "kind='document' requires sheet=... (except for 'ThisWorkbook')",
+                ));
+            }
+            _ => None,
+        };
+        self.inner
+            .add_vba_module(name.to_string(), kind, source.to_string(), bound_sheet_id)
+            .map_err(Wrapped)?;
+        Ok(())
+    }
+
+    /// Removes a VBA module by name. Mirrors `visi macro remove`.
+    fn remove_macro(&mut self, name: &str) -> PyResult<()> {
+        self.inner.remove_vba_module(name).map_err(Wrapped)?;
+        Ok(())
+    }
+
+    /// Renames a VBA module. Mirrors `visi macro rename`.
+    fn rename_macro(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_vba_module(old, new).map_err(Wrapped)?;
+        Ok(())
+    }
+
+    /// Replaces a module's source text. Mirrors `visi macro set-source`.
+    fn set_macro_source(&mut self, name: &str, source: &str) -> PyResult<()> {
+        self.inner
+            .set_vba_module_source(name, source.to_string())
+            .map_err(Wrapped)?;
+        Ok(())
+    }
+
+    /// The VBA modules, as dicts.
+    ///
+    /// Carries the keys `visi macro list --json` emits (`name`, `kind`,
+    /// `source_lines`), plus `source` itself and `bound_sheet_id` -- the two
+    /// things that command does not report but that a round trip can lose.
+    fn macros<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let modules = self.inner.list_vba_modules();
+        let mut out = Vec::with_capacity(modules.len());
+        for m in modules {
+            let d = PyDict::new(py);
+            d.set_item("name", &m.name)?;
+            d.set_item("kind", format!("{:?}", m.kind))?;
+            d.set_item("source", &m.source)?;
+            d.set_item("source_lines", m.source.lines().count())?;
+            d.set_item("bound_sheet_id", m.bound_sheet_id)?;
             out.push(d);
         }
         PyList::new(py, out)

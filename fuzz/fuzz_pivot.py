@@ -23,23 +23,28 @@ in Excel.sdef but fails with a generic "Parameter error (-50)" for every
 variant tried against real Excel (bare, with properties, range object vs.
 text source data, different containers) -- confirmed to be a real
 functional gap in Mac Excel's AppleScript support, not a syntax mistake.
-Instead, the AppleScript driver opens a copy of `fuzz/BuildFuzzPivot.bas`'s
-one-time, human-created macro-enabled workbook (`fuzz/pivot_macro_template.xlsm`,
-NOT checked in -- see "Setup" below) and invokes its `BuildFuzzPivot` macro
-via the `run VB macro` command, which *is* a working, standard AppleScript
-command -- the macro itself does the real work through VBA's PivotCaches.Create
-/ CreatePivotTable, the same well-documented object model win32com already
-uses directly.
+Instead, the AppleScript driver opens a macro-enabled copy of the source
+workbook carrying `fuzz/BuildFuzzPivot.bas` and invokes its `BuildFuzzPivot`
+macro via the `run VB macro` command, which *is* a working, standard
+AppleScript command -- the macro itself does the real work through VBA's
+PivotCaches.Create / CreatePivotTable, the same well-documented object model
+win32com already uses directly.
 
-Setup (one-time, macOS only -- skip if you only use win32com on Windows):
-    1. Open Excel, create a new blank workbook.
-    2. Alt+F11 (or Tools > Macro > Visual Basic Editor) to open the VBA editor.
-    3. Insert > Module, paste the contents of fuzz/BuildFuzzPivot.bas.
-    4. Save As... fuzz/pivot_macro_template.xlsm (Excel Macro-Enabled Workbook).
-    5. Ensure macros are allowed to run for this file (Excel Preferences >
-       Security, or Trust Center on Windows) -- this only needs to permit
-       *running* an already-embedded macro, not any VBA-project scripting
-       permission.
+Setup: none. `fuzz/pivot_macro_template.xlsm` is built automatically on first
+use by `visi macro add`, which writes the module into `vbaProject.bin` at the
+file-format level. This used to be a one-time manual ritual (open the VBA
+editor, paste the .bas in, Save As .xlsm) because Excel for Mac's AppleScript
+dictionary exposes no VBProject object, so nothing could put a macro into a
+workbook programmatically -- `visi`'s own macro CRUD is what removed the
+human step. See `fuzz/vba_probe.py` for the checks that establish Excel runs
+visi-authored macros exactly like its own.
+
+The generated template stays *empty* of data: openpyxl copies each iteration's
+random source rows into a copy of it, so the Excel oracle's data path never
+passes through visi's xlsx writer -- only the inert VBA skeleton does.
+
+Built through the `visi_core` bindings when they're installed, falling back to
+the CLI otherwise -- so `--backend bindings` needs nothing extra.
 
 STATUS -- piloted against real Excel, works end-to-end. Every finding from
 that pilot (fixed and still-open alike) is tracked as a GitHub issue rather
@@ -260,10 +265,13 @@ class PivotFuzzGenerator:
 PIVOT_NAME = "FuzzPivot"
 DEST_CELL = "H1"  # two columns clear of the source block (A:F)
 DEST_RC = (0, 7)  # DEST_CELL as 0-based (row, col); must agree with it
-# One-time, human-created macro-enabled workbook containing BuildFuzzPivot.bas
-# -- see fuzz_pivot.py's module docstring for setup steps. Not checked in
-# (it's a compiled-macro binary asset a human authors once, not generated).
+# Macro-enabled workbook carrying BuildFuzzPivot.bas, generated on first use
+# by `visi macro add` (see ExcelPivotDriver._ensure_macro_template). Cached on
+# disk rather than rebuilt per iteration -- it's identical every time, and the
+# AppleScript round trip already dominates the per-iteration cost. Gitignored:
+# it's a build artifact derived from BuildFuzzPivot.bas, which *is* checked in.
 MACRO_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pivot_macro_template.xlsm")
+MACRO_SOURCE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BuildFuzzPivot.bas")
 
 # visi's `Count` aggregation counts any non-blank value -- matches Excel's
 # `xlCount` (the *default* summary function Excel picks for a text field,
@@ -316,18 +324,20 @@ class ExcelPivotDriver:
     `range object` of a list object) were all verified against the same
     .sdef and do work once a PivotTable already exists.
 
-    So instead, the AppleScript path builds the pivot through a one-time,
-    human-authored macro (`fuzz/BuildFuzzPivot.bas`, pasted into
-    `fuzz/pivot_macro_template.xlsm` -- see this module's docstring for
-    setup) invoked via `run VB macro`, which *is* a working AppleScript
-    command. The macro itself uses the same PivotCaches.Create /
-    CreatePivotTable / PivotFields object model as the win32com path below,
-    just reached through VBA instead of AppleScript's broken pivot-cache
-    creation.
+    So instead, the AppleScript path builds the pivot through a macro
+    (`fuzz/BuildFuzzPivot.bas`, injected into `fuzz/pivot_macro_template.xlsm`
+    by `visi macro add` on first use) invoked via `run VB macro`, which *is* a
+    working AppleScript command. The macro itself uses the same
+    PivotCaches.Create / CreatePivotTable / PivotFields object model as the
+    win32com path below, just reached through VBA instead of AppleScript's
+    broken pivot-cache creation.
     """
 
-    def __init__(self, excel_path=None, driver_type="auto"):
+    def __init__(self, excel_path=None, driver_type="auto", visi_path=None):
         self.excel_path = excel_path
+        # Only used to build the macro template (AppleScript path); the
+        # comparison itself never goes through the CLI.
+        self.visi_path = visi_path
         self.driver_type = driver_type
         if driver_type == "auto":
             if sys.platform == "darwin":
@@ -363,14 +373,81 @@ class ExcelPivotDriver:
         escaped = s.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
 
-    def _prepare_macro_workbook(self, source_file, config, macro_file):
-        if not os.path.exists(MACRO_TEMPLATE_PATH):
+    def _ensure_macro_template(self):
+        """Builds `pivot_macro_template.xlsm` from `BuildFuzzPivot.bas` if it
+        isn't already there, by way of `visi macro add`.
+
+        Rebuilds whenever the .bas is newer than the .xlsm, so editing the
+        macro can't silently leave a stale template in play -- that failure
+        mode (macro edited, template not regenerated, mismatches blamed on the
+        engine) is exactly what the old manual setup step invited.
+
+        The template deliberately contains no data: `_prepare_macro_workbook`
+        copies each iteration's rows in via openpyxl, so nothing on the Excel
+        oracle's side of the comparison is round-tripped through visi's own
+        xlsx writer.
+        """
+        if not os.path.exists(MACRO_SOURCE_PATH):
+            raise RuntimeError(f"Missing {MACRO_SOURCE_PATH} -- it should be checked in.")
+        if (os.path.exists(MACRO_TEMPLATE_PATH)
+                and os.path.getmtime(MACRO_TEMPLATE_PATH) >= os.path.getmtime(MACRO_SOURCE_PATH)):
+            return
+
+        with open(MACRO_SOURCE_PATH) as f:
+            source = f.read()
+
+        # The module name must match the .bas's own `Attribute VB_Name` line
+        # (visi writes the source verbatim and does not reconcile the two).
+        # It's the *module* name; `run VB macro` invokes the procedure name,
+        # `BuildFuzzPivot`, which is deliberately distinct from it.
+        via = self._build_macro_template_via_bindings(source)
+        if via is None:
+            via = self._build_macro_template_via_cli()
+        print(f"[ExcelPivotDriver] Built {os.path.basename(MACRO_TEMPLATE_PATH)} from "
+              f"{os.path.basename(MACRO_SOURCE_PATH)} via {via}.")
+
+    def _build_macro_template_via_bindings(self, source):
+        """Returns a description of what it used, or None if unavailable."""
+        try:
+            import visi_core
+        except ImportError:
+            return None
+        wb = visi_core.Workbook()
+        wb.add_macro("Module1", source)
+        wb.save(MACRO_TEMPLATE_PATH)
+        return "the visi_core bindings"
+
+    def _build_macro_template_via_cli(self):
+        visi = self.visi_path or "./target/release/visi"
+        if not (shutil.which(visi) or os.path.exists(visi)):
             raise RuntimeError(
-                f"Missing {MACRO_TEMPLATE_PATH} -- see fuzz_pivot.py's module "
-                "docstring for the one-time setup steps to create it (paste "
-                "fuzz/BuildFuzzPivot.bas into a macro-enabled workbook saved "
-                "at that path)."
+                f"Building {os.path.basename(MACRO_TEMPLATE_PATH)} needs either the "
+                f"visi_core bindings (`maturin develop -m visi-python/Cargo.toml --release`) "
+                f"or the visi CLI, and neither is available ({visi!r} does not exist -- "
+                "run `cargo build --release`, or pass --visi-path)."
             )
+
+        import openpyxl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base.xlsx")
+            wb = openpyxl.Workbook()
+            wb.active.title = "Sheet1"
+            wb.save(base)
+            res = subprocess.run(
+                [visi, "macro", "add", base, "--name", "Module1",
+                 "--kind", "standard", "--source-file", MACRO_SOURCE_PATH,
+                 "--output", MACRO_TEMPLATE_PATH],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"`visi macro add` failed to build {MACRO_TEMPLATE_PATH}: {res.stderr.strip()}"
+            )
+        return "`visi macro add`"
+
+    def _prepare_macro_workbook(self, source_file, config, macro_file):
+        self._ensure_macro_template()
         import openpyxl
         from openpyxl.worksheet.table import Table, TableStyleInfo
 
@@ -629,7 +706,8 @@ def main():
     visi_driver = VisiPivotDriver(binary_path=args.visi_path, backend=args.backend)
     if args.backend == "auto" and visi_driver.backend != "bindings":
         print(bindings_hint(), file=sys.stderr)
-    excel_driver = ExcelPivotDriver(excel_path=args.excel_path, driver_type=args.driver)
+    excel_driver = ExcelPivotDriver(excel_path=args.excel_path, driver_type=args.driver,
+                                    visi_path=args.visi_path)
     comparator = DifferentialComparator()
     smoke_mode = excel_driver.driver_type == "mock"
 

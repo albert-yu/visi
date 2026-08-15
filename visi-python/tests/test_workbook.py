@@ -370,3 +370,94 @@ def test_filter_selection_does_not_survive_a_roundtrip():
 
     assert wb.pivots()[0]["filter_selections"]["Region"] == ["East"]
     assert wb.roundtrip().pivots()[0]["filter_selections"]["Region"] is None
+
+
+# ------------------------------------------------------------------- macros
+
+
+MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    MsgBox "hi"\nEnd Sub\n'
+
+
+def test_add_macro_then_read_it_back():
+    wb = visi_core.Workbook()
+    assert not wb.has_macros()
+
+    wb.add_macro("Mod1", MACRO_SRC)
+    assert wb.has_macros()
+
+    (mod,) = wb.macros()
+    assert mod["name"] == "Mod1"
+    assert mod["kind"] == "Standard"
+    assert mod["source"] == MACRO_SRC
+    assert mod["source_lines"] == 4
+    assert mod["bound_sheet_id"] is None
+
+
+def test_macro_survives_a_roundtrip():
+    """The property the whole VBA feature rests on: the CLI is a fresh process
+    per invocation, so a module only persists by round-tripping through
+    vbaProject.bin."""
+    wb = visi_core.Workbook()
+    wb.add_macro("Mod1", MACRO_SRC)
+
+    (mod,) = wb.roundtrip().macros()
+    assert mod["name"] == "Mod1"
+    assert mod["source"] == MACRO_SRC
+
+
+def test_document_module_binds_to_a_sheet():
+    wb = visi_core.Workbook()
+    sheet = wb.sheet_names[0]
+    wb.add_macro("Sheet1Code", MACRO_SRC, kind="document", sheet=sheet)
+
+    (mod,) = wb.macros()
+    assert mod["kind"] == "Document"
+    assert mod["bound_sheet_id"] is not None
+
+
+def test_this_workbook_is_the_one_document_module_needing_no_sheet():
+    wb = visi_core.Workbook()
+    wb.add_macro("ThisWorkbook", MACRO_SRC, kind="document")
+    assert wb.macros()[0]["bound_sheet_id"] is None
+
+    with pytest.raises(visi_core.InvalidArgumentError):
+        wb.add_macro("Other", MACRO_SRC, kind="document")
+
+
+def test_unknown_module_kind_is_rejected():
+    wb = visi_core.Workbook()
+    with pytest.raises(visi_core.InvalidArgumentError):
+        wb.add_macro("Mod1", MACRO_SRC, kind="bas")
+
+
+def test_rename_set_source_and_remove():
+    wb = visi_core.Workbook()
+    wb.add_macro("Mod1", MACRO_SRC)
+
+    wb.rename_macro("Mod1", "Renamed")
+    assert wb.macros()[0]["name"] == "Renamed"
+
+    wb.set_macro_source("Renamed", "Attribute VB_Name = \"Renamed\"\n")
+    assert wb.macros()[0]["source_lines"] == 1
+
+    wb.remove_macro("Renamed")
+    assert wb.macros() == []
+
+
+def test_operations_on_a_missing_module_raise_not_found():
+    wb = visi_core.Workbook()
+    wb.add_macro("Mod1", MACRO_SRC)
+    for call in (
+        lambda: wb.remove_macro("Nope"),
+        lambda: wb.rename_macro("Nope", "Other"),
+        lambda: wb.set_macro_source("Nope", "x"),
+    ):
+        with pytest.raises(visi_core.NotFoundError):
+            call()
+
+
+def test_duplicate_module_name_is_rejected():
+    wb = visi_core.Workbook()
+    wb.add_macro("Mod1", MACRO_SRC)
+    with pytest.raises(visi_core.AlreadyExistsError):
+        wb.add_macro("Mod1", MACRO_SRC)

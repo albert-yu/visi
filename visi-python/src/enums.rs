@@ -14,7 +14,7 @@
 use crate::errors::invalid_argument;
 use pyo3::PyResult;
 use visi_engine::core::chart::ChartType;
-use visi_engine::core::{PivotAggregation, PivotArea};
+use visi_engine::core::{PivotAggregation, PivotArea, VbaModuleKind};
 
 /// Parses a chart type name (`"column"`, `"bar"`, `"line"`, ...).
 pub fn parse_chart_type(s: &str) -> PyResult<ChartType> {
@@ -59,6 +59,18 @@ pub fn parse_pivot_agg(s: &str) -> PyResult<PivotAggregation> {
     }
 }
 
+/// Parses a VBA module kind (`"standard"`, `"class"`, `"document"`).
+pub fn parse_vba_module_kind(s: &str) -> PyResult<VbaModuleKind> {
+    match s.to_ascii_lowercase().as_str() {
+        "standard" => Ok(VbaModuleKind::Standard),
+        "class" => Ok(VbaModuleKind::Class),
+        "document" => Ok(VbaModuleKind::Document),
+        other => Err(invalid_argument(format!(
+            "unknown VBA module kind {other:?}; expected one of: standard, class, document"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +88,9 @@ mod tests {
         }
         for s in ["sum", "count", "count-numbers", "average", "max", "min"] {
             assert!(parse_pivot_agg(s).is_ok(), "aggregation {s:?}");
+        }
+        for s in ["standard", "class", "document"] {
+            assert!(parse_vba_module_kind(s).is_ok(), "module kind {s:?}");
         }
     }
 
@@ -97,6 +112,26 @@ mod tests {
         assert!(parse_pivot_agg("counta").is_err());
         // Underscores are not an accepted alias -- clap renders kebab-case.
         assert!(parse_pivot_agg("count_numbers").is_err());
+        // The file extensions, not the kinds -- the CLI takes neither.
+        assert!(parse_vba_module_kind("bas").is_err());
+        assert!(parse_vba_module_kind("cls").is_err());
+    }
+
+    /// Same exhaustiveness guard as `every_chart_type_has_a_spelling`.
+    #[test]
+    fn every_vba_module_kind_has_a_spelling() {
+        for kind in [
+            VbaModuleKind::Standard,
+            VbaModuleKind::Class,
+            VbaModuleKind::Document,
+        ] {
+            let name = match kind {
+                VbaModuleKind::Standard => "standard",
+                VbaModuleKind::Class => "class",
+                VbaModuleKind::Document => "document",
+            };
+            assert_eq!(parse_vba_module_kind(name).unwrap(), kind);
+        }
     }
 
     // A guard on exhaustiveness: if `ChartType` gains a variant, this match
