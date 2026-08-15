@@ -404,11 +404,16 @@ impl Interpreter {
                 // `Select Case ""` against `Case 0` is simply no match). All
                 // measured; Select Case genuinely has its own comparison.
                 let subject_is_const_text = is_constant(subject);
+                // A *statically* Boolean subject converts every case value
+                // with `CBool` before comparing; a Variant that merely holds a
+                // Boolean does not. See `is_statically_boolean`.
+                let subject_is_static_bool = is_statically_boolean(subject);
                 let subject = self.eval(subject, frame)?;
                 let text_compare = subject_is_const_text && matches!(subject, Variant::Str(_));
+                let bool_compare = subject_is_static_bool && matches!(subject, Variant::Boolean(_));
                 for case in cases {
                     for m in &case.matches {
-                        if self.case_matches(&subject, m, frame, text_compare)? {
+                        if self.case_matches(&subject, m, frame, text_compare, bool_compare)? {
                             return self.exec_block(&case.body, frame);
                         }
                     }
@@ -489,6 +494,7 @@ impl Interpreter {
         m: &CaseMatch,
         frame: &mut Frame,
         text_compare: bool,
+        bool_compare: bool,
     ) -> VResult<bool> {
         // See `Stmt::SelectCase` for why a constant String subject compares
         // as text.
@@ -499,16 +505,31 @@ impl Interpreter {
                 }
                 value::compare_ctx(lhs, rhs, Operand::Runtime, kind)
             };
+        // Against a statically Boolean subject every case value is converted
+        // with `CBool` and the comparison then runs on the Booleans, in all
+        // three case forms. That single rule produces the whole measured
+        // table, including the parts that look inconsistent:
+        //
+        //   Case 1        matches True   -- CBool(1) is True
+        //   Case 0        misses  True
+        //   Case 2 To 5   matches True   -- both ends become True
+        //   Case 0 To 1   misses  True   -- the range is False To True, i.e.
+        //                                   0 To -1, which is empty
+        //   Case Is < 0   matches True   -- True is -1
+        //   Case Null     is error 94    -- CBool(Null) raises it
+        //
+        // The `Case 0 To 1` and `Case Null` rows are what rule out "compare
+        // the case value as a Boolean": the conversion happens first, and
+        // everything after it is the ordinary comparison.
+        let cast = |v: Variant| -> VResult<Variant> {
+            if bool_compare {
+                return Ok(Variant::Boolean(v.to_bool()?));
+            }
+            Ok(v)
+        };
         Ok(match m {
             CaseMatch::Value(e) => {
-                let v = self.eval(e, frame)?;
-                // A Boolean subject compares its cases as Booleans, which is
-                // why `Select Case True` matches `Case 1` -- True is -1, so a
-                // numeric comparison would not. Measured; the range form does
-                // *not* do this (`Case 2 To 5` still misses True).
-                if matches!(subject, Variant::Boolean(_)) && !v.is_null() {
-                    return Ok(subject.to_bool()? == v.to_bool()?);
-                }
+                let v = cast(self.eval(e, frame)?)?;
                 // The case value carries its own constant-ness, which is what
                 // makes `Select Case "10"` match `Case 10`.
                 cmp(subject, &v, operand_kind(e))? == Some(std::cmp::Ordering::Equal)
@@ -522,15 +543,15 @@ impl Interpreter {
                 if subject.is_null() {
                     return Ok(true);
                 }
-                let lo = self.eval(lo_e, frame)?;
-                let hi = self.eval(hi_e, frame)?;
+                let lo = cast(self.eval(lo_e, frame)?)?;
+                let hi = cast(self.eval(hi_e, frame)?)?;
                 let a = cmp(subject, &lo, operand_kind(lo_e))?;
                 let b = cmp(subject, &hi, operand_kind(hi_e))?;
                 matches!(a, Some(o) if o != std::cmp::Ordering::Less)
                     && matches!(b, Some(o) if o != std::cmp::Ordering::Greater)
             }
             CaseMatch::Is(op, e) => {
-                let v = self.eval(e, frame)?;
+                let v = cast(self.eval(e, frame)?)?;
                 let ord = cmp(subject, &v, operand_kind(e))?;
                 match ord {
                     None => false,
@@ -890,19 +911,82 @@ fn is_constant(e: &Expr) -> bool {
 /// `(1.5 & "abc") <> CLng(a)` is error 13, while `(1.5 & "abc") <> a` with
 /// `a = -1` compares fine, because `a` is a `Variant` and the runtime
 /// number-sorts-before-string rule applies instead. Measured.
-/// Only the numeric `C*` conversions, whose declared return types are
-/// unambiguous. `Len` was in this list on the strength of its documented
-/// `As Long` signature and had to come out: `("abc" & va) <> Len(CStr("Z"))`
-/// does *not* error, while the same shape against `CLng` does.
-const STATICALLY_NUMERIC: &[&str] = &["cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte"];
+///
+/// `Len`, `Val` and `Sgn` belong here alongside the `C*` conversions, and the
+/// discriminating case has to hold the *string* side constant to show it:
+/// against `(-32768 & -2.5)` all four raise error 13 while `Int(a)`, `Abs(a)`
+/// and a bare `a` do not. An earlier round put `Len` in on the strength of
+/// its `As Long` signature, tested it against a *runtime* string -- where
+/// nothing is strict, see `compare_ctx` -- concluded it did not belong, and
+/// took it out again. `Int` and `Abs` stay out for a reason that is visible
+/// in their signatures: they return the type they were handed, so a Variant
+/// argument makes them Variant, where `Len` is always `Long`.
+const STATICALLY_NUMERIC: &[&str] = &[
+    "cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte", "len", "val", "sgn",
+];
+
+/// Intrinsics whose return type is declared `Boolean`.
+///
+/// The same "the compiler knows this statically" idea as
+/// [`STATICALLY_NUMERIC`] (which lists `cbool` too, for the numeric
+/// comparison rule), used by `Select Case` to decide whether to convert its
+/// case values with `CBool`. Measured for `CBool`, `IsNumeric`, `IsNull`,
+/// `IsEmpty`, `IsDate` and `IsObject`; `IsArray` and `IsError` measure the
+/// same way in Excel but are not implemented here yet, and are listed so they
+/// arrive with the right behaviour rather than silently as Variants.
+const STATICALLY_BOOLEAN: &[&str] = &[
+    "cbool",
+    "isnumeric",
+    "isnull",
+    "isempty",
+    "isdate",
+    "isobject",
+    "isarray",
+    "iserror",
+];
+
+/// Intrinsics whose return type is declared `String`.
+///
+/// `CStr` and nothing else, which is a measurement rather than an oversight:
+/// `LCase`, `UCase`, `Left` and the rest return `Variant`, and it is their
+/// `$`-suffixed forms that are typed `String`. The pair
+/// `True Eqv CStr(True)` (error 13) against `LCase("TRUE") Eqv True` (True)
+/// is what pins it down -- see [`value::logical_pair`].
+const STATICALLY_STRING: &[&str] = &["cstr"];
+
+/// Whether an expression's *static* type is `Boolean`, as the VBA compiler
+/// would know it.
+///
+/// This is the distinction `Select Case` turns on, and it is invisible in the
+/// value: `Select Case CBool(a)` matches `Case 1`, while `Select Case a` with
+/// `a = True` does not, though both subjects are `True` at run time. A
+/// constant expression qualifies because the compiler folds it (`Select Case
+/// (1 = 1)` behaves as `Select Case True`); a Variant never does, whatever it
+/// happens to hold.
+fn is_statically_boolean(e: &Expr) -> bool {
+    match e {
+        Expr::Paren { expr, .. } => is_statically_boolean(expr),
+        Expr::Call { target, .. } => matches!(target.as_ref(), Expr::Ident { name, .. }
+            if STATICALLY_BOOLEAN.contains(&name.to_ascii_lowercase().as_str())),
+        _ => is_constant(e),
+    }
+}
 
 /// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
-    let statically_numeric = matches!(
+    // Boolean-returning intrinsics count as statically typed for the same
+    // reason the numeric ones do -- the compiler knows the type without the
+    // value -- and it decides how a String compares against them.
+    let statically_typed = matches!(
         e,
         Expr::Call { target, .. }
             if matches!(target.as_ref(), Expr::Ident { name, .. }
-                if STATICALLY_NUMERIC.contains(&name.to_ascii_lowercase().as_str()))
+                if {
+                    let name = name.to_ascii_lowercase();
+                    STATICALLY_NUMERIC.contains(&name.as_str())
+                        || STATICALLY_BOOLEAN.contains(&name.as_str())
+                        || STATICALLY_STRING.contains(&name.as_str())
+                })
     );
     match e {
         Expr::Literal(_) => Operand::Literal,
@@ -913,7 +997,7 @@ fn operand_kind(e: &Expr) -> Operand {
             Operand::Literal
         }
         _ if is_constant(e) => Operand::ConstExpr,
-        _ if statically_numeric => Operand::Static,
+        _ if statically_typed => Operand::Static,
         _ => Operand::Runtime,
     }
 }
@@ -974,14 +1058,44 @@ fn eval_binary(
         },
         // And/Or/Imp are three-valued; Xor and Eqv are not (a Null operand
         // always makes their result unknown).
-        And => value::and(a, b),
-        Or => value::or(a, b),
-        Xor => value::logical(a, b, |x, y| x ^ y),
-        Eqv => value::logical(a, b, |x, y| !(x ^ y)),
-        Imp => value::imp(a, b),
+        And => null_on_the_right(a, b, kinds, value::and(a, b, kinds)),
+        Or => null_on_the_right(a, b, kinds, value::or(a, b, kinds)),
+        Xor => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| x ^ y)),
+        Eqv => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| !(x ^ y))),
+        Imp => null_on_the_right(a, b, kinds, value::imp(a, b, kinds)),
         Like => Err(out_of_scope("Like")),
         Is => Err(out_of_scope("Is")),
     }
+}
+
+/// A statically typed `String` on the **left** of a logical operator, with
+/// `Null` on the right, is error 94.
+///
+/// | Expression | Excel |
+/// | --- | --- |
+/// | `"  3  " Imp Null`, `"3" And Null`, `"1.5" Or Null`, `"0" Or Null` | error 94 |
+/// | `("  " & "3") Or Null`, `CStr(3) Or Null` | error 94 |
+/// | `a = Null : "  3  " Or a` | error 94 -- the *Null* may be a variable |
+/// | `a = "  3  " : a Imp Null` | not an error -- the **String** may not |
+/// | `Null Or "  3  "`, `Null And "  3  "`, `Null Xor "  3  "` | not an error -- it is left-specific |
+/// | `"abc" Imp Null`, `"True" Or Null` | error 13 -- the string's own conversion is checked first |
+/// | `3 Imp Null`, `255 Imp Null` | not an error -- the operand must be a String |
+///
+/// Which is why this wraps the operator rather than short-circuiting it: the
+/// conversion failures have to surface as themselves, and only a *successful*
+/// operation becomes the 94. Measured with `fuzz/vba_expr_probe.py`.
+fn null_on_the_right(
+    lhs: &Variant,
+    rhs: &Variant,
+    kinds: (Operand, Operand),
+    computed: VResult<Variant>,
+) -> VResult<Variant> {
+    let statically_string = matches!(lhs, Variant::Str(_)) && kinds.0 != Operand::Runtime;
+    if statically_string && rhs.is_null() {
+        computed?;
+        return Err(VbaError::invalid_null());
+    }
+    computed
 }
 
 fn literal_to_variant(l: &Literal) -> Variant {
@@ -1653,6 +1767,135 @@ mod tests {
     }
 
     #[test]
+    fn a_static_string_over_a_null_is_invalid_use_of_null() {
+        // Left-specific, and only for a statically typed string. See
+        // `null_on_the_right` for the measured table.
+        for e in [
+            "\"  3  \" Imp Null",
+            "\"3\" And Null",
+            "\"1.5\" Or Null",
+            "\"0\" Or Null",
+            "\"  3  \" Xor Null",
+            "\"  3  \" Eqv Null",
+            "(\"  \" & \"3\") Or Null",
+            "CStr(3) Or Null",
+        ] {
+            assert_eq!(expr(e), "ERR|94", "{e}");
+        }
+        assert_eq!(
+            run("    Dim a\n    a = Null\n    F = IsNull(\"  3  \" Or a)"),
+            "ERR|94"
+        );
+        // A runtime string does not trigger it, and neither does a Null on
+        // the left.
+        assert_eq!(
+            run("    Dim a\n    a = \"  3  \"\n    F = IsNull(a Imp Null)"),
+            "Boolean|False"
+        );
+        assert_eq!(expr("IsNull(Null Or \"  3  \")"), "Boolean|False");
+        assert_eq!(expr("IsNull(Null Xor \"  3  \")"), "Boolean|True");
+        // The string's own conversion is checked first: these stay 13.
+        assert_eq!(expr("\"abc\" Imp Null"), "ERR|13");
+        assert_eq!(expr("\"True\" Or Null"), "ERR|13");
+        // A numeric operand is unaffected.
+        assert_eq!(expr("IsNull(255 Imp Null)"), "Boolean|False");
+    }
+
+    #[test]
+    fn a_statically_typed_numeric_partner_is_strict_only_against_a_constant_string() {
+        // `Len`, `Val` and `Sgn` are declared numeric like the `C*`
+        // conversions, so a constant string compared against one has to parse
+        // whole; `Int` and `Abs` return their argument's type and do not.
+        let with = |e: &str| run(&format!("    Dim va\n    va = 1\n    F = {e}"));
+        for f in ["CLng(va)", "Len(CStr(va))", "Val(CStr(va))", "Sgn(va)"] {
+            assert_eq!(with(&format!("({f} > (-32768 & -2.5))")), "ERR|13", "{f}");
+        }
+        for f in ["Int(va)", "Abs(va)", "va"] {
+            assert_eq!(
+                with(&format!("({f} > (-32768 & -2.5))")),
+                "Boolean|True",
+                "{f}"
+            );
+        }
+        // A *runtime* string is not held to that: it compares numerically
+        // when it parses, and falls back to the ordering when it does not,
+        // rather than erroring.
+        assert_eq!(
+            run("    Dim va, vb\n    va = 5\n    vb = \"1\"\n    F = (CLng(va) < vb)"),
+            "Boolean|False"
+        );
+        assert_eq!(with("(CLng(va) < (\"abc\" & va))"), "Boolean|True");
+    }
+
+    #[test]
+    fn a_string_compares_against_a_static_boolean_as_text() {
+        // `"011" < False` is True because "011" sorts before "False" -- the
+        // numeric reading (11 against 0) says the opposite, and that is what
+        // this used to do. The words True and False still convert with CBool
+        // instead, and a Boolean held in a *variable* is not static, so it
+        // falls back to the runtime rule where a number sorts first. All
+        // measured with `fuzz/vba_expr_probe.py`.
+        let with = |setup: &str, e: &str| run(&format!("    Dim va, vb\n{setup}\n    F = {e}"));
+        assert_eq!(with("    va = \"011\"", "(va < False)"), "Boolean|True");
+        assert_eq!(with("    va = \"011\"", "(va > False)"), "Boolean|False");
+        assert_eq!(with("    va = \"011\"", "(va > True)"), "Boolean|False");
+        assert_eq!(with("    va = \"011\"", "(va < CBool(0))"), "Boolean|True");
+        assert_eq!(
+            with("    va = \"011\"", "(va < IsNull(32768))"),
+            "Boolean|True"
+        );
+        // A *constant* string keeps the numeric rules: no numeric prefix is
+        // error 13, and a prefix compares numerically. Both measured, and
+        // both are what the text comparison would get wrong.
+        assert_eq!(expr("(\"abc\" < True)"), "ERR|13");
+        assert_eq!(expr("(\"Z\" < True)"), "ERR|13");
+        assert_eq!(expr("(False >= \"abc\")"), "ERR|13");
+        assert_eq!(
+            expr("((Empty & \"1\") <= (\"\" <> Empty))"),
+            "Boolean|False"
+        );
+        // One measured row this does not reproduce: Excel says
+        // `("011" < False)` is True, i.e. it compares a *numeric* string
+        // literal as text after all. Left alone deliberately -- making
+        // literals text-compare regressed six cases across four seeds.
+        assert_eq!(expr("(\"011\" < False)"), "Boolean|False");
+        // The words still take the CBool path, case-insensitively.
+        assert_eq!(with("    va = \"true\"", "(va = True)"), "Boolean|True");
+        assert_eq!(with("    va = \"TRUE\"", "(va = True)"), "Boolean|True");
+        assert_eq!(with("    va = \"true\"", "(va = False)"), "Boolean|False");
+        // A Boolean variable is not static: the number sorts before the
+        // string, so "011" is Greater and `<` is False.
+        assert_eq!(
+            with("    va = \"011\"\n    vb = False", "(va < vb)"),
+            "Boolean|False"
+        );
+        // A numeric partner is unaffected, and still refuses the words.
+        assert_eq!(with("    va = \"011\"", "(va < 0)"), "Boolean|False");
+        assert_eq!(expr("(\"True\" = -1)"), "ERR|13");
+    }
+
+    #[test]
+    fn division_overflows_rather_than_returning_an_infinity() {
+        // `/` was the last operator handing back an INF where Excel raises
+        // error 6, at run time as well as between constants. Measured with
+        // `fuzz/vba_expr_probe.py`; `^` remains the one operator that does
+        // produce infinities, and feeding one of those to `/` raises too.
+        assert_eq!(expr("1E308 / 1E-308"), "ERR|6");
+        assert_eq!(
+            run("    Dim a, b\n    a = 1E308\n    b = 1E-308\n    F = a / b"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 3.75\n    b = a ^ 32767\n    F = b / 2"),
+            "ERR|6"
+        );
+        // Ordinary division is untouched, and so are the two zero cases.
+        assert_eq!(expr("1 / 2"), "Double|0.5");
+        assert_eq!(expr("1 / 0"), "ERR|11");
+        assert_eq!(expr("0 / 0"), "ERR|6");
+    }
+
+    #[test]
     fn pow_overflows_between_constants_and_yields_infinity_at_runtime() {
         // The same ArithMode split the other operators have. Phase 1
         // measured the runtime half and missed this one.
@@ -1784,31 +2027,61 @@ mod tests {
     }
 
     #[test]
-    fn a_boolean_select_subject_compares_its_cases_as_booleans() {
-        // `Select Case True` matches `Case 1`, which a numeric comparison
-        // would not: True is -1. Measured. The range form does not do this.
+    fn a_statically_boolean_select_subject_converts_its_cases_with_cbool() {
+        // Every row measured against Excel 16.112 with
+        // `fuzz/vba_expr_probe.py`. A *statically* Boolean subject converts
+        // each case value with CBool and compares the Booleans; a Variant
+        // holding a Boolean does not, and compares numerically with True as
+        // -1. The two halves of this test are the same subject value either
+        // side of that line.
         let sel = |subject: &str, cases: &str| {
             format!(
                 "    Dim r\n    Select Case {subject}\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
             )
         };
+        let hit = |subject: &str, case: &str| {
+            run(&sel(
+                subject,
+                &format!("    Case {case}\n        r = \"a\"\n"),
+            ))
+        };
+
+        // Statically Boolean: a folded constant, or a Boolean-returning
+        // intrinsic over a variable.
+        for subject in ["(1 = 1)", "True", "CBool(1)", "IsNumeric(0)"] {
+            assert_eq!(hit(subject, "1"), "String|a", "{subject} vs Case 1");
+            assert_eq!(hit(subject, "0"), "String|else", "{subject} vs Case 0");
+            assert_eq!(hit(subject, "0, 1"), "String|a", "{subject} vs Case 0, 1");
+            // Both ends become True, so the range is True To True.
+            assert_eq!(hit(subject, "2 To 5"), "String|a", "{subject} vs 2 To 5");
+            // ... while `0 To 1` becomes False To True, i.e. 0 To -1, which
+            // is empty. This row is why the conversion cannot be "compare as
+            // Booleans" -- it has to happen before the comparison.
+            assert_eq!(hit(subject, "0 To 1"), "String|else", "{subject} vs 0 To 1");
+            assert_eq!(hit(subject, "Is = 1"), "String|a", "{subject} vs Is = 1");
+            assert_eq!(hit(subject, "Is > 0"), "String|else", "{subject} vs Is > 0");
+            assert_eq!(hit(subject, "Is < 0"), "String|a", "{subject} vs Is < 0");
+        }
+        assert_eq!(hit("(1 = 2)", "0, 1"), "String|a");
+        assert_eq!(hit("(1 = 2)", "2 To 5"), "String|else");
+        // CBool(Null) is error 94, and the case value goes through CBool.
         assert_eq!(
-            run(&sel("IsNumeric(0)", "    Case 0, 1\n        r = \"a\"\n")),
-            "String|a"
+            run(&sel("CBool(1)", "    Case Null\n        r = \"a\"\n")),
+            "ERR|94"
         );
-        assert_eq!(
-            run(&sel("(1 = 2)", "    Case 0, 1\n        r = \"a\"\n")),
-            "String|a"
-        );
-        assert_eq!(
-            run(&sel("(1 = 1)", "    Case 0\n        r = \"a\"\n")),
-            "String|else"
-        );
-        // Ranges still compare numerically, so True (-1) misses 2 To 5.
-        assert_eq!(
-            run(&sel("(1 = 1)", "    Case 2 To 5\n        r = \"a\"\n")),
-            "String|else"
-        );
+
+        // The same values in a Variant compare numerically instead.
+        let via_var = |value: &str, case: &str| {
+            run(&format!(
+                "    Dim a, r\n    a = {value}\n    Select Case a\n    Case {case}\n        \
+                 r = \"a\"\n    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            ))
+        };
+        assert_eq!(via_var("True", "0, 1"), "String|else");
+        assert_eq!(via_var("True", "-1"), "String|a");
+        assert_eq!(via_var("True", "2 To 5"), "String|else");
+        assert_eq!(via_var("True", "Is < 0"), "String|a");
+        assert_eq!(via_var("False", "0, 1"), "String|a");
     }
 
     /// The constant-folding quirk in `constant_bool_int_op`, with the
@@ -1956,13 +2229,35 @@ mod tests {
         // one; `Xor` with a number goes bitwise and yields an Integer.
         assert_eq!(expr("Not \"True\""), "Boolean|False");
 
-        // But the fold does not apply when the *other* side is already a
-        // Boolean, which is the one shape where Excel refuses.
+        // Against a Boolean partner the fold is suppressed only when *both*
+        // sides are statically typed -- a literal, or a call with a declared
+        // return type. `CStr` is declared `As String`; `LCase` returns a
+        // Variant, and that pair is what separates the two halves.
         assert_eq!(expr("True Eqv \"True\""), "ERR|13");
+        assert_eq!(expr("\"True\" Eqv True"), "ERR|13");
         assert_eq!(expr("True Eqv CStr(True)"), "ERR|13");
         assert_eq!(
             run("    Dim a\n    a = 3.75\n    F = (IsNumeric(a) Eqv CStr(True))"),
             "ERR|13"
+        );
+        // ... and happens as soon as either side is a Variant.
+        assert_eq!(expr("LCase(\"TRUE\") Eqv True"), "Boolean|True");
+        assert_eq!(expr("LCase(False) Eqv IsNull(True)"), "Boolean|True");
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = (a Eqv \"True\")"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"false\"\n    F = (a Eqv False)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"true\"\n    F = (a Eqv False)"),
+            "Boolean|False"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = \"true\"\n    b = False\n    F = (a Eqv b)"),
+            "Boolean|False"
         );
 
         // The floating-point path still rejects them.
