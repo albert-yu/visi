@@ -1210,11 +1210,10 @@ fn test_vba_syntax_check_through_a_real_roundtrip() {
         }) => {
             // The module name is what makes a multi-module report readable.
             assert_eq!(module.as_deref(), Some("Bad"));
-            // Line 4 -- the `End Sub` that arrives where `End If` was due.
-            // Excel instead blames the unclosed `If` on line 3; both point at
-            // the same defect, and narrowing to the opener is a diagnostics
-            // improvement rather than a Phase 0 requirement.
-            assert_eq!(line, 4);
+            // Line 3 -- the unclosed `If` itself, matching how VBA words and
+            // places the error, rather than the perfectly correct `End Sub`
+            // on line 4 that merely arrived where `End If` was due.
+            assert_eq!(line, 3);
             assert!(column >= 1);
         }
         other => panic!("expected a syntax error, got {other:?}"),

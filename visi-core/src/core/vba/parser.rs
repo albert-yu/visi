@@ -218,6 +218,37 @@ impl Parser {
         }
     }
 
+    /// A block that was opened and never closed.
+    ///
+    /// Reported at the **opener**, not at whatever turned up where the closer
+    /// was due, and worded the way VBA's own compiler words it ("Block If
+    /// without End If", "For without Next", ...). Pointing at the opener is
+    /// the more useful of the two: in
+    ///
+    /// ```text
+    /// Sub S()
+    ///     If x Then
+    /// End Sub
+    /// ```
+    ///
+    /// the defect is the `If` on line 2, and blaming the `End Sub` on line 3
+    /// sends the reader to a line that is perfectly correct. It matters most
+    /// in a long procedure, where the two can be hundreds of lines apart.
+    ///
+    /// The wording and the choice of position follow VBA's documented
+    /// compile errors; they could not be read back from Excel directly,
+    /// because a compile error surfaces only as a modal dialog, which is
+    /// unreadable to the AppleScript bridge (it is the hang the fuzz harness
+    /// works around) and, in the environment this was written in, to UI
+    /// scripting and screenshots as well. Worth re-checking by hand in the
+    /// VBE if these strings ever matter for more than readability.
+    fn unclosed(&self, what: &str, pos: Pos) -> ParseError {
+        ParseError {
+            message: what.to_string(),
+            pos,
+        }
+    }
+
     // ---- separators -----------------------------------------------------
 
     fn skip_newlines(&mut self) {
@@ -469,15 +500,15 @@ impl Parser {
 
         let body = self.parse_block()?;
 
-        self.expect_kw("end")?;
         let closer = match kind {
             ProcKind::Sub => "Sub",
             ProcKind::Function => "Function",
             _ => "Property",
         };
-        if !self.eat_kw(closer) {
-            return Err(self.expected(&format!("End {closer}")));
+        if !(self.peek().is_kw("end") && self.at(1).is_kw(closer)) {
+            return Err(self.unclosed(&format!("Expected End {closer}"), pos));
         }
+        self.i += 2;
         if !self.is_eof() {
             self.expect_stmt_end()?;
         }
@@ -965,13 +996,12 @@ impl Parser {
                 break;
             }
             if self.is_eof() {
-                return Err(self.expected("End Type"));
+                return Err(self.unclosed("Expected End Type", pos));
             }
             fields.push(self.parse_var_decl(false)?);
             self.expect_stmt_end()?;
         }
-        self.expect_kw("end")?;
-        self.expect_kw("type")?;
+        self.i += 2;
         Ok(Stmt::TypeDef {
             name,
             visibility,
@@ -995,7 +1025,7 @@ impl Parser {
                 break;
             }
             if self.is_eof() {
-                return Err(self.expected("End Enum"));
+                return Err(self.unclosed("Expected End Enum", pos));
             }
             let (member, _) = self.expect_ident()?;
             let value = if self.eat_punct("=") {
@@ -1009,8 +1039,7 @@ impl Parser {
             });
             self.expect_stmt_end()?;
         }
-        self.expect_kw("end")?;
-        self.expect_kw("enum")?;
+        self.i += 2;
         Ok(Stmt::EnumDef {
             name,
             visibility,
@@ -1105,7 +1134,7 @@ impl Parser {
                 self.i += 2;
                 break;
             } else {
-                return Err(self.expected("ElseIf, Else or End If"));
+                return Err(self.unclosed("Block If without End If", pos));
             }
         }
         Ok(Stmt::If {
@@ -1148,7 +1177,7 @@ impl Parser {
                 break;
             }
             if !self.eat_kw("case") {
-                return Err(self.expected("Case or End Select"));
+                return Err(self.unclosed("Select Case without End Select", pos));
             }
             if self.eat_kw("else") {
                 self.expect_stmt_end()?;
@@ -1212,7 +1241,7 @@ impl Parser {
             let iterable = self.parse_expr()?;
             self.expect_stmt_end()?;
             let body = self.parse_block()?;
-            self.finish_next()?;
+            self.finish_next(pos)?;
             return Ok(Stmt::ForEach {
                 var,
                 iterable,
@@ -1233,7 +1262,7 @@ impl Parser {
         };
         self.expect_stmt_end()?;
         let body = self.parse_block()?;
-        self.finish_next()?;
+        self.finish_next(pos)?;
         Ok(Stmt::For {
             var,
             from,
@@ -1246,12 +1275,14 @@ impl Parser {
 
     /// Consumes the `Next` closing a loop, handling `Next i, j` closing
     /// several at once by leaving a count for the enclosing loops.
-    fn finish_next(&mut self) -> Result<(), ParseError> {
+    fn finish_next(&mut self, opener: Pos) -> Result<(), ParseError> {
         if self.pending_next > 0 {
             self.pending_next -= 1;
             return Ok(());
         }
-        self.expect_kw("next")?;
+        if !self.eat_kw("next") {
+            return Err(self.unclosed("For without Next", opener));
+        }
         let mut names = 0usize;
         while !self.at_stmt_end() {
             self.parse_postfix()?;
@@ -1269,7 +1300,9 @@ impl Parser {
         let pre = self.eat_do_test()?;
         self.expect_stmt_end()?;
         let body = self.parse_block()?;
-        self.expect_kw("loop")?;
+        if !self.eat_kw("loop") {
+            return Err(self.unclosed("Do without Loop", pos));
+        }
         let post = if pre.is_none() {
             self.eat_do_test()?
         } else {
@@ -1299,7 +1332,9 @@ impl Parser {
         let cond = self.parse_expr()?;
         self.expect_stmt_end()?;
         let body = self.parse_block()?;
-        self.expect_kw("wend")?;
+        if !self.eat_kw("wend") {
+            return Err(self.unclosed("While without Wend", pos));
+        }
         Ok(Stmt::DoLoop {
             pre: Some((DoTest::While, cond)),
             post: None,
@@ -1313,8 +1348,10 @@ impl Parser {
         let subject = self.parse_expr()?;
         self.expect_stmt_end()?;
         let body = self.parse_block()?;
-        self.expect_kw("end")?;
-        self.expect_kw("with")?;
+        if !(self.peek().is_kw("end") && self.at(1).is_kw("with")) {
+            return Err(self.unclosed("With without End With", pos));
+        }
+        self.i += 2;
         Ok(Stmt::With { subject, body, pos })
     }
 
@@ -2346,23 +2383,88 @@ mod tests {
         assert!(err.message.contains("expected an expression"), "{err}");
     }
 
+    /// An unclosed block is blamed on the line that opened it, matching how
+    /// VBA words and places its own compile errors -- not on whatever token
+    /// arrived where the closer was due, which is usually a correct line.
     #[test]
-    fn an_unclosed_block_is_reported() {
-        for src in [
-            "Sub S()\n    a = 1\n",
-            "Sub S()\n    If a Then\n        b = 1\nEnd Sub\n",
-            "Sub S()\n    For i = 1 To 2\n        a = 1\nEnd Sub\n",
-            "Sub S()\n    With x\n        .a = 1\nEnd Sub\n",
-            "Sub S()\n    Select Case x\n    Case 1\n        a = 1\nEnd Sub\n",
-        ] {
-            assert!(parse_module(src).is_err(), "should not parse: {src:?}");
+    fn an_unclosed_block_is_blamed_on_its_opener() {
+        // (source, expected message, expected line)
+        let cases = [
+            ("Sub S()\n    a = 1\n", "Expected End Sub", 1),
+            ("Function F()\n    a = 1\n", "Expected End Function", 1),
+            (
+                "Sub S()\n    If a Then\n        b = 1\nEnd Sub\n",
+                "Block If without End If",
+                2,
+            ),
+            (
+                "Sub S()\n    b = 1\n    If a Then\n        b = 2\nEnd Sub\n",
+                "Block If without End If",
+                3,
+            ),
+            (
+                "Sub S()\n    For i = 1 To 2\n        a = 1\nEnd Sub\n",
+                "For without Next",
+                2,
+            ),
+            (
+                "Sub S()\n    For Each c In r\n        a = 1\nEnd Sub\n",
+                "For without Next",
+                2,
+            ),
+            (
+                "Sub S()\n    Do While a\n        b = 1\nEnd Sub\n",
+                "Do without Loop",
+                2,
+            ),
+            (
+                "Sub S()\n    While a\n        b = 1\nEnd Sub\n",
+                "While without Wend",
+                2,
+            ),
+            (
+                "Sub S()\n    With x\n        .a = 1\nEnd Sub\n",
+                "With without End With",
+                2,
+            ),
+            (
+                "Sub S()\n    Select Case x\n    Case 1\n        a = 1\nEnd Sub\n",
+                "Select Case without End Select",
+                2,
+            ),
+            ("Type P\n    X As Long\n", "Expected End Type", 1),
+            ("Enum C\n    Red\n", "Expected End Enum", 1),
+        ];
+        for (src, message, line) in cases {
+            let err = parse_module(src).expect_err(src);
+            assert_eq!(err.message, message, "for {src:?}");
+            assert_eq!(err.pos.line, line, "for {src:?}");
         }
     }
 
     #[test]
     fn a_mismatched_block_closer_is_reported() {
-        assert!(parse_module("Sub S()\nEnd Function\n").is_err());
-        assert!(parse_module("Function F()\nEnd Sub\n").is_err());
+        // `End Function` does not close a `Sub`, so the Sub is unclosed and
+        // is what gets blamed -- again matching VBA's "Expected End Sub".
+        let err = parse_module("Sub S()\nEnd Function\n").unwrap_err();
+        assert_eq!(err.message, "Expected End Sub");
+        assert_eq!(err.pos.line, 1);
+
+        let err = parse_module("Function F()\nEnd Sub\n").unwrap_err();
+        assert_eq!(err.message, "Expected End Function");
+        assert_eq!(err.pos.line, 1);
+    }
+
+    #[test]
+    fn the_innermost_unclosed_block_is_the_one_blamed() {
+        // Both the For and the If are unclosed; the If is nearer, and fixing
+        // it is what lets the next error surface.
+        let err = parse_module(
+            "Sub S()\n    For i = 1 To 2\n        If a Then\n            b = 1\nEnd Sub\n",
+        )
+        .unwrap_err();
+        assert_eq!(err.message, "Block If without End If");
+        assert_eq!(err.pos.line, 3);
     }
 
     // ---- real-world corpus ----------------------------------------------

@@ -166,6 +166,17 @@ way to ask Excel "does this arbitrary module compile?" without also asking it
 to run something.** `fuzz_vba_parse.py --corpus` is therefore parser-only by
 design rather than by omission.
 
+**Diagnostics blame the opener, matching VBA.** An unclosed block reports at
+the line that opened it, with VBA's own wording (`Block If without End If`,
+`For without Next`, `Expected End Sub`, ...), rather than at whatever token
+turned up where the closer was due — which is usually a perfectly correct
+line, and in a long procedure can be hundreds of lines from the defect. The
+wording and position follow VBA's documented compile errors; they could not be
+read back from Excel directly, since a compile error surfaces only as a modal
+dialog that is unreadable to the AppleScript bridge and, in this environment,
+to UI scripting and screenshots as well. Worth re-checking by hand in the VBE
+if these strings ever matter for more than readability.
+
 **A compile error is observable only as a hang**, as predicted in Part 2 —
 and, unlike a runtime error, the `On Error` wrapper does not help, because a
 compile error is not trappable. The harness reads a timeout as Excel's
