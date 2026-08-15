@@ -402,19 +402,35 @@ fn logical_operand(v: &Variant) -> Variant {
 /// The pair of operands for a logical operator, with the `"True"`/`"False"`
 /// fold applied only where Excel applies it.
 ///
-/// The fold does **not** happen when the other side is already a `Boolean`:
-/// `"True" Xor 1` is `-2`, but `True Eqv "True"` is error 13. Folding
-/// unconditionally made the second one succeed.
-fn logical_pair(lhs: &Variant, rhs: &Variant) -> (Variant, Variant) {
+/// Against a `Boolean` partner the fold is suppressed exactly when **both**
+/// operands' types are known statically -- a literal, a constant expression,
+/// or a call whose declared return type says so:
+///
+/// | Expression | Excel | Why |
+/// | --- | --- | --- |
+/// | `True Eqv "True"` | error 13 | Boolean literal, String literal |
+/// | `True Eqv CStr(True)` | error 13 | `CStr` is declared `As String` |
+/// | `a = 3.75 : IsNumeric(a) Eqv CStr(True)` | error 13 | both declared |
+/// | `LCase("TRUE") Eqv True` | `True` | `LCase` returns a *Variant* |
+/// | `a = True : a Eqv "True"` | `True` | `a` is a Variant |
+/// | `a = "false" : a Eqv False` | `True` | same, other way round |
+///
+/// The `CStr`/`LCase` pair is the one that pins it down, and it is not
+/// arbitrary: `CStr` returns `String`, while `LCase` (like `UCase`, `Left`
+/// and friends, whose `$`-suffixed forms are the String-typed ones) returns
+/// `Variant`. A non-Boolean partner always folds -- `"True" Xor 1` is `-2`
+/// between two literals.
+fn logical_pair(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> (Variant, Variant) {
+    let both_static = kinds.0 != Operand::Runtime && kinds.1 != Operand::Runtime;
     let l_bool = matches!(lhs, Variant::Boolean(_));
     let r_bool = matches!(rhs, Variant::Boolean(_));
     (
-        if r_bool {
+        if r_bool && both_static {
             lhs.clone()
         } else {
             logical_operand(lhs)
         },
-        if l_bool {
+        if l_bool && both_static {
             rhs.clone()
         } else {
             logical_operand(rhs)
@@ -469,8 +485,26 @@ pub fn parse_vba_number(s: &str) -> VResult<f64> {
     }
     // VBA's `D` exponent marker is equivalent to `E`.
     let normalised = t.replace(['d', 'D'], "e");
-    let value = normalised
+    // A *trailing* sign negates (or confirms) the number, so `CDbl("1-")` is
+    // -1 and `CDbl("1+")` is 1 -- as is `"1 -"`, the space being trimmed, and
+    // `"1E2-"`, which is -100. It is a suffix, not a second sign: `"-1-"` and
+    // `"1--"` are both error 13. Measured; this is what makes `CBool("1-")`
+    // True where visi used to raise 13 and take the other `If` branch.
+    let negated_by_suffix = normalised.ends_with('-');
+    let body = match normalised.strip_suffix(['-', '+']) {
+        Some(rest) => {
+            let rest = rest.trim_end();
+            // The suffix replaces a sign rather than adding to one.
+            if rest.starts_with(['-', '+']) {
+                return Err(VbaError::type_mismatch());
+            }
+            rest
+        }
+        None => normalised.as_str(),
+    };
+    let value = body
         .parse::<f64>()
+        .map(|v| if negated_by_suffix { -v } else { v })
         .map_err(|_| VbaError::type_mismatch())?;
     // A string whose value is outside Double range fails to *convert* --
     // error 6, not 13, and not a quiet infinity. `a = "1E+2923" : a ^ 255`
@@ -583,10 +617,20 @@ pub fn add(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     if let (Variant::Str(a), Variant::Str(b)) = (lhs, rhs) {
         return Ok(Variant::Str(format!("{a}{b}")));
     }
-    // `Empty + Empty` is Empty, not the Integer 0.
-    if lhs.is_empty() && rhs.is_empty() {
-        return Ok(Variant::Empty);
+    // `Empty` against a String concatenates instead of forcing the string
+    // into a number, so `Empty + "a"` is the String "a" rather than error 13,
+    // and `Empty + "1"` is the String "1" rather than the Double 1. Empty
+    // takes the other operand's type here, the same way it does against a
+    // number -- and only for `+`: `Empty - "a"` and `Empty * "a"` are both
+    // still error 13. Measured with `fuzz/vba_expr_probe.py`.
+    if let (Variant::Empty, Variant::Str(s)) | (Variant::Str(s), Variant::Empty) = (lhs, rhs) {
+        return Ok(Variant::Str(s.clone()));
     }
+    // `Empty + Empty` falls through to `arith` and lands on the Integer 0,
+    // which is what `TypeName(Empty + Empty)` reports in Excel. It used to
+    // short-circuit to Empty here; that came from reading the result back
+    // through the fuzz harness, which cannot see the difference -- Empty and
+    // the Integer 0 both render as "0" once assigned onward.
     arith(lhs, rhs, mode, |a, b| a + b)
 }
 
@@ -629,7 +673,16 @@ pub fn div(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
             VbaError::div_by_zero()
         });
     }
-    Ok(Variant::Double(a / b))
+    let r = a / b;
+    // `/` refuses infinity exactly as `arith` does for `+`, `-` and `*`:
+    // `1E308 / 1E-308` is error 6, and so is `b / 2` when `b` is already
+    // infinite. It is only `^` that hands back an infinity. Measured both
+    // ways round -- this was the last operator still returning INF, which is
+    // how `(-7 ^ a) / (Not c)` came out INF here and error 6 in Excel.
+    if !r.is_finite() || !a.is_finite() || !b.is_finite() {
+        return Err(VbaError::overflow());
+    }
+    Ok(Variant::Double(r))
 }
 
 /// `\` -- integer division.
@@ -692,7 +745,11 @@ fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i6
 
     // The `"True"`/`"False"` fold has to happen *before* coercion, or the
     // words would fail `to_f64` on the way in: `"True" \\ 1` is -1.
-    let (l, r) = logical_pair(lhs, rhs);
+    // `\` and `Mod` claim both operands are runtime, so the fold always
+    // happens for them: their constant Boolean-against-String case is handled
+    // ahead of this by `interp::constant_bool_int_op`, and the suppression
+    // `Eqv` and friends need has not been measured for them.
+    let (l, r) = logical_pair(lhs, rhs, (Operand::Runtime, Operand::Runtime));
 
     let a = one(&l)?;
     let b = one(&r)?;
@@ -841,9 +898,14 @@ pub fn not(v: &Variant) -> VResult<Variant> {
 /// Probe cases 43/45: `True And False` is the `Boolean` `False`, but
 /// `5 And 3` is the `Integer` `1` -- the operation is bitwise unless both
 /// operands are already `Boolean`.
-pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VResult<Variant> {
+pub fn logical(
+    lhs: &Variant,
+    rhs: &Variant,
+    kinds: (Operand, Operand),
+    f: impl Fn(i64, i64) -> i64,
+) -> VResult<Variant> {
     // `"True" Xor 1` is -2: the integer path accepts the words.
-    let (l, r) = logical_pair(lhs, rhs);
+    let (l, r) = logical_pair(lhs, rhs, kinds);
     let (lhs, rhs) = (&l, &r);
     if let (Variant::Boolean(a), Variant::Boolean(b)) = (lhs, rhs) {
         let r = f(if *a { -1 } else { 0 }, if *b { -1 } else { 0 });
@@ -883,22 +945,22 @@ pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VRe
 /// operand, returned unchanged (type included). Only when the known operand
 /// is truthy is the answer genuinely unknown: `5 And Null` and `-1 And Null`
 /// are both `Null`.
-pub fn and(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
+pub fn and(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<Variant> {
     if let Some(v) = three_valued(lhs, rhs, false)? {
         return Ok(v);
     }
-    logical(lhs, rhs, |x, y| x & y)
+    logical(lhs, rhs, kinds, |x, y| x & y)
 }
 
 /// `Or`, three-valued in the mirrored way.
 ///
 /// Measured: `True Or Null` is `True`, `5 Or Null` is the `Integer` `5`, and
 /// `0 Or Null` is `Null`. A *truthy* operand determines the answer here.
-pub fn or(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
+pub fn or(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<Variant> {
     if let Some(v) = three_valued(lhs, rhs, true)? {
         return Ok(v);
     }
-    logical(lhs, rhs, |x, y| x | y)
+    logical(lhs, rhs, kinds, |x, y| x | y)
 }
 
 /// `Imp`, evaluated as its definition: `Not a Or b`.
@@ -910,8 +972,8 @@ pub fn or(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
 /// agrees. The measured endpoints still hold: `Null Imp True` is `True`
 /// (a truthy consequent decides it) and `False Imp Null` is `True`
 /// (`Not False` is truthy).
-pub fn imp(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
-    or(&not(lhs)?, rhs)
+pub fn imp(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<Variant> {
+    or(&not(lhs)?, rhs, kinds)
 }
 
 /// The shared half of [`and`] and [`or`]: when one side is `Null`, the other
@@ -1026,21 +1088,51 @@ pub fn compare_ctx(
             } else {
                 (rhs_kind, lhs_kind)
             };
-            // A Boolean partner converts the string with `CBool` rather than
-            // numerically: `a = "True"` makes `a = True` come out True, while
-            // `"True" = -1` -- a numeric partner -- is error 13.
-            if matches!(other, Variant::Boolean(_)) && bool_word(text).is_some() {
-                let a = bool_word(text).unwrap_or(false);
-                let b = other.to_bool()?;
-                let ord = a.cmp(&b);
-                return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
+            // A Boolean partner the compiler knows statically -- a literal, a
+            // folded constant, or a call like `CBool`/`IsNull` -- does not go
+            // down the numeric path at all.
+            //
+            // `"True"` and `"False"` convert with `CBool`, so `a = "True"`
+            // makes `a = True` come out True while `"True" = -1`, against a
+            // *numeric* partner, is error 13.
+            //
+            // Any other string compares against a static Boolean **as text**,
+            // but only when the string is a runtime value: `a = "011"` makes
+            // `a < False` True, because "011" sorts before "False", where
+            // coercing "011" to 11 and comparing against 0 says the opposite.
+            // A *constant* string falls through to the numeric rules below
+            // instead -- `("abc" < True)` is error 13 and
+            // `((Empty & "1") <= ("" <> Empty))` is False, both of which the
+            // text comparison gets wrong. The one row still unaccounted for
+            // is a numeric string *literal*, where Excel appears to do the
+            // text comparison after all (`("011" < False)` is True there and
+            // False here); see docs/vba-error-ordering.md.
+            if matches!(other, Variant::Boolean(_)) {
+                if let Some(a) = bool_word(text) {
+                    let ord = a.cmp(&other.to_bool()?);
+                    return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
+                }
+                if str_kind == Operand::Runtime && num_kind != Operand::Runtime {
+                    let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
+                    return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
+                }
             }
 
             // Against a *statically typed* numeric partner the whole string
             // must parse; against a numeric constant only a leading run need
             // parse, as `Val` takes it.
             let ord = if num_kind == Operand::Static {
-                cmp_f64(parse_vba_number(text)?, numeric(other)?)
+                match parse_vba_number(text) {
+                    Ok(a) => cmp_f64(a, numeric(other)?),
+                    // Only a *constant* string has to parse. A runtime one
+                    // that does not falls back to the ordering below, exactly
+                    // as it does against a numeric constant:
+                    // `CLng(a) < ("abc" & a)` is True, not error 13. An
+                    // out-of-range string is a different failure (error 6,
+                    // from the conversion) and still propagates.
+                    Err(e) if str_kind.is_const() || e.number != 13 => return Err(e),
+                    Err(_) => Ordering::Greater,
+                }
             } else if num_kind.is_const() {
                 match numeric_prefix(text) {
                     Some(a) => cmp_f64(a, numeric(other)?),
@@ -1345,14 +1437,26 @@ mod tests {
         // Cases 43, 45, 46.
         assert_eq!(
             shows(
-                &logical(&Variant::Boolean(true), &Variant::Boolean(false), |a, b| a
-                    & b)
+                &logical(
+                    &Variant::Boolean(true),
+                    &Variant::Boolean(false),
+                    (Operand::Literal, Operand::Literal),
+                    |a, b| a & b
+                )
                 .unwrap()
             ),
             "Boolean|False"
         );
         assert_eq!(
-            shows(&logical(&Variant::Integer(5), &Variant::Integer(3), |a, b| a & b).unwrap()),
+            shows(
+                &logical(
+                    &Variant::Integer(5),
+                    &Variant::Integer(3),
+                    (Operand::Literal, Operand::Literal),
+                    |a, b| a & b
+                )
+                .unwrap()
+            ),
             "Integer|1"
         );
         assert_eq!(shows(&not(&Variant::Integer(5)).unwrap()), "Integer|-6");
@@ -1394,6 +1498,61 @@ mod tests {
         assert_eq!(
             compare(&Variant::Empty, &Variant::Str(String::new())).unwrap(),
             Some(std::cmp::Ordering::Equal)
+        );
+        // `+` against a String concatenates rather than coercing it, which is
+        // what makes `Empty + "a"` a value at all instead of error 13, and
+        // keeps `Empty + "1"` a String. `Empty + Empty` is the Integer 0.
+        for (l, r) in [
+            (Variant::Empty, Variant::Str("a".into())),
+            (Variant::Str("a".into()), Variant::Empty),
+        ] {
+            assert_eq!(
+                shows(&add(&l, &r, ArithMode::Constant).unwrap()),
+                "String|a"
+            );
+        }
+        assert_eq!(
+            shows(
+                &add(
+                    &Variant::Empty,
+                    &Variant::Str("1".into()),
+                    ArithMode::Constant
+                )
+                .unwrap()
+            ),
+            "String|1"
+        );
+        assert_eq!(
+            shows(
+                &add(
+                    &Variant::Empty,
+                    &Variant::Str(String::new()),
+                    ArithMode::Constant
+                )
+                .unwrap()
+            ),
+            "String|"
+        );
+        assert_eq!(
+            shows(&add(&Variant::Empty, &Variant::Empty, ArithMode::Constant).unwrap()),
+            "Integer|0"
+        );
+        // Only `+`. The other operators still make the string a number.
+        assert!(
+            sub(
+                &Variant::Empty,
+                &Variant::Str("a".into()),
+                ArithMode::Constant
+            )
+            .is_err()
+        );
+        assert!(
+            mul(
+                &Variant::Empty,
+                &Variant::Str("a".into()),
+                ArithMode::Constant
+            )
+            .is_err()
         );
     }
 
@@ -1472,5 +1631,17 @@ mod tests {
         // `"" = 0`, `"" < 0` and `Not ""`, all of which are error 13.
         assert_eq!(parse_vba_number("").unwrap_err().number, 13);
         assert_eq!(parse_vba_number("abc").unwrap_err().number, 13);
+        // A trailing sign, which VBA reads as the number's sign. Measured:
+        // CDbl("1-") is -1, CInt("1-") is -1, CDbl("1E2-") is -100,
+        // CDbl("1 -") is -1, and IsNumeric("1-") is True.
+        assert_eq!(parse_vba_number("1-").unwrap(), -1.0);
+        assert_eq!(parse_vba_number("1+").unwrap(), 1.0);
+        assert_eq!(parse_vba_number("2.5-").unwrap(), -2.5);
+        assert_eq!(parse_vba_number("1 -").unwrap(), -1.0);
+        assert_eq!(parse_vba_number("1E2-").unwrap(), -100.0);
+        // It replaces the sign rather than compounding one.
+        assert_eq!(parse_vba_number("-1-").unwrap_err().number, 13);
+        assert_eq!(parse_vba_number("1--").unwrap_err().number, 13);
+        assert_eq!(parse_vba_number("-").unwrap_err().number, 13);
     }
 }

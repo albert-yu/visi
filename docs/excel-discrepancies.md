@@ -1,6 +1,6 @@
 # Known discrepancies with Microsoft Excel
 
-Last updated: 2026-08-12
+Last updated: 2026-08-15
 
 Cases where `visi-core` and real Microsoft Excel (verified against 16.111.3 on
 macOS) disagree, and which are therefore **excluded from the differential
@@ -396,6 +396,44 @@ Note this is *not* the same as the deliberate `#NUM!` cutoff already in
 `MOD` for large **quotients** (`MOD(28^31, 3)`), which is a real Excel
 behavior visi reproduces. Here the quotient is vanishingly small; it is the
 result that is large.
+
+## 16. VBA: an infinity poisons the next string-to-number conversion — *Excel is wrong*
+
+VBA's `^` is the one operator that returns an infinity rather than raising
+overflow (`a = 3.75 : a ^ 32767` is the `Double` `INF`, measured). Once a
+procedure has produced one, the **next string-to-number conversion anywhere in
+that procedure raises error 6**, whatever string it is given:
+
+```vba
+a = 3.75
+b = a ^ 32767        ' Double INF, no error
+c = CDbl("1.5")      ' Excel: error 6.  visi: 1.5
+```
+
+Nothing about `"1.5"` overflows. The same statement on its own, or after
+`b = 1`, converts fine. What the probe shows is a status flag rather than a
+rule:
+
+| After `b = a ^ 32767` | Excel |
+| --- | --- |
+| `CDbl("1.5")`, `CSng("1.5")`, `"1.5" * 1`, `"1.5" <> 0` | error 6 |
+| `Val("1.5")` | `1.5` — a different parser |
+| `CDbl("abc")` | error 13 — the type check comes first |
+| `1 <> 0`, `"abc" & 1` | fine — no conversion involved |
+| an intervening `b = 1` or `c = 1 + 1`, then `CDbl("1.5")` | still error 6 |
+| a *first* conversion swallowed by `On Error Resume Next`, then another | fine |
+
+The last two rows are the tell: the condition is not cleared by unrelated
+work, but *is* cleared by being reported once — the behaviour of a sticky
+floating-point exception flag that the conversion routine reads and clears.
+`Val`, which does not consult it, is unaffected.
+
+visi raises the error where the overflow actually happens and nowhere else.
+Matching this would mean modelling an FPU status word across statement
+boundaries, to reproduce an error on a conversion that cannot overflow.
+
+Measured with `fuzz/vba_expr_probe.py`; it is why `fuzz_vba.py` case
+`s555/219` is left as a known divergence rather than chased.
 
 ---
 
