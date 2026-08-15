@@ -246,11 +246,13 @@ and each fix is a measured rule with a test naming the Excel result:
 
 Seven long-tail cases remain, all with saved reproductions under
 `fuzz_results/failures/`. None is a wrong *value* — they are disagreements
-about which of two errors surfaces, or about whether `Null` propagates. They
-have since been root-caused and scoped in
-[`vba-error-ordering.md`](vba-error-ordering.md), which turns them into five
-small, mostly one-or-two-line changes; one of the seven turned out to be a bug
-in the fuzz driver rather than in either engine.
+about which of two errors surfaces, or about whether `Null` propagates. All seven were
+root-caused and fixed in [`vba-error-ordering.md`](vba-error-ordering.md) —
+one of them turned out to be a bug in the fuzz driver rather than in either
+engine. That document is also where the honest number lives: on *unseen*
+seeds the harness reports 294–297 of 300, not the 300/300 the tuned seed
+shows, and the gap between those two figures is worth reading before trusting
+any of these counts.
 
 ### Security posture
 

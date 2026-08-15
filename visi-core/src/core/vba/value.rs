@@ -258,6 +258,8 @@ impl Variant {
         match self {
             Variant::Boolean(b) => Ok(*b),
             Variant::Null => Err(VbaError::invalid_null()),
+            // `CBool("True")` is True even though `CDbl("True")` is error 13.
+            Variant::Str(s) if bool_word(s).is_some() => Ok(bool_word(s).unwrap_or(false)),
             other => Ok(other.to_f64()? != 0.0),
         }
     }
@@ -361,6 +363,42 @@ impl Variant {
     }
 }
 
+/// `"True"` / `"False"` as a boolean, case-insensitively and ignoring
+/// surrounding space.
+///
+/// VBA accepts these words on the *integer* conversion path only. `"True"
+/// Xor 1` is `-2` and `CBool("True")` is `True`, but `"True" + 1` and
+/// `CDbl("True")` are both error 13 -- the floating-point path has never
+/// heard of them. That asymmetry is why this is a separate function rather
+/// than a case inside [`parse_vba_number`].
+pub fn bool_word(s: &str) -> Option<bool> {
+    let t = s.trim();
+    if t.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if t.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// A logical/bitwise operand, with a `"True"`/`"False"` string folded to a
+/// `Boolean` so the ordinary rules take over from there.
+///
+/// Folding to `Boolean` rather than to a number is what makes
+/// `Not "True"` a `Boolean` while `"True" Xor 1` is an `Integer`: the first
+/// stays inside [`not`]'s boolean branch, the second falls into the bitwise
+/// one because only one side is a `Boolean`.
+fn logical_operand(v: &Variant) -> Variant {
+    match v {
+        Variant::Str(s) => match bool_word(s) {
+            Some(b) => Variant::Boolean(b),
+            None => v.clone(),
+        },
+        _ => v.clone(),
+    }
+}
+
 /// Round-half-to-even, which is what every VBA numeric conversion uses.
 ///
 /// Probe cases 55--59: `CLng(0.5)` is `0`, `CLng(1.5)` is `2`, `CLng(2.5)`
@@ -431,32 +469,33 @@ pub fn format_number(v: f64) -> String {
         return if v > 0.0 { "INF" } else { "-INF" }.to_string();
     }
 
-    // VBA leaves fixed notation outside this range.
-    let abs = v.abs();
-    if !(1e-4..1e16).contains(&abs) {
-        let s = format!("{v:E}");
-        let (mantissa, exp) = s.split_once('E').unwrap_or((s.as_str(), "0"));
-        let mantissa = if mantissa.contains('.') {
-            mantissa.trim_end_matches('0').trim_end_matches('.')
-        } else {
-            mantissa
-        };
-        let exp_num: i32 = exp.parse().unwrap_or(0);
-        let sign = if exp_num < 0 { "-" } else { "+" };
-        return format!("{mantissa}E{sign}{:02}", exp_num.abs());
+    // Everything is derived from a 15-significant-digit rendering, because
+    // that is exactly what Excel shows. Getting this from `log10().floor()`
+    // and a decimal count was wrong in both directions -- 16 digits in
+    // exponent form and 14 in fixed form -- and the fuzzer caught it on
+    // every seed. Asking Rust for the exponent instead removes the
+    // arithmetic that was getting it wrong.
+    let sci = format!("{v:.14e}");
+    let (mantissa, exp_text) = sci.split_once('e').unwrap_or((sci.as_str(), "0"));
+    let exp: i32 = exp_text.parse().unwrap_or(0);
+
+    // Excel stays in fixed notation over this range and switches outside it.
+    if (-4..16).contains(&exp) {
+        let decimals = (14 - exp).max(0) as usize;
+        let mut r = format!("{v:.decimals$}");
+        if r.contains('.') {
+            r = r.trim_end_matches('0').trim_end_matches('.').to_string();
+        }
+        return if r == "-0" { "-0".to_string() } else { r };
     }
 
-    // 15 significant digits, which is VBA's display precision -- enough that
-    // 0.1 + 0.2 prints as 0.3 rather than exposing the binary representation.
-    let exponent = abs.log10().floor() as i32;
-    let decimals = (14 - exponent).clamp(0, 17) as usize;
-    let mut s = format!("{v:.decimals$}");
-    if s.contains('.') {
-        s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-    }
-    // Excel keeps the sign: `CStr(-Right(1E3, 3))` is "-0", not "0".
-    // Found by fuzz/fuzz_vba.py, which caught it as a value mismatch.
-    s
+    let mantissa = if mantissa.contains('.') {
+        mantissa.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        mantissa
+    };
+    let sign = if exp < 0 { "-" } else { "+" };
+    format!("{mantissa}E{sign}{:02}", exp.abs())
 }
 
 fn format_currency(scaled: i64) -> String {
@@ -510,13 +549,31 @@ pub fn mul(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
 /// Probe case 25: `4 / 2` is the `Double` 2, not an `Integer`.
 pub fn div(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
+        // Coerce the non-Null side first, as the other operators do:
+        // `"abc" / Null` is error 13, not Null.
+        if !lhs.is_null() {
+            lhs.to_f64()?;
+        }
+        if !rhs.is_null() {
+            rhs.to_f64()?;
+        }
         return Ok(Variant::Null);
     }
+    // Both operands are coerced *before* the divisor is tested, so a type
+    // mismatch beats a division by zero: `"xxxx" / 0` is error 13, not 11.
+    // Testing the divisor first masked the real error.
+    let a = lhs.to_f64()?;
     let b = rhs.to_f64()?;
     if b == 0.0 {
-        return Err(VbaError::div_by_zero());
+        // `0 / 0` is Overflow, not Division by zero -- measured, and specific
+        // to floating-point `/`: `0 \ 0` and `0 Mod 0` are both error 11.
+        return Err(if a == 0.0 {
+            VbaError::overflow()
+        } else {
+            VbaError::div_by_zero()
+        });
     }
-    Ok(Variant::Double(lhs.to_f64()? / b))
+    Ok(Variant::Double(a / b))
 }
 
 /// `\` -- integer division.
@@ -561,6 +618,9 @@ fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i6
     if lhs.is_null() || rhs.is_null() {
         return Ok((None, None, NumClass::Long));
     }
+    // `\\` and `Mod` are integer operations, so they accept the words too:
+    // `"True" \\ 1` is -1.
+    let (lhs, rhs) = (&logical_operand(lhs), &logical_operand(rhs));
     // A non-integral operand forces Long; two small integers stay Integer.
     let class = match Variant::arith_type(lhs, rhs)? {
         NumClass::Integer => NumClass::Integer,
@@ -577,8 +637,14 @@ fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i6
 /// `^`, which is always `Double`.
 ///
 /// Probe case 32: `2 ^ 2` is the `Double` 4.
-pub fn pow(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
+pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
+        if !lhs.is_null() {
+            lhs.to_f64()?;
+        }
+        if !rhs.is_null() {
+            rhs.to_f64()?;
+        }
         return Ok(Variant::Null);
     }
     let base = lhs.to_f64()?;
@@ -589,7 +655,14 @@ pub fn pow(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
     if base < 0.0 && exp.fract() != 0.0 {
         return Err(VbaError::invalid_call());
     }
-    Ok(Variant::Double(base.powf(exp)))
+    let r = base.powf(exp);
+    // The same constant-vs-runtime split the other operators have:
+    // `3.75 ^ 32767` written with literals is error 6, while the same
+    // exponentiation with a variable base yields `INF`.
+    if mode == ArithMode::Constant && !r.is_finite() && base.is_finite() && exp.is_finite() {
+        return Err(VbaError::overflow());
+    }
+    Ok(Variant::Double(r))
 }
 
 /// `&` -- concatenation, which skips `Null` operands rather than
@@ -666,6 +739,7 @@ pub fn pos(v: &Variant) -> VResult<Variant> {
 ///
 /// Probe case 46: `Not 5` is `-6`, the bitwise complement.
 pub fn not(v: &Variant) -> VResult<Variant> {
+    let v = &logical_operand(v);
     match v {
         Variant::Null => Ok(Variant::Null),
         Variant::Boolean(b) => Ok(Variant::Boolean(!b)),
@@ -689,6 +763,8 @@ pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VRe
     if lhs.is_null() || rhs.is_null() {
         return Ok(Variant::Null);
     }
+    // `"True" Xor 1` is -2: the integer path accepts the words.
+    let (lhs, rhs) = (&logical_operand(lhs), &logical_operand(rhs));
     if let (Variant::Boolean(a), Variant::Boolean(b)) = (lhs, rhs) {
         let r = f(if *a { -1 } else { 0 }, if *b { -1 } else { 0 });
         return Ok(Variant::Boolean(r != 0));
@@ -1105,7 +1181,14 @@ mod tests {
     fn pow_is_always_double() {
         // Case 32.
         assert_eq!(
-            shows(&pow(&Variant::Integer(2), &Variant::Integer(2)).unwrap()),
+            shows(
+                &pow(
+                    &Variant::Integer(2),
+                    &Variant::Integer(2),
+                    ArithMode::Constant
+                )
+                .unwrap()
+            ),
             "Double|4"
         );
     }
@@ -1223,6 +1306,24 @@ mod tests {
         assert_eq!(format_number(0.0), "0");
         assert_eq!(format_number(-0.4 + 0.4), "0");
         assert_eq!(shows(&neg(&Variant::Double(0.0)).unwrap()), "Double|-0");
+    }
+
+    #[test]
+    fn cstr_shows_exactly_fifteen_significant_digits() {
+        // Excel is consistently 15 s.f. The previous implementation derived
+        // the decimal count from log10 and got 16 digits in exponent form and
+        // 14 in fixed form; the fuzzer caught it on every seed.
+        assert_eq!(format_number(9.156321295314252e-5), "9.15632129531425E-05");
+        assert_eq!(
+            format_number(-0.000985221674876847),
+            "-0.000985221674876847"
+        );
+        assert_eq!(format_number(0.000457247370827618), "0.000457247370827618");
+        // The fixed/exponent boundary: 1e-4 stays fixed, below it switches.
+        assert_eq!(format_number(0.0001), "0.0001");
+        assert_eq!(format_number(0.00001), "1E-05");
+        assert_eq!(format_number(1e15), "1000000000000000");
+        assert_eq!(format_number(1e16), "1E+16");
     }
 
     #[test]
