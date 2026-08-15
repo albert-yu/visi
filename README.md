@@ -1,5 +1,7 @@
 # visi
 
+[![CI](https://github.com/albert-yu/visi/actions/workflows/ci.yml/badge.svg)](https://github.com/albert-yu/visi/actions/workflows/ci.yml)
+
 A high-performance spreadsheet engine for editing and evaluating Excel (`.xlsx`) files.
 
 My goals with this project are:

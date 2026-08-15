@@ -1,0 +1,146 @@
+# Runs the test suite on every PR, so a branch can't merge red.
+#
+# What is deliberately *not* here: the differential fuzzers in `fuzz/`
+# (fuzz_excel.py and friends). They diff visi against a real copy of Microsoft
+# Excel driven over AppleScript, which no hosted runner has. Their findings
+# reach CI the other way around -- minimized into the regression cases under
+# `visi-core/src/core/engine/tests/`, which do run here. The cargo-fuzz targets
+# under `visi-core/fuzz/` are also left out: they need nightly and are
+# open-ended runs, not pass/fail checks.
+#
+# The `name:` of every job here is load-bearing: the "Protect main" repository
+# ruleset lists them as required status checks, by the exact strings
+# `fmt + clippy`, `cargo test (ubuntu-24.04)`, `cargo test (macos-15)`, and
+# `bindings + parity`. Renaming a job -- or changing the `os` matrix, which
+# builds those parenthesized suffixes -- without updating the ruleset leaves it
+# waiting forever on a check that will never report, and nothing can merge.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A PR that gets a second push doesn't need the first run's results.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      # `--workspace` (not the default members) so visi-python is checked too,
+      # and `--all-targets` so tests and examples are linted like the library.
+      #
+      # The pyo3 pair is what lets visi-python be checked with no interpreter
+      # on the runner at all: it is abi3, so PYO3_NO_PYTHON is enough to
+      # configure it -- but only with `extension-module` on, since without that
+      # feature pyo3-ffi emits a link line for libpython and its build script
+      # fails for want of a library name. Nothing is actually linked in a
+      # clippy run; maturin turns the same feature on for the real build.
+      #
+      # -D warnings covers rustc's lints as well as clippy's, which is what
+      # makes lib.rs's `#![warn(missing_docs)]` a hard failure on a new public
+      # item that arrives undocumented.
+      - name: cargo clippy
+        env:
+          PYO3_NO_PYTHON: 1
+        run: cargo clippy --workspace --all-targets --features visi-python/extension-module -- -D warnings
+
+  test:
+    name: cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      # visi-python is excluded on purpose. It is a pyo3 cdylib, and building
+      # its (empty) test harness would link against libpython, which is a
+      # portability problem this job does not need to own -- the `python` job
+      # below builds it for real with maturin and exercises it through pytest,
+      # and the `lint` job already type-checks it. This leaves the same set
+      # `default-members` picks, stated explicitly.
+      - name: cargo test
+        run: cargo test --workspace --exclude visi-python
+
+  python:
+    name: bindings + parity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: python
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # `maturin develop` installs into the active virtualenv and refuses to
+      # run without one, so make one and put it on PATH for the steps below.
+      # Same shape as the documented local setup (`fuzz/venv`).
+      - name: Create a virtualenv
+        run: |
+          python -m venv .venv
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install Python deps
+        run: pip install -r fuzz/requirements.txt
+
+      # test_backend_parity.py compares the bindings against the CLI, so both
+      # have to exist. It resolves the binary as the newer of
+      # target/{release,debug}/visi, so a release build is enough.
+      - name: Build the bindings and the CLI
+        run: |
+          maturin develop -m visi-python/Cargo.toml --release
+          cargo build --release -p visi
+
+      # Both suites skip themselves when the bindings or the binary are
+      # missing, which would turn a broken build into a green run of zero
+      # tests. Fail here instead, where the reason is still visible.
+      - name: Check the harness is actually wired up
+        run: |
+          python -c "import visi_core; visi_core.Workbook()"
+          test -x target/release/visi
+
+      - name: pytest
+        run: pytest fuzz/test_backend_parity.py visi-python/tests/

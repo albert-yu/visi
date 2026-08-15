@@ -17,6 +17,12 @@ cargo test -p visi-core --lib core::engine::tests::rounding
 cargo test -p visi --test cli_tests
 ```
 
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace --exclude visi-python` on
+Linux and macOS, and the pytest suites (`fuzz/test_backend_parity.py`,
+`visi-python/tests/`) on every PR. Everything requiring a real Excel — the `fuzz/`
+differential harness — and the nightly-only cargo-fuzz targets stay local.
+
 Differential fuzzing against real Microsoft Excel (Python, `fuzz/`). Use the venv,
 not system Python — `maturin develop` installs into whichever venv is active:
 

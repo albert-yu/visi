@@ -729,7 +729,18 @@ fn test_coupdaysnc_and_acoth_precision() {
         ((got - exact) / exact).abs() < 1e-15,
         "ACOTH(-165) expected {exact}, got {got}"
     );
-    assert!((num("=ACOTH(2)") - 0.5493061443340549).abs() < 1e-16);
+    // Small |x| was never the problem, so this one is only a guard that the
+    // rewrite didn't break the ordinary case. It is checked at the same
+    // relative tolerance as the case above rather than an absolute 1e-16:
+    // one ulp here is ~1.1e-16, so a sub-ulp bound demands a bit-exact
+    // `atanh` and Apple's libm and glibc are entitled to differ by an ulp.
+    // They do -- that assertion passed on macOS and failed on Linux.
+    let acoth2 = 0.54930614433405484570;
+    let got2 = num("=ACOTH(2)");
+    assert!(
+        ((got2 - acoth2) / acoth2).abs() < 1e-15,
+        "ACOTH(2) expected {acoth2}, got {got2}"
+    );
 }
 
 #[test]
