@@ -245,13 +245,14 @@ and each fix is a measured rule with a test naming the Excel result:
 | `Val(255)` | An `Integer`. `Val` types its result like a literal rather than always returning a `Double`. |
 
 Seven long-tail cases remain, all with saved reproductions under
-`fuzz_results/failures/`. Most are **error-ordering** disagreements — visi
-reports error 11 where Excel reports 6, or 13 where Excel reports 6 — meaning
-both engines detect a fault in the same expression but coerce its
-subexpressions in a different order. One is a trailing-whitespace difference
-in a string result. None is a wrong *value*; they are all about which of two
-errors surfaces first, which needs a probe of VBA's operand evaluation order
-to settle.
+`fuzz_results/failures/`. None is a wrong *value* — they are disagreements
+about which of two errors surfaces, or about whether `Null` propagates. All seven were
+root-caused and fixed in [`vba-error-ordering.md`](vba-error-ordering.md) —
+one of them turned out to be a bug in the fuzz driver rather than in either
+engine. That document is also where the honest number lives: on *unseen*
+seeds the harness reports 294–297 of 300, not the 300/300 the tuned seed
+shows, and the gap between those two figures is worth reading before trusting
+any of these counts.
 
 ### Security posture
 

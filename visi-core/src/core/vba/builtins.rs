@@ -13,6 +13,52 @@
 
 use super::value::{self, VResult, Variant, VbaError};
 
+/// Intrinsics that inspect a `Null` rather than propagating or rejecting it.
+const HANDLES_NULL: &[&str] = &[
+    "isnull",
+    "isempty",
+    "isnumeric",
+    "isdate",
+    "isobject",
+    "typename",
+    "vartype",
+    "iif",
+];
+
+/// Intrinsics that raise error 94 on a `Null` argument.
+///
+/// Measured, not derived, because no principle is visible behind the split:
+/// `Hex` and `Oct` propagate a `Null` while `Chr` and `Asc` reject it;
+/// `String` propagates while `Space` rejects; `Trim` propagates while
+/// `StrReverse` rejects. Everything not listed here (and not in
+/// [`HANDLES_NULL`]) propagates -- including `CVar`, the one `C*` conversion
+/// that does.
+const REJECTS_NULL: &[&str] = &[
+    "cstr",
+    "cint",
+    "clng",
+    "cdbl",
+    "csng",
+    "cbool",
+    "ccur",
+    "val",
+    "sgn",
+    "sqr",
+    "exp",
+    "log",
+    "sin",
+    "cos",
+    "tan",
+    "atn",
+    "space",
+    "strreverse",
+    "chr",
+    "chrw",
+    "asc",
+    "ascw",
+    "replace",
+];
+
 /// One argument, or `Empty` when it was omitted.
 fn arg(args: &[Variant], i: usize) -> Variant {
     args.get(i).cloned().unwrap_or(Variant::Empty)
@@ -31,22 +77,12 @@ fn any_null(args: &[Variant]) -> bool {
 pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
     let lower = name.to_ascii_lowercase();
 
-    // Most intrinsics propagate Null rather than erroring on it, but two
-    // families do not:
-    //
-    //   - inspection functions, whose whole job is to look at the value;
-    //   - the `C*` conversions, which cannot represent Null and raise error
-    //     94 instead. `CStr(Null)` propagating a Null rather than raising was
-    //     a real mismatch: the caller had it under `On Error Resume Next`
-    //     expecting the assignment to be skipped, and instead got a Null
-    //     variable that poisoned everything downstream.
-    let handles_null = matches!(
-        lower.as_str(),
-        "isnull" | "isempty" | "isnumeric" | "isdate" | "isobject" | "typename" | "vartype" | "iif"
-    );
-    let rejects_null =
-        lower.starts_with('c') && lower.len() >= 4 && lower != "cos" && lower != "chr";
-    if any_null(args) && !handles_null && !rejects_null {
+    // How an intrinsic treats a `Null` argument, from a sweep of all 46 of
+    // them against real Excel (see docs/vba-error-ordering.md).
+    if any_null(args) && !HANDLES_NULL.contains(&lower.as_str()) {
+        if REJECTS_NULL.contains(&lower.as_str()) {
+            return Err(VbaError::invalid_null());
+        }
         return Ok(Some(Variant::Null));
     }
 

@@ -871,7 +871,7 @@ fn eval_binary(
         Div => value::div(a, b),
         IntDiv => value::int_div(a, b),
         Mod => value::modulo(a, b),
-        Pow => value::pow(a, b),
+        Pow => value::pow(a, b, mode),
         Concat => value::concat(a, b),
         Eq | Ne | Lt | Gt | Le | Ge => match value::compare_ctx(a, b, kinds.0, kinds.1)? {
             None => Ok(Variant::Null),
@@ -1426,11 +1426,60 @@ mod tests {
         );
     }
 
+    // ---- error ordering (docs/vba-error-ordering.md) --------------------
+
+    #[test]
+    fn zero_divided_by_zero_is_overflow_not_division_by_zero() {
+        // Measured: only floating-point `/` makes the distinction.
+        assert_eq!(expr("1 / 0"), "ERR|11");
+        assert_eq!(expr("-1 / 0"), "ERR|11");
+        assert_eq!(expr("1.5 / 0"), "ERR|11");
+        assert_eq!(expr("0 / 0"), "ERR|6");
+        assert_eq!(expr("False / 0"), "ERR|6");
+        // `\` and `Mod` stay at 11 even for 0 op 0.
+        assert_eq!(expr("0 \\ 0"), "ERR|11");
+        assert_eq!(expr("0 Mod 0"), "ERR|11");
+    }
+
+    #[test]
+    fn division_coerces_both_operands_before_testing_the_divisor() {
+        // A type mismatch beats a division by zero. Testing the divisor
+        // first masked the real error.
+        assert_eq!(expr("\"xxxx\" / 0"), "ERR|13");
+        assert_eq!(expr("\"\" / 0"), "ERR|13");
+        assert_eq!(expr("0 / \"xxxx\""), "ERR|13");
+        assert_eq!(expr("\"abc\" / Null"), "ERR|13");
+    }
+
+    #[test]
+    fn pow_overflows_between_constants_and_yields_infinity_at_runtime() {
+        // The same ArithMode split the other operators have. Phase 1
+        // measured the runtime half and missed this one.
+        assert_eq!(expr("3.75 ^ 32767"), "ERR|6");
+        assert_eq!(expr("255 ^ 255"), "ERR|6");
+        assert_eq!(
+            run("    Dim a\n    a = 3.75\n    F = (a ^ 32767)"),
+            "Double|INF"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
+            "Double|INF"
+        );
+        // A finite constant result is unaffected.
+        assert_eq!(expr("2 ^ 10"), "Double|1024");
+    }
+
     #[test]
     fn infinity_is_a_value_for_pow_but_not_for_arithmetic() {
         // `^` produces it, negation preserves it, CStr renders it "INF" --
-        // but +, - and * refuse to produce or consume one.
-        assert_eq!(expr("255 ^ 255"), "Double|INF");
+        // but +, - and * refuse to produce or consume one. The runtime form
+        // is used throughout: between constants `^` overflows instead, which
+        // `pow_overflows_between_constants_and_yields_infinity_at_runtime`
+        // covers.
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
+            "Double|INF"
+        );
         assert_eq!(
             run("    Dim a\n    a = 255\n    F = -(a ^ 255)"),
             "Double|-INF"
@@ -1489,6 +1538,68 @@ mod tests {
         assert_eq!(expr("IsNull(Null - 1)"), "Boolean|True");
     }
 
+    /// The whole `Null` table, from a sweep of every intrinsic against real
+    /// Excel. There is no principle behind the split, so the test enumerates
+    /// it -- `Hex` propagates but `Chr` rejects, `String` propagates but
+    /// `Space` rejects, `CVar` propagates where every other `C*` rejects.
+    #[test]
+    fn every_intrinsic_handles_null_the_way_excel_does() {
+        for f in [
+            "CVar", "Abs", "Int", "Fix", "Round", "Len", "UCase", "LCase", "Trim", "LTrim",
+            "RTrim", "Hex", "Oct",
+        ] {
+            assert_eq!(
+                expr(&format!("IsNull({f}(Null))")),
+                "Boolean|True",
+                "{f} should propagate"
+            );
+        }
+        for e in [
+            "Left(Null, 1)",
+            "Right(Null, 1)",
+            "Mid(Null, 1, 1)",
+            "InStr(Null, \"a\")",
+            "String(2, Null)",
+            "StrComp(Null, \"a\")",
+        ] {
+            assert_eq!(
+                expr(&format!("IsNull({e})")),
+                "Boolean|True",
+                "{e} should propagate"
+            );
+        }
+        for f in [
+            "CStr",
+            "CInt",
+            "CLng",
+            "CDbl",
+            "CSng",
+            "CBool",
+            "CCur",
+            "Val",
+            "Sgn",
+            "Sqr",
+            "Exp",
+            "Log",
+            "Sin",
+            "Cos",
+            "Tan",
+            "Atn",
+            "Space",
+            "StrReverse",
+            "Chr",
+            "Asc",
+        ] {
+            assert_eq!(expr(&format!("{f}(Null)")), "ERR|94", "{f} should reject");
+        }
+        assert_eq!(expr("Replace(Null, \"a\", \"b\")"), "ERR|94");
+        // Inspection functions look at it rather than propagating or rejecting.
+        assert_eq!(expr("TypeName(Null)"), "String|Null");
+        assert_eq!(expr("IsNull(Null)"), "Boolean|True");
+        assert_eq!(expr("IsNumeric(Null)"), "Boolean|False");
+        assert_eq!(expr("IsEmpty(Null)"), "Boolean|False");
+    }
+
     #[test]
     fn conversions_reject_null_rather_than_propagating_it() {
         // `CStr(Null)` raises error 94. Propagating a Null instead was a real
@@ -1511,6 +1622,38 @@ mod tests {
         assert_eq!(expr("Val(255)"), "Integer|255");
         assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
         assert_eq!(expr("Val(\"100000\")"), "Long|100000");
+    }
+
+    #[test]
+    fn the_words_true_and_false_coerce_on_the_integer_path_only() {
+        // Measured. The integer/logical path accepts them as -1 and 0; the
+        // floating-point path has never heard of them.
+        assert_eq!(expr("\"True\" Xor 1"), "Integer|-2");
+        assert_eq!(expr("\"False\" Xor 1"), "Integer|1");
+        assert_eq!(expr("\"True\" \\ 1"), "Integer|-1");
+        assert_eq!(expr("\"True\" Mod 2"), "Integer|-1");
+        assert_eq!(expr("CBool(\"True\")"), "Boolean|True");
+        // Case-insensitive, and space-tolerant.
+        assert_eq!(expr("\"true\" Xor 1"), "Integer|-2");
+        assert_eq!(expr("\"TRUE\" Xor 1"), "Integer|-2");
+        // `Not` keeps it a Boolean, because both sides of the operation are
+        // one; `Xor` with a number goes bitwise and yields an Integer.
+        assert_eq!(expr("Not \"True\""), "Boolean|False");
+
+        // The floating-point path still rejects them.
+        for e in [
+            "\"True\" + 1",
+            "\"False\" + 1",
+            "\"True\" * 2",
+            "CDbl(\"True\")",
+        ] {
+            assert_eq!(expr(e), "ERR|13", "for {e}");
+        }
+        assert_eq!(expr("IsNumeric(\"True\")"), "Boolean|False");
+
+        // The exact shape the fuzzer hit: Trim of a comparison yields the
+        // word, which then has to work as a logical operand.
+        assert_eq!(expr("Trim((1 >= 2)) Xor 5"), "Integer|5");
     }
 
     #[test]
