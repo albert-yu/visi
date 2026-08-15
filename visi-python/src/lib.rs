@@ -51,6 +51,28 @@ fn check_syntax(source: &str) -> PyResult<Vec<String>> {
         .procedures)
 }
 
+/// Runs a VBA procedure and returns `(type_name, value)`.
+///
+/// Phase 1 of the VBA plan: expressions, control flow, `Sub`/`Function` and
+/// `On Error`, with no host object model. Raises `VbaRuntimeError` (carrying
+/// `number`) for a run-time error and `VbaSyntaxError` if the source does not
+/// parse.
+///
+/// `value` is `None` where VBA itself cannot stringify the result, which in
+/// practice means `Null`. What `fuzz/fuzz_vba.py` compares against Excel.
+#[pyfunction]
+#[pyo3(signature = (source, procedure, args=None))]
+fn run_macro(
+    source: &str,
+    procedure: &str,
+    args: Option<Vec<String>>,
+) -> PyResult<(String, Option<String>)> {
+    let args = args.unwrap_or_default();
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = visi_engine::core::run_macro(source, procedure, &refs).map_err(Wrapped)?;
+    Ok((out.type_name, out.value))
+}
+
 /// The Python module, `visi_core`.
 #[pymodule]
 fn visi_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -58,6 +80,7 @@ fn visi_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<value::CellError>()?;
     m.add_function(wrap_pyfunction!(eval_file, m)?)?;
     m.add_function(wrap_pyfunction!(check_syntax, m)?)?;
+    m.add_function(wrap_pyfunction!(run_macro, m)?)?;
     errors::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

@@ -47,6 +47,7 @@ pub use shared_vec::SharedVec;
 pub use style::CellStyle;
 pub use table::ExcelTable;
 pub use vba::{
-    ModuleSyntax, VbaModule, VbaModuleKind, VbaProject, check_syntax, validate_vba_module_name,
+    ModuleSyntax, RunOutcome, VbaModule, VbaModuleKind, VbaProject, check_syntax, run_macro,
+    validate_vba_module_name,
 };
 pub use workbook::{SheetSummary, WorkbookManager, WorkbookSummary};

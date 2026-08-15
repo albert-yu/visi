@@ -29,9 +29,15 @@
 #[doc(hidden)]
 pub mod ast;
 #[doc(hidden)]
+pub mod builtins;
+#[doc(hidden)]
+pub mod interp;
+#[doc(hidden)]
 pub mod lexer;
 #[doc(hidden)]
 pub mod parser;
+#[doc(hidden)]
+pub mod value;
 
 use crate::Error;
 use serde::{Deserialize, Serialize};
@@ -68,6 +74,73 @@ pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
     })?;
     Ok(ModuleSyntax {
         procedures: module.procedures().iter().map(|p| p.name.clone()).collect(),
+    })
+}
+
+/// The outcome of running a VBA procedure: its return value, rendered the way
+/// VBA would render it, plus the subtype name `TypeName()` reports.
+///
+/// Both halves matter. An interpreter that computes the right number with the
+/// wrong subtype has a real bug -- `1 + 1` is an `Integer` and `1 / 1` is a
+/// `Double` -- so the differential fuzzer compares the type as well as the
+/// value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RunOutcome {
+    /// `TypeName()` of the returned value.
+    pub type_name: String,
+    /// `CStr()` of the returned value, or `None` where VBA itself cannot
+    /// stringify it (`Null`).
+    pub value: Option<String>,
+}
+
+/// Parses `source` and runs one of its procedures.
+///
+/// Phase 1 of `docs/vba-macro-support.md`: expressions, control flow,
+/// `Sub`/`Function` calls and `On Error`. There is **no host object model**,
+/// so anything touching a workbook raises a run-time error naming what it
+/// was rather than silently doing nothing.
+///
+/// Execution is bounded -- a statement budget stops a runaway loop and a
+/// depth limit stops unbounded recursion -- because this runs source the
+/// caller did not necessarily write.
+///
+/// ```
+/// use visi_core::core::run_macro;
+/// let src = "Function Add2(a, b)\n    Add2 = a + b\nEnd Function\n";
+/// let out = run_macro(src, "Add2", &["1", "2"]).unwrap();
+/// assert_eq!(out.type_name, "Integer");
+/// assert_eq!(out.value.as_deref(), Some("3"));
+/// ```
+pub fn run_macro(source: &str, procedure: &str, args: &[&str]) -> Result<RunOutcome, Error> {
+    let module = parser::parse_module(source).map_err(|e| Error::VbaSyntax {
+        message: e.message,
+        module: None,
+        line: e.pos.line,
+        column: e.pos.col,
+    })?;
+    // Arguments arrive as text (they come from a CLI or a fuzz harness), and
+    // are given the type VBA would give the same literal.
+    let args: Vec<value::Variant> = args
+        .iter()
+        .map(|a| match value::parse_vba_number(a) {
+            Ok(n) if !a.trim().is_empty() => {
+                value::Variant::from_literal(n, a.contains('.') || a.contains(['e', 'E']))
+            }
+            _ => value::Variant::Str((*a).to_string()),
+        })
+        .collect();
+
+    let result = interp::Interpreter::new(module)
+        .run(procedure, args)
+        .map_err(|e| Error::VbaRuntime {
+            message: e.description,
+            number: e.number,
+        })?;
+
+    Ok(RunOutcome {
+        type_name: result.type_name().to_string(),
+        value: result.to_vba_string().ok(),
     })
 }
 

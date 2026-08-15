@@ -127,7 +127,7 @@ real Excel, using the harness in Part 2.
 | Phase | Scope | Fuzzable when done? |
 | --- | --- | --- |
 | 0 ✅ | Lexer + parser + AST; `visi macro check` reports syntax errors, no execution | Parse-only: does Excel agree this compiles? |
-| 1 | `Variant` model, expressions, `If`/`For`/`Do`/`Select Case`, `Sub`/`Function`, `On Error` | Yes — the bulk of the differential value |
+| 1 ✅ | `Variant` model, expressions, `If`/`For`/`Do`/`Select Case`, `Sub`/`Function`, `On Error` | Yes — the bulk of the differential value |
 | 2 | Range and Worksheet object model, `WorksheetFunction` bridge | Yes |
 | 3 | Styles, tables, pivots, row/column edits | Yes |
 | — | Events (`Worksheet_Change`, `Workbook_Open`), classes | Separate design; ordering is observable and Excel's is subtle |
@@ -192,6 +192,54 @@ deliberately does not do; the parser cannot even tell a procedure call from an
 array index without a symbol table. So it marks the boundary of what
 parse-only checking can see rather than a parser bug, and the generator now
 declares a real callee so the omitted-argument syntax stays under test.
+
+### Phase 1, as built
+
+Landed as `core/vba/{value,interp,builtins}.rs`, `visi macro run`,
+`visi_core.run_macro` in the bindings, and `fuzz/fuzz_vba.py`. The interpreter
+covers expressions, `If`/`For`/`Do`/`While`/`Select Case`, `Sub`/`Function`
+calls with recursion, `On Error` in all its forms, and ~45 host-free
+intrinsics. There is **no host object model** — anything touching a workbook
+raises error 438 naming what it was, rather than being skipped.
+
+**The `Variant` rules were measured, not assumed.** `fuzz/vba_variant_probe.bas`
+returns `TypeName(v) & "|" & CStr(v)` for 64 expressions; every rule in
+`value.rs` cites the case it came from. Several are the opposite of the
+obvious guess: `"1" + 1` is a `Double` but `"1" + "2"` is a `String`; `7.6 \ 2`
+is `4` and typed `Long`, because the operands round before dividing;
+`CLng(2.5)` is `2` because every conversion is banker's rounding; `Null`
+propagates through arithmetic but `&` skips it.
+
+**The fuzzer immediately corrected a rule the probe had got wrong**, which is
+the clearest possible argument for building it alongside the phase rather
+than after. The probe showed `32767 + 1` raising error 6 and I encoded
+"Variant arithmetic never promotes". The fuzzer disagreed, and a follow-up
+probe showed why: **only arithmetic between two compile-time constants uses
+fixed widths and overflows.** With a variable on either side it widens —
+`a = 32767 : a + 1` is the `Long` 32768, `a = 100000 : a * a` is the `Double`
+1e10. `value::ArithMode` now carries which of the two applies, decided by
+whether both operand expressions are literal.
+
+Two smaller corrections came from the same run: Excel's `CStr` renders
+negative zero as `-0` (normalising it away was wrong), and an empty string is
+*not* a zero — `"" = 0`, `"" < 0` and `Not ""` are all error 13, unlike
+`Empty`, which genuinely is zero.
+
+**Where it stands:** 60 generated procedures, **54 agreeing** with Excel on
+value, subtype and error number together. The six open divergences are real
+and tractable, and each has a saved reproduction:
+
+| Divergence | visi | Excel |
+| --- | --- | --- |
+| `x Or Null` / `x And Null` | error 94 | three-valued: `True Or Null` is `True`, not `Null` |
+| number vs non-numeric string comparison | error 13 | context-dependent; needs its own probe |
+| a `For` counter read after the loop | `Empty` | the value that failed the test |
+| `Space`/`String` argument edge cases | accepted | error 5 in some shapes |
+
+The three-valued logic one is the clearest: VBA's `Or` and `And` return `Null`
+only when the result is genuinely indeterminate, so `True Or Null` is `True`
+and `False And Null` is `False`. `value::logical` currently propagates `Null`
+unconditionally.
 
 ### Security posture
 

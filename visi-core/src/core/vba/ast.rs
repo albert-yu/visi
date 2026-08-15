@@ -616,6 +616,9 @@ pub enum Literal {
         base: NumBase,
         /// A trailing type-declaration character.
         suffix: Option<TypeSuffix>,
+        /// Whether it was written with a fraction or exponent, which forces
+        /// `Double`. See [`super::lexer::TokenKind::Number`].
+        is_float: bool,
     },
     /// A string.
     Str(String),

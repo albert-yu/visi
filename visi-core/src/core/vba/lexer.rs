@@ -112,6 +112,10 @@ pub enum TokenKind {
         base: NumBase,
         /// A trailing type-declaration character, if any.
         suffix: Option<TypeSuffix>,
+        /// Whether it was written with a decimal point or an exponent, which
+        /// forces `Double` regardless of the value: `1E3` is a `Double` even
+        /// though the same value written `1000` is a `Long`.
+        is_float: bool,
     },
     /// A string literal, with `""` escapes already resolved to `"`.
     Str(String),
@@ -486,6 +490,7 @@ impl Lexer {
                 value: value as f64,
                 base,
                 suffix: None,
+                is_float: false,
             },
             pos,
         );
@@ -551,11 +556,13 @@ impl Lexer {
                 pos,
             });
         }
+        let is_float = text.contains('.') || text.contains(['e', 'E']);
         self.push(
             TokenKind::Number {
                 value,
                 base: NumBase::Decimal,
                 suffix: None,
+                is_float,
             },
             pos,
         );
