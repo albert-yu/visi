@@ -312,6 +312,47 @@ Failure artifacts land under `fuzz_results/failures/chart_fail_iter_<N>_seed_<SE
 
 ---
 
+## VBA Execution Probe (`vba_probe.py`)
+
+Not a fuzzer -- a fixed, deterministic feasibility check, and the empirical
+basis for the VBA testing plan in [`docs/vba-macro-support.md`](../docs/vba-macro-support.md)
+(GitHub issue #46). There is no VBA interpreter in `visi-core` yet, so there
+is nothing to run differentially; this establishes that there *could* be.
+
+```bash
+cargo build --release
+source fuzz/venv/bin/activate
+python fuzz/vba_probe.py            # 4 checks, ~15s against real Excel
+python fuzz/vba_probe.py --demo-hang  # + reproduce the modal-dialog hang
+```
+
+The thing it proves is non-obvious: Excel for Mac's AppleScript dictionary
+exposes **no** VBProject object, so no automation path can put a macro *into*
+a workbook on macOS. `visi macro add` writes the module into `vbaProject.bin`
+at the file-format level instead, before Excel opens the file, and Excel then
+runs it as an ordinary macro via `run VB macro`. That is the only reason a
+VBA differential fuzzer is possible here without a Windows COM host.
+
+Three findings that constrain any future `fuzz_vba.py`:
+
+- **`run VB macro` returns typed values straight to AppleScript** (`OK|Double|42`), so
+  results don't have to be routed through cells and a file read.
+- **Trapped runtime errors come back as structured text** (`ERR|11|Division by zero`),
+  making `Err.Number` directly comparable against an interpreter's.
+- **An *un*trapped runtime error hangs the automation bridge.** `set display
+  alerts to false` does not suppress the modal run-time-error dialog; the
+  `osascript` call never returns and Excel must be SIGKILLed (see §6 below).
+  Every generated macro must therefore be invoked through an `On Error GoTo`
+  wrapper -- verified to catch errors raised anywhere down the call stack.
+  This is a correctness requirement of the harness, not a nicety.
+
+Also worth noting: `vba_probe.py` demonstrates that `fuzz_pivot.py`'s one-time
+manual "paste `BuildFuzzPivot.bas` into the VBA editor and Save As
+`pivot_macro_template.xlsm`" setup step could now be replaced by a single
+`visi macro add` invocation.
+
+---
+
 ## Key Considerations for Excel Parity
 
 When building full feature parity between `visi` and Microsoft Excel for formula evaluation and file import/export, several critical edge cases and subtle behaviors must be addressed:
