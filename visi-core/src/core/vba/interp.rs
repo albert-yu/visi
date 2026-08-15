@@ -502,6 +502,13 @@ impl Interpreter {
         Ok(match m {
             CaseMatch::Value(e) => {
                 let v = self.eval(e, frame)?;
+                // A Boolean subject compares its cases as Booleans, which is
+                // why `Select Case True` matches `Case 1` -- True is -1, so a
+                // numeric comparison would not. Measured; the range form does
+                // *not* do this (`Case 2 To 5` still misses True).
+                if matches!(subject, Variant::Boolean(_)) && !v.is_null() {
+                    return Ok(subject.to_bool()? == v.to_bool()?);
+                }
                 // The case value carries its own constant-ness, which is what
                 // makes `Select Case "10"` match `Case 10`.
                 cmp(subject, &v, operand_kind(e))? == Some(std::cmp::Ordering::Equal)
@@ -691,9 +698,16 @@ impl Interpreter {
 
             Expr::Unary { op, expr, .. } => {
                 let v = self.eval(expr, frame)?;
+                // Unary sign promotes on overflow at runtime and does not
+                // between constants, exactly as the binary operators do.
+                let mode = if is_constant(expr) {
+                    ArithMode::Constant
+                } else {
+                    ArithMode::Promote
+                };
                 match op {
-                    UnOp::Neg => value::neg(&v),
-                    UnOp::Pos => value::pos(&v),
+                    UnOp::Neg => value::neg(&v, mode),
+                    UnOp::Pos => value::pos(&v, mode),
                     UnOp::Not => value::not(&v),
                 }
             }
@@ -1635,6 +1649,52 @@ mod tests {
         // A well-formed partner still propagates.
         assert_eq!(expr("IsNull(1 - Null)"), "Boolean|True");
         assert_eq!(expr("IsNull(Null Mod 3)"), "Boolean|True");
+    }
+
+    #[test]
+    fn unary_sign_promotes_on_overflow_at_runtime() {
+        // Same constant-vs-runtime split the binary operators have.
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = (-(Not a))"),
+            "Double|2147483648"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = TypeName(-(Not a))"),
+            "String|Double"
+        );
+        // Integer widens to Long the same way.
+        assert_eq!(
+            run("    Dim a\n    a = 32767\n    F = (-(Not a))"),
+            "Long|32768"
+        );
+    }
+
+    #[test]
+    fn a_boolean_select_subject_compares_its_cases_as_booleans() {
+        // `Select Case True` matches `Case 1`, which a numeric comparison
+        // would not: True is -1. Measured. The range form does not do this.
+        let sel = |subject: &str, cases: &str| {
+            format!(
+                "    Dim r\n    Select Case {subject}\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(
+            run(&sel("IsNumeric(0)", "    Case 0, 1\n        r = \"a\"\n")),
+            "String|a"
+        );
+        assert_eq!(
+            run(&sel("(1 = 2)", "    Case 0, 1\n        r = \"a\"\n")),
+            "String|a"
+        );
+        assert_eq!(
+            run(&sel("(1 = 1)", "    Case 0\n        r = \"a\"\n")),
+            "String|else"
+        );
+        // Ranges still compare numerically, so True (-1) misses 2 To 5.
+        assert_eq!(
+            run(&sel("(1 = 1)", "    Case 2 To 5\n        r = \"a\"\n")),
+            "String|else"
+        );
     }
 
     #[test]

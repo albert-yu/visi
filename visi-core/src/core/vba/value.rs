@@ -769,22 +769,24 @@ fn arith(
 }
 
 /// Unary `-`.
-pub fn neg(v: &Variant) -> VResult<Variant> {
+pub fn neg(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
     }
     // Boolean negation widens to Integer: `-True` is 1.
     let class = v.num_class().ok_or_else(VbaError::invalid_null)?;
-    Variant::pack(-v.to_f64()?, class)
+    // Promotes on overflow at runtime, like the binary operators:
+    // `a = 2147483647 : -(Not a)` is the Double 2147483648, not an overflow.
+    Variant::pack_mode(-v.to_f64()?, class, mode)
 }
 
 /// Unary `+`, which still coerces to a number.
-pub fn pos(v: &Variant) -> VResult<Variant> {
+pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
     }
     let class = v.num_class().ok_or_else(VbaError::invalid_null)?;
-    Variant::pack(v.to_f64()?, class)
+    Variant::pack_mode(v.to_f64()?, class, mode)
 }
 
 /// `Not`, which is bitwise on numbers and logical on `Boolean`s.
@@ -1372,7 +1374,10 @@ mod tests {
         // Positive zero stays unsigned.
         assert_eq!(format_number(0.0), "0");
         assert_eq!(format_number(-0.4 + 0.4), "0");
-        assert_eq!(shows(&neg(&Variant::Double(0.0)).unwrap()), "Double|-0");
+        assert_eq!(
+            shows(&neg(&Variant::Double(0.0), ArithMode::Constant).unwrap()),
+            "Double|-0"
+        );
     }
 
     #[test]
