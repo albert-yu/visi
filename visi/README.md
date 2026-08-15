@@ -7,7 +7,6 @@ Libraries such as `openpyxl` can author Excel workbooks,
 but they cannot evaluate formulas. `visi` enables headless shell-scripting
 and LLM automation of Excel workflows.
 
-
 ## Installation
 
 ### Homebrew (macOS/Linux)
@@ -15,23 +14,6 @@ and LLM automation of Excel workflows.
 ```bash
 brew install albert-yu/tap/visi
 ```
-
-### Building from Source
-
-#### Requirements
-
-- [Rust](https://www.rust-lang.org/) (2024 edition supported)
-
-#### Build Binary
-
-```bash
-# Build dev binary
-cargo build --workspace
-
-# Build optimized release binary
-cargo build --release --workspace
-```
-The compiled CLI executable will be located at `target/release/visi` (or `target/debug/visi`).
 
 ### Examples
 
