@@ -375,7 +375,11 @@ class ExcelDriver:
                     if "=" in line:
                         k, _, v = line.partition("=")
                         if k.strip().isdigit():
-                            out[int(k.strip())] = v.strip()
+                            # Only the trailing CR is stripped. `.strip()`
+                            # here silently ate the padding on results like
+                            # `OK|String|  3  ` and reported a divergence that
+                            # was the harness's own doing.
+                            out[int(k.strip())] = v.rstrip("\r")
                 return out
             self.restart()
             if attempt == 0:
