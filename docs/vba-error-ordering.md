@@ -171,58 +171,70 @@ inside `not`'s boolean branch, the second falls into the bitwise one because
 only one side is a `Boolean`. Covered by
 `the_words_true_and_false_coerce_on_the_integer_path_only`.
 
-## What is left
+## String against number, in full
 
-Two cases across seven seeds of 300 (2097/2100 agreeing). Both come down to
-one unresolved question, and it is worth writing down precisely, because
-three separate attempts at a model have each fitted the cases in front of
-them and regressed others.
+This was the last hard question, and it took four attempts. The rule:
 
-### When is a string-vs-number comparison *strict*?
-
-"Strict" means numeric comparison where a string that will not parse raises
-error 13, as opposed to falling back to the runtime ordering. These three
-measurements constrain it, and no rule tried so far fits all of them:
-
-| Expression | Excel | Shape |
+| Numeric side | String side | Behaviour |
 | --- | --- | --- |
-| `1 <> "True255"`, as `(-True) <> (True & &HFF)` | **error 13** | numeric unary-on-literal, string from `&` of two literals |
-| `-3 <= "1.5False"`, as `(Not 2!) <= ("1.5" & False)` | **True** | numeric unary-on-literal, string from `&` of two literals |
-| `(False & Null) = (0.1 / -2.5)` | **False** | numeric binary constant, string from `&` involving `Null` |
+| statically typed (`CLng` and the other numeric `C*` conversions) | anything | the **whole** string must parse; error 13 otherwise |
+| constant | constant | the string's numeric **prefix** is used, as `Val` takes it; error 13 if there is no prefix at all |
+| constant | runtime | same prefix rule, but no prefix falls back to the ordering below rather than erroring |
+| runtime | constant | plain **string** comparison, the number rendered with `CStr` |
+| runtime | runtime | a number sorts **before** any string, whatever the values |
 
-The first two are the same shape by every property tried -- which operand is
-the string, whether each side is a literal or a constant expression, whether
-`&` is involved -- and disagree. The third is explicable if an expression
-containing `Null` is not folded, but that does not separate the first two.
+Prefix coercion is what finally separated the pair that had defeated three
+earlier models:
 
-The current implementation gets rows 2 and 3 right and row 1 wrong, which is
-the best of the arrangements tried. `value::Operand` carries the distinction
-it does (`Literal` vs `ConstExpr` vs `Static` vs `Runtime`) because that
-combination scored highest across seven seeds, not because it is known to be
-the rule.
+| Expression | Excel | Why |
+| --- | --- | --- |
+| `(Not 2!) <= ("1.5" & False)` | `True` | `"1.5False"` has the numeric prefix `1.5` |
+| `(-True) <> (True & &HFF)` | error 13 | `"True255"` has no numeric prefix |
 
-**Three failed models, kept so they are not retried:**
+Structurally those two are identical -- same operator family, same side for
+the string, same literal-versus-constant-expression shape on each side, both
+strings built by `&` from two literals. Only the *content* of the string
+separates them, which is not something a structural model could ever have
+reached.
 
-1. *`&` is never constant-folded.* Net negative on its own: 2093 against
-   2096 across seven seeds, fixing one case and breaking three.
+One supporting rule: **`Null` is not foldable**, so nothing containing it is
+constant. `(False & Null) = (0.1 / -2.5)` is `False` rather than an error
+because the string side is not constant and therefore falls back.
+
+### Four failed models, kept so they are not retried
+
+1. *`&` is never constant-folded.* Net negative on its own: 2093 against 2096
+   across seven seeds, fixing one case and breaking three.
 2. *Any statically-typed numeric partner is strict, including `Len`.* `Len`
    has a documented `As Long` signature, and `("abc" & va) <> Len(CStr("Z"))`
-   still does not error, while the same shape against `CLng` does. Only the
-   numeric `C*` conversions belong in that set.
+   still does not error while the same shape against `CLng` does.
 3. *`^` with a String operand is strict.* `"255" ^ 255` and
    `StrReverse(255) ^ 1.5E54` are both `INF`, exactly as their numeric
-   equivalents. The case that looked like evidence for this had a base of
-   `"1E+2923"`, where the real rule was that the *conversion* overflows.
+   equivalents. The case that looked like evidence had a base of `"1E+2923"`,
+   where the real rule was that the *conversion* overflows.
+4. *Strictness depends on literal versus constant expression.* This scored
+   best of the structural models and is still wrong; it was replaced by
+   prefix coercion, which is about the string's content instead.
 
-### How to take it further
+## What is left
 
-The next step is not another guess. It is a probe that varies one property at
-a time across the first two rows above -- operator (`<>` vs `<=` vs `=`),
-which side the string is on, literal vs unary-on-literal vs binary constant on
-each side, and `&` vs a plain string literal -- and looks for the axis that
-separates them. Roughly forty cases in one workbook, which is one Excel round
-trip.
+Roughly 1-2% on seeds never tuned against -- 293 and 297 of 300 on two fresh
+ones, against 300, 300, 300, 300, 300, 299, 299 on the seven this work used.
+**The fresh numbers are the honest ones**, and the gap is the same overfitting
+trap this document opened with.
 
-Everything else in this document was found that way, including the three
-failed models above, which were all found by *measuring* rather than by
-reasoning about what VBA ought to do.
+The remaining cases are the same kind of thing: error-code disagreements where
+both engines fault on one expression and report different numbers. The
+workflow that has resolved every one so far:
+
+1. Run `python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <unseen>`.
+2. Reduce to the smallest expression that reproduces it -- and if that is hard,
+   instrument the generated procedure statement by statement and diff the
+   intermediate `TypeName|CStr` values against Excel's. That is how the
+   prefix rule was finally cornered.
+3. Probe with the neighbouring cases that would discriminate between plausible
+   rules, checking whether the probe's own rendering can confound the answer
+   (observe a possibly-`Null` result with `IsNull`, never `CStr`).
+4. Implement one change at a time. Bundling three at once regressed six of
+   seven seeds and had to be unpicked afterwards.
+5. Re-run on several seeds, including ones not used while developing the fix.

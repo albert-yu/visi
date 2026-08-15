@@ -482,6 +482,26 @@ pub fn parse_vba_number(s: &str) -> VResult<f64> {
     Ok(value)
 }
 
+/// The longest leading run of `s` that parses as a number, as `Val` takes it.
+///
+/// Comparison against a numeric *constant* coerces the string this way rather
+/// than demanding the whole string parse, which is what separates
+/// `(Not 2!) <= ("1.5" & False)` -- `"1.5False"` has the numeric prefix
+/// `1.5`, so the comparison succeeds -- from `(-True) <> (True & &HFF)`,
+/// where `"True255"` has none and the comparison is error 13.
+pub fn numeric_prefix(s: &str) -> Option<f64> {
+    let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut best = None;
+    for (i, _) in t.char_indices() {
+        if let Ok(v) = t[..=i].parse::<f64>()
+            && v.is_finite()
+        {
+            best = Some(v);
+        }
+    }
+    best
+}
+
 /// Renders a number the way VBA's `CStr` does.
 ///
 /// Not the same as Rust's `{}`: VBA prints up to 15 significant digits and
@@ -1016,29 +1036,18 @@ pub fn compare_ctx(
                 return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
             }
 
-            let parsed = parse_vba_number(text);
-
-            // Strict numeric comparison -- a string that will not parse is
-            // error 13, with none of the fallback below -- applies when the
-            // compiler can type both sides: a plain string *literal* against
-            // a numeric constant, or any string against a statically-typed
-            // numeric partner.
-            //
-            // A constant *expression* on the string side does not qualify,
-            // which is the distinction that took two attempts to find:
-            // `"False" = -0.04` is error 13 but `(False & Null) = (0.1 / -2.5)`
-            // is simply False.
-            let strict = num_kind == Operand::Static
-                || (num_kind.is_const() && str_kind == Operand::Literal);
-
-            let ord = if strict {
-                cmp_f64(parsed?, numeric(other)?)
+            // Against a *statically typed* numeric partner the whole string
+            // must parse; against a numeric constant only a leading run need
+            // parse, as `Val` takes it.
+            let ord = if num_kind == Operand::Static {
+                cmp_f64(parse_vba_number(text)?, numeric(other)?)
             } else if num_kind.is_const() {
-                match parsed {
-                    Ok(a) => cmp_f64(a, numeric(other)?),
-                    // Falls through to the runtime ordering rather than
-                    // erroring, unlike the strict case.
-                    Err(_) => Ordering::Greater,
+                match numeric_prefix(text) {
+                    Some(a) => cmp_f64(a, numeric(other)?),
+                    // No numeric prefix at all. A constant string is an
+                    // error; a runtime one falls back to the ordering below.
+                    None if str_kind.is_const() => return Err(VbaError::type_mismatch()),
+                    None => Ordering::Greater,
                 }
             } else if str_kind.is_const() {
                 text.as_str().cmp(other.to_vba_string()?.as_str())
