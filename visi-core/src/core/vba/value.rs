@@ -924,10 +924,24 @@ fn three_valued(lhs: &Variant, rhs: &Variant, deciding: bool) -> VResult<Option<
 /// makes the rules look contradictory until you separate the cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
-    /// A literal, or an expression built only from literals.
-    Const,
+    /// A plain literal. Only this makes the *string* side of a comparison
+    /// strict; a constant expression that merely evaluates to a string does
+    /// not.
+    Literal,
+    /// An expression built only from literals. Counts as constant on the
+    /// numeric side, but not as a literal on the string side.
+    ConstExpr,
+    /// A call whose return type is declared numeric, so the compiler knows
+    /// the type statically without the value being constant.
+    Static,
     /// Anything involving a variable.
     Runtime,
+}
+
+impl Operand {
+    fn is_const(self) -> bool {
+        matches!(self, Operand::Literal | Operand::ConstExpr)
+    }
 }
 
 /// Comparison, returning `None` when either side is `Null`.
@@ -996,19 +1010,29 @@ pub fn compare_ctx(
 
             let parsed = parse_vba_number(text);
 
-            let ord = if str_kind == Operand::Const && num_kind == Operand::Const {
-                // Constant folding: a string that will not parse is error 13.
-                let a = parsed?;
-                let b = numeric(other)?;
-                cmp_f64(a, b)
-            } else if num_kind == Operand::Const {
+            // Strict numeric comparison -- a string that will not parse is
+            // error 13, with none of the fallback below -- applies when the
+            // compiler can type both sides: a plain string *literal* against
+            // a numeric constant, or any string against a statically-typed
+            // numeric partner.
+            //
+            // A constant *expression* on the string side does not qualify,
+            // which is the distinction that took two attempts to find:
+            // `"False" = -0.04` is error 13 but `(False & Null) = (0.1 / -2.5)`
+            // is simply False.
+            let strict = num_kind == Operand::Static
+                || (num_kind.is_const() && str_kind == Operand::Literal);
+
+            let ord = if strict {
+                cmp_f64(parsed?, numeric(other)?)
+            } else if num_kind.is_const() {
                 match parsed {
                     Ok(a) => cmp_f64(a, numeric(other)?),
                     // Falls through to the runtime ordering rather than
-                    // erroring, unlike the all-constant case.
+                    // erroring, unlike the strict case.
                     Err(_) => Ordering::Greater,
                 }
-            } else if str_kind == Operand::Const {
+            } else if str_kind.is_const() {
                 text.as_str().cmp(other.to_vba_string()?.as_str())
             } else {
                 // Both runtime: the number sorts first, whatever it is.

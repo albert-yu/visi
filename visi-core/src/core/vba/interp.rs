@@ -886,9 +886,11 @@ fn is_constant(e: &Expr) -> bool {
 /// `(1.5 & "abc") <> CLng(a)` is error 13, while `(1.5 & "abc") <> a` with
 /// `a = -1` compares fine, because `a` is a `Variant` and the runtime
 /// number-sorts-before-string rule applies instead. Measured.
-const STATICALLY_NUMERIC: &[&str] = &[
-    "cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte", "len",
-];
+/// Only the numeric `C*` conversions, whose declared return types are
+/// unambiguous. `Len` was in this list on the strength of its documented
+/// `As Long` signature and had to come out: `("abc" & va) <> Len(CStr("Z"))`
+/// does *not* error, while the same shape against `CLng` does.
+const STATICALLY_NUMERIC: &[&str] = &["cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte"];
 
 /// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
@@ -898,10 +900,17 @@ fn operand_kind(e: &Expr) -> Operand {
             if matches!(target.as_ref(), Expr::Ident { name, .. }
                 if STATICALLY_NUMERIC.contains(&name.to_ascii_lowercase().as_str()))
     );
-    if is_constant(e) || statically_numeric {
-        Operand::Const
-    } else {
-        Operand::Runtime
+    match e {
+        Expr::Literal(_) => Operand::Literal,
+        // A parenthesised or signed literal is still just a literal.
+        Expr::Paren { expr, .. } | Expr::Unary { expr, .. }
+            if matches!(**expr, Expr::Literal(_)) =>
+        {
+            Operand::Literal
+        }
+        _ if is_constant(e) => Operand::ConstExpr,
+        _ if statically_numeric => Operand::Static,
+        _ => Operand::Runtime,
     }
 }
 
@@ -1486,6 +1495,26 @@ mod tests {
         );
         assert_eq!(
             run("    Dim a\n    a = 2147483647\n    F = (\"Z\" <> a)"),
+            "Boolean|True"
+        );
+
+        // Strictness needs a plain string *literal*, not merely a constant
+        // expression that evaluates to a string. This distinction took two
+        // attempts to find, and getting it wrong in either direction costs
+        // real cases in both directions.
+        assert_eq!(expr("\"False\" = -0.04"), "ERR|13");
+        assert_eq!(expr("(False & Null) = (0.1 / -2.5)"), "Boolean|False");
+        assert_eq!(expr("(Not 2!) <= (\"1.5\" & False)"), "Boolean|True");
+
+        // A statically-typed numeric partner is strict whatever the string
+        // side looks like -- but only the C* conversions qualify. `Len` does
+        // not, despite its documented `As Long` signature.
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = ((1.5 & \"abc\") <> CLng(a))"),
+            "ERR|13"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 1\n    F = ((\"abc\" & a) <> Len(CStr(\"Z\")))"),
             "Boolean|True"
         );
 
