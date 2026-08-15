@@ -127,7 +127,7 @@ real Excel, using the harness in Part 2.
 | Phase | Scope | Fuzzable when done? |
 | --- | --- | --- |
 | 0 ✅ | Lexer + parser + AST; `visi macro check` reports syntax errors, no execution | Parse-only: does Excel agree this compiles? |
-| 1 | `Variant` model, expressions, `If`/`For`/`Do`/`Select Case`, `Sub`/`Function`, `On Error` | Yes — the bulk of the differential value |
+| 1 ✅ | `Variant` model, expressions, `If`/`For`/`Do`/`Select Case`, `Sub`/`Function`, `On Error` | Yes — the bulk of the differential value |
 | 2 | Range and Worksheet object model, `WorksheetFunction` bridge | Yes |
 | 3 | Styles, tables, pivots, row/column edits | Yes |
 | — | Events (`Worksheet_Change`, `Workbook_Open`), classes | Separate design; ordering is observable and Excel's is subtle |
@@ -192,6 +192,66 @@ deliberately does not do; the parser cannot even tell a procedure call from an
 array index without a symbol table. So it marks the boundary of what
 parse-only checking can see rather than a parser bug, and the generator now
 declares a real callee so the omitted-argument syntax stays under test.
+
+### Phase 1, as built
+
+Landed as `core/vba/{value,interp,builtins}.rs`, `visi macro run`,
+`visi_core.run_macro` in the bindings, and `fuzz/fuzz_vba.py`. The interpreter
+covers expressions, `If`/`For`/`Do`/`While`/`Select Case`, `Sub`/`Function`
+calls with recursion, `On Error` in all its forms, and ~45 host-free
+intrinsics. There is **no host object model** — anything touching a workbook
+raises error 438 naming what it was, rather than being skipped.
+
+**The `Variant` rules were measured, not assumed.** `fuzz/vba_variant_probe.bas`
+returns `TypeName(v) & "|" & CStr(v)` for 64 expressions; every rule in
+`value.rs` cites the case it came from. Several are the opposite of the
+obvious guess: `"1" + 1` is a `Double` but `"1" + "2"` is a `String`; `7.6 \ 2`
+is `4` and typed `Long`, because the operands round before dividing;
+`CLng(2.5)` is `2` because every conversion is banker's rounding; `Null`
+propagates through arithmetic but `&` skips it.
+
+**The fuzzer immediately corrected a rule the probe had got wrong**, which is
+the clearest possible argument for building it alongside the phase rather
+than after. The probe showed `32767 + 1` raising error 6 and I encoded
+"Variant arithmetic never promotes". The fuzzer disagreed, and a follow-up
+probe showed why: **only arithmetic between two compile-time constants uses
+fixed widths and overflows.** With a variable on either side it widens —
+`a = 32767 : a + 1` is the `Long` 32768, `a = 100000 : a * a` is the `Double`
+1e10. `value::ArithMode` now carries which of the two applies, decided by
+whether both operand expressions are literal.
+
+Two smaller corrections came from the same run: Excel's `CStr` renders
+negative zero as `-0` (normalising it away was wrong), and an empty string is
+*not* a zero — `"" = 0`, `"" < 0` and `Not ""` are all error 13, unlike
+`Empty`, which genuinely is zero.
+
+**Where it stands:** 500 generated procedures, **493 agreeing** with Excel on
+value, subtype and error number together — up from 54 of 60 when the harness
+first ran. Every divergence family found in that first run has been resolved,
+and each fix is a measured rule with a test naming the Excel result:
+
+| Was diverging | What Excel actually does |
+| --- | --- |
+| `And` / `Or` / `Imp` with `Null` | Three-valued. A *falsy* operand decides `And` and a *truthy* one decides `Or`, and the deciding operand is returned — converted to the integer type the bitwise operator works in, so `vb Or Null` with `vb = 0.1 - 2147483647` is the `Long` `-2147483647`. `Imp` needed no table at all: evaluating it as `Not a Or b` gets this for free, and fixed a case the hand-rolled table got wrong (`255 Imp Null` is `-256`, not `Null`). |
+| string vs number comparison | Four rules, split by constant-ness exactly as arithmetic is. Both constant → numeric, error 13 if the string will not parse. Numeric constant → numeric, falling back rather than erroring. String constant → string comparison. **Both variables → a number always sorts before a string**, which is why `a = "1.5"`, `b = 1.5` makes `a = b` `False` even though they are equal both numerically and as text. |
+| `For` counter after the loop | Left at the value that failed the test (`For i = 1 To 3` leaves `4`; `Step 2` leaves `5`), or at the current value on `Exit For`. Assigning the counter *before* the test rather than after is the whole fix. |
+| `Space` / `String` / `Mid` counts | Rounded, not truncated: `Space(2.6)` is three spaces. |
+| `(-1) ^ 1.5` | Error 5, not a quiet `NaN`. |
+| `Select Case Null` | `Case 2 To 5` **matches** a `Null` subject, while `Case 0, 1` and `Case Is > 2` do not — and nothing about the comparisons predicts it, since `Null >= 2` is `Null`. An Excel quirk, matched deliberately. |
+| infinity | `255 ^ 255` is `INF` and negating it gives `-INF`, but `+`, `-` and `*` raise error 6 if either side is infinite. `CStr` renders it `"INF"`. |
+| `CStr(Null)` | Error 94, not a propagated `Null`. Propagating it silently poisoned callers who had it under `On Error Resume Next` expecting the assignment to be skipped. |
+| `Single` with `Long` | Widens past both to `Double`, since a `Single` cannot hold every `Long` — though `Single` with `Integer` stays `Single`. |
+| `"abc" - Null` | Error 13, not `Null`: the operand is coerced *before* the `Null` short-circuits. |
+| `Val(255)` | An `Integer`. `Val` types its result like a literal rather than always returning a `Double`. |
+
+Seven long-tail cases remain, all with saved reproductions under
+`fuzz_results/failures/`. Most are **error-ordering** disagreements — visi
+reports error 11 where Excel reports 6, or 13 where Excel reports 6 — meaning
+both engines detect a fault in the same expression but coerce its
+subexpressions in a different order. One is a trailing-whitespace difference
+in a string result. None is a wrong *value*; they are all about which of two
+errors surfaces first, which needs a probe of VBA's operand evaluation order
+to settle.
 
 ### Security posture
 

@@ -133,6 +133,16 @@ pub enum Error {
         /// 1-based column number, counted in characters.
         column: u32,
     },
+    /// A VBA procedure raised a run-time error.
+    ///
+    /// Carries VBA's own `Err.Number` so a caller can compare it against what
+    /// Excel would have raised, which is what the differential fuzzer does.
+    VbaRuntime {
+        /// `Err.Description`.
+        message: String,
+        /// `Err.Number`.
+        number: i32,
+    },
     /// Formula evaluation failed.
     Eval(EngineError),
 }
@@ -196,6 +206,9 @@ impl std::fmt::Display for Error {
             Error::InvalidArgument(msg) => f.write_str(msg),
             Error::Xlsx(msg) => write!(f, "xlsx error: {msg}"),
             Error::Vba(msg) => write!(f, "VBA error: {msg}"),
+            Error::VbaRuntime { message, number } => {
+                write!(f, "run-time error {number}: {message}")
+            }
             Error::VbaSyntax {
                 message,
                 module,

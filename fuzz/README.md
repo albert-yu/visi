@@ -384,6 +384,35 @@ Failure artifacts land under `fuzz_results/failures/vba_parse_<label>/` as `sour
 
 ---
 
+## VBA Execution Fuzzing (`fuzz_vba.py`)
+
+Phase 1 of the VBA plan. Generates a VBA procedure, runs it in `visi`'s interpreter and in real Excel, and compares **value, subtype and error number** together.
+
+```bash
+python3 fuzz/fuzz_vba.py --driver mock --iterations 50    # visi only, no Excel
+python3 fuzz/fuzz_vba.py --iterations 60 --batch 20 --seed 1
+```
+
+The subtype is not decoration: `1 + 1` is an `Integer` and `1 / 1` is a `Double`, and an interpreter that computes the right number with the wrong subtype has a bug that only surfaces later, when something overflows that should not have.
+
+Fast, unlike the other Excel-driven harnesses — 60 cases in about 4 seconds. Batching is why: 20 generated procedures go into one workbook and one Excel session, and the AppleScript round trip (not the macro) is the entire cost.
+
+**It has already paid for itself twice over.** It corrected a `Variant` rule that a careful hand-probe had got *backwards*: `32767 + 1` really does raise error 6, so the probe suggested "Variant arithmetic never promotes" — but that is true only between two **compile-time constants**. With a variable involved, `a = 32767 : a + 1` is the `Long` 32768 and `a = 100000 : a * a` is the `Double` 1e10. It also found that Excel's `CStr` keeps the sign on negative zero (`-0`), and that an empty string is not a zero (`"" = 0` is error 13, unlike `Empty`).
+
+Three things shape the design:
+
+- **The generated procedure is invoked through an `On Error GoTo` harness.** Without it an untrapped error goes modal, `osascript` never returns, and Excel needs a SIGKILL — see the VBA probe section above.
+- **Nothing non-deterministic is generated** (`Now`, `Rnd`, `Timer`): the two engines would differ by construction and every iteration would be noise.
+- **`Len` is never applied to a raw expression**, only to `CStr(...)`. `Len(False)` — `Len` of a *Boolean literal* — is a compile error in Excel, which hangs the batch. It is another instance of the Phase 0 boundary: a check needing the argument's static type, which a parser does not track.
+
+It found and drove out eleven distinct rule families in the value model — three-valued `And`/`Or`/`Imp`, the four string-vs-number comparison rules, `For` counter semantics, count-argument rounding, `(-1) ^ 1.5`, `Select Case Null`, infinity handling, `CStr(Null)`, `Single` with `Long`, Null coercion order, and `Val` typing — taking agreement from 54/60 to **493/500**. Each is documented with its measured Excel result in [`docs/vba-macro-support.md`](../docs/vba-macro-support.md) under "Phase 1, as built".
+
+The seven that remain are almost all **error-ordering** disagreements: both engines fault on the same expression but coerce its subexpressions in a different order, so one reports error 11 where the other reports 6. Settling them needs a probe of VBA's operand evaluation order. None is a wrong value.
+
+Failure artifacts land under `fuzz_results/failures/vba_exec_case_<N>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers.
+
+---
+
 ## Key Considerations for Excel Parity
 
 When building full feature parity between `visi` and Microsoft Excel for formula evaluation and file import/export, several critical edge cases and subtle behaviors must be addressed:

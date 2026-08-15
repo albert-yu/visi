@@ -157,6 +157,7 @@ Two layers that share a directory but not much else:
 
 - **Storage** (`mod.rs`, plus `ovba.rs`/`vba_xlsx.rs`/`vba_synth.rs` outside it) — `VbaProject`/`VbaModule` and the `vbaProject.bin` round trip. Workbook-level like `Chart`, not sheet-scoped. Read those files' own doc comments before touching them; the p-code prefix and MODULECOOKIE handling are both load-bearing in ways that are not guessable.
 - **Syntax** (`lexer.rs`, `ast.rs`, `parser.rs`) — Phase 0 of `docs/vba-macro-support.md`. Parses only: no name resolution, no types, no evaluation, which is why a `Call` node cannot distinguish a procedure call from an array index.
+- **Execution** (`value.rs`, `interp.rs`, `builtins.rs`) — Phase 1. A tree-walking interpreter over the AST, with **no host object model**: anything touching a workbook raises error 438 naming what it was, rather than being skipped. Driven by `visi macro run`, which is opt-in per invocation and never implicit in `eval`.
 
 Things that will bite:
 
@@ -164,6 +165,7 @@ Things that will bite:
 - **Keywords are not reserved.** The lexer emits every one as a plain `Ident` and the parser matches case-insensitively, because VBA's keyword set is contextual — `Name`, `Line`, `Get`, and `Width` are all statements in one position and ordinary property names in another. The `Stmt::Opaque` guards in `parser.rs` are narrow for exactly this reason.
 - **Excel compiles VBA lazily, per invoked procedure.** Nothing short of calling a procedure compiles it — not a probe in the same module, not a reference from a dead branch. This is why `fuzz/fuzz_vba_parse.py` wraps generated source in `If False Then ... End If` inside the procedure it calls, and why there is no way to ask Excel whether an arbitrary module compiles without also running something.
 - A **compile** error in Excel hangs the AppleScript bridge and, unlike a runtime error, is *not* catchable by an `On Error` wrapper.
+- **Every `Variant` rule in `value.rs` was measured against real Excel**, not taken from documentation, and each cites the `fuzz/vba_variant_probe.bas` case it came from. Re-measure rather than "correcting" one from memory — a careful hand-probe already got one backwards. **Overflow promotes at runtime but not between literals**: `32767 + 1` written with two literals is error 6, but `a = 32767 : a + 1` is the `Long` 32768. `value::ArithMode` carries which applies. Also non-obvious: `"1" + 1` is a `Double` but `"1" + "2"` is a `String`; `7.6 \ 2` is `4` and typed `Long`; every conversion is banker's rounding; `CStr(-0.0)` is `"-0"`; and `""` is *not* a zero (`"" = 0` is error 13) while `Empty` is.
 
 ### xlsx I/O (`visi-core/src/core/xlsx.rs`)
 

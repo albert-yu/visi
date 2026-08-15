@@ -5,10 +5,10 @@ use clap::Parser;
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
-    ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroCheckArgs, MacroSubcommands, OutputFormat,
-    PivotAggArg, PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands,
-    SetArgs, SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands,
-    StyleTableArgs, TableArgs, TableSubcommands, VbaModuleKindArg,
+    ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroCheckArgs, MacroRunArgs, MacroSubcommands,
+    OutputFormat, PivotAggArg, PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs,
+    RowSubcommands, SetArgs, SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs,
+    StyleSubcommands, StyleTableArgs, TableArgs, TableSubcommands, VbaModuleKindArg,
 };
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::format::{get_cell_display_val, render_grid};
@@ -1649,6 +1649,78 @@ fn name_syntax_error(e: visi_core::Error, module: &str) -> visi_core::Error {
     }
 }
 
+/// `visi macro run` -- executes a VBA procedure.
+///
+/// Deliberately opt-in and explicit. Nothing else in the CLI runs a macro:
+/// not `eval`, not opening a file, and not a `Workbook_Open` handler. The
+/// notice that a macro ran goes to stderr and survives `--quiet`, because
+/// "this file executed code" is not informational chatter.
+fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
+    let source = if is_vba_source_path(&args.file) {
+        read_source_argument(&args.file)
+    } else {
+        let wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
+            exit_with_error(e, EXIT_IO_ERROR);
+        });
+        let modules = wb.list_vba_modules();
+        let chosen = match &args.module {
+            Some(name) => modules
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(name))
+                .unwrap_or_else(|| {
+                    exit_with_error(
+                        format!("VBA module '{}' not found", name),
+                        EXIT_USAGE_ERROR,
+                    )
+                }),
+            // With no --module, take the one declaring the procedure, so the
+            // common single-module case needs no extra flag.
+            None => modules
+                .iter()
+                .find(|m| {
+                    m.check_syntax()
+                        .map(|s| s.procedures.iter().any(|p| p.eq_ignore_ascii_case(&args.name)))
+                        .unwrap_or(false)
+                })
+                .unwrap_or_else(|| {
+                    exit_with_error(
+                        format!(
+                            "No VBA module declares a procedure named '{}'. Use --module to pick one explicitly.",
+                            args.name
+                        ),
+                        EXIT_USAGE_ERROR,
+                    )
+                }),
+        };
+        chosen.source.clone()
+    };
+
+    eprintln!(
+        "Running VBA procedure '{}' from '{}'.",
+        args.name, args.file
+    );
+
+    let arg_refs: Vec<&str> = args.args.iter().map(|s| s.as_str()).collect();
+    match visi_core::core::run_macro(&source, &args.name, &arg_refs) {
+        Ok(out) => {
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "procedure": args.name,
+                        "type": out.type_name,
+                        "value": out.value,
+                    }))
+                    .unwrap()
+                );
+            } else if let Some(v) = out.value {
+                println!("{v}");
+            }
+        }
+        Err(e) => exit_with_error(e, EXIT_ENGINE_ERROR),
+    }
+}
+
 fn handle_macro(args: MacroArgs, quiet: bool) {
     match args.command {
         MacroSubcommands::List(list_args) => {
@@ -1771,6 +1843,7 @@ fn handle_macro(args: MacroArgs, quiet: bool) {
             }
         }
         MacroSubcommands::Check(check_args) => handle_macro_check(check_args, quiet),
+        MacroSubcommands::Run(run_args) => handle_macro_run(run_args, quiet),
         MacroSubcommands::SetSource(set_source_args) => {
             let mut wb = WorkbookManager::load_file(&set_source_args.file).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_IO_ERROR);

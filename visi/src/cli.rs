@@ -873,6 +873,31 @@ pub enum MacroSubcommands {
     SetSource(MacroSetSourceArgs),
     /// Check VBA module source for syntax errors
     Check(MacroCheckArgs),
+    /// Run a VBA procedure (opt-in; see --help for what is and isn't supported)
+    Run(MacroRunArgs),
+}
+
+/// Running a macro executes code the workbook's author wrote, so it is never
+/// implicit: no other subcommand runs one, and `eval` in particular does not.
+/// The Phase 1 interpreter has no host object model, so a macro cannot reach
+/// the workbook -- anything that tries reports an error rather than silently
+/// doing nothing.
+#[derive(Args, Debug)]
+pub struct MacroRunArgs {
+    /// Input Excel file path, or a .bas source file, or - for stdin
+    pub file: String,
+    /// Name of the procedure to run
+    #[arg(short, long)]
+    pub name: String,
+    /// Module to take the procedure from (defaults to searching all modules)
+    #[arg(short, long)]
+    pub module: Option<String>,
+    /// Argument to pass, repeatable and positional in order
+    #[arg(short = 'a', long = "arg")]
+    pub args: Vec<String>,
+    /// Output the result as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]

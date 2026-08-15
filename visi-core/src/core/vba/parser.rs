@@ -1771,12 +1771,14 @@ impl Parser {
                 value,
                 base,
                 suffix,
+                is_float,
             } => {
                 self.i += 1;
                 Ok(Expr::Literal(Literal::Number {
                     value: *value,
                     base: *base,
                     suffix: *suffix,
+                    is_float: *is_float,
                 }))
             }
             TokenKind::Str(s) => {
