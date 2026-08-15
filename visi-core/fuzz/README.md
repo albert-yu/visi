@@ -17,6 +17,17 @@ infinite loops on malformed input -- no output property is checked.
   full import pipeline: CFB container parsing, `dir`-stream decompression,
   `PROJECTMODULES` record walking, and per-module stream decompression. This
   is what runs on `xl/vbaProject.bin` the moment any `.xlsm` is opened.
+- **`vba_parse`** -- `core::vba::parser::parse_module` over arbitrary text.
+  Unlike the other VBA targets here, the input is not a binary this codebase
+  wrote and read back -- it is source someone typed or pasted, and both
+  `visi macro check` and `visi macro add` put user text straight into this
+  parser, so the never-panics property matters more here than anywhere else
+  in the VBA code. Seeded from `fuzz/seeds/vba_parse/`, which includes the
+  repo's own ~300-line `BuildFuzzPivot.bas` alongside files concentrating the
+  awkward corners (type suffixes, `&H`/`&O` literals, date literals, line
+  continuations, `#If` blocks, every loop and declaration form). Whether the
+  parser's verdict *agrees with Excel* is a different question, answered by
+  the differential harness at `../../fuzz/fuzz_vba_parse.py`.
 - **`formula_eval`** -- feeds arbitrary bytes as formula text through the
   full formula pipeline (`compile_formula` -> `serialize_formula` ->
   `parse_excel_formula` -> `evaluate_ast`/`evaluate_function`) via

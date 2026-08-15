@@ -5,10 +5,10 @@ use clap::Parser;
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
-    ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroSubcommands, OutputFormat, PivotAggArg,
-    PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs,
-    SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands, StyleTableArgs,
-    TableArgs, TableSubcommands, VbaModuleKindArg,
+    ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroCheckArgs, MacroSubcommands, OutputFormat,
+    PivotAggArg, PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands,
+    SetArgs, SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands,
+    StyleTableArgs, TableArgs, TableSubcommands, VbaModuleKindArg,
 };
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::format::{get_cell_display_val, render_grid};
@@ -1455,6 +1455,200 @@ fn require_xlsm_extension(path: &str) {
     }
 }
 
+/// One module's verdict, shared by the human and JSON renderings.
+struct MacroCheckResult {
+    module: String,
+    procedures: Vec<String>,
+    error: Option<visi_core::Error>,
+}
+
+/// `visi macro check` -- Phase 0 of VBA support: does this source parse?
+///
+/// Takes either a workbook (checking every module, or one named with
+/// `--name`) or a bare `.bas` file, since the source usually exists as a file
+/// before it is ever put into a workbook and refusing to check it there would
+/// make the command useless in exactly the moment it is wanted.
+///
+/// Reports *every* module's verdict rather than stopping at the first
+/// failure, so one run tells you the whole story.
+fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
+    let results = if is_vba_source_path(&args.file) {
+        let source = read_source_argument(&args.file);
+        let module = args
+            .name
+            .clone()
+            .unwrap_or_else(|| default_module_label(&args.file));
+        let (procedures, error) = match visi_core::core::check_syntax(&source) {
+            Ok(syntax) => (syntax.procedures, None),
+            Err(e) => (Vec::new(), Some(name_syntax_error(e, &module))),
+        };
+        vec![MacroCheckResult {
+            module,
+            procedures,
+            error,
+        }]
+    } else {
+        let wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
+            exit_with_error(e, EXIT_IO_ERROR);
+        });
+        let modules = wb.list_vba_modules();
+        let selected: Vec<_> = match &args.name {
+            Some(name) => {
+                let found: Vec<_> = modules
+                    .iter()
+                    .filter(|m| m.name.eq_ignore_ascii_case(name))
+                    .collect();
+                if found.is_empty() {
+                    exit_with_error(
+                        format!(
+                            "VBA module '{}' not found. Available modules: {}",
+                            name,
+                            if modules.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                modules
+                                    .iter()
+                                    .map(|m| m.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            }
+                        ),
+                        EXIT_USAGE_ERROR,
+                    );
+                }
+                found.into_iter().copied().collect()
+            }
+            None => modules.clone(),
+        };
+
+        if selected.is_empty() && !args.json && !quiet {
+            eprintln!("No VBA modules found in workbook.");
+        }
+
+        selected
+            .iter()
+            .map(|m| match m.check_syntax() {
+                Ok(syntax) => MacroCheckResult {
+                    module: m.name.clone(),
+                    procedures: syntax.procedures,
+                    error: None,
+                },
+                Err(e) => MacroCheckResult {
+                    module: m.name.clone(),
+                    procedures: Vec::new(),
+                    error: Some(e),
+                },
+            })
+            .collect()
+    };
+
+    let failed = results.iter().filter(|r| r.error.is_some()).count();
+
+    if args.json {
+        let val = json!(
+            results
+                .iter()
+                .map(|r| {
+                    let error = r.error.as_ref().map(|e| match e {
+                        visi_core::Error::VbaSyntax {
+                            message,
+                            line,
+                            column,
+                            ..
+                        } => json!({ "message": message, "line": line, "column": column }),
+                        other => json!({ "message": other.to_string() }),
+                    });
+                    json!({
+                        "module": r.module,
+                        "ok": r.error.is_none(),
+                        "procedures": r.procedures,
+                        "error": error,
+                    })
+                })
+                .collect::<Vec<_>>()
+        );
+        println!("{}", serde_json::to_string_pretty(&val).unwrap());
+    } else {
+        for r in &results {
+            match &r.error {
+                // Errors go to stderr so `--quiet` piping still surfaces
+                // them, and are formatted `module(line,column): message` --
+                // the shape editors already know how to jump to.
+                Some(e) => eprintln!("{e}"),
+                None if !quiet => println!(
+                    "{}: OK ({} procedure{})",
+                    r.module,
+                    r.procedures.len(),
+                    if r.procedures.len() == 1 { "" } else { "s" }
+                ),
+                None => {}
+            }
+        }
+        if failed > 0 && !quiet {
+            eprintln!(
+                "{} of {} module{} failed to parse.",
+                failed,
+                results.len(),
+                if results.len() == 1 { "" } else { "s" }
+            );
+        }
+    }
+
+    if failed > 0 {
+        std::process::exit(EXIT_ENGINE_ERROR);
+    }
+}
+
+/// Whether the path names VBA source text rather than a workbook.
+///
+/// Anything that is not a recognised workbook extension is treated as source,
+/// so `-` (stdin) and an extensionless file both work.
+fn is_vba_source_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    !(lower.ends_with(".xlsx") || lower.ends_with(".xlsm") || lower.ends_with(".xlsb"))
+}
+
+fn read_source_argument(path: &str) -> String {
+    if path == "-" {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).unwrap_or_else(|e| {
+            exit_with_error(format!("Failed to read stdin: {}", e), EXIT_IO_ERROR)
+        });
+        buf
+    } else {
+        std::fs::read_to_string(path).unwrap_or_else(|e| {
+            exit_with_error(format!("Failed to read '{}': {}", path, e), EXIT_IO_ERROR)
+        })
+    }
+}
+
+fn default_module_label(path: &str) -> String {
+    if path == "-" {
+        return "<stdin>".to_string();
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn name_syntax_error(e: visi_core::Error, module: &str) -> visi_core::Error {
+    match e {
+        visi_core::Error::VbaSyntax {
+            message,
+            line,
+            column,
+            ..
+        } => visi_core::Error::VbaSyntax {
+            message,
+            module: Some(module.to_string()),
+            line,
+            column,
+        },
+        other => other,
+    }
+}
+
 fn handle_macro(args: MacroArgs, quiet: bool) {
     match args.command {
         MacroSubcommands::List(list_args) => {
@@ -1576,6 +1770,7 @@ fn handle_macro(args: MacroArgs, quiet: bool) {
                 );
             }
         }
+        MacroSubcommands::Check(check_args) => handle_macro_check(check_args, quiet),
         MacroSubcommands::SetSource(set_source_args) => {
             let mut wb = WorkbookManager::load_file(&set_source_args.file).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_IO_ERROR);

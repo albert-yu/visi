@@ -19,7 +19,81 @@
 //! the design notes in this crate's VBA feature plan for the full rationale
 //! (proven via a scratchpad proof-of-concept against real Excel).
 
+// The syntax layer. These are `#[doc(hidden)] pub` for the same reason
+// `ovba` and `vba_xlsx` are: `visi-core/fuzz`'s `vba_parse` target needs to
+// reach `parse_module` from outside the crate. The supported surface is
+// [`check_syntax`] and [`ModuleSyntax`] below, which is what `core`'s
+// `pub use` list carries -- the AST is an implementation detail until the
+// interpreter phases need it, and pinning its shape now would be a semver
+// commitment made a phase too early.
+#[doc(hidden)]
+pub mod ast;
+#[doc(hidden)]
+pub mod lexer;
+#[doc(hidden)]
+pub mod parser;
+
+use crate::Error;
 use serde::{Deserialize, Serialize};
+
+/// What [`check_syntax`] found in a module that parsed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ModuleSyntax {
+    /// The names of every `Sub`, `Function` and `Property` declared, in source
+    /// order. Procedures inside a `#If` branch are all included: which branch
+    /// is live depends on `#Const` values, which parsing alone cannot decide.
+    pub procedures: Vec<String>,
+}
+
+/// Checks a VBA module's source for syntax errors.
+///
+/// This is Phase 0 of the plan in `docs/vba-macro-support.md`: it answers
+/// whether the source *parses*, and nothing more. It does not resolve names,
+/// check types, or evaluate anything, so it will accept a module that fails
+/// at run time -- and, being an independent implementation, it may still
+/// differ from Excel's own compiler at the edges.
+///
+/// ```
+/// use visi_core::core::check_syntax;
+/// assert!(check_syntax("Sub Hello()\n    MsgBox \"hi\"\nEnd Sub\n").is_ok());
+/// assert!(check_syntax("Sub Hello()\n").is_err());
+/// ```
+pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
+    let module = parser::parse_module(source).map_err(|e| Error::VbaSyntax {
+        message: e.message,
+        module: None,
+        line: e.pos.line,
+        column: e.pos.col,
+    })?;
+    Ok(ModuleSyntax {
+        procedures: module.procedures().iter().map(|p| p.name.clone()).collect(),
+    })
+}
+
+impl VbaModule {
+    /// Checks this module's source, naming it in any error.
+    ///
+    /// The name matters more than it looks: a workbook can hold many modules
+    /// and `visi macro check` reports on all of them, so an error that does
+    /// not say which one it came from is close to useless.
+    pub fn check_syntax(&self) -> Result<ModuleSyntax, Error> {
+        check_syntax(&self.source).map_err(|e| match e {
+            Error::VbaSyntax {
+                message,
+                line,
+                column,
+                ..
+            } => Error::VbaSyntax {
+                message,
+                module: Some(self.name.clone()),
+                line,
+                column,
+            },
+            other => other,
+        })
+    }
+}
 
 /// What kind of VBA module a [`VbaModule`] is, which decides how it binds to
 /// the workbook.

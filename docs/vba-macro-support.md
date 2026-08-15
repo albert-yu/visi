@@ -126,15 +126,72 @@ real Excel, using the harness in Part 2.
 
 | Phase | Scope | Fuzzable when done? |
 | --- | --- | --- |
-| 0 | Lexer + parser + AST; `visi macro check` reports syntax errors, no execution | Parse-only: does Excel agree this compiles? |
+| 0 ✅ | Lexer + parser + AST; `visi macro check` reports syntax errors, no execution | Parse-only: does Excel agree this compiles? |
 | 1 | `Variant` model, expressions, `If`/`For`/`Do`/`Select Case`, `Sub`/`Function`, `On Error` | Yes — the bulk of the differential value |
 | 2 | Range and Worksheet object model, `WorksheetFunction` bridge | Yes |
 | 3 | Styles, tables, pivots, row/column edits | Yes |
 | — | Events (`Worksheet_Change`, `Workbook_Open`), classes | Separate design; ordering is observable and Excel's is subtle |
 
-Phase 0 alone has standalone value: `visi macro add` currently accepts
-source that Excel will reject at compile time, and there is no way to find
-out short of opening the file in Excel.
+Phase 0 alone has standalone value: `visi macro add` accepts source that
+Excel will reject at compile time, and before `visi macro check` there was no
+way to find out short of opening the file in Excel.
+
+### Phase 0, as built
+
+Landed as `core/vba/{lexer,ast,parser}.rs`, the `visi macro check` subcommand,
+`visi_core.check_syntax` in the bindings, a `vba_parse` cargo-fuzz target, and
+`fuzz/fuzz_vba_parse.py`. Three findings from building it are worth carrying
+forward, because they constrain the later phases too.
+
+**VBA's operator precedence was pinned against real Excel, not documentation.**
+Two cases discriminate between plausible tables and were run to get the
+answer: `False Imp False Eqv False` is `True` only if `Eqv` binds tighter than
+`Imp`, and `True Xor True Eqv False` likewise for `Xor` over `Eqv`. The one
+most likely to be got wrong is `^`: `2 ^ 3 ^ 2` is **64**, so it is
+*left*-associative, unlike almost every other language with an exponent
+operator. `-2 ^ 2` is `-4`, so `^` also binds tighter than unary minus. The
+table and its confirming cases are documented at the top of `parser.rs`, and
+each has a unit test naming the Excel result.
+
+**Excel compiles VBA lazily, strictly per invoked procedure.** This was found
+while building the differential harness and is the single most awkward fact
+about testing any of this. A trivial probe procedure in the same module as
+broken code compiles and runs happily; so does a procedure that *references*
+the broken one from a dead branch. Only invoking a procedure compiles it. The
+harness gets around it by putting generated source inside
+`If False Then ... End If` in the procedure it invokes — Excel must compile
+the body and cannot execute it (verified with an `Err.Raise` inside the dead
+branch, which never fired). A consequence worth stating plainly: **there is no
+way to ask Excel "does this arbitrary module compile?" without also asking it
+to run something.** `fuzz_vba_parse.py --corpus` is therefore parser-only by
+design rather than by omission.
+
+**Diagnostics blame the opener, matching VBA.** An unclosed block reports at
+the line that opened it, with VBA's own wording (`Block If without End If`,
+`For without Next`, `Expected End Sub`, ...), rather than at whatever token
+turned up where the closer was due — which is usually a perfectly correct
+line, and in a long procedure can be hundreds of lines from the defect. The
+wording and position follow VBA's documented compile errors; they could not be
+read back from Excel directly, since a compile error surfaces only as a modal
+dialog that is unreadable to the AppleScript bridge and, in this environment,
+to UI scripting and screenshots as well. Worth re-checking by hand in the VBE
+if these strings ever matter for more than readability.
+
+**A compile error is observable only as a hang**, as predicted in Part 2 —
+and, unlike a runtime error, the `On Error` wrapper does not help, because a
+compile error is not trappable. The harness reads a timeout as Excel's
+rejection, and confirms it survives an Excel restart before believing it, so
+session degradation is not mistaken for a verdict.
+
+The harness's first real run found a genuine disagreement, and it is a useful
+one to have on record: `x = f(1, , 3)` — an omitted middle argument — parses
+fine and is valid VBA, but Excel rejects it at compile time when it cannot
+resolve `f` to a procedure with an `Optional` parameter in that position.
+That is a *semantic* check requiring name resolution, which Phase 0
+deliberately does not do; the parser cannot even tell a procedure call from an
+array index without a symbol table. So it marks the boundary of what
+parse-only checking can see rather than a parser bug, and the generator now
+declares a real callee so the omitted-argument syntax stays under test.
 
 ### Security posture
 

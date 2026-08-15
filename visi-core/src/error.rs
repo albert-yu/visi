@@ -118,6 +118,21 @@ pub enum Error {
     Xlsx(String),
     /// Reading or writing the VBA project failed.
     Vba(String),
+    /// A VBA module failed to parse.
+    ///
+    /// Carries the position separately from the message so a caller can point
+    /// at the offending line -- an editor integration, or `visi macro check
+    /// --json` -- without parsing the text back out.
+    VbaSyntax {
+        /// What went wrong, phrased for someone reading it.
+        message: String,
+        /// The module the error is in, when the caller knew one.
+        module: Option<String>,
+        /// 1-based line number within that module's source.
+        line: u32,
+        /// 1-based column number, counted in characters.
+        column: u32,
+    },
     /// Formula evaluation failed.
     Eval(EngineError),
 }
@@ -181,6 +196,15 @@ impl std::fmt::Display for Error {
             Error::InvalidArgument(msg) => f.write_str(msg),
             Error::Xlsx(msg) => write!(f, "xlsx error: {msg}"),
             Error::Vba(msg) => write!(f, "VBA error: {msg}"),
+            Error::VbaSyntax {
+                message,
+                module,
+                line,
+                column,
+            } => match module {
+                Some(m) => write!(f, "{m}({line},{column}): {message}"),
+                None => write!(f, "line {line}, column {column}: {message}"),
+            },
             Error::Eval(err) => write!(f, "evaluation error: {err}"),
         }
     }

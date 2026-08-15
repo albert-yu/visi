@@ -358,6 +358,32 @@ call the driver makes for itself.
 
 ---
 
+## VBA Syntax Fuzzing (`fuzz_vba_parse.py`)
+
+Phase 0 of the VBA plan ([`docs/vba-macro-support.md`](../docs/vba-macro-support.md), issue #49) added a VBA lexer and parser behind `visi macro check`. This asks both engines one question about generated source — **does it compile?** — and reports the two failure modes a syntax checker has: rejecting source Excel accepts (a false positive, which makes `macro check` untrustworthy) and accepting source Excel refuses (a false negative, which is the thing the command exists to catch).
+
+```bash
+python3 fuzz/fuzz_vba_parse.py --driver mock --iterations 20        # parser only, no Excel
+python3 fuzz/fuzz_vba_parse.py --iterations 10 --seed 1
+python3 fuzz/fuzz_vba_parse.py --corpus visi-core/fuzz/seeds/vba_parse
+```
+
+Getting Excel's verdict is the entire difficulty, and three findings shape the design:
+
+- **A compile error is observable only as a hang.** Excel raises it as a modal dialog `set display alerts to false` does not suppress. Unlike a runtime error, the `On Error` wrapper does *not* help — a compile error is not trappable. "Excel rejected it" is therefore read from a timeout, confirmed to survive an Excel restart so that session degradation (§ pivot fuzzing above) is not mistaken for a verdict.
+- **VBA compiles lazily, strictly per invoked procedure.** A trivial probe procedure in the same module as broken code compiles and runs happily; so does one that *references* the broken procedure from a dead branch. Only invoking a procedure compiles it.
+- **`If False Then ... End If` compiles its body without running it**, which is what makes the previous point usable. Generated source goes in a dead branch of the procedure being invoked, so Excel must compile it and cannot execute it — verified with an `Err.Raise 5` in the dead branch that never fired. **The harness never executes a line of generated VBA**, which removes runtime errors, infinite loops, and side effects from the picture entirely.
+
+`--corpus` is parser-only by design, not omission: per the second finding, there is no way to ask Excel whether an arbitrary module compiles without also asking it to run something. It checks that visi still accepts known-good real-world `.bas` files — a regression check, not a differential one.
+
+Cost: a valid case is one fast round trip (~1s); an invalid one costs the full `--timeout` plus an Excel restart, since a hang is the signal. Runs are dominated by however many invalid cases the generator emits, which is what `--mutation-rate` controls.
+
+**One known divergence, and it is a boundary rather than a bug.** `x = f(1, , 3)` (an omitted middle argument) parses fine and is valid VBA, but Excel rejects it at compile time when it cannot resolve `f` to a procedure with an `Optional` parameter there. That is a semantic check needing name resolution, which Phase 0 does not do — the parser cannot tell a procedure call from an array index without a symbol table. The generator declares a real callee so the syntax stays under test.
+
+Failure artifacts land under `fuzz_results/failures/vba_parse_<label>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers.
+
+---
+
 ## Key Considerations for Excel Parity
 
 When building full feature parity between `visi` and Microsoft Excel for formula evaluation and file import/export, several critical edge cases and subtle behaviors must be addressed:

@@ -871,6 +871,20 @@ pub enum MacroSubcommands {
     Rename(MacroRenameArgs),
     /// Replace a VBA module's source code
     SetSource(MacroSetSourceArgs),
+    /// Check VBA module source for syntax errors
+    Check(MacroCheckArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct MacroCheckArgs {
+    /// Input Excel file path, or a .bas source file, or - for stdin
+    pub file: String,
+    /// Check only this module (defaults to every module in the workbook)
+    #[arg(short, long)]
+    pub name: Option<String>,
+    /// Output results as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

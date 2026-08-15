@@ -52,6 +52,8 @@ cargo install cargo-fuzz                                          # needs a nigh
 cd visi-core && cargo +nightly fuzz run ovba_decompress
 mkdir -p fuzz/corpus/vba_import
 cargo +nightly fuzz run vba_import fuzz/corpus/vba_import fuzz/seeds/vba_import   # seed corpus gets past the CFB-magic-bytes gate
+mkdir -p fuzz/corpus/vba_parse
+cargo +nightly fuzz run vba_parse fuzz/corpus/vba_parse fuzz/seeds/vba_parse       # VBA source text, not a binary
 ```
 
 See `visi-core/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties are also covered by `proptest` cases in `cargo test -p visi-core`, no nightly needed.
@@ -75,7 +77,7 @@ The two crates version independently: `visi` is at the workspace version, `visi-
 
 ### Public API surface
 
-Not everything in `core` is public. The modules implementing Excel's function library — `stats`, `math_trig`, `text`, `date_fn`, `date`, `engineering`, `finance`, `extended_fn`, `ets`, `xml`, `vba_synth`, `pivot_xlsx`, `parser`, `formula`, `actions`, `shared_vec` — are `pub(crate)`; their types reach users only through the curated `pub use` list at the bottom of `core/mod.rs`. `ovba` and `vba_xlsx` are `#[doc(hidden)] pub` because `visi-core/fuzz` and the `dump_vba_fuzz_seeds` example need them, not because they are supported.
+Not everything in `core` is public. The modules implementing Excel's function library — `stats`, `math_trig`, `text`, `date_fn`, `date`, `engineering`, `finance`, `extended_fn`, `ets`, `xml`, `vba_synth`, `pivot_xlsx`, `parser`, `formula`, `actions`, `shared_vec` — are `pub(crate)`; their types reach users only through the curated `pub use` list at the bottom of `core/mod.rs`. `ovba`, `vba_xlsx`, and `vba`'s `ast`/`lexer`/`parser` submodules are `#[doc(hidden)] pub` because `visi-core/fuzz` and the `dump_vba_fuzz_seeds` example need them, not because they are supported — the VBA syntax layer's supported surface is `check_syntax`/`ModuleSyntax`, and the AST's shape is deliberately not a semver commitment until the interpreter phases need it.
 
 **When adding a public item, ask whether it belongs in that re-export list.** Anything reachable from `core`'s `pub use` is a semver commitment.
 
@@ -148,6 +150,20 @@ Neither xlsx library used here has pivot table support: calamine doesn't expose 
 
 - **Export** (`inject_pivot_tables`) post-processes the zip `export_xlsx_data` already produced — rust_xlsxwriter has no hook for extra parts — by re-opening it with the `zip` crate, editing `[Content_Types].xml` / `xl/workbook.xml` (`<pivotCaches>`) / `xl/_rels/workbook.xml.rels` / the destination worksheet's `.rels`, and writing new `pivotCacheDefinition`/`pivotCacheRecords`/`pivotTable` parts, then rewriting the whole zip. `rowItems`/`colItems` encode Excel's leading-field repeat suppression (`<i r="N">` = "the first N fields are unchanged from the previous row") plus `t="default"`/`t="grand"` subtotal/grand-total markers — get this wrong and Excel still opens the file (`refreshOnLoad="1"` lets it silently rebuild the cache) but may misrender the grid. Verified against `openpyxl` (a strict independent OOXML reader) rather than real Excel, since driving Excel via AppleScript needs a one-time interactive automation-permission grant this environment couldn't complete — re-verify with the `fuzz/` Excel driver or manually in Excel before trusting further pivot XML changes.
 - **Import** (`import_pivot_tables`) reconstructs each `PivotTable`'s source/destination/row/col/value fields from that XML, including per-field subtotal toggles (recovered from whether the field's `<item t="default"/>` placeholder is present) — this is not just fidelity, it's load-bearing: the CLI is a fresh process per invocation, so a pivot table definition only survives `pivot add-field` in a later command because it round-trips through this xlsx parsing. Filter-field *selections* are the one thing not reconstructed (they reset to "all"), since that would require trusting index-based item references against data that may have changed. **Anything that mutates a filter selection must therefore be the last step before saving** — a round trip past that point silently drops it.
+
+### VBA (`visi-core/src/core/vba/`)
+
+Two layers that share a directory but not much else:
+
+- **Storage** (`mod.rs`, plus `ovba.rs`/`vba_xlsx.rs`/`vba_synth.rs` outside it) — `VbaProject`/`VbaModule` and the `vbaProject.bin` round trip. Workbook-level like `Chart`, not sheet-scoped. Read those files' own doc comments before touching them; the p-code prefix and MODULECOOKIE handling are both load-bearing in ways that are not guessable.
+- **Syntax** (`lexer.rs`, `ast.rs`, `parser.rs`) — Phase 0 of `docs/vba-macro-support.md`. Parses only: no name resolution, no types, no evaluation, which is why a `Call` node cannot distinguish a procedure call from an array index.
+
+Things that will bite:
+
+- **VBA's operator precedence differs from the formula language's and was pinned against real Excel**, not documentation. `^` is **left**-associative (`2 ^ 3 ^ 2` = 64, not 512) and binds tighter than unary minus (`-2 ^ 2` = -4); `Eqv` binds tighter than `Imp`, `Xor` tighter than `Eqv`, `Not` looser than comparison. The table and its confirming cases are at the top of `parser.rs`, each with a unit test naming the Excel result. Do not "fix" one of these from memory.
+- **Keywords are not reserved.** The lexer emits every one as a plain `Ident` and the parser matches case-insensitively, because VBA's keyword set is contextual — `Name`, `Line`, `Get`, and `Width` are all statements in one position and ordinary property names in another. The `Stmt::Opaque` guards in `parser.rs` are narrow for exactly this reason.
+- **Excel compiles VBA lazily, per invoked procedure.** Nothing short of calling a procedure compiles it — not a probe in the same module, not a reference from a dead branch. This is why `fuzz/fuzz_vba_parse.py` wraps generated source in `If False Then ... End If` inside the procedure it calls, and why there is no way to ask Excel whether an arbitrary module compiles without also running something.
+- A **compile** error in Excel hangs the AppleScript bridge and, unlike a runtime error, is *not* catchable by an `On Error` wrapper.
 
 ### xlsx I/O (`visi-core/src/core/xlsx.rs`)
 
