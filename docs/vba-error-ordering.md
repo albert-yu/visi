@@ -3,7 +3,8 @@
 Scoping for the divergences left after Phase 1 of
 [`vba-macro-support.md`](vba-macro-support.md). Findings measured against
 Microsoft Excel for Mac 16.112 on macOS 26.6.1, with
-[`fuzz/vba_ordering_probe.bas`](../fuzz/vba_ordering_probe.bas).
+[`fuzz/vba_ordering_probe.bas`](../fuzz/vba_ordering_probe.bas) for §2–§6 and
+[`fuzz/vba_expr_probe.py`](../fuzz/vba_expr_probe.py) for §7 onwards.
 
 Phase 1 landed at 493 of 500 generated procedures agreeing with Excel on
 value, subtype and error number together. This document scoped the remainder,
@@ -11,11 +12,14 @@ and **all of it has since been implemented** — each section below records the
 measurement, and each fix has a unit test naming the Excel result it came
 from.
 
-**Status:** every item here is done. On the seed this was developed against,
-the harness now reports 300/300. On *unseen* seeds it reports 294–297 of 300,
-which is the honest number — see [Overfitting](#overfitting-is-real-here)
-below, because the gap between those two figures is the most useful thing in
-this document.
+Sections 2–6 are the first round. Sections 7–13 are the second, which closed
+eleven of the twelve cases that round left behind; §14 is the twelfth, which
+turned out to be Excel misreporting an error and is deliberately not matched.
+
+**Status:** see [What is left](#what-is-left) for the current per-seed
+numbers, and read [Overfitting](#overfitting-is-real-here) first — the gap
+between a tuned seed and an unseen one is the most useful thing in this
+document.
 
 ---
 
@@ -171,6 +175,184 @@ inside `not`'s boolean branch, the second falls into the bitwise one because
 only one side is a `Boolean`. Covered by
 `the_words_true_and_false_coerce_on_the_integer_path_only`.
 
+## 7. `Select Case` converts its cases to the subject's *static* type
+
+The distinction is invisible in the value: `Select Case CBool(a)` matches
+`Case 1`, while `Select Case a` with `a = True` does not, though both subjects
+are `True` at run time. When the compiler knows the subject is `Boolean` — a
+literal, a folded constant expression, or a call to `CBool`/`IsNumeric`/
+`IsNull`/`IsEmpty`/`IsDate`/`IsObject` — **every case value is converted with
+`CBool` and the comparison then runs on the Booleans**. A Variant that merely
+holds a Boolean gets the ordinary numeric comparison, where `True` is `-1`.
+
+One rule, and it produces a table that looks like six:
+
+| Subject | Case | Excel | Why |
+| --- | --- | --- | --- |
+| static `True` | `Case 1` | match | `CBool(1)` is True |
+| static `True` | `Case 0` | miss | `CBool(0)` is False |
+| static `True` | `Case 2 To 5` | **match** | both ends become True |
+| static `True` | `Case 0 To 1` | **miss** | the range is False To True, i.e. `0 To -1`, which is empty |
+| static `True` | `Case Is < 0` | match | True is -1 |
+| static `True` | `Case Null` | **error 94** | `CBool(Null)` raises it |
+| Variant `True` | `Case 0, 1` | miss | -1 is neither |
+| Variant `True` | `Case 2 To 5` | miss | -1 is outside |
+
+The `Case 0 To 1` and `Case Null` rows are the ones that rule out the simpler
+"compare the case value as a Boolean": the conversion happens *first*, and
+everything after it is the ordinary comparison.
+
+This also corrects a Phase 1 measurement that this document previously
+recorded as fact — "the range form does not do this" — which was taken with a
+Variant subject and generalised to both.
+
+**Done.** `interp::is_statically_boolean` plus a conversion in
+`case_matches`, covered by
+`a_statically_boolean_select_subject_converts_its_cases_with_cbool`.
+
+Accounts for fuzz cases `s2024/52`, `s2024/171`, `s2024/299` and `s31337/119`.
+
+## 8. `/` overflows rather than returning an infinity
+
+`^` is the one operator that hands back an infinity. Every other one raises
+error 6 when its result is not finite, *or when an operand already is* — and
+`/` was the last one still returning `INF`:
+
+| Expression | Excel |
+| --- | --- |
+| `1E308 / 1E-308` | error 6 |
+| `a = 1E308 : b = 1E-308 : a / b` | error 6 |
+| `a = 3.75 : b = a ^ 32767 : b / 2` | error 6 |
+| `a = 3.75 : b = a ^ 32767 : b * 2`, `b + 1`, `b \ 2` | error 6 (already matched) |
+| `a = 3.75 : b = a ^ 32767 : -b`, `b ^ 1`, `Abs(b)`, `b & "x"` | the infinity, unchanged |
+
+**Done.** `value::div` applies the same finiteness check `value::arith` does,
+covered by `division_overflows_rather_than_returning_an_infinity`.
+
+Accounts for `s777/298`.
+
+## 9. `Empty + <String>` concatenates
+
+The lead the previous round left unimplemented, and the probe confirmed it —
+with a sharper edge than the hypothesis had: it is not only the non-numeric
+strings that concatenate.
+
+| Expression | Excel | visi, before this |
+| --- | --- | --- |
+| `Empty + "a"`, `"a" + Empty` | `String` `"a"` | error 13 |
+| `Empty + "1"` | **`String` `"1"`** | `Double` `1` |
+| `Empty + ""` | `String` `""` | error 13 |
+| `Empty + CStr(1)` | `String` `"1"` | `Double` `1` |
+| `Empty - "a"`, `Empty * "a"`, `Empty / "a"` | error 13 | error 13 ✅ |
+| `TypeName(Empty + Empty)` | **`Integer`** | `Empty` |
+
+`Empty` takes the other operand's type, the same way it does against a number
+— and only for `+`. The `Empty + Empty` row is a correction to a Phase 1
+measurement: reading that result back through the fuzz harness cannot
+distinguish `Empty` from the `Integer` 0, since both render as `0` once
+assigned onward. Asking `TypeName` *inside* VBA can.
+
+**Done.** In `value::add`, covered by `empty_is_both_zero_and_the_empty_string`.
+
+Accounts for `s2024/4`.
+
+## 10. A trailing sign is part of the number
+
+VBA's string-to-number conversion accepts a sign *after* the digits:
+
+| Expression | Excel |
+| --- | --- |
+| `CDbl("1-")`, `CInt("1-")`, `CDbl("1 -")` | `-1` |
+| `CDbl("1+")` | `1` |
+| `CDbl("2.5-")` | `-2.5` |
+| `CDbl("1E2-")` | `-100` |
+| `IsNumeric("1-")` | `True` |
+| `"1-" + 1` | `Double` `0` |
+| `CDbl("-1-")`, `CDbl("1--")` | error 13 |
+| `Val("1-")` | `1` — `Val` stops at the sign, and always did |
+
+**Done.** In `value::parse_vba_number`, covered by
+`string_to_number_accepts_what_vba_accepts`.
+
+Accounts for `s2024/162`, where `If Left("1-2.5", 2) Then` — that is,
+`If "1-"` — decides which branch runs, and visi was raising error 13 on the
+condition where Excel takes the `Then` branch and reaches a division by zero.
+
+## 11. A runtime String against a static Boolean compares as text
+
+| Expression | Excel | Note |
+| --- | --- | --- |
+| `a = "011" : a < False` | `True` | "011" sorts before "False" |
+| `a = "011" : a > True` | `False` | |
+| `a = "011" : a < CBool(0)`, `a < IsNull(32768)` | `True` | any static Boolean |
+| `a = "true" : a = True` | `True` | the *words* still convert with `CBool` |
+| `a = "011" : b = False : a < b` | `False` | a Boolean **variable** is not static: the runtime rule applies and the number sorts first |
+| `a = "011" : a < 0` | `False` | a numeric partner is unaffected |
+
+**Done, for the runtime half only.** `value::compare_ctx`, covered by
+`a_string_compares_against_a_static_boolean_as_text`.
+
+A *constant* string keeps the numeric rules — `("abc" < True)` is error 13 and
+`((Empty & "1") <= ("" <> Empty))` is `False`, both of which a text comparison
+gets wrong. That leaves one measured row unexplained: `("011" < False)` is
+`True` in Excel, so a numeric string *literal* does appear to compare as text.
+Implementing that was tried and reverted — see [What is left](#what-is-left).
+
+Accounts for `s2024/145`.
+
+## 12. The `"True"`/`"False"` fold stops when both sides are statically typed
+
+Section 6 established that the words coerce on the integer path. The
+open question was when a `Boolean` partner suppresses that, and the answer is
+the same static-typing distinction as §7 and §11:
+
+| Expression | Excel | Why |
+| --- | --- | --- |
+| `True Eqv "True"` | error 13 | Boolean literal, String literal |
+| `True Eqv CStr(True)` | error 13 | `CStr` is declared `As String` |
+| `a = 3.75 : IsNumeric(a) Eqv CStr(True)` | error 13 | both declared |
+| `LCase("TRUE") Eqv True` | `True` | **`LCase` returns a `Variant`** |
+| `LCase(False) Eqv IsNull(True)` | `True` | |
+| `a = True : a Eqv "True"` | `True` | `a` is a Variant |
+| `a = "false" : a Eqv False` | `True` | same, other way round |
+| `a = "true" : b = False : a Eqv b` | `False` | |
+
+The `CStr`/`LCase` pair is what pins it down, and the split is not arbitrary:
+`CStr` returns `String`, while `LCase`, `UCase`, `Left` and the rest return
+`Variant` — it is their `$`-suffixed forms that are typed. visi had the
+suppression keyed on "the partner is a Boolean" alone, which matched the four
+all-constant rows and made every runtime row error.
+
+**Done.** `value::logical_pair` takes the operand kinds, covered by
+`the_words_true_and_false_coerce_on_the_integer_path_only`.
+
+Accounts for `s2024/103`.
+
+## 13. Strictness needs a constant string — and `Len`, `Val` and `Sgn` are static
+
+Two corrections to the table below, both from cases that hold one side fixed
+while the other varies.
+
+**`Len`, `Val` and `Sgn` are statically typed**, like the `C*` conversions.
+Against the constant string `(-32768 & -2.5)` all four raise error 13, while
+`Int(a)`, `Abs(a)` and a bare `a` do not. The earlier round put `Len` in on
+the strength of its `As Long` signature, tested it against a *runtime* string,
+saw no error and took it out — but nothing is strict against a runtime string,
+so the case could not discriminate. `Int` and `Abs` stay out for a reason
+visible in their signatures: they return the type they were handed, so a
+Variant argument makes them Variant.
+
+**Strictness only applies to a constant string.** `CLng(a) < ("abc" & a)` is
+`True` in Excel, not error 13: a runtime string that fails to parse falls back
+to the ordering rule, exactly as it does against a numeric constant. It still
+compares numerically when it *does* parse — `a = 5 : b = "1" : CLng(a) < b` is
+`False`.
+
+**Done.** `interp::STATICALLY_NUMERIC` and `value::compare_ctx`, covered by
+`a_statically_typed_numeric_partner_is_strict_only_against_a_constant_string`.
+
+Accounts for `s31337/123` and `s31337/147`.
+
 ## String against number, in full
 
 This was the last hard question, and it took four attempts. The rule:
@@ -201,13 +383,15 @@ One supporting rule: **`Null` is not foldable**, so nothing containing it is
 constant. `(False & Null) = (0.1 / -2.5)` is `False` rather than an error
 because the string side is not constant and therefore falls back.
 
-### Four failed models, kept so they are not retried
+### Failed models, kept so they are not retried
 
 1. *`&` is never constant-folded.* Net negative on its own: 2093 against 2096
    across seven seeds, fixing one case and breaking three.
-2. *Any statically-typed numeric partner is strict, including `Len`.* `Len`
-   has a documented `As Long` signature, and `("abc" & va) <> Len(CStr("Z"))`
-   still does not error while the same shape against `CLng` does.
+2. ~~*Any statically-typed numeric partner is strict, including `Len`.*~~
+   **Rehabilitated — see §13.** `Len`, `Val` and `Sgn` really are strict; the
+   case that rejected the model (`("abc" & va) <> Len(CStr("Z"))`) held the
+   *string* side runtime, where nothing is strict, so it could not
+   discriminate. A model rejected on a confounded case is not rejected.
 3. *`^` with a String operand is strict.* `"255" ^ 255` and
    `StrReverse(255) ^ 1.5E54` are both `INF`, exactly as their numeric
    equivalents. The case that looked like evidence had a base of `"1E+2923"`,
@@ -215,55 +399,80 @@ because the string side is not constant and therefore falls back.
 4. *Strictness depends on literal versus constant expression.* This scored
    best of the structural models and is still wrong; it was replaced by
    prefix coercion, which is about the string's content instead.
+5. *A String compares against a Boolean as text.* True only when the string is
+   a **runtime** value (§11). Applied to constants as well it fixed one case
+   and broke six across four seeds — 1192 to 1190 — and was narrowed rather
+   than kept. The tell was that every regression had a constant string.
+6. *The `"True"`/`"False"` fold is suppressed whenever the partner is a
+   Boolean.* Right for the four all-constant cases it was measured on, wrong
+   for every runtime one (§12).
+
+## 14. `s555/219` is Excel misreporting, and is not matched
+
+The twelfth case turned out not to be a rule at all. Once a procedure has
+produced an infinity — `^` is the only operator that can — Excel raises error
+6 on the **next string-to-number conversion anywhere in that procedure**,
+whatever string it is given:
+
+```vba
+a = 3.75
+b = a ^ 32767        ' Double INF, no error
+c = CDbl("1.5")      ' Excel: error 6.  visi: 1.5
+```
+
+It survives unrelated intervening statements but clears once the error has
+been reported, and `Val` — a different parser — is immune. That is a sticky
+floating-point status flag being read by the conversion routine, not
+behaviour worth reproducing. Full table in
+[`excel-discrepancies.md` §16](excel-discrepancies.md).
+
+## 15. A static String over a `Null` is error 94
+
+Found on a seed never used during this work, which is the point of running
+those:
+
+| Expression | Excel |
+| --- | --- |
+| `"  3  " Imp Null`, `"3" And Null`, `"1.5" Or Null`, `"0" Or Null` | error 94 |
+| `("  " & "3") Or Null`, `CStr(3) Or Null` | error 94 |
+| `a = Null : "  3  " Or a` | error 94 — the *Null* may be a variable |
+| `a = "  3  " : a Imp Null` | no error — the **String** may not |
+| `Null Or "  3  "`, `Null And "  3  "`, `Null Xor "  3  "` | no error — left-specific |
+| `"abc" Imp Null`, `"True" Or Null` | error 13 — the conversion is checked first |
+| `3 Imp Null`, `255 Imp Null` | no error — the operand must be a String |
+
+**Done.** `interp::null_on_the_right`, covered by
+`a_static_string_over_a_null_is_invalid_use_of_null`.
 
 ## What is left
 
-Roughly 1-2% on seeds never tuned against. **Those are the honest numbers**,
-and the gap from the tuned ones is the same overfitting trap this document
-opened with:
-
-| Seeds used during this work | 300, 300, 300, 300, 300, 299, 299 of 300 |
-| --- | --- |
-| **Seeds never used** | **293, 297 of 300** |
-
-### The outstanding cases
-
-Twelve, across four seeds, reproducible with
-`python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <seed>`:
-
-| Case | visi | Excel |
+| Seed | Before | After |
 | --- | --- | --- |
-| `s2024/4` | error 13 | `Double 0.0001` |
-| `s2024/103` | error 13 | `Boolean True` |
-| `s2024/145` | `String "False"` | `String "True"` |
-| `s2024/162` | error 13 | error 11 |
-| `s2024/171` | `Integer -255` | `Double 3` |
-| `s2024/299` | error 13 | error 11 |
-| `s2024/52` | `String "xx2"` | error 13 |
-| `s31337/119` | error 11 | error 13 |
-| `s31337/123` | error 13 | `Double 0.1` |
-| `s31337/147` | `Long 1` | error 13 |
-| `s555/219` | `Integer 255` | error 6 |
-| `s777/298` | `Boolean True` | error 6 |
+| 2024 | 293 | **300** |
+| 31337 | 297 | **300** |
+| 555 | 299 | 299 |
+| 777 | 299 | **300** |
+| 293 (never used) | — | **300** |
+| 297 (never used) | — | **300** |
 
-Nine of the twelve are error-code disagreements or a spurious error on one
-side, which is the same family as everything resolved above: both engines
-fault on one expression and disagree about which fault surfaces, or one
-coerces where the other refuses.
+`s555/219` is the one remaining, and it is §14 — Excel reporting an overflow
+on a conversion that cannot overflow. It is left in place rather than
+suppressed, so that the harness keeps saying 299 and the reason stays visible.
 
-### One unverified lead
+Two more divergences are known and unfixed, both narrower than a fuzz case
+reaches:
 
-`s2024/4` contains `Empty + "a"`, which visi makes error 13 -- `Empty` enters
-arithmetic as a numeric zero, so the `"a"` has to coerce and cannot. The
-obvious hypothesis is that **`Empty + <string>` concatenates**, `Empty` taking
-the other operand's type rather than forcing a numeric context, which would
-make it `"a"`.
+- `("011" < False)` is `True` in Excel and `False` here: a *numeric string
+  literal* appears to compare against a Boolean as text, where a constant
+  expression like `(Empty & "1")` compares numerically (§11).
+- `("1-2.5" = 1)` and `("1-2.5" = -1)` are both error 13 in Excel, where
+  visi's numeric-prefix scan reads a `1`. Trailing-sign parsing (§10) is
+  presumably what makes the prefix ambiguous, but the scan's exact rule was
+  not measured.
 
-That is a guess and is **deliberately not implemented**. It fits the shape of
-the `Empty` rules already measured (`Empty + 1` is the `Integer` 1,
-`Empty & "a"` is `"a"`, `Empty = 0` and `Empty = ""` are both `True`), but
-this document records four separate models that fitted the cases in front of
-them and were wrong. Probe it before touching `value::add`.
+`IsArray` and `IsError` are also unimplemented (error 35); Excel treats both
+as statically Boolean in `Select Case`, and `STATICALLY_BOOLEAN` already lists
+them so they arrive with the right behaviour.
 
 ### The workflow that has resolved every one so far
 
