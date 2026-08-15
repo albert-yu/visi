@@ -9,9 +9,11 @@
 //! object they never link (see the commit that dropped `visi-core`'s cdylib).
 //!
 //! Depends on `visi-core` only, never on the `visi` CLI crate. Where a binding
-//! has to mirror CLI behavior -- `edit_chart`'s clear-vs-set flags, and
-//! `add_pivot_field`'s post-add subtotal/label mutation -- that mirroring is a
-//! contract enforced by `fuzz/test_backend_parity.py`, not an accident.
+//! has to mirror CLI behavior -- `edit_chart`'s clear-vs-set flags,
+//! `add_pivot_field`'s post-add subtotal/label mutation, and `add_macro`'s
+//! sheet-name-to-id resolution with its `ThisWorkbook` exemption -- that
+//! mirroring is a contract enforced by `fuzz/test_backend_parity.py`, not an
+//! accident.
 
 use pyo3::prelude::*;
 use visi_engine::WorkbookManager;

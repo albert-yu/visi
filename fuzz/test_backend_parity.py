@@ -231,3 +231,86 @@ def test_binding_error_text_matches_the_cli(tmp_path):
     assert res.returncode != 0
     cli_msg = res.stderr.strip().removeprefix("Error: ")
     assert str(exc.value) == cli_msg
+
+
+# ------------------------------------------------------------------- macros
+
+
+MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    Range("A1").Value = 1\nEnd Sub\n'
+
+
+@requires_cli
+@pytest.mark.parametrize("kind,sheet", [("standard", None), ("document", "Sheet1")])
+def test_macro_add_parity(kind, sheet, tmp_path):
+    """`visi macro add` and `Workbook.add_macro` must produce the same module.
+
+    The bindings duplicate the CLI's resolve-sheet-name-to-id step and its
+    ThisWorkbook special case (visi-core takes a sheet id, not a name), so
+    this is the same kind of mirrored logic as `edit_chart`'s flags.
+    """
+    import subprocess
+
+    import visi_core
+
+    from visi_driver import resolve_visi_binary
+
+    src = str(tmp_path / "source.xlsx")
+    bas = str(tmp_path / "mod1.bas")
+    cli_out = str(tmp_path / "cli.xlsm")
+    base = visi_core.Workbook()
+    if sheet is not None:
+        # Both backends resolve the sheet by name, so take it from the
+        # workbook rather than assuming what an empty one calls its sheet.
+        sheet = base.sheet_names[0]
+    base.save(src)
+    with open(bas, "w") as f:
+        f.write(MACRO_SRC)
+
+    cmd = [resolve_visi_binary(None), "macro", "add", src, "--name", "Mod1",
+           "--kind", kind, "--source-file", bas, "--output", cli_out, "--quiet"]
+    if sheet is not None:
+        cmd += ["--sheet", sheet]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert res.returncode == 0, res.stderr
+
+    wb = visi_core.Workbook.load(src)
+    wb.add_macro("Mod1", MACRO_SRC, kind=kind, sheet=sheet)
+    bindings_out = str(tmp_path / "bindings.xlsm")
+    wb.save(bindings_out)
+
+    def modules(path):
+        return [
+            (m["name"], m["kind"], m["source"], m["bound_sheet_id"] is not None)
+            for m in visi_core.Workbook.load(path).macros()
+        ]
+
+    assert modules(cli_out) == modules(bindings_out)
+
+
+@requires_cli
+def test_macro_list_parity(tmp_path):
+    """The dicts `macros()` returns must carry `macro list --json`'s keys."""
+    import json
+    import subprocess
+
+    import visi_core
+
+    from visi_driver import resolve_visi_binary
+
+    path = str(tmp_path / "book.xlsm")
+    wb = visi_core.Workbook()
+    wb.add_macro("Mod1", MACRO_SRC)
+    wb.add_macro("ThisWorkbook", 'Attribute VB_Name = "ThisWorkbook"\n', kind="document")
+    wb.save(path)
+
+    res = subprocess.run(
+        [resolve_visi_binary(None), "macro", "list", path, "--json"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    cli = json.loads(res.stdout)
+
+    got = visi_core.Workbook.load(path).macros()
+    assert [(m["name"], m["kind"], m["source_lines"]) for m in cli] == [
+        (m["name"], m["kind"], m["source_lines"]) for m in got
+    ]

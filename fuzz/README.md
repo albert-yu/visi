@@ -83,7 +83,8 @@ iteration and still saves the reproducing files.
 
 The two backends must stay observationally identical, and they duplicate a
 little logic to do it (`edit_chart`'s clear-vs-set flags, `add_pivot_field`'s
-post-add subtotal mutation). Nothing else would notice that drifting:
+post-add subtotal mutation, `add_macro`'s sheet-name-to-id resolution and its
+`ThisWorkbook` exemption). Nothing else would notice that drifting:
 
 ```bash
 pytest fuzz/test_backend_parity.py visi-python/tests/
@@ -276,7 +277,7 @@ The workaround: `fuzz/BuildFuzzPivot.bas` is a VBA macro (using the same well-do
 
 **No setup step.** The template is a build output, generated on first use (and regenerated whenever the `.bas` is newer) by `ExcelPivotDriver._ensure_macro_template`, which shells out to `visi macro add`. It used to be a one-time manual ritual -- open Excel's VBA editor, paste the `.bas` in, Save As `.xlsm` -- because Excel for Mac exposes no VBProject object to AppleScript, so nothing could put a macro into a workbook programmatically; `visi`'s own macro CRUD writes it into `vbaProject.bin` at the file-format level instead. Beyond removing the manual step, this closes the stale-template failure mode the old flow invited: edit the macro, forget to rebuild, and the resulting mismatches get blamed on the engine.
 
-Two properties worth preserving if this is touched: the generated template holds **no data** (openpyxl copies each iteration's rows in), so the Excel oracle's data path never round-trips through visi's own xlsx writer -- only the inert VBA skeleton does; and `--name Module1` in the `visi macro add` call must keep matching the `.bas`'s own `Attribute VB_Name` line, since visi writes the source verbatim and doesn't reconcile the two. Building the template needs a compiled CLI (`cargo build --release`) even under `--backend bindings`, as `visi-python` doesn't expose macro CRUD.
+Two properties worth preserving if this is touched: the generated template holds **no data** (openpyxl copies each iteration's rows in), so the Excel oracle's data path never round-trips through visi's own xlsx writer -- only the inert VBA skeleton does; and the module name `Module1` must keep matching the `.bas`'s own `Attribute VB_Name` line, since visi writes the source verbatim and doesn't reconcile the two. The template is built through the `visi_core` bindings when they're installed and through `visi macro add` otherwise, so neither backend needs the other's build step.
 
 ### Known caveats and open findings
 

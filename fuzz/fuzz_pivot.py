@@ -43,8 +43,8 @@ The generated template stays *empty* of data: openpyxl copies each iteration's
 random source rows into a copy of it, so the Excel oracle's data path never
 passes through visi's xlsx writer -- only the inert VBA skeleton does.
 
-Requires a built CLI (`cargo build --release`) even under `--backend bindings`,
-since the Python bindings don't expose macro CRUD.
+Built through the `visi_core` bindings when they're installed, falling back to
+the CLI otherwise -- so `--backend bindings` needs nothing extra.
 
 STATUS -- piloted against real Excel, works end-to-end. Every finding from
 that pilot (fixed and still-open alike) is tracked as a GitHub issue rather
@@ -393,12 +393,38 @@ class ExcelPivotDriver:
                 and os.path.getmtime(MACRO_TEMPLATE_PATH) >= os.path.getmtime(MACRO_SOURCE_PATH)):
             return
 
+        with open(MACRO_SOURCE_PATH) as f:
+            source = f.read()
+
+        # The module name must match the .bas's own `Attribute VB_Name` line
+        # (visi writes the source verbatim and does not reconcile the two).
+        # It's the *module* name; `run VB macro` invokes the procedure name,
+        # `BuildFuzzPivot`, which is deliberately distinct from it.
+        via = self._build_macro_template_via_bindings(source)
+        if via is None:
+            via = self._build_macro_template_via_cli()
+        print(f"[ExcelPivotDriver] Built {os.path.basename(MACRO_TEMPLATE_PATH)} from "
+              f"{os.path.basename(MACRO_SOURCE_PATH)} via {via}.")
+
+    def _build_macro_template_via_bindings(self, source):
+        """Returns a description of what it used, or None if unavailable."""
+        try:
+            import visi_core
+        except ImportError:
+            return None
+        wb = visi_core.Workbook()
+        wb.add_macro("Module1", source)
+        wb.save(MACRO_TEMPLATE_PATH)
+        return "the visi_core bindings"
+
+    def _build_macro_template_via_cli(self):
         visi = self.visi_path or "./target/release/visi"
         if not (shutil.which(visi) or os.path.exists(visi)):
             raise RuntimeError(
-                f"Building {os.path.basename(MACRO_TEMPLATE_PATH)} needs the visi CLI, but "
-                f"{visi!r} does not exist -- run `cargo build --release`, or pass --visi-path. "
-                "(The bindings backend doesn't help here: visi-python doesn't expose macro CRUD.)"
+                f"Building {os.path.basename(MACRO_TEMPLATE_PATH)} needs either the "
+                f"visi_core bindings (`maturin develop -m visi-python/Cargo.toml --release`) "
+                f"or the visi CLI, and neither is available ({visi!r} does not exist -- "
+                "run `cargo build --release`, or pass --visi-path)."
             )
 
         import openpyxl
@@ -409,11 +435,6 @@ class ExcelPivotDriver:
             wb.active.title = "Sheet1"
             wb.save(base)
             res = subprocess.run(
-                # --name must match the .bas's own `Attribute VB_Name` line
-                # (visi writes the source verbatim and does not reconcile the
-                # two). It's the *module* name; `run VB macro` invokes the
-                # procedure name, `BuildFuzzPivot`, which is deliberately
-                # distinct from it.
                 [visi, "macro", "add", base, "--name", "Module1",
                  "--kind", "standard", "--source-file", MACRO_SOURCE_PATH,
                  "--output", MACRO_TEMPLATE_PATH],
@@ -423,8 +444,7 @@ class ExcelPivotDriver:
             raise RuntimeError(
                 f"`visi macro add` failed to build {MACRO_TEMPLATE_PATH}: {res.stderr.strip()}"
             )
-        print(f"[ExcelPivotDriver] Built {os.path.basename(MACRO_TEMPLATE_PATH)} from "
-              f"{os.path.basename(MACRO_SOURCE_PATH)} via `visi macro add`.")
+        return "`visi macro add`"
 
     def _prepare_macro_workbook(self, source_file, config, macro_file):
         self._ensure_macro_template()
