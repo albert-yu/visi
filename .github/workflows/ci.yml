@@ -7,6 +7,13 @@
 # `visi-core/src/core/engine/tests/`, which do run here. The cargo-fuzz targets
 # under `visi-core/fuzz/` are also left out: they need nightly and are
 # open-ended runs, not pass/fail checks.
+#
+# The `name:` of every job here is load-bearing: the "Protect main" repository
+# ruleset lists them as required status checks, by the exact strings
+# `fmt + clippy`, `cargo test (ubuntu-24.04)`, `cargo test (macos-15)`, and
+# `bindings + parity`. Renaming a job -- or changing the `os` matrix, which
+# builds those parenthesized suffixes -- without updating the ruleset leaves it
+# waiting forever on a check that will never report, and nothing can merge.
 name: CI
 
 on:
