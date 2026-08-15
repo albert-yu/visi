@@ -469,9 +469,17 @@ pub fn parse_vba_number(s: &str) -> VResult<f64> {
     }
     // VBA's `D` exponent marker is equivalent to `E`.
     let normalised = t.replace(['d', 'D'], "e");
-    normalised
+    let value = normalised
         .parse::<f64>()
-        .map_err(|_| VbaError::type_mismatch())
+        .map_err(|_| VbaError::type_mismatch())?;
+    // A string whose value is outside Double range fails to *convert* --
+    // error 6, not 13, and not a quiet infinity. `a = "1E+2923" : a ^ 255`
+    // is error 6 for this reason, while `a = "255" : a ^ 255` is INF: the
+    // power overflows happily, the conversion does not.
+    if !value.is_finite() {
+        return Err(VbaError::overflow());
+    }
+    Ok(value)
 }
 
 /// Renders a number the way VBA's `CStr` does.

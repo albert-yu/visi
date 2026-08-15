@@ -1974,6 +1974,29 @@ mod tests {
     }
 
     #[test]
+    fn a_string_outside_double_range_fails_to_convert() {
+        // Error 6 from the *conversion*, not a quiet infinity -- and not the
+        // 13 an unparseable string gives.
+        assert_eq!(
+            run("    Dim a\n    a = \"1E+2923\"\n    F = (a ^ 255)"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"1E400\"\n    F = (a + 1)"),
+            "ERR|6"
+        );
+        // The power itself still overflows to infinity happily.
+        assert_eq!(
+            run("    Dim a\n    a = \"255\"\n    F = (a ^ 255)"),
+            "Double|INF"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
+            "Double|INF"
+        );
+    }
+
+    #[test]
     fn an_empty_string_never_coerces_to_a_number() {
         // Measured across every operator: `"" - 3`, `"" + 3`, `"" * 3`,
         // `"" \ 3`, `"" And 1`, `Not ""` and `CDbl("")` are all error 13.
