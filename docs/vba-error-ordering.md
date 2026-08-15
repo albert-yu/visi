@@ -218,23 +218,68 @@ because the string side is not constant and therefore falls back.
 
 ## What is left
 
-Roughly 1-2% on seeds never tuned against -- 293 and 297 of 300 on two fresh
-ones, against 300, 300, 300, 300, 300, 299, 299 on the seven this work used.
-**The fresh numbers are the honest ones**, and the gap is the same overfitting
-trap this document opened with.
+Roughly 1-2% on seeds never tuned against. **Those are the honest numbers**,
+and the gap from the tuned ones is the same overfitting trap this document
+opened with:
 
-The remaining cases are the same kind of thing: error-code disagreements where
-both engines fault on one expression and report different numbers. The
-workflow that has resolved every one so far:
+| Seeds used during this work | 300, 300, 300, 300, 300, 299, 299 of 300 |
+| --- | --- |
+| **Seeds never used** | **293, 297 of 300** |
 
-1. Run `python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <unseen>`.
-2. Reduce to the smallest expression that reproduces it -- and if that is hard,
+### The outstanding cases
+
+Twelve, across four seeds, reproducible with
+`python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <seed>`:
+
+| Case | visi | Excel |
+| --- | --- | --- |
+| `s2024/4` | error 13 | `Double 0.0001` |
+| `s2024/103` | error 13 | `Boolean True` |
+| `s2024/145` | `String "False"` | `String "True"` |
+| `s2024/162` | error 13 | error 11 |
+| `s2024/171` | `Integer -255` | `Double 3` |
+| `s2024/299` | error 13 | error 11 |
+| `s2024/52` | `String "xx2"` | error 13 |
+| `s31337/119` | error 11 | error 13 |
+| `s31337/123` | error 13 | `Double 0.1` |
+| `s31337/147` | `Long 1` | error 13 |
+| `s555/219` | `Integer 255` | error 6 |
+| `s777/298` | `Boolean True` | error 6 |
+
+Nine of the twelve are error-code disagreements or a spurious error on one
+side, which is the same family as everything resolved above: both engines
+fault on one expression and disagree about which fault surfaces, or one
+coerces where the other refuses.
+
+### One unverified lead
+
+`s2024/4` contains `Empty + "a"`, which visi makes error 13 -- `Empty` enters
+arithmetic as a numeric zero, so the `"a"` has to coerce and cannot. The
+obvious hypothesis is that **`Empty + <string>` concatenates**, `Empty` taking
+the other operand's type rather than forcing a numeric context, which would
+make it `"a"`.
+
+That is a guess and is **deliberately not implemented**. It fits the shape of
+the `Empty` rules already measured (`Empty + 1` is the `Integer` 1,
+`Empty & "a"` is `"a"`, `Empty = 0` and `Empty = ""` are both `True`), but
+this document records four separate models that fitted the cases in front of
+them and were wrong. Probe it before touching `value::add`.
+
+### The workflow that has resolved every one so far
+
+1. Run the fuzzer on a seed you have **not** tuned against.
+2. Reduce to the smallest expression that reproduces it. If that stalls,
    instrument the generated procedure statement by statement and diff the
-   intermediate `TypeName|CStr` values against Excel's. That is how the
-   prefix rule was finally cornered.
-3. Probe with the neighbouring cases that would discriminate between plausible
-   rules, checking whether the probe's own rendering can confound the answer
-   (observe a possibly-`Null` result with `IsNull`, never `CStr`).
-4. Implement one change at a time. Bundling three at once regressed six of
-   seven seeds and had to be unpicked afterwards.
+   intermediate `TypeName|CStr` values against Excel's -- that is how the
+   prefix rule was finally cornered, after inspection had failed.
+3. Probe with the neighbouring cases that would discriminate between
+   plausible rules, and check whether the probe's own rendering can confound
+   the answer. Observe a possibly-`Null` result with `IsNull`, never `CStr`:
+   `CStr(Null)` is itself error 94, and that confound produced two separate
+   false conclusions in this work.
+4. Implement **one change at a time**. Bundling three regressed six of seven
+   seeds and had to be unpicked afterwards; split up, one of the three turned
+   out to be net-negative on its own.
 5. Re-run on several seeds, including ones not used while developing the fix.
+   A fix that improves the tuned seeds and leaves fresh ones unchanged is
+   still a real fix; one that only moves the tuned seeds is overfitting.
