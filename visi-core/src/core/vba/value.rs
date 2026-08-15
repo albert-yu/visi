@@ -984,6 +984,16 @@ pub fn compare_ctx(
             } else {
                 (rhs_kind, lhs_kind)
             };
+            // A Boolean partner converts the string with `CBool` rather than
+            // numerically: `a = "True"` makes `a = True` come out True, while
+            // `"True" = -1` -- a numeric partner -- is error 13.
+            if matches!(other, Variant::Boolean(_)) && bool_word(text).is_some() {
+                let a = bool_word(text).unwrap_or(false);
+                let b = other.to_bool()?;
+                let ord = a.cmp(&b);
+                return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
+            }
+
             let parsed = parse_vba_number(text);
 
             let ord = if str_kind == Operand::Const && num_kind == Operand::Const {

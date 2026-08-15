@@ -1489,6 +1489,15 @@ mod tests {
             "Boolean|True"
         );
 
+        // A Boolean partner converts the string with CBool, so the words
+        // compare as booleans. A numeric partner does not: `"True" = -1` is
+        // error 13.
+        assert_eq!(
+            run("    Dim a\n    a = \"True\"\n    F = (a = True)"),
+            "Boolean|True"
+        );
+        assert_eq!(expr("\"True\" = -1"), "ERR|13");
+
         // Both variables: a number sorts before a string, whatever it is.
         // This is the row that defeats every simpler theory -- "1.5" and 1.5
         // are equal both numerically and textually, and Excel says False.
