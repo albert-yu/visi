@@ -89,8 +89,3 @@ The modules implementing Excel's function library (statistics, text, financial,
 engineering, date/time, the formula parser and AST) are crate-private — what is
 re-exported from the crate root and from `core` is the intended surface.
 `Error` is `#[non_exhaustive]`, so match it with a `_` arm.
-
-## License
-
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
-
