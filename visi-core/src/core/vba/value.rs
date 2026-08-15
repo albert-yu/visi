@@ -399,6 +399,29 @@ fn logical_operand(v: &Variant) -> Variant {
     }
 }
 
+/// The pair of operands for a logical operator, with the `"True"`/`"False"`
+/// fold applied only where Excel applies it.
+///
+/// The fold does **not** happen when the other side is already a `Boolean`:
+/// `"True" Xor 1` is `-2`, but `True Eqv "True"` is error 13. Folding
+/// unconditionally made the second one succeed.
+fn logical_pair(lhs: &Variant, rhs: &Variant) -> (Variant, Variant) {
+    let l_bool = matches!(lhs, Variant::Boolean(_));
+    let r_bool = matches!(rhs, Variant::Boolean(_));
+    (
+        if r_bool {
+            lhs.clone()
+        } else {
+            logical_operand(lhs)
+        },
+        if l_bool {
+            rhs.clone()
+        } else {
+            logical_operand(rhs)
+        },
+    )
+}
+
 /// Round-half-to-even, which is what every VBA numeric conversion uses.
 ///
 /// Probe cases 55--59: `CLng(0.5)` is `0`, `CLng(1.5)` is `2`, `CLng(2.5)`
@@ -620,7 +643,8 @@ fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i6
     }
     // `\\` and `Mod` are integer operations, so they accept the words too:
     // `"True" \\ 1` is -1.
-    let (lhs, rhs) = (&logical_operand(lhs), &logical_operand(rhs));
+    let (l, r) = logical_pair(lhs, rhs);
+    let (lhs, rhs) = (&l, &r);
     // A non-integral operand forces Long; two small integers stay Integer.
     let class = match Variant::arith_type(lhs, rhs)? {
         NumClass::Integer => NumClass::Integer,
@@ -774,13 +798,20 @@ pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VRe
         return Ok(Variant::Null);
     }
     // `"True" Xor 1` is -2: the integer path accepts the words.
-    let (lhs, rhs) = (&logical_operand(lhs), &logical_operand(rhs));
+    let (l, r) = logical_pair(lhs, rhs);
+    let (lhs, rhs) = (&l, &r);
     if let (Variant::Boolean(a), Variant::Boolean(b)) = (lhs, rhs) {
         let r = f(if *a { -1 } else { 0 }, if *b { -1 } else { 0 });
         return Ok(Variant::Boolean(r != 0));
     }
     let a = bankers_round(lhs.to_f64()?);
     let b = bankers_round(rhs.to_f64()?);
+    // The operands have to fit a Long, as `\\` and `Mod` require:
+    // `True Or "2147483648"` is error 6 even though the answer would fit.
+    let fits = |v: f64| v.is_finite() && v >= i32::MIN as f64 && v <= i32::MAX as f64;
+    if !fits(a) || !fits(b) {
+        return Err(VbaError::overflow());
+    }
     let class = match Variant::arith_type(lhs, rhs)? {
         NumClass::Integer => NumClass::Integer,
         _ => NumClass::Long,

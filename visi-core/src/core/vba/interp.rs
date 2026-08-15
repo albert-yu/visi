@@ -1706,6 +1706,15 @@ mod tests {
         // one; `Xor` with a number goes bitwise and yields an Integer.
         assert_eq!(expr("Not \"True\""), "Boolean|False");
 
+        // But the fold does not apply when the *other* side is already a
+        // Boolean, which is the one shape where Excel refuses.
+        assert_eq!(expr("True Eqv \"True\""), "ERR|13");
+        assert_eq!(expr("True Eqv CStr(True)"), "ERR|13");
+        assert_eq!(
+            run("    Dim a\n    a = 3.75\n    F = (IsNumeric(a) Eqv CStr(True))"),
+            "ERR|13"
+        );
+
         // The floating-point path still rejects them.
         for e in [
             "\"True\" + 1",
@@ -1772,6 +1781,16 @@ mod tests {
             run("    Dim a, b\n    a = 2\n    b = -2\n    F = (a ^ b)"),
             "Double|0.25"
         );
+    }
+
+    #[test]
+    fn logical_operators_range_check_their_operands_too() {
+        // Same rule as `\\` and `Mod`: the operands must fit a Long.
+        assert_eq!(expr("True Or \"2147483648\""), "ERR|6");
+        assert_eq!(expr("1 And \"2147483648\""), "ERR|6");
+        // Operands that round into a Long are fine.
+        assert_eq!(expr("True Or \"3.752147483647\""), "Long|-1");
+        assert_eq!(expr("1 And \"12\""), "Long|0");
     }
 
     #[test]
