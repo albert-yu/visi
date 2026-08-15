@@ -878,13 +878,55 @@ fn is_constant(e: &Expr) -> bool {
     }
 }
 
+/// Intrinsics whose return type is declared numeric rather than `Variant`.
+///
+/// This matters for comparison, not for arithmetic. `value::compare_ctx`'s
+/// "constant" case is really "the compiler knows this side's numeric type
+/// statically", and a call to one of these qualifies just as a literal does:
+/// `(1.5 & "abc") <> CLng(a)` is error 13, while `(1.5 & "abc") <> a` with
+/// `a = -1` compares fine, because `a` is a `Variant` and the runtime
+/// number-sorts-before-string rule applies instead. Measured.
+const STATICALLY_NUMERIC: &[&str] = &[
+    "cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte", "len",
+];
+
 /// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
-    if is_constant(e) {
+    let statically_numeric = matches!(
+        e,
+        Expr::Call { target, .. }
+            if matches!(target.as_ref(), Expr::Ident { name, .. }
+                if STATICALLY_NUMERIC.contains(&name.to_ascii_lowercase().as_str()))
+    );
+    if is_constant(e) || statically_numeric {
         Operand::Const
     } else {
         Operand::Runtime
     }
+}
+
+/// The one constant-folding quirk this interpreter reproduces.
+///
+/// `True Mod "12"` is the **Boolean** `False`, and `True \ "12"` is `True`,
+/// where the same expressions with either operand in a variable give the
+/// ordinary `Long` results. The model that fits every measurement is that
+/// when the *left* operand is a constant `Boolean` and the right is a
+/// constant `String`, `\` and `Mod` convert **both** sides with `CBool` and
+/// return a `Boolean`.
+///
+/// Confirmed against eighteen cases, including the ones that pin down how
+/// narrow it is: `"12" Mod True` is `Long 0` (so it is left-specific),
+/// `True Mod 12` is `Integer -1` (so the partner must be a String),
+/// `a = True : a Mod "12"` is `Long -1` (so both must be constants), and
+/// `True And "12"` is `Long 12` (so it is only `\` and `Mod`).
+/// `True Mod "0"` is error 11, which the CBool conversion explains: `"0"`
+/// becomes `False`, i.e. zero.
+fn constant_bool_int_op(op: BinOp, a: &Variant, b: &Variant, mode: ArithMode) -> Option<()> {
+    (mode == ArithMode::Constant
+        && matches!(op, BinOp::IntDiv | BinOp::Mod)
+        && matches!(a, Variant::Boolean(_))
+        && matches!(b, Variant::Str(_)))
+    .then_some(())
 }
 
 fn eval_binary(
@@ -895,6 +937,15 @@ fn eval_binary(
     kinds: (Operand, Operand),
 ) -> VResult<Variant> {
     use BinOp::*;
+    if constant_bool_int_op(op, a, b, mode).is_some() {
+        let l: i64 = if a.to_bool()? { -1 } else { 0 };
+        let r: i64 = if b.to_bool()? { -1 } else { 0 };
+        if r == 0 {
+            return Err(VbaError::div_by_zero());
+        }
+        let v = if op == IntDiv { l / r } else { l % r };
+        return Ok(Variant::Boolean(v != 0));
+    }
     match op {
         Add => value::add(a, b, mode),
         Sub => value::sub(a, b, mode),
@@ -1421,6 +1472,23 @@ mod tests {
             "Boolean|True"
         );
 
+        // A call whose return type is declared numeric counts as statically
+        // typed, exactly as a literal does -- see `STATICALLY_NUMERIC`.
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = ((1.5 & \"abc\") <> CLng(a))"),
+            "ERR|13"
+        );
+        // The same comparison against a plain Variant uses the runtime rule
+        // and does not error.
+        assert_eq!(
+            run("    Dim a\n    a = -1\n    F = ((1.5 & \"abc\") <> a)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = (\"Z\" <> a)"),
+            "Boolean|True"
+        );
+
         // Both variables: a number sorts before a string, whatever it is.
         // This is the row that defeats every simpler theory -- "1.5" and 1.5
         // are equal both numerically and textually, and Excel says False.
@@ -1695,6 +1763,38 @@ mod tests {
             run(&sel("(1 = 1)", "    Case 2 To 5\n        r = \"a\"\n")),
             "String|else"
         );
+    }
+
+    /// The constant-folding quirk in `constant_bool_int_op`, with the
+    /// negative controls that pin down how narrow it is.
+    #[test]
+    fn a_constant_boolean_over_a_constant_string_folds_to_a_boolean() {
+        assert_eq!(expr("True Mod \"12\""), "Boolean|False");
+        assert_eq!(expr("True \\ \"12\""), "Boolean|True");
+        assert_eq!(expr("False \\ \"12\""), "Boolean|False");
+        // "0" becomes False, i.e. zero, so these divide by zero.
+        assert_eq!(expr("True Mod \"0\""), "ERR|11");
+        assert_eq!(expr("True \\ \"0\""), "ERR|11");
+
+        // Left-specific.
+        assert_eq!(expr("\"12\" Mod True"), "Long|0");
+        assert_eq!(expr("\"12\" \\ True"), "Long|-12");
+        // The partner has to be a String.
+        assert_eq!(expr("True Mod 12"), "Integer|-1");
+        assert_eq!(expr("True \\ 12"), "Integer|0");
+        // Both have to be constants.
+        assert_eq!(
+            run("    Dim a\n    a = True\n    F = (a Mod \"12\")"),
+            "Long|-1"
+        );
+        assert_eq!(
+            run("    Dim b\n    b = \"12\"\n    F = (True Mod b)"),
+            "Long|-1"
+        );
+        // Only `\\` and `Mod`.
+        assert_eq!(expr("True And \"12\""), "Long|12");
+        assert_eq!(expr("True Or \"12\""), "Long|-1");
+        assert_eq!(expr("True Eqv \"12\""), "Long|12");
     }
 
     #[test]
