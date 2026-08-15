@@ -173,21 +173,56 @@ only one side is a `Boolean`. Covered by
 
 ## What is left
 
-The long tail is error-code disagreements of the same shape as §2–§4: both
-engines fault on one expression and report different numbers, because they
-coerce its subexpressions in a different order. Examples from unseen seeds:
-`ERR|94` where Excel says `ERR|13`, `ERR|6` where Excel says `ERR|5`,
-`ERR|13` where Excel says `ERR|94`.
+Two cases across seven seeds of 300 (2097/2100 agreeing). Both come down to
+one unresolved question, and it is worth writing down precisely, because
+three separate attempts at a model have each fitted the cases in front of
+them and regressed others.
 
-Each needs its own probe — which is tractable but not derivable, and the
-pattern so far is that guessing at one of these gets it backwards about half
-the time. The workflow that has worked every round:
+### When is a string-vs-number comparison *strict*?
 
-1. Run `python fuzz/fuzz_vba.py --iterations 300 --batch 25 --seed <unseen>`.
-2. Reduce a mismatch to the smallest expression that reproduces it.
-3. Put that expression, and the neighbouring cases that would discriminate
-   between plausible rules, into a probe modelled on
-   [`vba_ordering_probe.bas`](../fuzz/vba_ordering_probe.bas) — and check
-   whether the probe's own rendering can confound the answer, as §5's did.
-4. Implement, add a unit test naming the Excel result, re-run on several
-   seeds.
+"Strict" means numeric comparison where a string that will not parse raises
+error 13, as opposed to falling back to the runtime ordering. These three
+measurements constrain it, and no rule tried so far fits all of them:
+
+| Expression | Excel | Shape |
+| --- | --- | --- |
+| `1 <> "True255"`, as `(-True) <> (True & &HFF)` | **error 13** | numeric unary-on-literal, string from `&` of two literals |
+| `-3 <= "1.5False"`, as `(Not 2!) <= ("1.5" & False)` | **True** | numeric unary-on-literal, string from `&` of two literals |
+| `(False & Null) = (0.1 / -2.5)` | **False** | numeric binary constant, string from `&` involving `Null` |
+
+The first two are the same shape by every property tried -- which operand is
+the string, whether each side is a literal or a constant expression, whether
+`&` is involved -- and disagree. The third is explicable if an expression
+containing `Null` is not folded, but that does not separate the first two.
+
+The current implementation gets rows 2 and 3 right and row 1 wrong, which is
+the best of the arrangements tried. `value::Operand` carries the distinction
+it does (`Literal` vs `ConstExpr` vs `Static` vs `Runtime`) because that
+combination scored highest across seven seeds, not because it is known to be
+the rule.
+
+**Three failed models, kept so they are not retried:**
+
+1. *`&` is never constant-folded.* Net negative on its own: 2093 against
+   2096 across seven seeds, fixing one case and breaking three.
+2. *Any statically-typed numeric partner is strict, including `Len`.* `Len`
+   has a documented `As Long` signature, and `("abc" & va) <> Len(CStr("Z"))`
+   still does not error, while the same shape against `CLng` does. Only the
+   numeric `C*` conversions belong in that set.
+3. *`^` with a String operand is strict.* `"255" ^ 255` and
+   `StrReverse(255) ^ 1.5E54` are both `INF`, exactly as their numeric
+   equivalents. The case that looked like evidence for this had a base of
+   `"1E+2923"`, where the real rule was that the *conversion* overflows.
+
+### How to take it further
+
+The next step is not another guess. It is a probe that varies one property at
+a time across the first two rows above -- operator (`<>` vs `<=` vs `=`),
+which side the string is on, literal vs unary-on-literal vs binary constant on
+each side, and `&` vs a plain string literal -- and looks for the axis that
+separates them. Roughly forty cases in one workbook, which is one Excel round
+trip.
+
+Everything else in this document was found that way, including the three
+failed models above, which were all found by *measuring* rather than by
+reasoning about what VBA ought to do.
