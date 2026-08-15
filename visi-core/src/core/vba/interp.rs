@@ -1602,13 +1602,57 @@ mod tests {
         );
     }
 
+    /// Which operators coerce a `Null`'s partner before propagating, and
+    /// which short-circuit. Measured in both directions with `IsNull`.
     #[test]
-    fn null_propagates_only_after_the_other_operand_coerces() {
-        // `"abc" - Null` is error 13, not Null: the type mismatch is found
-        // before the Null short-circuits.
-        assert_eq!(expr("\"abc\" - Null"), "ERR|13");
+    fn only_plus_short_circuits_past_a_bad_partner() {
+        // `+` alone returns Null without looking at the other side --
+        // plausibly because it cannot tell addition from concatenation
+        // without inspecting both, so it gives up first.
+        assert_eq!(expr("IsNull(Null + \"Z\")"), "Boolean|True");
+        assert_eq!(expr("IsNull(\"Z\" + Null)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Null + \"12\")"), "Boolean|True");
+
+        // Every other operator coerces the partner, and a bad string wins.
+        for e in [
+            "\"Z\" - Null",
+            "Null - \"Z\"",
+            "\"Z\" * Null",
+            "\"Z\" / Null",
+            "\"Z\" ^ Null",
+            "\"Z\" Mod Null",
+            "Null Mod \"Z\"",
+            "\"Z\" \\ Null",
+            "\"Z\" And Null",
+            "Null Or \"Z\"",
+        ] {
+            assert_eq!(expr(e), "ERR|13", "for {e}");
+        }
+
+        // `&` keeps the non-Null side rather than propagating at all.
+        assert_eq!(expr("\"Z\" & Null"), "String|Z");
+
+        // A well-formed partner still propagates.
         assert_eq!(expr("IsNull(1 - Null)"), "Boolean|True");
-        assert_eq!(expr("IsNull(Null - 1)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Null Mod 3)"), "Boolean|True");
+    }
+
+    #[test]
+    fn integer_operators_process_the_left_operand_first() {
+        // Which error surfaces depends on the order: the left operand
+        // overflowing a Long beats a bad string on the right, and vice versa.
+        assert_eq!(
+            run("    Dim a\n    a = \"32768100000\"\n    F = (a Mod \"Double\")"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"Double\"\n    F = (a Mod \"32768100000\")"),
+            "ERR|13"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"32768100000\"\n    F = (a Mod 3)"),
+            "ERR|6"
+        );
     }
 
     /// The whole `Null` table, from a sweep of every intrinsic against real

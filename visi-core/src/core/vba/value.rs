@@ -545,6 +545,11 @@ fn format_currency(scaled: i64) -> String {
 /// strings does `+` concatenate.
 pub fn add(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
+        // `+` alone does *not* coerce the other operand first: `Null + "Z"`
+        // is Null, while `Null - "Z"` is error 13. The likely reason is that
+        // `+` is overloaded -- it cannot know whether it is addition or
+        // concatenation without inspecting both sides -- so it short-circuits
+        // before deciding. Measured in both directions.
         return Ok(Variant::Null);
     }
     if let (Variant::Str(a), Variant::Str(b)) = (lhs, rhs) {
@@ -638,28 +643,41 @@ fn zip3(a: Option<i64>, b: Option<i64>, class: NumClass) -> Option<(i64, i64, Nu
 /// Rounds both operands to integers and decides the result class, shared by
 /// `\` and `Mod`.
 fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i64>, NumClass)> {
-    if lhs.is_null() || rhs.is_null() {
+    // Each operand is coerced, rounded and range-checked in turn, left
+    // before right, because which error surfaces depends on the order:
+    // `"32768100000" Mod "Double"` is error 6 (the left overflows a Long)
+    // while `"Double" Mod "32768100000"` is error 13. Coercing both and then
+    // checking both reported the wrong one.
+    //
+    // A Null operand does not short-circuit past its partner either:
+    // `Null Mod "Z"` is error 13, not Null.
+    fn one(v: &Variant) -> VResult<Option<i64>> {
+        if v.is_null() {
+            return Ok(None);
+        }
+        let r = bankers_round(v.to_f64()?);
+        if !r.is_finite() || r < i32::MIN as f64 || r > i32::MAX as f64 {
+            return Err(VbaError::overflow());
+        }
+        Ok(Some(r as i64))
+    }
+
+    // The `"True"`/`"False"` fold has to happen *before* coercion, or the
+    // words would fail `to_f64` on the way in: `"True" \\ 1` is -1.
+    let (l, r) = logical_pair(lhs, rhs);
+
+    let a = one(&l)?;
+    let b = one(&r)?;
+    if a.is_none() || b.is_none() {
         return Ok((None, None, NumClass::Long));
     }
-    // `\\` and `Mod` are integer operations, so they accept the words too:
-    // `"True" \\ 1` is -1.
-    let (l, r) = logical_pair(lhs, rhs);
-    let (lhs, rhs) = (&l, &r);
+
     // A non-integral operand forces Long; two small integers stay Integer.
-    let class = match Variant::arith_type(lhs, rhs)? {
+    let class = match Variant::arith_type(&l, &r)? {
         NumClass::Integer => NumClass::Integer,
         _ => NumClass::Long,
     };
-    let a = bankers_round(lhs.to_f64()?);
-    let b = bankers_round(rhs.to_f64()?);
-    // The *operands* have to fit, not just the result: `254 Mod "22147483647"`
-    // is error 6 even though the answer is 254, because 22147483647 is not a
-    // Long. Checking only the result let that through.
-    let fits = |v: f64| v.is_finite() && v >= i32::MIN as f64 && v <= i32::MAX as f64;
-    if !fits(a) || !fits(b) {
-        return Err(VbaError::overflow());
-    }
-    Ok((Some(a as i64), Some(b as i64), class))
+    Ok((a, b, class))
 }
 
 /// `^`, which is always `Double`.
@@ -728,8 +746,8 @@ fn arith(
 ) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
         // Null propagates, but only *after* the other operand has been
-        // coerced: `"abc" - Null` is error 13, not Null. Measured -- the
-        // type mismatch is detected before the Null short-circuits.
+        // coerced: `"Z" - Null` is error 13, not Null. `+` is the one
+        // exception -- see `add`.
         if !lhs.is_null() {
             lhs.to_f64()?;
         }
@@ -794,9 +812,6 @@ pub fn not(v: &Variant) -> VResult<Variant> {
 /// `5 And 3` is the `Integer` `1` -- the operation is bitwise unless both
 /// operands are already `Boolean`.
 pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VResult<Variant> {
-    if lhs.is_null() || rhs.is_null() {
-        return Ok(Variant::Null);
-    }
     // `"True" Xor 1` is -2: the integer path accepts the words.
     let (l, r) = logical_pair(lhs, rhs);
     let (lhs, rhs) = (&l, &r);
@@ -804,14 +819,25 @@ pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VRe
         let r = f(if *a { -1 } else { 0 }, if *b { -1 } else { 0 });
         return Ok(Variant::Boolean(r != 0));
     }
-    let a = bankers_round(lhs.to_f64()?);
-    let b = bankers_round(rhs.to_f64()?);
-    // The operands have to fit a Long, as `\\` and `Mod` require:
-    // `True Or "2147483648"` is error 6 even though the answer would fit.
-    let fits = |v: f64| v.is_finite() && v >= i32::MIN as f64 && v <= i32::MAX as f64;
-    if !fits(a) || !fits(b) {
-        return Err(VbaError::overflow());
-    }
+    // Each operand is coerced and range-checked in turn, left before right,
+    // and a Null does not short-circuit past its partner: `Null And "Z"` is
+    // error 13. Same rule as `int_operands`, for the same measured reason.
+    let one = |v: &Variant| -> VResult<Option<f64>> {
+        if v.is_null() {
+            return Ok(None);
+        }
+        let r = bankers_round(v.to_f64()?);
+        // The operands have to fit a Long, as `\\` and `Mod` require:
+        // `True Or "2147483648"` is error 6 even though the answer would fit.
+        if !r.is_finite() || r < i32::MIN as f64 || r > i32::MAX as f64 {
+            return Err(VbaError::overflow());
+        }
+        Ok(Some(r))
+    };
+    let (a, b) = (one(lhs)?, one(rhs)?);
+    let (Some(a), Some(b)) = (a, b) else {
+        return Ok(Variant::Null);
+    };
     let class = match Variant::arith_type(lhs, rhs)? {
         NumClass::Integer => NumClass::Integer,
         _ => NumClass::Long,
