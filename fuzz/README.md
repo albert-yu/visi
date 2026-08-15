@@ -411,6 +411,31 @@ The seven that remained were disagreements about *which error surfaces*, never a
 
 Failure artifacts land under `fuzz_results/failures/vba_exec_case_<N>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers.
 
+## VBA Expression Probe (`vba_expr_probe.py`)
+
+The fuzzer finds *that* the two engines disagree on a twenty-line generated procedure. Turning that into a rule needs the opposite tool — a handful of expressions chosen to discriminate between the models that could explain it, run through both engines side by side:
+
+```bash
+python3 fuzz/vba_expr_probe.py -e 'Empty + "a"' -e '"a" + Empty'
+python3 fuzz/vba_expr_probe.py -f probes.txt          # one file, one Excel round trip
+python3 fuzz/vba_expr_probe.py -e '1 + 1' --driver mock
+```
+
+Each case becomes a procedure returning the expression, plus the same `OK|TypeName|CStr` / `ERR|number` harness `fuzz_vba.py` uses, so a result here is directly comparable to a fuzzer verdict. A case may carry setup statements before a `::` separator, and a literal `\n` in that setup opens a block statement:
+
+```
+a = 32767 :: a + 1                                    # runtime, per value::ArithMode
+32767 + 1                                             # between constants: a different rule
+Select Case CBool(a)\nCase 1\nr = 1\nEnd Select :: r  # a block, one line
+```
+
+This replaced hand-editing [`vba_ordering_probe.bas`](vba_ordering_probe.bas) and re-deriving the AppleScript each time, and it is what resolved every rule in the second round of [`docs/vba-error-ordering.md`](../docs/vba-error-ordering.md).
+
+Two traps it cannot protect you from:
+
+- **`CStr(Null)` is itself error 94**, so a case whose result may be `Null` has to be written `IsNull(...)` — stringifying it cannot distinguish "the function raised 94" from "the function returned Null". That confound produced two published-and-wrong conclusions in this project.
+- **A compile error hangs the bridge** and is not catchable by the `On Error` wrapper, so the whole batch returns nothing. `If "abc" Then` is one: a String *literal* as a condition is a compile-time type error, where the same string in a variable is fine. Bisect the file when a batch comes back empty.
+
 ---
 
 ## Key Considerations for Excel Parity
