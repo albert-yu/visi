@@ -46,5 +46,7 @@ pub use pivot::{
 pub use shared_vec::SharedVec;
 pub use style::CellStyle;
 pub use table::ExcelTable;
-pub use vba::{VbaModule, VbaModuleKind, VbaProject, validate_vba_module_name};
+pub use vba::{
+    ModuleSyntax, VbaModule, VbaModuleKind, VbaProject, check_syntax, validate_vba_module_name,
+};
 pub use workbook::{SheetSummary, WorkbookManager, WorkbookSummary};

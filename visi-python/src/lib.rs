@@ -38,12 +38,26 @@ fn eval_file(input: std::path::PathBuf, output: std::path::PathBuf) -> PyResult<
     Ok(())
 }
 
+/// Checks VBA source for syntax errors, returning the procedure names it
+/// declares.
+///
+/// Raises `VbaSyntaxError` (carrying `line` and `column`) if it does not
+/// parse. The exact equivalent of `visi macro check` over a `.bas` file, and
+/// what `fuzz/fuzz_vba_parse.py` compares against real Excel's verdict.
+#[pyfunction]
+fn check_syntax(source: &str) -> PyResult<Vec<String>> {
+    Ok(visi_engine::core::check_syntax(source)
+        .map_err(Wrapped)?
+        .procedures)
+}
+
 /// The Python module, `visi_core`.
 #[pymodule]
 fn visi_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<workbook::Workbook>()?;
     m.add_class::<value::CellError>()?;
     m.add_function(wrap_pyfunction!(eval_file, m)?)?;
+    m.add_function(wrap_pyfunction!(check_syntax, m)?)?;
     errors::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

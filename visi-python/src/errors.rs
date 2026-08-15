@@ -84,6 +84,12 @@ create_exception!(
 );
 create_exception!(
     visi_core,
+    VbaSyntaxError,
+    VbaError,
+    "A VBA module failed to parse. Carries `module`, `line`, `column`."
+);
+create_exception!(
+    visi_core,
     EvaluationError,
     VisiError,
     "Formula evaluation failed. Note that per-cell formula errors do NOT raise this -- they arrive as `CellError` values in cells."
@@ -134,6 +140,8 @@ impl From<Wrapped> for PyErr {
             CoreError::InvalidArgument(_) => PyErr::new::<InvalidArgumentError, _>((msg,)),
             CoreError::Xlsx(_) => PyErr::new::<XlsxError, _>((msg,)),
             CoreError::Vba(_) => PyErr::new::<VbaError, _>((msg,)),
+            // A subclass of VbaError, so `except VbaError` still catches it.
+            CoreError::VbaSyntax { .. } => PyErr::new::<VbaSyntaxError, _>((msg,)),
             CoreError::Eval(_) => PyErr::new::<EvaluationError, _>((msg,)),
             CoreError::EmptyWorkbook => PyErr::new::<EmptyWorkbookError, _>((msg,)),
             CoreError::LastSheetInWorkbook => PyErr::new::<LastSheetError, _>((msg,)),
@@ -167,6 +175,16 @@ impl From<Wrapped> for PyErr {
                     let _ = v.setattr("kind", kind.as_str());
                     let _ = v.setattr("name", name.as_str());
                     let _ = v.setattr("reason", reason.as_str());
+                }
+                CoreError::VbaSyntax {
+                    module,
+                    line,
+                    column,
+                    ..
+                } => {
+                    let _ = v.setattr("module", module.clone());
+                    let _ = v.setattr("line", *line);
+                    let _ = v.setattr("column", *column);
                 }
                 CoreError::OutOfBounds { what, index, len } => {
                     let _ = v.setattr("what", *what);
@@ -207,6 +225,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("XlsxError", py.get_type::<XlsxError>())?;
     m.add("VbaError", py.get_type::<VbaError>())?;
+    m.add("VbaSyntaxError", py.get_type::<VbaSyntaxError>())?;
     m.add("EvaluationError", py.get_type::<EvaluationError>())?;
     m.add("EmptyWorkbookError", py.get_type::<EmptyWorkbookError>())?;
     m.add("LastSheetError", py.get_type::<LastSheetError>())?;

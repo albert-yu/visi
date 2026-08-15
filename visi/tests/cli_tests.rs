@@ -1155,3 +1155,77 @@ fn test_table_style_theme_setting_and_xlsx_round_trip() {
 
     let _ = fs::remove_file(file_path);
 }
+
+/// Syntax checking through the same API `visi macro check` calls, including
+/// the round trip that matters: a module's source only survives to be checked
+/// in a later invocation because it goes through `vbaProject.bin`.
+#[test]
+fn test_vba_syntax_check_through_a_real_roundtrip() {
+    use visi_core::core::{VbaModuleKind, check_syntax};
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_vba_check.xlsm");
+    let file_str = file_path.to_str().unwrap();
+
+    let good = "Attribute VB_Name = \"Good\"\n\
+                Public Sub Alpha()\n    Dim x As Long\n    x = -2 ^ 2\nEnd Sub\n\
+                Public Function Beta() As String\n    Beta = \"b\"\nEnd Function\n";
+    // Valid enough for `macro add` to store -- nothing validates syntax on
+    // the way in, which is exactly the gap `macro check` fills.
+    let bad = "Attribute VB_Name = \"Bad\"\n\
+               Public Sub Broken()\n    If x Then\nEnd Sub\n";
+
+    let mut wb = WorkbookManager::new_empty().unwrap();
+    wb.add_vba_module(
+        "Good".to_string(),
+        VbaModuleKind::Standard,
+        good.to_string(),
+        None,
+    )
+    .unwrap();
+    wb.add_vba_module(
+        "Bad".to_string(),
+        VbaModuleKind::Standard,
+        bad.to_string(),
+        None,
+    )
+    .unwrap();
+    wb.save_file(file_str).unwrap();
+
+    let reloaded = WorkbookManager::load_file(file_str).unwrap();
+    let modules = reloaded.list_vba_modules();
+    assert_eq!(modules.len(), 2);
+
+    let good_mod = modules.iter().find(|m| m.name == "Good").unwrap();
+    let syntax = good_mod.check_syntax().expect("valid module should parse");
+    assert_eq!(syntax.procedures, vec!["Alpha", "Beta"]);
+
+    let bad_mod = modules.iter().find(|m| m.name == "Bad").unwrap();
+    match bad_mod.check_syntax() {
+        Err(visi_core::Error::VbaSyntax {
+            module,
+            line,
+            column,
+            ..
+        }) => {
+            // The module name is what makes a multi-module report readable.
+            assert_eq!(module.as_deref(), Some("Bad"));
+            // Line 4 -- the `End Sub` that arrives where `End If` was due.
+            // Excel instead blames the unclosed `If` on line 3; both point at
+            // the same defect, and narrowing to the opener is a diagnostics
+            // improvement rather than a Phase 0 requirement.
+            assert_eq!(line, 4);
+            assert!(column >= 1);
+        }
+        other => panic!("expected a syntax error, got {other:?}"),
+    }
+
+    // The bare-source entry point carries no module name, since there is none.
+    assert!(check_syntax(good).is_ok());
+    match check_syntax(bad) {
+        Err(visi_core::Error::VbaSyntax { module, .. }) => assert!(module.is_none()),
+        other => panic!("expected a syntax error, got {other:?}"),
+    }
+
+    let _ = fs::remove_file(file_path);
+}
