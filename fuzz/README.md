@@ -272,7 +272,11 @@ python3 fuzz/fuzz_pivot.py --excel-path "/Applications/Microsoft Excel.app" --it
 
 `make new pivot cache at wb` is declared in `Microsoft Excel.app/Contents/Resources/Excel.sdef` (extracted directly from the app bundle, since the `sdef` CLI tool needs a full Xcode install), but fails with a generic "Parameter error (-50)" against real Excel for every variant tried: bare, with properties, range object vs. text source data, different container forms. Reading (`count of pivot caches of wb`) works fine, only creation fails -- a real functional gap in Mac Excel's AppleScript support, not a syntax mistake. (Several other names *were* wrong on the first pass and are now fixed against the real dictionary: the per-field property is `pivot field orientation` not `orientation`, its enum values are `orient as row field` etc., there's no table-wide `RowAxisLayout`/`SubtotalLocation` -- those are per-field `layout form`/`layout subtotal location` -- subtotals toggle one function at a time via the `set subtotals` command, a ListObject's range is `range object` not `range`, and labeled command parameters use **space**-separated syntax, not colons.)
 
-The workaround: `fuzz/BuildFuzzPivot.bas` is a VBA macro (using the same well-documented `PivotCaches.Create`/`CreatePivotTable`/`PivotFields` object model the win32com path uses directly) that a human pastes once into a macro-enabled workbook, `fuzz/pivot_macro_template.xlsm` (gitignored -- a compiled binary asset each developer creates locally, not generated). The AppleScript driver copies random data into that template via `openpyxl`'s `keep_vba=True`, then invokes the macro with `run VB macro "BuildFuzzPivot" arg1 ... arg9 ...`, which *is* a working AppleScript command. See `fuzz_pivot.py`'s module docstring for the exact one-time setup steps.
+The workaround: `fuzz/BuildFuzzPivot.bas` is a VBA macro (using the same well-documented `PivotCaches.Create`/`CreatePivotTable`/`PivotFields` object model the win32com path uses directly), carried in a macro-enabled workbook `fuzz/pivot_macro_template.xlsm`. The AppleScript driver copies random data into a copy of that template via `openpyxl`'s `keep_vba=True`, then invokes the macro with `run VB macro "BuildFuzzPivot" arg1 ... arg9 ...`, which *is* a working AppleScript command.
+
+**No setup step.** The template is a build output, generated on first use (and regenerated whenever the `.bas` is newer) by `ExcelPivotDriver._ensure_macro_template`, which shells out to `visi macro add`. It used to be a one-time manual ritual -- open Excel's VBA editor, paste the `.bas` in, Save As `.xlsm` -- because Excel for Mac exposes no VBProject object to AppleScript, so nothing could put a macro into a workbook programmatically; `visi`'s own macro CRUD writes it into `vbaProject.bin` at the file-format level instead. Beyond removing the manual step, this closes the stale-template failure mode the old flow invited: edit the macro, forget to rebuild, and the resulting mismatches get blamed on the engine.
+
+Two properties worth preserving if this is touched: the generated template holds **no data** (openpyxl copies each iteration's rows in), so the Excel oracle's data path never round-trips through visi's own xlsx writer -- only the inert VBA skeleton does; and `--name Module1` in the `visi macro add` call must keep matching the `.bas`'s own `Attribute VB_Name` line, since visi writes the source verbatim and doesn't reconcile the two. Building the template needs a compiled CLI (`cargo build --release`) even under `--backend bindings`, as `visi-python` doesn't expose macro CRUD.
 
 ### Known caveats and open findings
 
@@ -346,10 +350,10 @@ Three findings that constrain any future `fuzz_vba.py`:
   wrapper -- verified to catch errors raised anywhere down the call stack.
   This is a correctness requirement of the harness, not a nicety.
 
-Also worth noting: `vba_probe.py` demonstrates that `fuzz_pivot.py`'s one-time
-manual "paste `BuildFuzzPivot.bas` into the VBA editor and Save As
-`pivot_macro_template.xlsm`" setup step could now be replaced by a single
-`visi macro add` invocation.
+The same mechanism already paid for itself elsewhere: `fuzz_pivot.py`'s
+one-time manual "paste `BuildFuzzPivot.bas` into the VBA editor and Save As
+`pivot_macro_template.xlsm`" setup step is gone, replaced by a `visi macro add`
+call the driver makes for itself.
 
 ---
 

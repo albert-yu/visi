@@ -344,18 +344,17 @@ the macro, is the cost.
 - **The Excel-authored `ThisWorkbook` module appears on save.** Harmless,
   but the comparator must not treat the module list as an invariant.
 
-### Side finding: `fuzz_pivot.py`'s manual setup step is now removable
+### Side finding, since fixed: `fuzz_pivot.py`'s manual setup step is gone
 
-`fuzz_pivot.py` currently requires a one-time, human-performed ritual —
-open Excel, open the VBA editor, paste `fuzz/BuildFuzzPivot.bas` into a
-module, Save As `fuzz/pivot_macro_template.xlsm` — because when it was
-written there was no way to get a macro into a workbook programmatically.
-There is now. `visi macro add base.xlsx --name BuildFuzzPivot --source-file
-fuzz/BuildFuzzPivot.bas --output template.xlsm` produces the same file with
-no human in the loop, which would let the template be built on demand
-instead of being an uncheckable, uncheck-in-able prerequisite. Worth doing
-independently of any interpreter work; not done here to keep this change
-to investigation only.
+`fuzz_pivot.py` used to require a one-time, human-performed ritual — open
+Excel, open the VBA editor, paste `fuzz/BuildFuzzPivot.bas` into a module,
+Save As `fuzz/pivot_macro_template.xlsm` — because when it was written there
+was no way to get a macro into a workbook programmatically. The same
+file-format-level injection this document is built on removes that step:
+`ExcelPivotDriver._ensure_macro_template` now generates the template on first
+use, and regenerates it whenever the `.bas` is newer, which also closes the
+stale-template failure mode the manual flow invited (edit the macro, forget
+to rebuild, blame the resulting mismatches on the engine).
 
 ---
 

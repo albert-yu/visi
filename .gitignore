@@ -19,9 +19,9 @@ venv
 fuzz_results/
 __pycache__
 
-# One-time, human-created macro-enabled workbook for fuzz_pivot.py's
-# AppleScript driver (paste fuzz/BuildFuzzPivot.bas into it) -- a compiled
-# binary asset each developer authors locally, not a generated build output.
+# Macro-enabled workbook for fuzz_pivot.py's AppleScript driver -- a build
+# output, generated on first use from the checked-in fuzz/BuildFuzzPivot.bas
+# by `visi macro add` (ExcelPivotDriver._ensure_macro_template).
 fuzz/pivot_macro_template.xlsm
 
 # Python extension module built from visi-python by `maturin develop`.
