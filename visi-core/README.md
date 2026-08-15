@@ -19,7 +19,7 @@ it can target wasm.
 visi-core = "0.1"
 ```
 
-[`WorkbookManager`] is the entry point. It owns a workbook's sheets, charts,
+[`WorkbookManager`](https://docs.rs/visi-core/latest/visi_core/struct.WorkbookManager.html) is the entry point. It owns a workbook's sheets, charts,
 pivot tables and VBA project, and is the layer that makes cross-sheet formulas
 behave correctly — prefer it over reaching for `core::engine::Sheet` directly.
 
@@ -38,8 +38,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
-
-[`WorkbookManager`]: https://docs.rs/visi-core/latest/visi_core/struct.WorkbookManager.html
 
 Fallible calls return `visi_core::Error`, which implements `std::error::Error`.
 Failures that name a workbook object carry an `ObjectKind`, so you can react
