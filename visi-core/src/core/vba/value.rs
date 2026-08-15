@@ -628,7 +628,11 @@ fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i6
     };
     let a = bankers_round(lhs.to_f64()?);
     let b = bankers_round(rhs.to_f64()?);
-    if !a.is_finite() || !b.is_finite() || a.abs() > i64::MAX as f64 || b.abs() > i64::MAX as f64 {
+    // The *operands* have to fit, not just the result: `254 Mod "22147483647"`
+    // is error 6 even though the answer is 254, because 22147483647 is not a
+    // Long. Checking only the result let that through.
+    let fits = |v: f64| v.is_finite() && v >= i32::MIN as f64 && v <= i32::MAX as f64;
+    if !fits(a) || !fits(b) {
         return Err(VbaError::overflow());
     }
     Ok((Some(a as i64), Some(b as i64), class))
@@ -653,6 +657,12 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     // raises error 5 rather than returning NaN. Found by fuzz/fuzz_vba.py via
     // `(-1) ^ 1.5`, which this used to return as a quiet NaN.
     if base < 0.0 && exp.fract() != 0.0 {
+        return Err(VbaError::invalid_call());
+    }
+    // `0 ^ -1` has no value either, and is the same error. `0 ^ 0` is 1 and
+    // `0 ^ 2` is 0, so it is specifically a negative exponent over a zero
+    // base.
+    if base == 0.0 && exp < 0.0 {
         return Err(VbaError::invalid_call());
     }
     let r = base.powf(exp);

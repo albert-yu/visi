@@ -1618,13 +1618,6 @@ mod tests {
     }
 
     #[test]
-    fn val_types_its_result_like_a_literal() {
-        assert_eq!(expr("Val(255)"), "Integer|255");
-        assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
-        assert_eq!(expr("Val(\"100000\")"), "Long|100000");
-    }
-
-    #[test]
     fn the_words_true_and_false_coerce_on_the_integer_path_only() {
         // Measured. The integer/logical path accepts them as -1 and 0; the
         // floating-point path has never heard of them.
@@ -1670,6 +1663,73 @@ mod tests {
         ] {
             assert_eq!(expr(e), "ERR|13", "for {e}");
         }
+    }
+
+    #[test]
+    fn val_always_returns_a_double() {
+        // Measured directly. A previous version typed the result like a
+        // literal, inferred from a fuzz case where `Val` may never have run.
+        assert_eq!(expr("Val(255)"), "Double|255");
+        assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
+        assert_eq!(expr("Val(\"100000\")"), "Double|100000");
+        assert_eq!(run("    Dim a\n    a = 1%\n    F = Val(a)"), "Double|1");
+    }
+
+    #[test]
+    fn a_zero_base_with_a_negative_exponent_is_an_error() {
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = -1\n    F = (a ^ b)"),
+            "ERR|5"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = -246\n    F = (a ^ b)"),
+            "ERR|5"
+        );
+        // Zero and positive exponents are fine, as is a negative exponent
+        // over a non-zero base.
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = 0\n    F = (a ^ b)"),
+            "Double|1"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 0\n    b = 2\n    F = (a ^ b)"),
+            "Double|0"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 2\n    b = -2\n    F = (a ^ b)"),
+            "Double|0.25"
+        );
+    }
+
+    #[test]
+    fn int_div_and_mod_range_check_their_operands_not_just_the_result() {
+        // `254 Mod "22147483647"` is error 6 even though the answer is 254:
+        // the operand is not a Long. Checking only the result let it through.
+        assert_eq!(
+            run("    Dim a, b\n    a = 254\n    b = \"22147483647\"\n    F = (a Mod b)"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 254\n    b = \"22147483647\"\n    F = (a \\ b)"),
+            "ERR|6"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 3000000000#\n    b = 3\n    F = (a Mod b)"),
+            "ERR|6"
+        );
+        // Operands that do fit a Long still work.
+        assert_eq!(
+            run("    Dim a, b\n    a = 254\n    b = 2147483647\n    F = (a Mod b)"),
+            "Long|254"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 40000\n    b = 3\n    F = (a Mod b)"),
+            "Long|1"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 40000\n    b = 3\n    F = (a \\ b)"),
+            "Long|13333"
+        );
     }
 
     #[test]
