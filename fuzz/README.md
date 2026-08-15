@@ -405,7 +405,9 @@ Three things shape the design:
 - **Nothing non-deterministic is generated** (`Now`, `Rnd`, `Timer`): the two engines would differ by construction and every iteration would be noise.
 - **`Len` is never applied to a raw expression**, only to `CStr(...)`. `Len(False)` — `Len` of a *Boolean literal* — is a compile error in Excel, which hangs the batch. It is another instance of the Phase 0 boundary: a check needing the argument's static type, which a parser does not track.
 
-Open divergences are listed in [`docs/vba-macro-support.md`](../docs/vba-macro-support.md) under "Phase 1, as built"; the largest is that VBA's `And`/`Or` are three-valued (`True Or Null` is `True`, not `Null`) while `value::logical` propagates `Null` unconditionally.
+It found and drove out eleven distinct rule families in the value model — three-valued `And`/`Or`/`Imp`, the four string-vs-number comparison rules, `For` counter semantics, count-argument rounding, `(-1) ^ 1.5`, `Select Case Null`, infinity handling, `CStr(Null)`, `Single` with `Long`, Null coercion order, and `Val` typing — taking agreement from 54/60 to **493/500**. Each is documented with its measured Excel result in [`docs/vba-macro-support.md`](../docs/vba-macro-support.md) under "Phase 1, as built".
+
+The seven that remain are almost all **error-ordering** disagreements: both engines fault on the same expression but coerce its subexpressions in a different order, so one reports error 11 where the other reports 6. Settling them needs a probe of VBA's operand evaluation order. None is a wrong value.
 
 Failure artifacts land under `fuzz_results/failures/vba_exec_case_<N>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers.
 

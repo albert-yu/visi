@@ -31,13 +31,22 @@ fn any_null(args: &[Variant]) -> bool {
 pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
     let lower = name.to_ascii_lowercase();
 
-    // Most intrinsics propagate Null rather than erroring on it. The
-    // exceptions are the ones whose whole job is to inspect a value.
-    let inspects = matches!(
+    // Most intrinsics propagate Null rather than erroring on it, but two
+    // families do not:
+    //
+    //   - inspection functions, whose whole job is to look at the value;
+    //   - the `C*` conversions, which cannot represent Null and raise error
+    //     94 instead. `CStr(Null)` propagating a Null rather than raising was
+    //     a real mismatch: the caller had it under `On Error Resume Next`
+    //     expecting the assignment to be skipped, and instead got a Null
+    //     variable that poisoned everything downstream.
+    let handles_null = matches!(
         lower.as_str(),
         "isnull" | "isempty" | "isnumeric" | "isdate" | "isobject" | "typename" | "vartype" | "iif"
     );
-    if any_null(args) && !inspects {
+    let rejects_null =
+        lower.starts_with('c') && lower.len() >= 4 && lower != "cos" && lower != "chr";
+    if any_null(args) && !handles_null && !rejects_null {
         return Ok(Some(Variant::Null));
     }
 
@@ -72,7 +81,12 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
             Variant::Currency(scaled as i64)
         }
         "cvar" => need(args, 0)?,
-        "val" => Variant::Double(val_of(&arg(args, 0))),
+        // Val types its result like a literal rather than always returning a
+        // Double: `Val(255)` is an Integer, `Val("1.5")` a Double.
+        "val" => {
+            let n = val_of(&arg(args, 0));
+            Variant::from_literal(n, n.fract() != 0.0)
+        }
 
         // ---- maths -------------------------------------------------------
         // Abs and Sgn keep the argument's own numeric width, which is
@@ -301,11 +315,15 @@ fn to_i64(v: f64) -> VResult<i64> {
     Ok(r as i64)
 }
 
+/// A count argument, which VBA rounds rather than truncates.
+///
+/// Measured: `Space(2.6)` is three spaces, not two.
 fn to_count(v: f64) -> VResult<usize> {
-    if v < 0.0 {
+    let r = value::bankers_round(v);
+    if r < 0.0 {
         return Err(VbaError::invalid_call());
     }
-    Ok(v as usize)
+    Ok(r as usize)
 }
 
 fn count_arg(args: &[Variant], i: usize) -> VResult<usize> {

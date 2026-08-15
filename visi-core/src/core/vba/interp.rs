@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use super::ast::*;
 use super::builtins;
-use super::value::{self, ArithMode, VResult, Variant, VbaError};
+use super::value::{self, ArithMode, Operand, VResult, Variant, VbaError};
 
 /// How many statements a single `run` may execute before giving up.
 const DEFAULT_MAX_OPS: u64 = 5_000_000;
@@ -483,19 +483,31 @@ impl Interpreter {
         Ok(match m {
             CaseMatch::Value(e) => {
                 let v = self.eval(e, frame)?;
-                value::compare(subject, &v)? == Some(std::cmp::Ordering::Equal)
+                // The subject is always a runtime value here; the case value
+                // carries its own constant-ness, which is what makes
+                // `Select Case "10"` match `Case 10`.
+                value::compare_ctx(subject, &v, Operand::Runtime, operand_kind(e))?
+                    == Some(std::cmp::Ordering::Equal)
             }
-            CaseMatch::Range(lo, hi) => {
-                let lo = self.eval(lo, frame)?;
-                let hi = self.eval(hi, frame)?;
-                let a = value::compare(subject, &lo)?;
-                let b = value::compare(subject, &hi)?;
+            CaseMatch::Range(lo_e, hi_e) => {
+                // A `To` range matches a Null subject, which no other case
+                // form does: `Select Case Null` skips `Case 0, 1` and
+                // `Case Is > 2` but takes `Case 2 To 5`. Measured directly,
+                // and it does not follow from the comparisons -- `Null >= 2`
+                // is Null. Excel quirk, matched deliberately.
+                if subject.is_null() {
+                    return Ok(true);
+                }
+                let lo = self.eval(lo_e, frame)?;
+                let hi = self.eval(hi_e, frame)?;
+                let a = value::compare_ctx(subject, &lo, Operand::Runtime, operand_kind(lo_e))?;
+                let b = value::compare_ctx(subject, &hi, Operand::Runtime, operand_kind(hi_e))?;
                 matches!(a, Some(o) if o != std::cmp::Ordering::Less)
                     && matches!(b, Some(o) if o != std::cmp::Ordering::Greater)
             }
             CaseMatch::Is(op, e) => {
                 let v = self.eval(e, frame)?;
-                let ord = value::compare(subject, &v)?;
+                let ord = value::compare_ctx(subject, &v, Operand::Runtime, operand_kind(e))?;
                 match ord {
                     None => false,
                     Some(o) => compare_with(*op, o),
@@ -529,9 +541,14 @@ impl Interpreter {
             ));
         }
 
+        // The counter is assigned *before* the test, not after it, so that
+        // after the loop it holds the value that failed -- `For i = 1 To 3`
+        // leaves `i` at 4, and `Step 2` leaves it at 5. `Exit For` leaves it
+        // at the value the body was running with. All measured.
         let mut current = start;
         loop {
             self.tick()?;
+            self.assign(var, number_like(current, start, step_v), frame, false)?;
             let done = if step_v > 0.0 {
                 current > limit
             } else {
@@ -540,7 +557,6 @@ impl Interpreter {
             if done {
                 break;
             }
-            self.assign(var, number_like(current, start, step_v), frame, false)?;
             match self.exec_block(body, frame)? {
                 Flow::Normal => {}
                 Flow::ExitFor => break,
@@ -676,7 +692,10 @@ impl Interpreter {
                 } else {
                     ArithMode::Promote
                 };
-                eval_binary(*op, &a, &b, mode)
+                // Comparison needs each side's constant-ness separately, not
+                // just whether both are -- see `value::compare_ctx`.
+                let kinds = (operand_kind(lhs), operand_kind(rhs));
+                eval_binary(*op, &a, &b, mode, kinds)
             }
 
             Expr::Call { target, args, .. } => self.eval_call(target, args, frame),
@@ -828,7 +847,22 @@ fn is_constant(e: &Expr) -> bool {
     }
 }
 
-fn eval_binary(op: BinOp, a: &Variant, b: &Variant, mode: ArithMode) -> VResult<Variant> {
+/// How `value::compare_ctx` should treat an operand.
+fn operand_kind(e: &Expr) -> Operand {
+    if is_constant(e) {
+        Operand::Const
+    } else {
+        Operand::Runtime
+    }
+}
+
+fn eval_binary(
+    op: BinOp,
+    a: &Variant,
+    b: &Variant,
+    mode: ArithMode,
+    kinds: (Operand, Operand),
+) -> VResult<Variant> {
     use BinOp::*;
     match op {
         Add => value::add(a, b, mode),
@@ -839,15 +873,17 @@ fn eval_binary(op: BinOp, a: &Variant, b: &Variant, mode: ArithMode) -> VResult<
         Mod => value::modulo(a, b),
         Pow => value::pow(a, b),
         Concat => value::concat(a, b),
-        Eq | Ne | Lt | Gt | Le | Ge => match value::compare(a, b)? {
+        Eq | Ne | Lt | Gt | Le | Ge => match value::compare_ctx(a, b, kinds.0, kinds.1)? {
             None => Ok(Variant::Null),
             Some(ord) => Ok(Variant::Boolean(compare_with(op, ord))),
         },
-        And => value::logical(a, b, |x, y| x & y),
-        Or => value::logical(a, b, |x, y| x | y),
+        // And/Or/Imp are three-valued; Xor and Eqv are not (a Null operand
+        // always makes their result unknown).
+        And => value::and(a, b),
+        Or => value::or(a, b),
         Xor => value::logical(a, b, |x, y| x ^ y),
         Eqv => value::logical(a, b, |x, y| !(x ^ y)),
-        Imp => value::logical(a, b, |x, y| !x | y),
+        Imp => value::imp(a, b),
         Like => Err(out_of_scope("Like")),
         Is => Err(out_of_scope("Is")),
     }
@@ -1274,6 +1310,286 @@ mod tests {
         );
         assert_eq!(run("    Dim n As Long\n    F = TypeName(n)"), "String|Long");
         assert_eq!(run("    Dim v\n    F = TypeName(v)"), "String|Empty");
+    }
+
+    // ---- three-valued logic, comparison, loop counters -------------------
+    //
+    // All measured against Excel 16.112 after fuzz/fuzz_vba.py flagged them.
+
+    #[test]
+    fn and_or_and_imp_are_three_valued() {
+        // A falsy operand determines And; a truthy one determines Or. The
+        // deciding operand is returned unchanged, keeping its type.
+        assert_eq!(expr("False And Null"), "Boolean|False");
+        assert_eq!(expr("True Or Null"), "Boolean|True");
+        assert_eq!(expr("IsNull(True And Null)"), "Boolean|True");
+        assert_eq!(expr("IsNull(False Or Null)"), "Boolean|True");
+        // Numeric operands keep their own subtype through the same rule.
+        assert_eq!(
+            run("    Dim a\n    a = 0\n    F = (a And Null)"),
+            "Integer|0"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 5\n    F = (a Or Null)"),
+            "Integer|5"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 5\n    F = IsNull(a And Null)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 0\n    F = IsNull(a Or Null)"),
+            "Boolean|True"
+        );
+        // Imp is determined by a true consequent or a false antecedent.
+        assert_eq!(expr("Null Imp True"), "Boolean|True");
+        assert_eq!(expr("False Imp Null"), "Boolean|True");
+        // Xor and Eqv are not three-valued: Null always wins.
+        assert_eq!(expr("IsNull(Null Xor True)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Null Eqv True)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
+    }
+
+    #[test]
+    fn string_versus_number_comparison_depends_on_constant_ness() {
+        // The four rules in `value::compare_ctx`, each with the Excel result
+        // that established it.
+
+        // Both constant: numeric, and error 13 if the string will not parse.
+        assert_eq!(expr("\"10\" = 10"), "Boolean|True");
+        assert_eq!(expr("\"2\" > 10"), "Boolean|False");
+        assert_eq!(expr("\"\" = 0"), "ERR|13");
+        assert_eq!(expr("\"abc\" > 1"), "ERR|13");
+
+        // Numeric constant, string variable: numeric, falling back rather
+        // than erroring when the string will not parse.
+        assert_eq!(
+            run("    Dim a\n    a = \"2\"\n    F = (a > 10)"),
+            "Boolean|False"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"1.5\"\n    F = (a = 1.5)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"\"\n    F = (a = 0)"),
+            "Boolean|False"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"abc\"\n    F = (a = 1)"),
+            "Boolean|False"
+        );
+
+        // String constant, numeric variable: string comparison.
+        assert_eq!(
+            run("    Dim b\n    b = 10\n    F = (\"2\" > b)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim b\n    b = 1\n    F = (\"abc\" > b)"),
+            "Boolean|True"
+        );
+
+        // Both variables: a number sorts before a string, whatever it is.
+        // This is the row that defeats every simpler theory -- "1.5" and 1.5
+        // are equal both numerically and textually, and Excel says False.
+        assert_eq!(
+            run("    Dim a, b\n    a = \"1.5\"\n    b = 1.5\n    F = (a = b)"),
+            "Boolean|False"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = \"2\"\n    b = 10\n    F = (a > b)"),
+            "Boolean|True"
+        );
+    }
+
+    #[test]
+    fn a_case_range_matches_a_null_subject_but_no_other_case_form_does() {
+        // Measured, and deliberately not derived: `Null >= 2` is Null, so
+        // nothing about the comparisons predicts this.
+        let sel = |cases: &str| {
+            format!(
+                "    Dim r\n    Select Case Null\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            )
+        };
+        assert_eq!(
+            run(&sel("    Case 2 To 5\n        r = \"range\"\n")),
+            "String|range"
+        );
+        assert_eq!(
+            run(&sel("    Case 0, 1\n        r = \"value\"\n")),
+            "String|else"
+        );
+        assert_eq!(
+            run(&sel("    Case Is > 2\n        r = \"is\"\n")),
+            "String|else"
+        );
+    }
+
+    #[test]
+    fn infinity_is_a_value_for_pow_but_not_for_arithmetic() {
+        // `^` produces it, negation preserves it, CStr renders it "INF" --
+        // but +, - and * refuse to produce or consume one.
+        assert_eq!(expr("255 ^ 255"), "Double|INF");
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = -(a ^ 255)"),
+            "Double|-INF"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = ((a ^ 255) & \"x\")"),
+            "String|INFx"
+        );
+        assert_eq!(
+            run("    Dim a, b\n    a = 255\n    b = (a ^ 255)\n    F = (b + 1)"),
+            "ERR|6"
+        );
+        assert_eq!(run("    Dim a\n    a = 1E300\n    F = (a * a)"), "ERR|6");
+        // Finite overflow of an addition is still fine.
+        assert_eq!(
+            run("    Dim a, b\n    a = 1E300\n    b = 1E300\n    F = (a + b)"),
+            "Double|2E+300"
+        );
+    }
+
+    #[test]
+    fn imp_follows_its_definition_rather_than_a_hand_rolled_table() {
+        // `255 Imp Null` is `Not 255 Or Null` = `-256 Or Null` = -256,
+        // because -256 is truthy. A hand-rolled three-valued table said Null.
+        assert_eq!(
+            run("    Dim a\n    a = 255\n    F = (a Imp Null)"),
+            "Integer|-256"
+        );
+        // The measured endpoints still hold.
+        assert_eq!(expr("Null Imp True"), "Boolean|True");
+        assert_eq!(expr("False Imp Null"), "Boolean|True");
+        assert_eq!(expr("5 Imp 3"), "Integer|-5");
+    }
+
+    #[test]
+    fn single_combined_with_long_widens_past_both() {
+        // A Single cannot hold every Long, so VBA goes to Double -- but a
+        // Single with an Integer stays Single. Both measured.
+        assert_eq!(run("    Dim a\n    a = 2!\n    F = (a + 1)"), "Single|3");
+        assert_eq!(
+            run("    Dim a, b\n    a = 2!\n    b = 1&\n    F = (a * b)"),
+            "Double|2"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 2!\n    F = (a - 0.5)"),
+            "Double|1.5"
+        );
+    }
+
+    #[test]
+    fn null_propagates_only_after_the_other_operand_coerces() {
+        // `"abc" - Null` is error 13, not Null: the type mismatch is found
+        // before the Null short-circuits.
+        assert_eq!(expr("\"abc\" - Null"), "ERR|13");
+        assert_eq!(expr("IsNull(1 - Null)"), "Boolean|True");
+        assert_eq!(expr("IsNull(Null - 1)"), "Boolean|True");
+    }
+
+    #[test]
+    fn conversions_reject_null_rather_than_propagating_it() {
+        // `CStr(Null)` raises error 94. Propagating a Null instead was a real
+        // mismatch: callers put it under `On Error Resume Next` expecting the
+        // assignment to be skipped, and a returned Null poisoned everything
+        // downstream of it.
+        assert_eq!(expr("CStr(Null)"), "ERR|94");
+        assert_eq!(expr("CDbl(Null)"), "ERR|94");
+        assert_eq!(expr("CLng(Null)"), "ERR|94");
+        // String functions do propagate.
+        assert_eq!(expr("IsNull(UCase(Null))"), "Boolean|True");
+        assert_eq!(expr("IsNull(Left(Null, 1))"), "Boolean|True");
+        // Inspection functions look at it rather than propagating.
+        assert_eq!(expr("TypeName(Null)"), "String|Null");
+        assert_eq!(expr("IsNull(Null)"), "Boolean|True");
+    }
+
+    #[test]
+    fn val_types_its_result_like_a_literal() {
+        assert_eq!(expr("Val(255)"), "Integer|255");
+        assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
+        assert_eq!(expr("Val(\"100000\")"), "Long|100000");
+    }
+
+    #[test]
+    fn an_empty_string_never_coerces_to_a_number() {
+        // Measured across every operator: `"" - 3`, `"" + 3`, `"" * 3`,
+        // `"" \ 3`, `"" And 1`, `Not ""` and `CDbl("")` are all error 13.
+        for e in [
+            "\"\" - 3",
+            "\"\" + 3",
+            "\"\" * 3",
+            "\"\" \\ 3",
+            "Not \"\"",
+            "CDbl(\"\")",
+        ] {
+            assert_eq!(expr(e), "ERR|13", "for {e}");
+        }
+    }
+
+    #[test]
+    fn a_negative_base_with_a_fractional_exponent_is_an_error() {
+        // Excel raises error 5 rather than returning NaN.
+        assert_eq!(expr("(-1) ^ 1.5"), "ERR|5");
+        assert_eq!(expr("(-8) ^ (1 / 3)"), "ERR|5");
+        // Integral exponents are fine.
+        assert_eq!(expr("(-2) ^ 2"), "Double|4");
+        assert_eq!(expr("(-2) ^ 3"), "Double|-8");
+    }
+
+    #[test]
+    fn select_case_matches_a_numeric_case_against_a_string_subject() {
+        // `Select Case "10"` matches `Case 10`, but `Select Case ""` does not
+        // match `Case 0` -- the numeric-constant rule, not an error.
+        let body = |x: &str| {
+            format!(
+                "    Dim r\n    Select Case {x}\n    Case 0\n        r = \"zero\"\n    \
+                     Case 10\n        r = \"ten\"\n    Case Else\n        r = \"else\"\n    \
+                     End Select\n    F = r"
+            )
+        };
+        assert_eq!(run(&body("\"10\"")), "String|ten");
+        assert_eq!(run(&body("\"\"")), "String|else");
+    }
+
+    #[test]
+    fn a_for_counter_is_left_at_the_value_that_failed_the_test() {
+        assert_eq!(
+            run("    Dim c\n    For c = 1 To 3\n    Next c\n    F = c"),
+            "Integer|4"
+        );
+        assert_eq!(
+            run("    Dim c\n    For c = 1 To 3 Step 2\n    Next c\n    F = c"),
+            "Integer|5"
+        );
+        // A loop that never runs leaves the counter at its start value.
+        assert_eq!(
+            run("    Dim c\n    For c = 5 To 1\n    Next c\n    F = c"),
+            "Integer|5"
+        );
+        assert_eq!(
+            run("    Dim c\n    For c = 3 To 1 Step -1\n    Next c\n    F = c"),
+            "Integer|0"
+        );
+        // Exit For leaves it at the value the body was running with.
+        assert_eq!(
+            run("    Dim c\n    For c = 1 To 3\n        Exit For\n    Next c\n    F = c"),
+            "Integer|1"
+        );
+    }
+
+    #[test]
+    fn count_arguments_round_rather_than_truncate() {
+        // Space(2.6) is three spaces, not two.
+        assert_eq!(expr("Len(Space(2.6))"), "Long|3");
+        assert_eq!(expr("Space(-1)"), "ERR|5");
+        assert_eq!(expr("String(-1, \"x\")"), "ERR|5");
+        assert_eq!(expr("Left(\"abc\", -1)"), "ERR|5");
+        assert_eq!(expr("Right(\"abc\", 99)"), "String|abc");
+        assert_eq!(expr("InStr(0, \"abc\", \"b\")"), "ERR|5");
+        assert_eq!(expr("String(2, 65)"), "String|AA");
     }
 
     // ---- out of scope ---------------------------------------------------

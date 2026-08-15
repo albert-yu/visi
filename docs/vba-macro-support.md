@@ -225,21 +225,33 @@ negative zero as `-0` (normalising it away was wrong), and an empty string is
 *not* a zero — `"" = 0`, `"" < 0` and `Not ""` are all error 13, unlike
 `Empty`, which genuinely is zero.
 
-**Where it stands:** 60 generated procedures, **54 agreeing** with Excel on
-value, subtype and error number together. The six open divergences are real
-and tractable, and each has a saved reproduction:
+**Where it stands:** 500 generated procedures, **493 agreeing** with Excel on
+value, subtype and error number together — up from 54 of 60 when the harness
+first ran. Every divergence family found in that first run has been resolved,
+and each fix is a measured rule with a test naming the Excel result:
 
-| Divergence | visi | Excel |
-| --- | --- | --- |
-| `x Or Null` / `x And Null` | error 94 | three-valued: `True Or Null` is `True`, not `Null` |
-| number vs non-numeric string comparison | error 13 | context-dependent; needs its own probe |
-| a `For` counter read after the loop | `Empty` | the value that failed the test |
-| `Space`/`String` argument edge cases | accepted | error 5 in some shapes |
+| Was diverging | What Excel actually does |
+| --- | --- |
+| `And` / `Or` / `Imp` with `Null` | Three-valued. A *falsy* operand decides `And` and a *truthy* one decides `Or`, and the deciding operand is returned — converted to the integer type the bitwise operator works in, so `vb Or Null` with `vb = 0.1 - 2147483647` is the `Long` `-2147483647`. `Imp` needed no table at all: evaluating it as `Not a Or b` gets this for free, and fixed a case the hand-rolled table got wrong (`255 Imp Null` is `-256`, not `Null`). |
+| string vs number comparison | Four rules, split by constant-ness exactly as arithmetic is. Both constant → numeric, error 13 if the string will not parse. Numeric constant → numeric, falling back rather than erroring. String constant → string comparison. **Both variables → a number always sorts before a string**, which is why `a = "1.5"`, `b = 1.5` makes `a = b` `False` even though they are equal both numerically and as text. |
+| `For` counter after the loop | Left at the value that failed the test (`For i = 1 To 3` leaves `4`; `Step 2` leaves `5`), or at the current value on `Exit For`. Assigning the counter *before* the test rather than after is the whole fix. |
+| `Space` / `String` / `Mid` counts | Rounded, not truncated: `Space(2.6)` is three spaces. |
+| `(-1) ^ 1.5` | Error 5, not a quiet `NaN`. |
+| `Select Case Null` | `Case 2 To 5` **matches** a `Null` subject, while `Case 0, 1` and `Case Is > 2` do not — and nothing about the comparisons predicts it, since `Null >= 2` is `Null`. An Excel quirk, matched deliberately. |
+| infinity | `255 ^ 255` is `INF` and negating it gives `-INF`, but `+`, `-` and `*` raise error 6 if either side is infinite. `CStr` renders it `"INF"`. |
+| `CStr(Null)` | Error 94, not a propagated `Null`. Propagating it silently poisoned callers who had it under `On Error Resume Next` expecting the assignment to be skipped. |
+| `Single` with `Long` | Widens past both to `Double`, since a `Single` cannot hold every `Long` — though `Single` with `Integer` stays `Single`. |
+| `"abc" - Null` | Error 13, not `Null`: the operand is coerced *before* the `Null` short-circuits. |
+| `Val(255)` | An `Integer`. `Val` types its result like a literal rather than always returning a `Double`. |
 
-The three-valued logic one is the clearest: VBA's `Or` and `And` return `Null`
-only when the result is genuinely indeterminate, so `True Or Null` is `True`
-and `False And Null` is `False`. `value::logical` currently propagates `Null`
-unconditionally.
+Seven long-tail cases remain, all with saved reproductions under
+`fuzz_results/failures/`. Most are **error-ordering** disagreements — visi
+reports error 11 where Excel reports 6, or 13 where Excel reports 6 — meaning
+both engines detect a fault in the same expression but coerce its
+subexpressions in a different order. One is a trailing-whitespace difference
+in a string result. None is a wrong *value*; they are all about which of two
+errors surfaces first, which needs a probe of VBA's operand evaluation order
+to settle.
 
 ### Security posture
 

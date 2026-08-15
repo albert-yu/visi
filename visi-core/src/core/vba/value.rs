@@ -310,9 +310,6 @@ impl Variant {
     }
 
     fn pack(value: f64, class: NumClass) -> VResult<Variant> {
-        if !value.is_finite() {
-            return Err(VbaError::overflow());
-        }
         Ok(match class {
             NumClass::Integer => {
                 if value < i16::MIN as f64 || value > i16::MAX as f64 {
@@ -335,20 +332,31 @@ impl Variant {
             }
             NumClass::Single => {
                 let as_single = value as f32;
-                if !as_single.is_finite() {
+                if !as_single.is_finite() && value.is_finite() {
                     return Err(VbaError::overflow());
                 }
                 Variant::Single(as_single)
             }
+            // A Double may hold an infinity: `255 ^ 255` is `INF`, not an
+            // error, and negating it gives `-INF`. Only the arithmetic
+            // operators below refuse to produce or consume one.
             NumClass::Double => Variant::Double(value),
         })
     }
 
-    /// The result class of an arithmetic operation on two operands: the
-    /// wider of the two.
+    /// The result class of an arithmetic operation on two operands.
+    ///
+    /// Normally the wider of the two, but `Single` combined with `Long` is
+    /// `Double` rather than `Single` -- a `Single` cannot hold every `Long`,
+    /// so VBA widens past both. Measured: `2! + 1` is a `Single` (the other
+    /// side is an `Integer`) while `2! * 1&` is a `Double`.
     fn arith_type(lhs: &Variant, rhs: &Variant) -> VResult<NumClass> {
         let l = lhs.num_class().ok_or_else(VbaError::invalid_null)?;
         let r = rhs.num_class().ok_or_else(VbaError::invalid_null)?;
+        let pair = (l.min(r), l.max(r));
+        if pair == (NumClass::Long, NumClass::Single) {
+            return Ok(NumClass::Double);
+        }
         Ok(l.max(r))
     }
 }
@@ -419,7 +427,8 @@ pub fn format_number(v: f64) -> String {
         return "NaN".to_string();
     }
     if v.is_infinite() {
-        return if v > 0.0 { "1.#INF" } else { "-1.#INF" }.to_string();
+        // Measured: `CStr(255 ^ 255)` is "INF", not VB6's "1.#INF".
+        return if v > 0.0 { "INF" } else { "-INF" }.to_string();
     }
 
     // VBA leaves fixed notation outside this range.
@@ -572,7 +581,15 @@ pub fn pow(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
         return Ok(Variant::Null);
     }
-    Ok(Variant::Double(lhs.to_f64()?.powf(rhs.to_f64()?)))
+    let base = lhs.to_f64()?;
+    let exp = rhs.to_f64()?;
+    // A negative base with a fractional exponent has no real result, and VBA
+    // raises error 5 rather than returning NaN. Found by fuzz/fuzz_vba.py via
+    // `(-1) ^ 1.5`, which this used to return as a quiet NaN.
+    if base < 0.0 && exp.fract() != 0.0 {
+        return Err(VbaError::invalid_call());
+    }
+    Ok(Variant::Double(base.powf(exp)))
 }
 
 /// `&` -- concatenation, which skips `Null` operands rather than
@@ -603,10 +620,27 @@ fn arith(
     f: impl Fn(f64, f64) -> f64,
 ) -> VResult<Variant> {
     if lhs.is_null() || rhs.is_null() {
+        // Null propagates, but only *after* the other operand has been
+        // coerced: `"abc" - Null` is error 13, not Null. Measured -- the
+        // type mismatch is detected before the Null short-circuits.
+        if !lhs.is_null() {
+            lhs.to_f64()?;
+        }
+        if !rhs.is_null() {
+            rhs.to_f64()?;
+        }
         return Ok(Variant::Null);
     }
     let class = Variant::arith_type(lhs, rhs)?;
-    Variant::pack_mode(f(lhs.to_f64()?, rhs.to_f64()?), class, mode)
+    let (a, b) = (lhs.to_f64()?, rhs.to_f64()?);
+    let r = f(a, b);
+    // Measured: `1E300 * 1E300` is error 6, and so is `b + 1` when `b` is
+    // already infinite -- but `1E300 + 1E300` is fine, and `^` produces
+    // infinities happily. So +, - and * refuse infinity on either side.
+    if !r.is_finite() || !a.is_finite() || !b.is_finite() {
+        return Err(VbaError::overflow());
+    }
+    Variant::pack_mode(r, class, mode)
 }
 
 /// Unary `-`.
@@ -668,17 +702,123 @@ pub fn logical(lhs: &Variant, rhs: &Variant, f: impl Fn(i64, i64) -> i64) -> VRe
     Variant::pack(f(a as i64, b as i64) as f64, class)
 }
 
-/// Comparison, returning a `Boolean` -- or `Null` if either side is `Null`.
+/// `And`, which is three-valued: a `Null` operand does not always poison the
+/// result.
+///
+/// Measured: `False And Null` is `False`, and `0 And Null` is the `Integer`
+/// `0` -- a falsy operand *determines* the answer, so the result is that
+/// operand, returned unchanged (type included). Only when the known operand
+/// is truthy is the answer genuinely unknown: `5 And Null` and `-1 And Null`
+/// are both `Null`.
+pub fn and(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
+    if let Some(v) = three_valued(lhs, rhs, false)? {
+        return Ok(v);
+    }
+    logical(lhs, rhs, |x, y| x & y)
+}
+
+/// `Or`, three-valued in the mirrored way.
+///
+/// Measured: `True Or Null` is `True`, `5 Or Null` is the `Integer` `5`, and
+/// `0 Or Null` is `Null`. A *truthy* operand determines the answer here.
+pub fn or(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
+    if let Some(v) = three_valued(lhs, rhs, true)? {
+        return Ok(v);
+    }
+    logical(lhs, rhs, |x, y| x | y)
+}
+
+/// `Imp`, evaluated as its definition: `Not a Or b`.
+///
+/// Deriving it rather than hand-rolling a three-valued table is not just
+/// tidier, it is what makes it *correct*. A hand-rolled version said
+/// `255 Imp Null` was `Null`; the definition gives `Not 255 Or Null` =
+/// `-256 Or Null`, and since `-256` is truthy [`or`] returns it. Excel
+/// agrees. The measured endpoints still hold: `Null Imp True` is `True`
+/// (a truthy consequent decides it) and `False Imp Null` is `True`
+/// (`Not False` is truthy).
+pub fn imp(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
+    or(&not(lhs)?, rhs)
+}
+
+/// The shared half of [`and`] and [`or`]: when one side is `Null`, the other
+/// decides the result if its truthiness is the deciding one.
+///
+/// Returns the deciding operand converted the way the bitwise operation
+/// would have converted it: a `Boolean` stays a `Boolean`, and anything else
+/// becomes the `Integer` or `Long` the operator works in.
+///
+/// The conversion is not cosmetic. `vb = 0.1 - 2147483647` then
+/// `vb Or Null` is the **`Long`** `-2147483647` in Excel, not the `Double`
+/// `-2147483646.9` -- the operand is rounded and narrowed before `Or` looks
+/// at it, and returning it unchanged was a mismatch fuzz/fuzz_vba.py caught.
+fn three_valued(lhs: &Variant, rhs: &Variant, deciding: bool) -> VResult<Option<Variant>> {
+    let known = match (lhs.is_null(), rhs.is_null()) {
+        (true, true) => return Ok(Some(Variant::Null)),
+        (true, false) => rhs,
+        (false, true) => lhs,
+        (false, false) => return Ok(None),
+    };
+    if known.to_bool()? != deciding {
+        return Ok(Some(Variant::Null));
+    }
+    if matches!(known, Variant::Boolean(_)) {
+        return Ok(Some(known.clone()));
+    }
+    let class = match known.num_class().ok_or_else(VbaError::invalid_null)? {
+        NumClass::Integer => NumClass::Integer,
+        _ => NumClass::Long,
+    };
+    Variant::pack(bankers_round(known.to_f64()?), class).map(Some)
+}
+
+/// Whether a comparison operand was a compile-time constant.
+///
+/// Comparison between a string and a number depends on this, in the same way
+/// arithmetic overflow does (see [`ArithMode`]) -- and the dependence is what
+/// makes the rules look contradictory until you separate the cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operand {
+    /// A literal, or an expression built only from literals.
+    Const,
+    /// Anything involving a variable.
+    Runtime,
+}
+
+/// Comparison, returning `None` when either side is `Null`.
 ///
 /// Probe cases 53/54: `Empty = 0` and `Empty = ""` are both `True`, because
 /// `Empty` compares as whichever the other operand is.
-pub fn compare(lhs: &Variant, rhs: &Variant) -> VResult<Option<std::cmp::Ordering>> {
+///
+/// # String against number
+///
+/// Four measured rules, which only make sense once the literal-vs-variable
+/// split is separated out. Every one of these was run against Excel:
+///
+/// | Operands | Rule | Evidence |
+/// | --- | --- | --- |
+/// | both constant | numeric; error 13 if the string does not parse | `"10" = 10` is `True`, `"" = 0` is error 13 |
+/// | numeric constant, string variable | numeric, falling back below if it does not parse | `a = "2"` makes `a > 10` `False`; `a = ""` makes `a = 0` `False`, not an error |
+/// | string constant, numeric variable | string, with the number via `CStr` | `b = 10` makes `"2" > b` `True` |
+/// | both variables | **a number always sorts before a string** | `a = "1.5"`, `b = 1.5` makes `a = b` **`False`** |
+///
+/// That last row is the one that defeats every simpler theory: `"1.5"` and
+/// `1.5` are equal both numerically and as text, and Excel still says they
+/// differ -- because at runtime VBA does not convert either side, it orders
+/// numbers before strings wholesale.
+pub fn compare_ctx(
+    lhs: &Variant,
+    rhs: &Variant,
+    lhs_kind: Operand,
+    rhs_kind: Operand,
+) -> VResult<Option<std::cmp::Ordering>> {
     use std::cmp::Ordering;
     if lhs.is_null() || rhs.is_null() {
         return Ok(None);
     }
-    // Two strings compare as text; a string against a number compares
-    // numerically, which is why `Empty = 0` holds.
+
+    // `Empty` takes the other side's shape, so it is settled before the
+    // string/number split below.
     let both_stringy = matches!(
         (lhs, rhs),
         (Variant::Str(_), Variant::Str(_))
@@ -686,13 +826,55 @@ pub fn compare(lhs: &Variant, rhs: &Variant) -> VResult<Option<std::cmp::Orderin
             | (Variant::Empty, Variant::Str(_))
     );
     if both_stringy {
-        let a = lhs.to_vba_string()?;
-        let b = rhs.to_vba_string()?;
-        return Ok(Some(a.cmp(&b)));
+        return Ok(Some(lhs.to_vba_string()?.cmp(&rhs.to_vba_string()?)));
     }
-    let a = lhs.to_f64()?;
-    let b = rhs.to_f64()?;
-    Ok(Some(a.partial_cmp(&b).unwrap_or(Ordering::Equal)))
+
+    let numeric = |v: &Variant| -> VResult<f64> { v.to_f64() };
+
+    match (lhs, rhs) {
+        (Variant::Str(text), other) | (other, Variant::Str(text)) => {
+            let str_on_left = matches!(lhs, Variant::Str(_));
+            let (str_kind, num_kind) = if str_on_left {
+                (lhs_kind, rhs_kind)
+            } else {
+                (rhs_kind, lhs_kind)
+            };
+            let parsed = parse_vba_number(text);
+
+            let ord = if str_kind == Operand::Const && num_kind == Operand::Const {
+                // Constant folding: a string that will not parse is error 13.
+                let a = parsed?;
+                let b = numeric(other)?;
+                cmp_f64(a, b)
+            } else if num_kind == Operand::Const {
+                match parsed {
+                    Ok(a) => cmp_f64(a, numeric(other)?),
+                    // Falls through to the runtime ordering rather than
+                    // erroring, unlike the all-constant case.
+                    Err(_) => Ordering::Greater,
+                }
+            } else if str_kind == Operand::Const {
+                text.as_str().cmp(other.to_vba_string()?.as_str())
+            } else {
+                // Both runtime: the number sorts first, whatever it is.
+                Ordering::Greater
+            };
+            // `ord` was computed with the string on the left; flip it if the
+            // string was actually the right operand.
+            Ok(Some(if str_on_left { ord } else { ord.reverse() }))
+        }
+        _ => Ok(Some(cmp_f64(numeric(lhs)?, numeric(rhs)?))),
+    }
+}
+
+fn cmp_f64(a: f64, b: f64) -> std::cmp::Ordering {
+    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// Comparison between two runtime values, for callers with no constant
+/// information (`Select Case`, and the interpreter's internal uses).
+pub fn compare(lhs: &Variant, rhs: &Variant) -> VResult<Option<std::cmp::Ordering>> {
+    compare_ctx(lhs, rhs, Operand::Runtime, Operand::Runtime)
 }
 
 #[cfg(test)]
