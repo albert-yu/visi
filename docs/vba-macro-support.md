@@ -348,20 +348,30 @@ past four million instead — a number VBA itself produces, so a macro sees
 something plausible. Reading or iterating a range that large is capped the
 same way.
 
-**Where it stands.** On seeds never used while developing, **998 of 1000**
-generated procedures agree with Excel on value, subtype, error number *and*
-every cell in the data grid. The per-seed numbers and the two remaining cases
-are in [`vba-error-ordering.md`](vba-error-ordering.md); both are error
-ordering, with every cell agreeing.
+**Where it stands.** On eight seeds never used while developing,
+**1599 of 1600** generated procedures agree with Excel on value, subtype,
+error number *and* every cell in the data grid. The one remaining is Excel
+raising an overflow that depends on the *statement kind* rather than on any
+value, and is deliberately not matched; the per-seed numbers and the full
+accounting are in [`vba-error-ordering.md`](vba-error-ordering.md) §16–§22.
 
-The fuzzer earned its keep immediately. It found a Phase 1 rule that had been
-wrong since it was written — §11's "a runtime String against a static Boolean
-compares as text", derived from two cases that could not distinguish it from
-the truth, which is that the string converts with `CBool` — and two cell
-divergences that **no return value could have exposed**: a macro assigning an
-infinity left `-inf` in a cell where Excel leaves `#NUM!`, and one assigning
-`"  3  "` left text where Excel leaves the number 3. Both engines returned the
-same value in each case.
+The fuzzer earned its keep several times over, and the findings split into
+three kinds worth distinguishing:
+
+- **Two cell divergences no return value could have exposed.** A macro
+  assigning an infinity left `-inf` in a cell where Excel leaves `#NUM!`; one
+  assigning `"  3  "` left text where Excel leaves the number 3. Both engines
+  returned the same value in each case.
+- **A Phase 1 rule that had been wrong since it was written.** §11's "a
+  runtime String against a static Boolean compares as text" was derived from
+  two cases that could not distinguish it from the truth, which is that the
+  string converts with `CBool`. Two more rules (§13's static typing, §7's
+  `Select Case` conversion) turned out to stop one level too early.
+- **Two ordinary bugs** in `InStr` and in negating the `Long` minimum.
+
+The process lesson is in §16's own history: the corrected rule was itself
+wrong on the first attempt, in the same way, and only a seed added afterwards
+caught it. Each of the eight seeds kept finding something until the last.
 
 ### Security posture
 

@@ -1062,6 +1062,19 @@ pub fn neg(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
     }
+    // Negating the `Long` minimum between constants **wraps to itself**
+    // rather than overflowing or widening: `-(Not 2147483647)` is the `Long`
+    // -2147483648, which is arithmetically wrong and is what Excel does.
+    // Plain two's complement, and narrow -- the `Integer` minimum does *not*
+    // do it (`-(Not 32767)` is error 6 on both sides), and at run time the
+    // whole thing widens instead (`a = 2147483647 : -(Not a)` is the Double
+    // 2147483648). All three measured.
+    if mode == ArithMode::Constant
+        && let Variant::Long(n) = v
+        && *n == i32::MIN
+    {
+        return Ok(Variant::Long(i32::MIN));
+    }
     // Boolean negation widens to Integer: `-True` is 1.
     let class = v.num_class().ok_or_else(VbaError::invalid_null)?;
     // Promotes on overflow at runtime, like the binary operators:
@@ -1321,31 +1334,46 @@ pub fn compare_ctx(
                 // stood for a whole phase on two cases that could not tell
                 // the readings apart.
                 //
-                // **The Boolean side** decides *which* comparison:
+                // The measured table, by how well the compiler knows each
+                // side. `cv` is the `CBool` conversion, `txt` a text
+                // comparison, `num` the numeric rules further below:
                 //
-                //   partner is a literal      -> convert the string with CBool
-                //   partner is anything else  -> compare as text
+                //            | Bool literal | Bool static | Bool folded |
+                //   ---------|--------------|-------------|-------------|
+                //   str rt   |      cv      |     cv      |     cv      |
+                //   str lit  |      cv      |     cv      |     cv      |
+                //   str stat |      cv      |     cv      |    *txt*    |
+                //   str fold |     num      |     num     |     num     |
                 //
-                //   TypeName(0) >= False            error 13   (literal)
-                //   TypeName(0) >= (3# >= Empty)    False      (folded, text)
-                //   CStr(0)     >= (3# >= Empty)    False      (folded, text)
-                //   (3# >= Empty) >= TypeName(0)    True       (folded, text)
-                //
-                // Those middle rows rule out both the conversion (which says
-                // True for `CStr(0)`) and the numeric path (likewise):
-                // "Double" and "0" simply sort below "True". Note `(Not True)`
-                // counts as a *literal* -- see `operand_kind`, which folds a
-                // unary chain over one but not a comparison.
-                //
-                // **The String side** decides whether either applies at all:
-                // a folded constant expression takes neither and falls
-                // through to the numeric rules below, which is the only way
-                // `((Empty & "1") <= ("" <> Empty))` comes out False.
+                // A *folded* string takes none of this and falls through,
+                // which is the only way `((Empty & "1") <= ("" <> Empty))`
+                // comes out False. Note `(Not True)` counts as a **literal**
+                // and `(3# >= Empty)` as folded -- see `operand_kind`, which
+                // follows a unary chain down to a literal but not a
+                // comparison.
                 let stringy = matches!(
                     str_kind,
                     Operand::Runtime | Operand::Static | Operand::Literal
                 );
-                if stringy && num_kind == Operand::Literal {
+                // The one cell that does *not* convert. Three measured rows
+                // put it there and no principle explains it, so it is written
+                // as the exception it is rather than dressed up as a rule:
+                //
+                //   CStr(0)       >= (3# >= Empty)   False  (conversion says True)
+                //   TypeName(0)   >= (3# >= Empty)   False  (conversion says error 13)
+                //   (3# >= Empty) >= TypeName(0)     True
+                //
+                // A *literal* or *runtime* string against the same folded
+                // Boolean does convert -- `("000" < ("1" >= -7))` and
+                // `a = "000" : a < ("1" >= -7)` are both False, which only
+                // `CBool` gives.
+                let static_against_folded =
+                    str_kind == Operand::Static && num_kind == Operand::ConstExpr;
+                // A Boolean held in a *variable* is not statically known at
+                // all, so none of the table applies and the ordinary runtime
+                // rule takes over -- `a = "011" : b = False : a < b` is False
+                // there, where every static partner makes it True.
+                if stringy && num_kind != Operand::Runtime && !static_against_folded {
                     // The conversion is `CBool`, and the comparison then runs
                     // on the Booleans as *numbers*, so True (-1) sorts below
                     // False (0). Measured:
@@ -1391,9 +1419,10 @@ pub fn compare_ctx(
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
                 if stringy && num_kind != Operand::Runtime {
-                    // A statically known Boolean that is not a literal: text,
-                    // and never an error. This is what §11 recorded, now
-                    // narrowed to the case where it is actually right.
+                    // The exception above: text, and never an error. This is
+                    // what §11 of docs/vba-error-ordering.md recorded as the
+                    // whole rule, now narrowed to the one cell where it is
+                    // actually right.
                     let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }

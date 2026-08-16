@@ -446,7 +446,15 @@ fn instr(args: &[Variant]) -> VResult<Variant> {
         )
     };
     let hay_chars: Vec<char> = hay.chars().collect();
-    if start >= hay_chars.len() && !(start == 0 && hay_chars.is_empty()) {
+    // A zero-length string to search in is 0, whatever the needle -- so
+    // `InStr("", "")` is 0 while `InStr("a", "")` is 1. Measured; this used
+    // to report 1 for the empty/empty pair, on the reasoning that an empty
+    // needle matches at the start, which is true only when there is a string
+    // to match in. `Empty` reaches here as `""` and behaves the same way.
+    if hay_chars.is_empty() {
+        return Ok(Variant::Long(0));
+    }
+    if start >= hay_chars.len() {
         return Ok(Variant::Long(0));
     }
     // Empty needle matches at the start position, as VBA has it.

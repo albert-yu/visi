@@ -1273,28 +1273,82 @@ const STATICALLY_STRING: &[&str] = &["cstr", "typename"];
 fn is_statically_boolean(e: &Expr) -> bool {
     match e {
         Expr::Paren { expr, .. } => is_statically_boolean(expr),
+        // `Not` of a Boolean is a Boolean, so it carries the static type
+        // through: `Select Case (Not IsEmpty("Z"))` takes `Case 0, 1` -- the
+        // case values convert with `CBool` -- where the same subject read as
+        // a plain -1 takes `Case Else`. `Not` of a *number* is a number and
+        // does not, which the `Variant::Boolean` check at the use site
+        // enforces anyway: `Select Case (Not 5)` is -6 and matches neither.
+        // Measured; found by `fuzz/fuzz_vba.py`.
+        Expr::Unary {
+            op: UnOp::Not,
+            expr,
+            ..
+        } => is_statically_boolean(expr),
         Expr::Call { target, .. } => matches!(target.as_ref(), Expr::Ident { name, .. }
             if STATICALLY_BOOLEAN.contains(&name.to_ascii_lowercase().as_str())),
         _ => is_constant(e),
     }
 }
 
+/// Whether the compiler knows this expression's type without its value.
+///
+/// A call to one of the declared-return-type intrinsics qualifies, and so
+/// does **arithmetic over them** -- `Len(CStr(a)) / 2` is a `Double` as
+/// surely as `Len(CStr(a))` is a `Long`, because every operand's type is
+/// known. One `Variant` operand loses it for the whole expression, which is
+/// why `Len(CStr(a)) + a` is not static.
+///
+/// The propagation is measured, not assumed:
+///
+/// ```text
+/// a = -3 : Len(CStr(a))       = "-7False"   error 13   (bare call)
+/// a = -3 : (Len(CStr(a)) / 2) = "-7False"   error 13   (propagated)
+/// a = -3 : (Len(CStr(a)) + 1) = "-7False"   error 13   (propagated)
+/// a = -3 : (Len(CStr(a)) + a) = "-7False"   False      (a Variant operand)
+/// a = -3 : (a / (-32768))     = "-7False"   False      (no static operand)
+/// a = -3 : (CLng(a) * 2)      = "-6.0"      True       (numeric, not text)
+/// ```
+///
+/// That last row is the positive half: against a statically typed number the
+/// string must parse *and then compares numerically*, where a `Variant`
+/// partner would compare it as text and say False.
+///
+/// Only arithmetic propagates. Comparison and `&` are left out because
+/// nothing measured covers them, not because they are known not to.
+fn is_statically_typed(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(_) => true,
+        Expr::Paren { expr, .. } | Expr::Unary { expr, .. } => is_statically_typed(expr),
+        Expr::Binary { op, lhs, rhs, .. } => {
+            matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::IntDiv
+                    | BinOp::Mod
+                    | BinOp::Pow
+            ) && is_statically_typed(lhs)
+                && is_statically_typed(rhs)
+        }
+        // Boolean- and String-returning intrinsics count for the same reason
+        // the numeric ones do: the compiler knows the type without the value.
+        Expr::Call { target, .. } => matches!(target.as_ref(), Expr::Ident { name, .. }
+        if {
+            let name = name.to_ascii_lowercase();
+            STATICALLY_NUMERIC.contains(&name.as_str())
+                || STATICALLY_BOOLEAN.contains(&name.as_str())
+                || STATICALLY_STRING.contains(&name.as_str())
+        }),
+        _ => false,
+    }
+}
+
 /// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
-    // Boolean-returning intrinsics count as statically typed for the same
-    // reason the numeric ones do -- the compiler knows the type without the
-    // value -- and it decides how a String compares against them.
-    let statically_typed = matches!(
-        e,
-        Expr::Call { target, .. }
-            if matches!(target.as_ref(), Expr::Ident { name, .. }
-                if {
-                    let name = name.to_ascii_lowercase();
-                    STATICALLY_NUMERIC.contains(&name.as_str())
-                        || STATICALLY_BOOLEAN.contains(&name.as_str())
-                        || STATICALLY_STRING.contains(&name.as_str())
-                })
-    );
+    let statically_typed = is_statically_typed(e);
     match e {
         Expr::Literal(_) => Operand::Literal,
         // A parenthesised or signed literal is still just a literal, however
@@ -2179,6 +2233,85 @@ mod tests {
     }
 
     #[test]
+    fn negating_the_long_minimum_between_constants_wraps_to_itself() {
+        // `-(-2147483648)` is arithmetically 2147483648, and Excel gives back
+        // the Long -2147483648 -- plain two's complement, and wrong. Narrow:
+        // the Integer minimum errors instead, and at run time the whole thing
+        // widens to a Double. All three measured, and matched deliberately,
+        // since a macro doing this should behave the same way here.
+        assert_eq!(expr("TypeName(-(Not 2147483647))"), "String|Long");
+        assert_eq!(expr("CStr(-(Not 2147483647))"), "String|-2147483648");
+        assert_eq!(expr("CStr(-(Not 32767))"), "ERR|6");
+        assert_eq!(
+            run("    Dim a\n    a = 2147483647\n    F = CStr(-(Not a))"),
+            "String|2147483648"
+        );
+    }
+
+    #[test]
+    fn select_case_sees_not_of_a_boolean_as_statically_boolean() {
+        // §7's rule -- `Select Case` converts its case values to the
+        // subject's *static* type -- carries through `Not`, because `Not` of
+        // a Boolean is a Boolean. Measured; `fuzz/fuzz_vba.py` found it as a
+        // case that took `Case Else` here and `Case 0, 1` in Excel, which
+        // then raised on an expression the other arm never evaluates.
+        let sel = |subject: &str| {
+            run(&format!(
+                "    Dim c\n    Select Case {subject}\n    Case 0, 1\n        c = \"one\"\n                     Case 2 To 5\n        c = \"range\"\n    Case Else\n        c = \"else\"\n                     End Select\n    F = c"
+            ))
+        };
+        assert_eq!(sel("(Not IsEmpty(\"Z\"))"), "String|one");
+        assert_eq!(sel("(Not IsEmpty(\"\"))"), "String|one");
+        assert_eq!(sel("(Not (IsEmpty(\"Z\")))"), "String|one");
+        assert_eq!(sel("(Not CBool(0))"), "String|one");
+        assert_eq!(sel("IsEmpty(\"Z\")"), "String|one");
+        // `Not` of a *number* is a number, so this stays on the numeric path
+        // and matches nothing.
+        assert_eq!(sel("(Not 5)"), "String|else");
+    }
+
+    #[test]
+    fn instr_of_an_empty_haystack_is_zero() {
+        // `InStr("", "")` is 0 while `InStr("a", "")` is 1: an empty needle
+        // matches at the start position only when there is a string to match
+        // in. Measured; this used to report 1 for the empty/empty pair.
+        assert_eq!(expr("CStr(InStr(\"\", \"\"))"), "String|0");
+        assert_eq!(expr("CStr(InStr(Empty, \"\"))"), "String|0");
+        assert_eq!(expr("CStr(InStr(\"a\", \"\"))"), "String|1");
+        assert_eq!(expr("CStr(InStr(\"\", \"a\"))"), "String|0");
+    }
+
+    #[test]
+    fn static_typing_propagates_through_arithmetic() {
+        // `Len(CStr(a)) / 2` is a Double as surely as `Len(CStr(a))` is a
+        // Long -- every operand's type is known -- so the strictness of the
+        // test above applies to the whole expression. One Variant operand
+        // loses it.
+        //
+        // Found by `fuzz/fuzz_vba.py` on an unseen seed, which is worth
+        // noting: the rule itself is §13, already implemented and tested, and
+        // what was missing was only that it stopped at the top-level call.
+        let with = |e: &str| run(&format!("    Dim a\n    a = -3\n    F = {e}"));
+        assert_eq!(with("(Len(CStr(a)) = \"-7False\")"), "ERR|13");
+        assert_eq!(with("((Len(CStr(a)) / 2) = \"-7False\")"), "ERR|13");
+        assert_eq!(with("((Len(CStr(a)) + 1) = \"-7False\")"), "ERR|13");
+        assert_eq!(with("((CLng(a) / 2) = \"abc\")"), "ERR|13");
+        assert_eq!(
+            with("((Len(CStr(a)) / (-32768)) = ((-7) & (0 > \"1.5\")))"),
+            "ERR|13"
+        );
+        // A Variant operand anywhere in the arithmetic makes the whole
+        // expression a Variant, and then the string compares as text.
+        assert_eq!(with("((Len(CStr(a)) + a) = \"-7False\")"), "Boolean|False");
+        assert_eq!(with("((a / (-32768)) = \"-7False\")"), "Boolean|False");
+        assert_eq!(with("((a + 1) = \"-7False\")"), "Boolean|False");
+        // The positive half: against a statically typed number a string that
+        // *does* parse compares **numerically**, where a Variant partner
+        // would compare it as text and say False.
+        assert_eq!(with("((CLng(a) * 2) = \"-6.0\")"), "Boolean|True");
+    }
+
+    #[test]
     fn a_string_converts_with_cbool_against_a_static_boolean() {
         // Measured with `fuzz/vba_expr_probe.py`. This used to read "compares
         // as text", which fit `("011" < False)` -- True under both readings --
@@ -2254,6 +2387,22 @@ mod tests {
         assert_eq!(expr("CStr(0) >= (3# >= Empty)"), "Boolean|False");
         assert_eq!(expr("(Not True) <= CStr(32767)"), "Boolean|False");
         assert_eq!(expr("False >= TypeName(0)"), "ERR|13");
+        // ...but *only* a static string against a folded Boolean. A literal
+        // or runtime string against the same partner converts, which is the
+        // row that makes this an exception rather than a rule about folded
+        // Booleans.
+        assert_eq!(expr("(\"000\" < (\"1\" >= -7))"), "Boolean|False");
+        assert_eq!(
+            run("    Dim va\n    va = \"000\"\n    F = (va < (\"1\" >= -7))"),
+            "Boolean|False"
+        );
+        assert_eq!(expr("(Right(100000, 3) < (\"1\" >= -7))"), "Boolean|False");
+        // A *static* Boolean partner converts against every string kind,
+        // including a static one -- it is specifically the folded partner
+        // that is different.
+        assert_eq!(expr("(CStr(0) >= CBool(1))"), "Boolean|True");
+        assert_eq!(expr("(\"000\" < CBool(1))"), "Boolean|False");
+        assert_eq!(expr("(TypeName(0) >= CBool(1))"), "ERR|13");
         // A Boolean *variable* is not static at all, so none of this applies
         // and the runtime rule takes over: a number sorts before a string.
         assert_eq!(
