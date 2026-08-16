@@ -5,16 +5,18 @@ description: Cut a new visi release - version bump with cargo-release, then the 
 
 # Releasing visi
 
-Releases are **tag-driven**. `cargo release` bumps the versions, makes the commit
-and writes the tag; **pushing the tag is what starts everything else**. Nothing
-is released until `git push --follow-tags`.
+Releases are **tag-driven**. `cargo release` bumps the versions and makes the
+commit; the commit goes onto `main` through a PR, and **pushing a tag at the
+merged commit is what starts everything else**. Nothing is released until that
+tag push.
 
-The full flow is two commands (see "Cut it" below). The rest of this file is the
-checks on either side and the things that are easy to get wrong.
+"Cut it" below is the sequence. The rest of this file is the checks on either
+side and the things that are easy to get wrong.
 
 ## Before bumping
 
-- On `main`, clean tree, in sync with `origin/main` (`git fetch && git status`).
+- Start from an up-to-date `main` with a clean tree — the release branch is cut
+  from it (`git checkout main && git fetch && git status`).
 - `cargo test --workspace --exclude visi-python` passes. (Drop `--exclude` only
   if a `python3` is on PATH; without one the pyo3 crate fails to link.)
 - CI on `main` is green.
@@ -38,24 +40,49 @@ crates.io.
 
 ## Cut it
 
+**The release commit reaches `main` through a PR, like everything else.** Don't
+push it straight at `main`: the "Protect main" ruleset requires four status
+checks (`fmt + clippy`, `cargo test (ubuntu-24.04)`, `cargo test (macos-15)`,
+`bindings + parity`) and `ci.yml` runs only on `pull_request` and on pushes to
+`main`. A direct push is refused with `4 of 4 required status checks are
+expected`, and no amount of waiting fixes it — with no PR, those checks have
+nothing to report against.
+
 ```bash
+git checkout -b release-<version>
 cargo release <level> --workspace              # dry run; prints every edit it would make
-cargo release <level> --workspace --execute    # bumps, updates Cargo.lock, commits, tags
-git push --follow-tags                         # this is what starts the release
+cargo release <level> --workspace --execute    # bumps, updates Cargo.lock, commits
+git push -u origin release-<version>
+gh pr create --title "Release <version>" --body "..."
 ```
 
-Read the dry run before executing. It should show: the workspace version, the
-`visi-core` version, both dependency requirements, and a single `v<version>` tag
-(one tag, not per-crate, since both crates land on the same version).
+Read the dry run before executing. It should show five lines: the workspace
+version, the `visi-core` version, both dependency requirements rewritten, and
+`visi` inheriting the workspace version.
+
+Then wait for the four checks, and tag the commit that actually landed:
+
+```bash
+gh pr merge --merge --delete-branch     # leaves you on main, already pulled
+git tag -a v<version> -m "Release visi version <version>"
+git push origin v<version>              # this is what starts the release
+```
+
+Tagging is deliberately manual — `release.toml` sets `tag = false` alongside
+`push = false`. Left to itself cargo-release tags the commit on the *branch*,
+but what lands on `main` is the merge commit, a different SHA, so the tag would
+point at a commit no branch contains. Tags aren't covered by the branch ruleset,
+so that last push goes straight to origin.
 
 If `--execute` is refused by the permission classifier, don't reconstruct it as
-hand edits plus `git commit`/`git tag` — ask the user to run the two commands
-themselves by typing them with a leading `!`.
+hand edits plus `git commit` — ask the user to run that command themselves by
+typing it with a leading `!`.
 
-`release.toml` sets `publish = false` and `push = false` **deliberately**: CI
-publishes (doing it from a laptop would upload before the tag was pushed and
-race the CI job), and the manual push leaves a beat in which a bad bump can be
-amended rather than chased with a yanked release. Don't "fix" either one.
+All three of `release.toml`'s `false`s are **deliberate**, and none is an
+oversight to fix: CI publishes (doing it from a laptop would upload before the
+tag was pushed and race the CI job), the manual push leaves a beat in which a
+bad bump can be amended rather than chased with a yanked release, and the
+manual tag is what keeps the tag on the merged commit.
 
 The release commit comes from cargo-release's own template (`Release
 {{version}}`), so it carries no trailers. Don't amend it after the fact — the
@@ -86,3 +113,11 @@ package-and-verify pass, and skips whatever is already published.
 
 Never move or re-push an existing tag. If a released version is wrong, bump
 again and release a new one.
+
+If a tag somehow gets pushed before its commit is on `main` — `git push
+--follow-tags` does this, since the tag goes through while the branch update is
+refused — the release still builds correctly: pushing a tag uploads the commit
+it points at, and `release.yml` reads the tag, not `main`. Don't delete the tag
+to "redo it properly". Open the PR for that same commit and merge it; the tree
+is identical, so the tag remains an accurate record of what shipped, and it ends
+up in `main`'s history as the merge commit's parent.

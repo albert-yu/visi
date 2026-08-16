@@ -1,14 +1,25 @@
-# Version bumps and tagging, via `cargo release` (crate-ci/cargo-release).
+# Version bumps, via `cargo release` (crate-ci/cargo-release).
 #
-#   cargo release patch --workspace          # dry run; shows every edit
-#   cargo release patch --workspace --execute
-#   cargo release patch -p visi --execute    # CLI-only change
-#   git push --follow-tags                   # this is what starts the release
+#   git checkout -b release-0.1.4
+#   cargo release patch --workspace --no-tag            # dry run; shows every edit
+#   cargo release patch --workspace --execute --no-tag
+#   cargo release patch -p visi --execute --no-tag      # CLI-only change
+#   git push -u origin release-0.1.4 && gh pr create
+#   # ...then, once the required checks pass and the PR is merged:
+#   git tag -a v0.1.4 -m "Release visi version 0.1.4"
+#   git push origin v0.1.4                              # this starts the release
 #
-# cargo-release's job here stops at "version bumped, commit made, tag written".
-# Pushing the tag is what starts .github/workflows/release.yml, which builds
-# the binaries, cuts the GitHub Release, updates the homebrew tap, and publishes
-# to crates.io.
+# cargo-release's job here stops at "version bumped, commit made". Pushing the
+# tag is what starts .github/workflows/release.yml, which builds the binaries,
+# cuts the GitHub Release, updates the homebrew tap, and publishes to crates.io.
+#
+# The bump goes through a PR because the "Protect main" ruleset requires the
+# four CI checks, and ci.yml only runs on a pull request -- pushing the release
+# commit straight at main is refused with "4 of 4 required status checks are
+# expected", which no amount of waiting resolves. Hence `--no-tag`: the commit
+# that lands on main is the *merge* commit, so the tag has to be written after
+# the merge, against that SHA, rather than by cargo-release against the branch.
+# .claude/skills/release/SKILL.md walks the whole sequence.
 #
 # `visi-core` and `visi` version independently (see visi-core/Cargo.toml), but
 # they should generally be released together: bumping visi-core rewrites the
@@ -21,12 +32,22 @@
 # would upload from a laptop before the tag was pushed, and race the CI job.
 publish = false
 
-# Push the tag by hand, so there is a beat between "version bumped" and "the
-# release pipeline is running" -- and so a bad bump can be amended rather than
-# chased with a yanked release.
+# Push by hand, so there is a beat between "version bumped" and "the release
+# pipeline is running" -- and so a bad bump can be amended rather than chased
+# with a yanked release.
 push = false
 
-# This repo does not use conventional-commit prefixes; cargo-release's defaults
-# for both of these start with "chore: ".
+# Tag by hand too, after the bump PR merges. cargo-release would tag the commit
+# on the branch, which is not the commit that reaches main, so the tag it wrote
+# would point at a SHA no branch contains. Off by default here rather than left
+# to a `--no-tag` someone has to remember:
+#
+#   git tag -a v0.1.4 -m "Release visi version 0.1.4"
+#
+# is the convention (matching the v0.1.x tags, which cargo-release wrote as
+# `Release {{crate_name}} version {{version}}`).
+tag = false
+
+# This repo does not use conventional-commit prefixes; cargo-release's default
+# starts with "chore: ".
 pre-release-commit-message = "Release {{version}}"
-tag-message = "Release {{crate_name}} version {{version}}"
