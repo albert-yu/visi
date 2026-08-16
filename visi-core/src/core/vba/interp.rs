@@ -1,15 +1,25 @@
 //! A tree-walking interpreter for the VBA subset in Phase 1 of
 //! `docs/vba-macro-support.md`.
 //!
-//! Scope is expressions, control flow, `Sub`/`Function` calls, and
-//! `On Error`. There is **no host object model**: `Range`, `Worksheets`,
-//! `ThisWorkbook` and everything else that touches a workbook belong to
-//! Phase 2 and raise [`VbaError`] 438 here rather than silently doing
-//! nothing. That refusal is deliberate — a macro that skips a line it does
-//! not understand and then reports success has produced a wrong answer in
-//! the most dangerous way available.
+//! Scope is expressions, control flow, `Sub`/`Function` calls, `On Error`,
+//! and — when a [`Host`] is attached — the Phase 2 object model in
+//! [`super::host`]. Without a host, `Range`, `Worksheets`, `ThisWorkbook` and
+//! everything else that touches a workbook raise [`VbaError`] 438, and so
+//! does anything outside the object model's allow-list even with one. That
+//! refusal is deliberate — a macro that skips a line it does not understand
+//! and then reports success has produced a wrong answer in the most
+//! dangerous way available.
 //!
-//! Two structural notes:
+//! **A plain `=` reads an object's default member; `Set` does not.**
+//! `x = ws.Range("A1")` puts the cell's *value* in `x` while
+//! `Set r = ws.Range("A1")` puts the object there, and the parser cannot tell
+//! the two apart — it sees the same `Member` expression. So every context
+//! that wants a scalar funnels through [`Interpreter::scalar`], and the few
+//! that want the object (`Set`, `Is`, `TypeName`, a `With` subject, an
+//! argument to a user procedure) deliberately skip it. Getting this wrong
+//! does not raise; it silently produces the wrong kind of value.
+//!
+//! Two more structural notes:
 //!
 //! **`On Error Resume Next` is handled where the statement fails, not at the
 //! procedure level.** [`Interpreter::exec_block`] catches the error from each
@@ -27,6 +37,7 @@ use std::rc::Rc;
 
 use super::ast::*;
 use super::builtins;
+use super::host::{Host, ObjRef};
 use super::value::{self, ArithMode, Operand, VResult, Variant, VbaError};
 
 /// How many statements a single `run` may execute before giving up.
@@ -40,12 +51,26 @@ const DEFAULT_MAX_OPS: u64 = 5_000_000;
 const DEFAULT_MAX_DEPTH: usize = 64;
 
 /// Error 438 — the "object doesn't support this property or method" that
-/// everything outside Phase 1's scope reports.
+/// everything outside the implemented scope reports.
 fn out_of_scope(what: &str) -> VbaError {
     VbaError::new(
         438,
+        format!("Object doesn't support this property or method: {what} is not available"),
+    )
+}
+
+/// The same refusal, for something that needs a workbook when none is
+/// attached.
+///
+/// Distinct wording from [`out_of_scope`] on purpose: "no workbook is
+/// attached" is a fixable mistake by the *caller* (run the macro against a
+/// file, not a bare `.bas`), where a plain 438 means the construct is not
+/// implemented at all and never will be by trying harder.
+fn needs_workbook(what: &str) -> VbaError {
+    VbaError::new(
+        438,
         format!(
-            "Object doesn't support this property or method: {what} is not available yet (Phase 1 has no host object model)"
+            "Object doesn't support this property or method: {what} needs a workbook, and this run has none"
         ),
     )
 }
@@ -89,6 +114,13 @@ struct Frame {
     /// raised the error a handler is currently dealing with. `Resume Next`
     /// continues after it.
     failed_at: Option<usize>,
+    /// Enclosing `With` subjects, innermost last, against which a
+    /// leading-dot member reference resolves.
+    ///
+    /// Per frame rather than per interpreter because a `With` block does not
+    /// reach into a procedure it calls: a bare `.Value` inside the callee is
+    /// a compile error in VBA, not a reference to the caller's subject.
+    with_stack: Vec<Variant>,
 }
 
 impl Frame {
@@ -98,6 +130,7 @@ impl Frame {
             handler: Handler::None,
             in_handler: false,
             failed_at: None,
+            with_stack: Vec::new(),
         }
     }
 }
@@ -110,7 +143,11 @@ struct ErrState {
 }
 
 /// Runs VBA procedures from a parsed [`Module`].
-pub struct Interpreter {
+///
+/// The lifetime is the workbook's: an interpreter with a [`Host`] borrows it
+/// mutably for the whole run. `Interpreter::new` alone leaves the parameter
+/// free, so a host-free run has no lifetime obligations at all.
+pub struct Interpreter<'w> {
     module: Module,
     /// Procedures indexed by lowercased name. Behind an `Rc` so a call can
     /// hold one while `&mut self` runs its body, without cloning the body.
@@ -123,9 +160,13 @@ pub struct Interpreter {
     max_ops: u64,
     depth: usize,
     max_depth: usize,
+    /// The workbook, if this run has one. `None` is a real mode, not a
+    /// degraded one: `visi macro run` over a bare `.bas` file has no workbook
+    /// to offer, and every host construct then reports so.
+    host: Option<Host<'w>>,
 }
 
-impl Interpreter {
+impl<'w> Interpreter<'w> {
     /// Builds an interpreter over a parsed module.
     pub fn new(module: Module) -> Self {
         let procs = module
@@ -142,7 +183,32 @@ impl Interpreter {
             max_ops: DEFAULT_MAX_OPS,
             depth: 0,
             max_depth: DEFAULT_MAX_DEPTH,
+            host: None,
         }
+    }
+
+    /// Binds a workbook, enabling the host object model.
+    pub fn with_host(mut self, host: Host<'w>) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    /// Whether the run changed the workbook, and so whether the caller has
+    /// something worth writing back.
+    pub fn mutated(&self) -> bool {
+        self.host.as_ref().is_some_and(|h| h.mutated())
+    }
+
+    /// Settles any outstanding recalculation so a workbook about to be saved
+    /// holds what a reader inside the macro would have seen.
+    pub fn finish(&mut self) {
+        if let Some(h) = self.host.as_mut() {
+            h.finish();
+        }
+    }
+
+    fn host(&mut self, what: &str) -> VResult<&mut Host<'w>> {
+        self.host.as_mut().ok_or_else(|| needs_workbook(what))
     }
 
     /// Caps how many statements a run may execute.
@@ -361,9 +427,14 @@ impl Interpreter {
                 Ok(Flow::Normal)
             }
 
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign {
+                target, value, set, ..
+            } => {
                 let v = self.eval(value, frame)?;
-                self.assign(target, v, frame, module_level)?;
+                // `Set` assigns the reference; a plain `=` reads the object's
+                // default member on both sides. See the module doc comment.
+                let v = if *set { v } else { self.scalar(v)? };
+                self.assign_with(target, v, frame, module_level, *set)?;
                 Ok(Flow::Normal)
             }
 
@@ -433,13 +504,27 @@ impl Interpreter {
                 ..
             } => self.exec_for(var, from, to, step.as_ref(), body, frame),
 
-            Stmt::ForEach { .. } => Err(out_of_scope("For Each")),
+            Stmt::ForEach {
+                var,
+                iterable,
+                body,
+                ..
+            } => self.exec_for_each(var, iterable, body, frame),
 
             Stmt::DoLoop {
                 pre, post, body, ..
             } => self.exec_do(pre.as_ref(), post.as_ref(), body, frame),
 
-            Stmt::With { .. } => Err(out_of_scope("With")),
+            Stmt::With { subject, body, .. } => {
+                // The subject is evaluated once, on entry, and *not* through
+                // `scalar`: `With ws.Range("A2")` binds the Range, which is
+                // what makes `.Value` inside the block mean the cell.
+                let subject = self.eval(subject, frame)?;
+                frame.with_stack.push(subject);
+                let flow = self.exec_block(body, frame);
+                frame.with_stack.pop();
+                flow
+            }
 
             Stmt::Exit { kind, .. } => Ok(match kind {
                 ExitKind::Sub | ExitKind::Function | ExitKind::Property => Flow::ExitProc,
@@ -650,6 +735,8 @@ impl Interpreter {
         Ok(Flow::Normal)
     }
 
+    /// `For`'s counter assignment and every other internal write, which are
+    /// never `Set`.
     fn assign(
         &mut self,
         target: &Expr,
@@ -657,6 +744,58 @@ impl Interpreter {
         frame: &mut Frame,
         module_level: bool,
     ) -> VResult<()> {
+        self.assign_with(target, v, frame, module_level, false)
+    }
+
+    fn assign_with(
+        &mut self,
+        target: &Expr,
+        v: Variant,
+        frame: &mut Frame,
+        module_level: bool,
+        set: bool,
+    ) -> VResult<()> {
+        // A property write is the one place the target is *not* evaluated:
+        // `ws.Range("A1").Value = 5` has to reach the Range and set a member
+        // on it, not read `.Value` and throw the result away.
+        match target {
+            Expr::Member {
+                target: obj, name, ..
+            } => {
+                let obj = self.member_owner(obj.as_deref(), frame)?;
+                let Variant::Object(obj) = obj else {
+                    return Err(VbaError::new(
+                        424,
+                        format!("Object required: .{name} on a {}", obj.type_name()),
+                    ));
+                };
+                return self
+                    .host(&format!(".{name}"))?
+                    .set_member(&obj, name, &[], &v);
+            }
+            // `ws.Range("A1") = 5` and `ws.Cells(1, 2) = 5`: the call
+            // produces an object, and assigning to it writes its default
+            // member. `Set` on the same shape is a property *set*, which VBA
+            // needs `Set` + a `Property Set` to mean and this does not have.
+            Expr::Call {
+                target: t, args, ..
+            } if !set => {
+                if let Expr::Member { .. } | Expr::Ident { .. } = t.as_ref() {
+                    let obj = self.eval(target, frame);
+                    if let Ok(Variant::Object(obj)) = obj {
+                        return self
+                            .host("assignment to an object")?
+                            .assign_default(&obj, &v);
+                    }
+                    // Fall through to the error below, but only after the
+                    // call has had its chance -- an *array* element write is
+                    // a different, still-unsupported thing.
+                    let _ = args;
+                }
+                return Err(out_of_scope("array or property assignment"));
+            }
+            _ => {}
+        }
         match target {
             Expr::Ident { name, .. } => {
                 let key = name.to_ascii_lowercase();
@@ -674,8 +813,10 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            Expr::Member { .. } | Expr::Bang { .. } => Err(out_of_scope("property assignment")),
-            Expr::Call { .. } => Err(out_of_scope("array or property assignment")),
+            Expr::Bang { .. } => Err(out_of_scope("property assignment")),
+            Expr::Member { .. } | Expr::Call { .. } => {
+                Err(out_of_scope("array or property assignment"))
+            }
             other => Err(VbaError::new(
                 erl_assign_error(),
                 format!("Cannot assign to this expression ({other:?})"),
@@ -706,6 +847,14 @@ impl Interpreter {
                 if let Some(v) = self.builtin_constant(name) {
                     return Ok(v);
                 }
+                if let Some(h) = self.host.as_mut()
+                    && let Some(obj) = h.global(name)
+                {
+                    return Ok(Variant::Object(obj));
+                }
+                if self.host.is_none() && super::host::is_host_name(name) {
+                    return Err(needs_workbook(name));
+                }
                 // A zero-argument call written without parentheses.
                 if self.find_procedure(name).is_some() {
                     return self.call_procedure(name, Vec::new());
@@ -719,6 +868,7 @@ impl Interpreter {
 
             Expr::Unary { op, expr, .. } => {
                 let v = self.eval(expr, frame)?;
+                let v = self.scalar(v)?;
                 // Unary sign promotes on overflow at runtime and does not
                 // between constants, exactly as the binary operators do.
                 let mode = if is_constant(expr) {
@@ -736,6 +886,14 @@ impl Interpreter {
             Expr::Binary { op, lhs, rhs, .. } => {
                 let a = self.eval(lhs, frame)?;
                 let b = self.eval(rhs, frame)?;
+                // `Is` is the one operator that wants the references
+                // themselves; everything else reads through the default
+                // member first.
+                if *op == BinOp::Is {
+                    return is_comparison(&a, &b);
+                }
+                let a = self.scalar(a)?;
+                let b = self.scalar(b)?;
                 // Two compile-time constants use fixed-width arithmetic and
                 // overflow; anything involving a variable promotes. See
                 // `value::ArithMode`.
@@ -752,13 +910,11 @@ impl Interpreter {
 
             Expr::Call { target, args, .. } => self.eval_call(target, args, frame),
 
-            Expr::Member { name, .. } => {
-                // `Err.Number` / `Err.Description` are the one member access
-                // Phase 1 supports, because error handling is in scope and
-                // reading them is how a handler reports anything.
-                if let Expr::Member {
-                    target: Some(t), ..
-                } = e
+            Expr::Member { target, name, .. } => {
+                // `Err.Number` / `Err.Description` come first: `Err` is an
+                // interpreter object, not a host one, because error handling
+                // works with or without a workbook.
+                if let Some(t) = target
                     && let Expr::Ident { name: obj, .. } = t.as_ref()
                     && obj.eq_ignore_ascii_case("err")
                 {
@@ -768,7 +924,7 @@ impl Interpreter {
                         other => return Err(out_of_scope(&format!("Err.{other}"))),
                     });
                 }
-                Err(out_of_scope(&format!(".{name}")))
+                self.member(target.as_deref(), name, &[], frame)
             }
 
             Expr::Bang { name, .. } => Err(out_of_scope(&format!("!{name}"))),
@@ -777,6 +933,99 @@ impl Interpreter {
             Expr::TypeOf { .. } => Err(out_of_scope("TypeOf")),
             Expr::AddressOf { .. } => Err(out_of_scope("AddressOf")),
         }
+    }
+
+    /// The object a member reference hangs off: an explicit target, or the
+    /// innermost `With` subject for a leading dot.
+    fn member_owner(&mut self, target: Option<&Expr>, frame: &mut Frame) -> VResult<Variant> {
+        match target {
+            Some(e) => self.eval(e, frame),
+            None => frame
+                .with_stack
+                .last()
+                .cloned()
+                // A leading dot outside a `With` is a compile error in VBA,
+                // which has no error number; 91 is the closest runtime
+                // analogue and says the same thing.
+                .ok_or_else(|| {
+                    VbaError::new(
+                        91,
+                        "Object variable or With block variable not set: a leading '.' outside a With block",
+                    )
+                }),
+        }
+    }
+
+    /// Reads `<target>.<name>`, with or without arguments.
+    fn member(
+        &mut self,
+        target: Option<&Expr>,
+        name: &str,
+        args: &[Variant],
+        frame: &mut Frame,
+    ) -> VResult<Variant> {
+        let owner = self.member_owner(target, frame)?;
+        let Variant::Object(obj) = owner else {
+            return Err(VbaError::new(
+                424,
+                format!("Object required: .{name} on a {}", owner.type_name()),
+            ));
+        };
+        self.host(&format!(".{name}"))?.get_member(&obj, name, args)
+    }
+
+    /// A value in a context that wants a scalar, reading an object's default
+    /// member if that is what it is.
+    ///
+    /// The single funnel the module doc comment describes. Everything that
+    /// computes with a value goes through here; `Set`, `Is`, `TypeName`, a
+    /// `With` subject and a user procedure's arguments deliberately do not.
+    fn scalar(&mut self, v: Variant) -> VResult<Variant> {
+        let Variant::Object(obj) = v else {
+            return Ok(v);
+        };
+        self.host("using an object as a value")?.default_value(&obj)
+    }
+
+    fn exec_for_each(
+        &mut self,
+        var: &Expr,
+        iterable: &Expr,
+        body: &[Stmt],
+        frame: &mut Frame,
+    ) -> VResult<Flow> {
+        let subject = self.eval(iterable, frame)?;
+        // The elements are materialised up front rather than streamed. That
+        // is a real constraint -- it is why iterating a range is capped -- but
+        // the alternative is holding a borrow of the workbook across the loop
+        // body, which is exactly what the value-not-pointer object model
+        // exists to avoid.
+        let items = match subject {
+            Variant::Object(obj) => self.host("For Each")?.iterate(&obj)?,
+            Variant::Array(a) => a.values.clone(),
+            other => {
+                return Err(VbaError::new(
+                    438,
+                    format!(
+                        "Object doesn't support this property or method: For Each over a {}",
+                        other.type_name()
+                    ),
+                ));
+            }
+        };
+        for item in items {
+            self.tick()?;
+            // The element variable holds a reference, so this is a `Set`-like
+            // assignment: `For Each c In ws.Range(...)` makes `c` a Range,
+            // not the cell's value.
+            self.assign_with(var, item, frame, false, true)?;
+            match self.exec_block(body, frame)? {
+                Flow::Normal => {}
+                Flow::ExitFor => break,
+                other => return Ok(other),
+            }
+        }
+        Ok(Flow::Normal)
     }
 
     fn eval_call(&mut self, target: &Expr, args: &[Arg], frame: &mut Frame) -> VResult<Variant> {
@@ -803,19 +1052,72 @@ impl Interpreter {
             return Err(VbaError::new(number, description));
         }
 
+        // `obj.Method(args)` and `.Method(args)` inside a `With`.
+        if let Expr::Member {
+            target: obj, name, ..
+        } = target
+        {
+            let values = self.eval_args(args, frame)?;
+            return self.member(obj.as_deref(), name, &values, frame);
+        }
+
         let Expr::Ident { name, .. } = target else {
             return Err(out_of_scope("this call target"));
         };
 
-        // A local array or variable indexed like a call is out of scope; a
-        // user procedure wins over a builtin of the same name, as in VBA.
+        // A user procedure wins over everything else of the same name, as in
+        // VBA. Its arguments keep their objects: `Foo ws.Range("A1")` passes
+        // the Range, not the cell's value.
         if self.find_procedure(name).is_some() {
             let values = self.eval_args(args, frame)?;
             return self.call_procedure(name, values);
         }
+
+        // A local holding an array, indexed. The parser cannot tell this from
+        // a call -- that needs a symbol table -- so it is decided here, by
+        // what the name actually holds.
+        if let Some(Variant::Array(a)) = self.lookup(name, frame) {
+            let values = self.eval_args(args, frame)?;
+            let row = values
+                .first()
+                .map(|v| v.to_f64())
+                .transpose()?
+                .unwrap_or(0.0);
+            let col = match values.get(1) {
+                Some(v) => v.to_f64()?,
+                // A 2-D array read with one index is error 9 in VBA, which
+                // `VarArray::get` reports for column 0.
+                None => 0.0,
+            };
+            return a.get(row as usize, col as usize);
+        }
+
         let values = self.eval_args(args, frame)?;
+        // A builtin sees scalars: `Len(ws.Range("A1"))` measures the cell's
+        // value. The type-inspection builtins are the exception, and are the
+        // reason this is a list rather than a blanket conversion -- deref
+        // `TypeName`'s argument and it can only ever answer about the value.
+        let values = if OBJECT_AWARE_BUILTINS.contains(&name.to_ascii_lowercase().as_str()) {
+            values
+        } else {
+            values
+                .into_iter()
+                .map(|v| self.scalar(v))
+                .collect::<VResult<Vec<_>>>()?
+        };
         if let Some(v) = builtins::call(name, &values)? {
             return Ok(v);
+        }
+        // `Range("A1")`, `Cells(2, 3)`, `Worksheets(1)` -- the host's own
+        // unqualified constructors, tried last so a user procedure or a
+        // builtin of the same name still shadows them.
+        if let Some(h) = self.host.as_mut()
+            && let Some(r) = h.global_call(name, &values)
+        {
+            return r;
+        }
+        if self.host.is_none() && super::host::is_host_name(name) {
+            return Err(needs_workbook(name));
         }
         Err(VbaError::new(
             35,
@@ -947,12 +1249,17 @@ const STATICALLY_BOOLEAN: &[&str] = &[
 
 /// Intrinsics whose return type is declared `String`.
 ///
-/// `CStr` and nothing else, which is a measurement rather than an oversight:
-/// `LCase`, `UCase`, `Left` and the rest return `Variant`, and it is their
-/// `$`-suffixed forms that are typed `String`. The pair
-/// `True Eqv CStr(True)` (error 13) against `LCase("TRUE") Eqv True` (True)
-/// is what pins it down -- see [`value::logical_pair`].
-const STATICALLY_STRING: &[&str] = &["cstr"];
+/// The pair `True Eqv CStr(True)` (error 13) against `LCase("TRUE") Eqv True`
+/// (True) is what pins the distinction down -- see [`value::logical_pair`].
+/// `CStr` and `TypeName`, the two intrinsics declared `As String`.
+///
+/// `TypeName` was added on the strength of a measurement, not its signature:
+/// `TypeName(32767) >= False` is error 13 in Excel while
+/// `LCase("Integer") >= (Not True)` is True, and the difference is exactly
+/// that `TypeName` returns `String` where `LCase` returns `Variant`. Found by
+/// `fuzz/fuzz_vba.py`. `LCase`, `UCase`, `Left` and the rest stay out for the
+/// reason above -- it is their `$`-suffixed forms that are typed `String`.
+const STATICALLY_STRING: &[&str] = &["cstr", "typename"];
 
 /// Whether an expression's *static* type is `Boolean`, as the VBA compiler
 /// would know it.
@@ -990,9 +1297,16 @@ fn operand_kind(e: &Expr) -> Operand {
     );
     match e {
         Expr::Literal(_) => Operand::Literal,
-        // A parenthesised or signed literal is still just a literal.
+        // A parenthesised or signed literal is still just a literal, however
+        // many layers deep: `(Not True)` behaves as `False` does, where the
+        // *folded* `(3# >= Empty)` does not, and the two differ only in that
+        // one bottoms out at a literal through unary operators and the other
+        // through a comparison. Measured -- `TypeName(32767) >= (Not True)`
+        // is error 13 while `TypeName(0) >= (3# >= Empty)` compares as text.
+        // This used to check one level, which put `(Not True)` and `(-7)` in
+        // the wrong bucket.
         Expr::Paren { expr, .. } | Expr::Unary { expr, .. }
-            if matches!(**expr, Expr::Literal(_)) =>
+            if operand_kind(expr) == Operand::Literal =>
         {
             Operand::Literal
         }
@@ -1064,7 +1378,29 @@ fn eval_binary(
         Eqv => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| !(x ^ y))),
         Imp => null_on_the_right(a, b, kinds, value::imp(a, b, kinds)),
         Like => Err(out_of_scope("Like")),
-        Is => Err(out_of_scope("Is")),
+        // Handled before the operands are dereferenced -- see `eval`.
+        Is => is_comparison(a, b),
+    }
+}
+
+/// Builtins that must see an object rather than its default member.
+///
+/// Short on purpose. `TypeName` and `VarType` exist to report *what a value
+/// is*, and `IsObject` to report whether it is one at all, so dereferencing
+/// their argument would make them structurally unable to answer. Everything
+/// else -- `Len`, `IsNumeric`, `CStr` -- is asking about the value, which for
+/// a `Range` means the cell.
+const OBJECT_AWARE_BUILTINS: &[&str] = &["typename", "vartype", "isobject"];
+
+/// `Is`: reference identity.
+///
+/// Both operands must be objects. `Nothing` is one, which is what makes
+/// `r Is Nothing` the ordinary way to test an unset reference; anything else
+/// is error 424, VBA's "Object required".
+fn is_comparison(a: &Variant, b: &Variant) -> VResult<Variant> {
+    match (a.as_object(), b.as_object()) {
+        (Some(x), Some(y)) => Ok(Variant::Boolean(x.same_object(y))),
+        _ => Err(VbaError::new(424, "Object required: Is compares objects")),
     }
 }
 
@@ -1124,9 +1460,16 @@ fn literal_to_variant(l: &Literal) -> Variant {
         Literal::Bool(b) => Variant::Boolean(*b),
         Literal::Empty => Variant::Empty,
         Literal::Null => Variant::Null,
-        // Dates and Nothing are out of Phase 1's value scope; a date literal
-        // becomes Empty rather than a wrong number.
-        Literal::Date(_) | Literal::Nothing => Variant::Empty,
+        // `#6/22/2026#` is the Date 46195, and `CStr` of it is `6/22/26`.
+        // The engine's own date parser reads the literal, so a date written
+        // in a macro and a date typed into a cell go through one
+        // implementation. A literal it cannot read is Empty rather than a
+        // wrong number -- the same refusal Phase 1 made for every date.
+        Literal::Date(text) => match crate::core::date::parse_date(text) {
+            Some((d, _)) => Variant::Date(crate::core::date::date_to_excel_serial(d)),
+            None => Variant::Empty,
+        },
+        Literal::Nothing => Variant::Object(ObjRef::Nothing),
     }
 }
 
@@ -1154,6 +1497,14 @@ fn default_for(ty: Option<&TypeRef>) -> Variant {
         "currency" => Variant::Currency(0),
         "boolean" => Variant::Boolean(false),
         "string" => Variant::Str(String::new()),
+        "date" => Variant::Date(0.0),
+        // Measured: `Dim r As Range` leaves `r` reporting `TypeName` of
+        // "Nothing" and `r Is Nothing` True, where an untyped `Dim r` is
+        // Empty. Any object type behaves the same way, so this matches the
+        // host's classes rather than `Range` alone.
+        "range" | "worksheet" | "workbook" | "object" | "application" | "sheets" => {
+            Variant::Object(ObjRef::Nothing)
+        }
         _ => Variant::Empty,
     }
 }
@@ -1828,38 +2179,90 @@ mod tests {
     }
 
     #[test]
-    fn a_string_compares_against_a_static_boolean_as_text() {
-        // `"011" < False` is True because "011" sorts before "False" -- the
-        // numeric reading (11 against 0) says the opposite, and that is what
-        // this used to do. The words True and False still convert with CBool
-        // instead, and a Boolean held in a *variable* is not static, so it
-        // falls back to the runtime rule where a number sorts first. All
-        // measured with `fuzz/vba_expr_probe.py`.
+    fn a_string_converts_with_cbool_against_a_static_boolean() {
+        // Measured with `fuzz/vba_expr_probe.py`. This used to read "compares
+        // as text", which fit `("011" < False)` -- True under both readings --
+        // and was wrong about every case that discriminates them:
+        // `a = "-1"` makes `a = True` **True**, which no text comparison
+        // produces. `fuzz/fuzz_vba.py` found it on a generated case whose
+        // visible symptom was a *cell* holding the wrong value.
+        //
+        // The rule: convert the string with `CBool`, compare as Booleans, and
+        // fall back to text only when the conversion fails. Ordering is
+        // numeric, so True (-1) sorts below False (0).
         let with = |setup: &str, e: &str| run(&format!("    Dim va, vb\n{setup}\n    F = {e}"));
+        assert_eq!(with("    va = \"011\"", "(va = True)"), "Boolean|True");
+        assert_eq!(with("    va = \"0\"", "(va = False)"), "Boolean|True");
+        assert_eq!(with("    va = \"2\"", "(va = True)"), "Boolean|True");
+        assert_eq!(with("    va = \"-1\"", "(va = True)"), "Boolean|True");
+        assert_eq!(with("    va = \"1.5\"", "(va = True)"), "Boolean|True");
+        assert_eq!(with("    va = \"-1\"", "(va <> True)"), "Boolean|False");
         assert_eq!(with("    va = \"011\"", "(va < False)"), "Boolean|True");
         assert_eq!(with("    va = \"011\"", "(va > False)"), "Boolean|False");
         assert_eq!(with("    va = \"011\"", "(va > True)"), "Boolean|False");
+        // The two that pin down the fallback: `CBool` raises for both, yet
+        // neither comparison does -- so an unconvertible string compares as
+        // text, where it is simply unequal.
+        assert_eq!(with("    va = \"abc\"", "(va = True)"), "Boolean|False");
+        assert_eq!(with("    va = \"\"", "(va = False)"), "Boolean|False");
+        // A *statically* String operand takes the same conversion but does
+        // **not** get the text fallback -- it is error 13 instead. The
+        // discriminating rows, all measured: the same string reaches text
+        // comparison through a Variant or through a Variant-returning
+        // intrinsic, and error 13 only through one declared `As String`.
+        assert_eq!(expr("CStr(32767) >= (Not True)"), "Boolean|False");
+        assert_eq!(expr("TypeName(32767) >= False"), "ERR|13");
+        assert_eq!(expr("(TypeName(32767) >= (Not True))"), "ERR|13");
+        assert_eq!(expr("LCase(\"Integer\") >= (Not True)"), "Boolean|True");
+        assert_eq!(
+            run("    Dim va\n    va = TypeName(32767)\n    F = (va >= (Not True))"),
+            "Boolean|True"
+        );
         assert_eq!(with("    va = \"011\"", "(va < CBool(0))"), "Boolean|True");
         assert_eq!(
             with("    va = \"011\"", "(va < IsNull(32768))"),
             "Boolean|True"
         );
-        // A *constant* string keeps the numeric rules: no numeric prefix is
-        // error 13, and a prefix compares numerically. Both measured, and
-        // both are what the text comparison would get wrong.
+        // A string *literal* converts too, and a conversion failure is
+        // error 13 rather than the text fallback.
         assert_eq!(expr("(\"abc\" < True)"), "ERR|13");
         assert_eq!(expr("(\"Z\" < True)"), "ERR|13");
         assert_eq!(expr("(False >= \"abc\")"), "ERR|13");
+        assert_eq!(expr("(\"\" = False)"), "ERR|13");
+        // These two are what the numeric reading got wrong, and they are the
+        // same rule: `CBool("011")` and `CBool("12")` are both True (-1),
+        // which sorts *below* False (0). `("011" < False)` in particular sat
+        // in this file as an unexplained divergence for the whole of Phase 1;
+        // `fuzz/fuzz_vba.py` re-surfaced it as `(False > "12")` and the
+        // `CBool` model accounts for both.
+        assert_eq!(expr("(\"011\" < False)"), "Boolean|True");
+        assert_eq!(expr("(False > \"12\")"), "Boolean|True");
+        assert_eq!(expr("(\"0\" = False)"), "Boolean|True");
+        // A *folded constant expression* is the one string kind that stays on
+        // the numeric path -- `"1"` here becomes 1, and `1 <= 0` is False,
+        // where the conversion would say True.
         assert_eq!(
             expr("((Empty & \"1\") <= (\"\" <> Empty))"),
             "Boolean|False"
         );
-        // One measured row this does not reproduce: Excel says
-        // `("011" < False)` is True, i.e. it compares a *numeric* string
-        // literal as text after all. Left alone deliberately -- making
-        // literals text-compare regressed six cases across four seeds.
-        assert_eq!(expr("(\"011\" < False)"), "Boolean|False");
-        // The words still take the CBool path, case-insensitively.
+        // The *Boolean* side has its own split, and it decides which
+        // comparison runs: a literal converts, a folded constant expression
+        // compares as text and never errors. `(Not True)` is a literal for
+        // this purpose and `(3# >= Empty)` is not -- see `operand_kind`.
+        assert_eq!(expr("TypeName(0) >= (3# >= Empty)"), "Boolean|False");
+        assert_eq!(expr("(3# >= Empty) >= TypeName(0)"), "Boolean|True");
+        assert_eq!(expr("CStr(0) >= (3# >= Empty)"), "Boolean|False");
+        assert_eq!(expr("(Not True) <= CStr(32767)"), "Boolean|False");
+        assert_eq!(expr("False >= TypeName(0)"), "ERR|13");
+        // A Boolean *variable* is not static at all, so none of this applies
+        // and the runtime rule takes over: a number sorts before a string.
+        assert_eq!(
+            with("    va = \"011\"\n    vb = False", "(va < vb)"),
+            "Boolean|False"
+        );
+        // The words take the same path -- `CBool` accepts them too --
+        // case-insensitively, and order as the Booleans they become.
+        assert_eq!(with("    va = \"True\"", "(va < False)"), "Boolean|True");
         assert_eq!(with("    va = \"true\"", "(va = True)"), "Boolean|True");
         assert_eq!(with("    va = \"TRUE\"", "(va = True)"), "Boolean|True");
         assert_eq!(with("    va = \"true\"", "(va = False)"), "Boolean|False");
@@ -2461,15 +2864,29 @@ mod tests {
     fn host_object_access_errors_rather_than_silently_doing_nothing() {
         // The refusal that matters: a macro that skips a line it cannot
         // understand and then reports success is wrong in the worst way.
+        // These run with no workbook attached, which is what `visi macro run`
+        // over a bare `.bas` file does.
         for body in [
             "    F = Range(\"A1\").Value",
             "    F = ThisWorkbook.Name",
-            "    With x\n        F = .a\n    End With",
+            "    F = Worksheets(1).Name",
+            "    F = Application.WorksheetFunction.Sum(1, 2)",
             "    Dim c\n    For Each c In r\n    Next",
         ] {
             let out = run(body);
             assert!(out.starts_with("ERR|438"), "{body:?} gave {out}");
         }
+    }
+
+    #[test]
+    fn a_member_of_a_non_object_is_error_424() {
+        // Not 438: the construct *is* supported, the value just is not an
+        // object. VBA calls this "Object required", and distinguishing it
+        // from "not implemented" is the difference between a macro bug and a
+        // gap in this interpreter.
+        assert_eq!(run("    With x\n        F = .a\n    End With"), "ERR|424");
+        assert_eq!(expr("x.Name"), "ERR|424");
+        assert_eq!(expr("x Is Nothing"), "ERR|424");
     }
 
     #[test]

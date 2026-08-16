@@ -31,6 +31,8 @@ pub mod ast;
 #[doc(hidden)]
 pub mod builtins;
 #[doc(hidden)]
+pub mod host;
+#[doc(hidden)]
 pub mod interp;
 #[doc(hidden)]
 pub mod lexer;
@@ -39,7 +41,7 @@ pub mod parser;
 #[doc(hidden)]
 pub mod value;
 
-use crate::Error;
+use crate::{Error, ObjectKind};
 use serde::{Deserialize, Serialize};
 
 /// What [`check_syntax`] found in a module that parsed.
@@ -92,6 +94,139 @@ pub struct RunOutcome {
     /// `CStr()` of the returned value, or `None` where VBA itself cannot
     /// stringify it (`Null`).
     pub value: Option<String>,
+    /// Whether the run changed the workbook.
+    ///
+    /// Always `false` from [`run_macro`], which has no workbook to change.
+    /// From [`crate::core::WorkbookManager::run_macro`] this is what tells a caller
+    /// whether it has something worth saving -- and, for the `visi` CLI,
+    /// whether discarding the result silently would be a data loss rather
+    /// than a no-op.
+    pub mutated: bool,
+}
+
+/// Turns command-line argument text into the `Variant`s a procedure receives.
+///
+/// Arguments arrive as text -- they come from a CLI or a fuzz harness -- and
+/// are given the type VBA would give the same literal, so `-a 1` is an
+/// `Integer` and `-a 1.5` a `Double`.
+fn parse_args(args: &[&str]) -> Vec<value::Variant> {
+    args.iter()
+        .map(|a| match value::parse_vba_number(a) {
+            Ok(n) if !a.trim().is_empty() => {
+                value::Variant::from_literal(n, a.contains('.') || a.contains(['e', 'E']))
+            }
+            _ => value::Variant::Str((*a).to_string()),
+        })
+        .collect()
+}
+
+fn to_outcome(result: value::Variant, mutated: bool) -> RunOutcome {
+    RunOutcome {
+        type_name: result.type_name().to_string(),
+        value: result.to_vba_string().ok(),
+        mutated,
+    }
+}
+
+fn parse_or_error(source: &str, module: Option<&str>) -> Result<ast::Module, Error> {
+    parser::parse_module(source).map_err(|e| Error::VbaSyntax {
+        message: e.message,
+        module: module.map(str::to_string),
+        line: e.pos.line,
+        column: e.pos.col,
+    })
+}
+
+fn to_runtime_error(e: value::VbaError) -> Error {
+    Error::VbaRuntime {
+        message: e.description,
+        number: e.number,
+    }
+}
+
+impl crate::core::WorkbookManager {
+    /// Runs one of this workbook's own VBA procedures **against** this
+    /// workbook.
+    ///
+    /// Phase 2 of `docs/vba-macro-support.md`, and the entry point that
+    /// separates it from Phase 1: the interpreter borrows the workbook for
+    /// the duration, so a macro can read and write cells, walk the sheets,
+    /// and call worksheet functions. [`run_macro`] stays as the text-only
+    /// form -- it is what `visi_core.run_macro` and `fuzz/fuzz_vba.py` drive,
+    /// and a macro that touches no workbook has no reason to need one.
+    ///
+    /// `module` picks which module to take the procedure from; `None`
+    /// searches every module for one that declares it, which is the common
+    /// single-module case. Resolving it here rather than in each caller is
+    /// deliberate: the CLI and the Python bindings would otherwise each have
+    /// their own copy of the rule, and only `fuzz/test_backend_parity.py`
+    /// would notice them drifting apart.
+    ///
+    /// **This executes code the workbook's author wrote.** Nothing calls it
+    /// implicitly -- not loading a file, not evaluating formulas, and not a
+    /// `Workbook_Open` handler. See the security posture in the feature plan.
+    ///
+    /// The workbook is left recalculated, so a caller that saves afterwards
+    /// writes the values the macro itself would have read.
+    pub fn run_macro(
+        &mut self,
+        module: Option<&str>,
+        procedure: &str,
+        args: &[&str],
+    ) -> Result<RunOutcome, Error> {
+        let source = self.macro_source_for(module, procedure)?;
+        let parsed = parse_or_error(&source, module)?;
+        let args = parse_args(args);
+
+        let host = host::Host::new(self).map_err(to_runtime_error)?;
+        let mut interp = interp::Interpreter::new(parsed).with_host(host);
+        let result = interp.run(procedure, args);
+        // The recalculation runs whether or not the procedure succeeded: a
+        // macro that wrote three cells and then raised has still written
+        // them, and leaving the workbook holding stale computed values would
+        // make the failure look like corruption.
+        interp.finish();
+        let mutated = interp.mutated();
+        let result = result.map_err(to_runtime_error)?;
+        Ok(to_outcome(result, mutated))
+    }
+
+    /// The source text to run, resolving `module` the way
+    /// [`WorkbookManager::run_macro`] documents.
+    fn macro_source_for(&self, module: Option<&str>, procedure: &str) -> Result<String, Error> {
+        let project = self
+            .vba_project
+            .as_ref()
+            .ok_or_else(|| Error::not_found(ObjectKind::VbaModule, module.unwrap_or(procedure)))?;
+        let available = || project.modules.iter().map(|m| m.name.clone()).collect();
+        if let Some(name) = module {
+            return project
+                .find_module(name)
+                .map(|m| m.source.clone())
+                .ok_or_else(|| Error::not_found_among(ObjectKind::VbaModule, name, available()));
+        }
+        project
+            .modules
+            .iter()
+            // A module that does not parse is skipped rather than fatal: it
+            // cannot be the one declaring the procedure, and reporting its
+            // syntax error here would blame the wrong module entirely.
+            .find(|m| {
+                m.check_syntax().is_ok_and(|s| {
+                    s.procedures
+                        .iter()
+                        .any(|p| p.eq_ignore_ascii_case(procedure))
+                })
+            })
+            .map(|m| m.source.clone())
+            .ok_or_else(|| {
+                Error::not_found_among(
+                    ObjectKind::VbaModule,
+                    format!("a module declaring '{procedure}'"),
+                    available(),
+                )
+            })
+    }
 }
 
 /// Parses `source` and runs one of its procedures.
@@ -119,29 +254,11 @@ pub fn run_macro(source: &str, procedure: &str, args: &[&str]) -> Result<RunOutc
         line: e.pos.line,
         column: e.pos.col,
     })?;
-    // Arguments arrive as text (they come from a CLI or a fuzz harness), and
-    // are given the type VBA would give the same literal.
-    let args: Vec<value::Variant> = args
-        .iter()
-        .map(|a| match value::parse_vba_number(a) {
-            Ok(n) if !a.trim().is_empty() => {
-                value::Variant::from_literal(n, a.contains('.') || a.contains(['e', 'E']))
-            }
-            _ => value::Variant::Str((*a).to_string()),
-        })
-        .collect();
-
     let result = interp::Interpreter::new(module)
-        .run(procedure, args)
-        .map_err(|e| Error::VbaRuntime {
-            message: e.description,
-            number: e.number,
-        })?;
+        .run(procedure, parse_args(args))
+        .map_err(to_runtime_error)?;
 
-    Ok(RunOutcome {
-        type_name: result.type_name().to_string(),
-        value: result.to_vba_string().ok(),
-    })
+    Ok(to_outcome(result, false))
 }
 
 impl VbaModule {

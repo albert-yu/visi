@@ -51,12 +51,16 @@ fn check_syntax(source: &str) -> PyResult<Vec<String>> {
         .procedures)
 }
 
-/// Runs a VBA procedure and returns `(type_name, value)`.
+/// Runs a VBA procedure from loose source text and returns
+/// `(type_name, value)`.
 ///
-/// Phase 1 of the VBA plan: expressions, control flow, `Sub`/`Function` and
-/// `On Error`, with no host object model. Raises `VbaRuntimeError` (carrying
-/// `number`) for a run-time error and `VbaSyntaxError` if the source does not
-/// parse.
+/// Expressions, control flow, `Sub`/`Function` and `On Error`, with **no
+/// workbook**: this takes source text, not a file, so `Range`, `Worksheets`
+/// and `ThisWorkbook` have nothing to resolve against and report so. Use
+/// `Workbook.run_macro` for a run that can touch cells.
+///
+/// Raises `VbaRuntimeError` (carrying `number`) for a run-time error and
+/// `VbaSyntaxError` if the source does not parse.
 ///
 /// `value` is `None` where VBA itself cannot stringify the result, which in
 /// practice means `Null`. What `fuzz/fuzz_vba.py` compares against Excel.

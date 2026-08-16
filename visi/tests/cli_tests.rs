@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::fs;
-use visi::cli::{ChartSubcommands, Cli, Commands, PivotSubcommands};
+use visi::cli::{ChartSubcommands, Cli, Commands, MacroSubcommands, PivotSubcommands};
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::utils::{parse_cell_ref, parse_range_ref};
 
@@ -1227,4 +1227,132 @@ fn test_vba_syntax_check_through_a_real_roundtrip() {
     }
 
     let _ = fs::remove_file(file_path);
+}
+
+/// A workbook-bound macro run, through the same `WorkbookManager::run_macro`
+/// the CLI handler calls, over a real `.xlsm` round trip.
+///
+/// The round trip is the point rather than incidental. The CLI is a fresh
+/// process per invocation, so a macro only survives to be *run* in a later
+/// command because it went out through `vbaProject.bin` and came back --
+/// exactly the property `test_vba_syntax_check_through_a_real_roundtrip`
+/// covers for checking, now that running can change the file too.
+#[test]
+fn test_vba_macro_run_reads_and_writes_a_real_workbook() {
+    use visi_core::core::{CellRef, VbaModuleKind};
+
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_vba_run.xlsm");
+    let out_path = temp_dir.join("test_vba_run_out.xlsm");
+    let (file_str, out_str) = (file_path.to_str().unwrap(), out_path.to_str().unwrap());
+
+    let source = "Attribute VB_Name = \"Demo\"\n\
+        Public Function Total() As Variant\n\
+        \x20   Dim ws As Worksheet\n\
+        \x20   Set ws = ThisWorkbook.Worksheets(\"Sheet1\")\n\
+        \x20   Dim c As Range, running As Double\n\
+        \x20   For Each c In ws.Range(\"A1:A3\")\n\
+        \x20       running = running + c.Value\n\
+        \x20   Next c\n\
+        \x20   ws.Range(\"C1\").Value = running\n\
+        \x20   ws.Range(\"C2\").Formula = \"=C1*2\"\n\
+        \x20   Total = ws.Range(\"C2\").Value\n\
+        End Function\n\
+        Public Function JustLooks() As Variant\n\
+        \x20   JustLooks = ThisWorkbook.Worksheets.Count\n\
+        End Function\n";
+
+    let mut wb = WorkbookManager::new_empty().unwrap();
+    for (row, v) in [1, 2, 3].into_iter().enumerate() {
+        wb.set_cell(0, row, 0, v.to_string());
+    }
+    wb.evaluate().unwrap();
+    wb.add_vba_module(
+        "Demo".to_string(),
+        VbaModuleKind::Standard,
+        source.to_string(),
+        None,
+    )
+    .unwrap();
+    wb.save_file(file_str).unwrap();
+
+    // A second process would see exactly this: the module read back out of
+    // the binary VBA part, with no in-memory state carried over.
+    let mut reloaded = WorkbookManager::load_file(file_str).unwrap();
+
+    // A read-only macro reports no mutation, which is what lets the CLI
+    // accept it without an --output.
+    let looked = reloaded.run_macro(None, "JustLooks", &[]).unwrap();
+    assert_eq!(looked.value.as_deref(), Some("1"));
+    assert!(!looked.mutated);
+
+    // The writing one sees its own formula recalculated, exactly as Excel in
+    // automatic mode would.
+    let total = reloaded.run_macro(None, "Total", &[]).unwrap();
+    assert_eq!(total.value.as_deref(), Some("12"));
+    assert!(total.mutated);
+
+    reloaded.save_file(out_str).unwrap();
+    let saved = WorkbookManager::load_file(out_str).unwrap();
+    assert_eq!(saved.sheets[0].get_display_string(&CellRef::new(0, 2)), "6");
+    assert_eq!(
+        saved.sheets[0].get_display_string(&CellRef::new(1, 2)),
+        "12"
+    );
+
+    let _ = fs::remove_file(file_path);
+    let _ = fs::remove_file(out_path);
+}
+
+/// `visi macro run` takes the same write flags as every other write command.
+#[test]
+fn test_macro_run_parses_output_and_in_place() {
+    let cli = Cli::try_parse_from([
+        "visi",
+        "macro",
+        "run",
+        "book.xlsm",
+        "--name",
+        "Go",
+        "--module",
+        "M",
+        "-a",
+        "1",
+        "-a",
+        "two",
+        "--output",
+        "done.xlsm",
+        "--json",
+    ])
+    .expect("clap should parse a macro run with a write target");
+
+    let Commands::Macro(macro_args) = cli.command else {
+        panic!("expected Commands::Macro");
+    };
+    let MacroSubcommands::Run(run_args) = macro_args.command else {
+        panic!("expected MacroSubcommands::Run");
+    };
+    assert_eq!(run_args.name, "Go");
+    assert_eq!(run_args.module.as_deref(), Some("M"));
+    assert_eq!(run_args.args, vec!["1", "two"]);
+    assert_eq!(run_args.output.as_deref(), Some("done.xlsm"));
+    assert!(!run_args.in_place);
+    assert!(run_args.json);
+
+    // --output and --in-place are mutually exclusive, as they are everywhere
+    // else in the CLI.
+    assert!(
+        Cli::try_parse_from([
+            "visi",
+            "macro",
+            "run",
+            "book.xlsm",
+            "--name",
+            "Go",
+            "--output",
+            "a.xlsm",
+            "-i",
+        ])
+        .is_err()
+    );
 }

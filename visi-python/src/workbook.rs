@@ -601,6 +601,41 @@ impl Workbook {
         Ok(())
     }
 
+    /// Runs one of this workbook's macros **against** this workbook, mirroring
+    /// `visi macro run FILE`.
+    ///
+    /// Returns `(type_name, value, mutated)`. Unlike the module-level
+    /// `visi_core.run_macro`, which takes loose source text and has no
+    /// workbook to touch, this gives the macro the Phase 2 host object model:
+    /// it can read and write cells, walk the sheets, and call
+    /// `Application.WorksheetFunction`. Anything it changes is in this
+    /// `Workbook` afterwards, and `save`/`save_bytes` is what persists it --
+    /// there is no implicit write, exactly as in the CLI.
+    ///
+    /// `module` picks which module to take the procedure from; omitted, every
+    /// module is searched for one declaring it. That resolution lives in
+    /// `visi-core` rather than here precisely so this and the CLI cannot
+    /// drift apart -- `edit_chart` and `add_pivot_field` show what the other
+    /// choice costs.
+    ///
+    /// **This executes code the workbook's author wrote.** Nothing else in
+    /// these bindings does: not `load`, not `evaluate`, not `roundtrip`.
+    #[pyo3(signature = (procedure, *, module=None, args=None))]
+    fn run_macro(
+        &mut self,
+        procedure: &str,
+        module: Option<&str>,
+        args: Option<Vec<String>>,
+    ) -> PyResult<(String, Option<String>, bool)> {
+        let args = args.unwrap_or_default();
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let out = self
+            .inner
+            .run_macro(module, procedure, &refs)
+            .map_err(Wrapped)?;
+        Ok((out.type_name, out.value, out.mutated))
+    }
+
     /// Replaces a module's source text. Mirrors `visi macro set-source`.
     fn set_macro_source(&mut self, name: &str, source: &str) -> PyResult<()> {
         self.inner

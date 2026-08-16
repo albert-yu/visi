@@ -41,6 +41,9 @@
 //! "correct" one of these from memory -- re-measure instead.
 
 use std::fmt;
+use std::rc::Rc;
+
+use super::host::ObjRef;
 
 /// A VBA runtime error: a number and a description, as `Err.Number` and
 /// `Err.Description` expose them.
@@ -104,10 +107,11 @@ pub type VResult<T> = Result<T, VbaError>;
 
 /// A VBA value.
 ///
-/// The subtypes Phase 1 models. `Object`, `Byte`, `LongLong`, `Decimal` and
-/// arrays are deliberately absent: nothing in Phase 1's scope can produce
-/// one, and adding a variant that no path constructs makes every `match`
-/// pay for a case that cannot happen.
+/// `Byte`, `LongLong` and `Decimal` are deliberately absent: nothing in the
+/// implemented scope constructs one, and a variant no path can produce makes
+/// every `match` pay for a case that cannot happen. [`Variant::Object`],
+/// [`Variant::ErrValue`] and [`Variant::Array`] earned their place in Phase 2,
+/// where a cell read produces all three.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Variant {
     /// An uninitialised variable. Behaves as `0` and `""` depending on
@@ -131,9 +135,73 @@ pub enum Variant {
     Currency(i64),
     /// A date serial. Numerically a `Double`; the difference is only in how
     /// it renders and what `TypeName` says.
+    ///
+    /// This is a VBA-side type, deliberately *not* mirrored by a
+    /// `ResultData::Date` in the engine -- `core/date.rs` explains why the
+    /// engine has no date value type at all. The conversion happens at the
+    /// host boundary: a cell whose style carries a date `num_format` reads
+    /// back through `.Value` as one of these, and through `.Value2` as a
+    /// plain `Double`. Both halves measured (`fuzz/vba_host_probe.py`).
     Date(f64),
     /// A string.
     Str(String),
+    /// An Excel error value, as `CVErr` builds one, `Application.VLookup`
+    /// returns on failure, and a cell holding `=1/0` reads back as.
+    ///
+    /// The payload is the `CVErr` number (2007 for `#DIV/0!`, 2042 for
+    /// `#N/A`, ...), which is what `CLng` on one gives back. Measured: it
+    /// stringifies as `"Error 2042"` but is error 13 in arithmetic,
+    /// concatenation and comparison alike.
+    ErrValue(i32),
+    /// An object reference, or `Nothing`.
+    ///
+    /// Reference semantics: `Set` assigns one, `Is` compares identity, and a
+    /// plain `=` reads the object's default member instead. See
+    /// [`ObjRef`](super::host::ObjRef) for why identity is a token rather
+    /// than the range coordinates.
+    Object(ObjRef),
+    /// A 2-D `Variant` array, which in this scope only a multi-cell
+    /// `Range.Value` produces.
+    ///
+    /// Behind an `Rc` because a `Variant` is cloned constantly and a range
+    /// read can be large. Deliberately not general VBA arrays: `Dim x(10)`,
+    /// `ReDim` and `Erase` are still out of scope and still report so.
+    Array(Rc<VarArray>),
+}
+
+/// A 2-D `Variant` array, indexed from 1 as VBA's are.
+///
+/// Measured shape for a range read: `ws.Range("A1:A3").Value` has
+/// `UBound(v, 1) = 3` and `UBound(v, 2) = 1`, i.e. `(row, column)` with rows
+/// first, even for a single column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarArray {
+    /// Number of rows; `UBound(v, 1)`.
+    pub rows: usize,
+    /// Number of columns; `UBound(v, 2)`.
+    pub cols: usize,
+    /// The elements, row-major.
+    pub values: Vec<Variant>,
+}
+
+impl VarArray {
+    /// The element at a 1-based `(row, column)`, or error 9 if either index
+    /// is outside the array.
+    pub fn get(&self, row: usize, col: usize) -> VResult<Variant> {
+        if row < 1 || col < 1 || row > self.rows || col > self.cols {
+            return Err(VbaError::subscript());
+        }
+        Ok(self.values[(row - 1) * self.cols + (col - 1)].clone())
+    }
+
+    /// `UBound(v, dim)` for a 1-based `dim`.
+    pub fn ubound(&self, dim: usize) -> VResult<usize> {
+        match dim {
+            1 => Ok(self.rows),
+            2 => Ok(self.cols),
+            _ => Err(VbaError::subscript()),
+        }
+    }
 }
 
 /// Whether an arithmetic operation may widen its result type on overflow.
@@ -180,6 +248,36 @@ impl Variant {
             Variant::Currency(_) => "Currency",
             Variant::Date(_) => "Date",
             Variant::Str(_) => "String",
+            Variant::ErrValue(_) => "Error",
+            Variant::Object(o) => o.type_name(),
+            // Excel for Mac 16.112 reports this through the AppleScript
+            // bridge as `V()` rather than `Variant()`, consistently and even
+            // when the result is bracketed to prove nothing is truncating it.
+            // `Variant()` is what the language documents and what every other
+            // host reports, so that is what this returns; the discrepancy is
+            // recorded in `fuzz/vba_host_probe.py` rather than matched, since
+            // matching it would be encoding one bridge's quirk as a rule.
+            Variant::Array(_) => "Variant()",
+        }
+    }
+
+    /// The `CVErr` number if this is an error value.
+    ///
+    /// Separate from [`Variant::to_f64`] on purpose: `CLng(CVErr(2042))` is
+    /// `2042`, but `CVErr(2042) + 1` is error 13. The explicit conversions
+    /// reach for this; arithmetic must not.
+    pub fn error_number(&self) -> Option<i32> {
+        match self {
+            Variant::ErrValue(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// The object this holds, if it is one.
+    pub fn as_object(&self) -> Option<&ObjRef> {
+        match self {
+            Variant::Object(o) => Some(o),
+            _ => None,
         }
     }
 
@@ -205,6 +303,13 @@ impl Variant {
             // whatever the other operand is.
             Variant::Double(_) | Variant::Date(_) | Variant::Str(_) => NumClass::Double,
             Variant::Null => return None,
+            // These three have no numeric class at all. They report `Double`
+            // rather than `None` because `None` means `Null` to every caller
+            // here, and the real refusal happens a line later in `to_f64`,
+            // which is error 13 for all three -- measured for `ErrValue`
+            // (`CVErr(2042) + 1`), and the only defensible answer for an
+            // object or an array.
+            Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => NumClass::Double,
         })
     }
 
@@ -231,6 +336,13 @@ impl Variant {
             Variant::Currency(v) => *v as f64 / 10_000.0,
             Variant::Str(s) => parse_vba_number(s)?,
             Variant::Null => return Err(VbaError::invalid_null()),
+            // Measured: `v = CVErr(2042)` makes `v + 1`, `v & ""` and `v = 1`
+            // all error 13. `CLng(v)` still gives 2042 -- that path goes
+            // through `error_number`, not here. An object reaching this point
+            // has not had its default member read, and an array has none.
+            Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => {
+                return Err(VbaError::type_mismatch());
+            }
         })
     }
 
@@ -246,8 +358,15 @@ impl Variant {
             Variant::Single(v) => format_number(*v as f64),
             Variant::Double(v) => format_number(*v),
             Variant::Currency(v) => format_currency(*v),
-            Variant::Date(v) => format_number(*v),
+            Variant::Date(v) => format_vba_date(*v),
             Variant::Str(s) => s.clone(),
+            // Measured: `CStr(CVErr(2042))` is the string "Error 2042", even
+            // though `CVErr(2042) & ""` is error 13. `CStr` is the one
+            // conversion that renders an error value rather than refusing it,
+            // so this is reachable only from there -- `concat` rejects an
+            // `ErrValue` before it gets here.
+            Variant::ErrValue(n) => format!("Error {n}"),
+            Variant::Object(_) | Variant::Array(_) => return Err(VbaError::type_mismatch()),
         })
     }
 
@@ -631,12 +750,90 @@ pub fn add(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     // short-circuit to Empty here; that came from reading the result back
     // through the fuzz harness, which cannot see the difference -- Empty and
     // the Integer 0 both render as "0" once assigned onward.
-    arith(lhs, rhs, mode, |a, b| a + b)
+    keep_date(lhs, rhs, arith(lhs, rhs, mode, |a, b| a + b)?)
 }
 
 /// `-`.
 pub fn sub(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
-    arith(lhs, rhs, mode, |a, b| a - b)
+    keep_date(lhs, rhs, arith(lhs, rhs, mode, |a, b| a - b)?)
+}
+
+/// A date plus or minus a number is still a date; a date minus a date is a
+/// count of days and is not.
+///
+/// Measured: `TypeName(#6/22/2026# + 1)` is `Date` and `CStr` of it is
+/// `6/23/26`, while `#6/22/2026# - #6/21/2026#` is `1`. The rule keys off
+/// *exactly one* operand being a `Date`, which is the same shape as the
+/// engine's own `Sheet::inherited_date_format` -- and, as there, it applies
+/// to `+` and `-` only. `*` and `/` are not measured and do not preserve the
+/// subtype here; a date multiplied by anything is not a date in any reading.
+fn keep_date(lhs: &Variant, rhs: &Variant, result: Variant) -> VResult<Variant> {
+    let one_date = matches!(lhs, Variant::Date(_)) != matches!(rhs, Variant::Date(_));
+    if !one_date {
+        return Ok(result);
+    }
+    Ok(match result {
+        Variant::Integer(_)
+        | Variant::Long(_)
+        | Variant::Single(_)
+        | Variant::Double(_)
+        | Variant::Currency(_) => Variant::Date(result.to_f64()?),
+        other => other,
+    })
+}
+
+/// A `Date` as `CStr` renders it: the system short date, plus a time when the
+/// serial carries one, and the time alone when it carries no date.
+///
+/// Measured against Excel for Mac 16.112 on a machine set to en-US:
+/// `CStr(#6/22/2026#)` is `6/22/26`, `CStr(#6/22/2026 12:00:00 PM#)` is
+/// `6/22/26 12:00:00 PM`, and `CStr(CDate(0.5))` is `12:00:00 PM`. The
+/// two-digit year and the `m/d/yy` order come from the *system* short-date
+/// setting rather than from VBA, so a machine configured differently will
+/// disagree -- that is a property of the language, not a bug here, and it is
+/// why the fuzz harness compares dates on a machine it also measured on.
+pub fn format_vba_date(serial: f64) -> String {
+    let days = serial.floor();
+    let frac = serial - days;
+    // Excel's serial 0 is the (fictional) 1900-01-00, so a pure time has no
+    // date part to render.
+    let date_part = if days == 0.0 {
+        None
+    } else {
+        let d = crate::core::date::excel_serial_to_date(days);
+        Some(format!(
+            "{}/{}/{:02}",
+            d.month,
+            d.day,
+            d.year.rem_euclid(100)
+        ))
+    };
+    // Rounded to the nearest second before splitting, so that a serial a
+    // hair under a whole day does not render as `23:59:60`.
+    let total_seconds = (frac * 86_400.0).round() as i64;
+    let time_part = if total_seconds == 0 && date_part.is_some() {
+        None
+    } else {
+        let (h24, m, s) = (
+            total_seconds / 3600,
+            (total_seconds / 60) % 60,
+            total_seconds % 60,
+        );
+        let (h12, ampm) = match h24 {
+            0 => (12, "AM"),
+            1..=11 => (h24, "AM"),
+            12 => (12, "PM"),
+            _ => (h24 - 12, "PM"),
+        };
+        Some(format!("{h12}:{m:02}:{s:02} {ampm}"))
+    };
+    match (date_part, time_part) {
+        (Some(d), Some(t)) => format!("{d} {t}"),
+        (Some(d), None) => d,
+        (None, Some(t)) => t,
+        // Serial 0 exactly: VBA renders the epoch's own date.
+        (None, None) => "12:00:00 AM".to_string(),
+    }
 }
 
 /// `*`.
@@ -809,6 +1006,13 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
 pub fn concat(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
     if lhs.is_null() && rhs.is_null() {
         return Ok(Variant::Null);
+    }
+    // `CStr(CVErr(2042))` renders as "Error 2042", but `CVErr(2042) & ""` is
+    // error 13 -- `&` refuses an error value rather than stringifying it.
+    // Both measured, and the pair is why `to_vba_string` cannot be the only
+    // gate here.
+    if matches!(lhs, Variant::ErrValue(_)) || matches!(rhs, Variant::ErrValue(_)) {
+        return Err(VbaError::type_mismatch());
     }
     let a = if lhs.is_null() {
         String::new()
@@ -1092,27 +1296,104 @@ pub fn compare_ctx(
             // folded constant, or a call like `CBool`/`IsNull` -- does not go
             // down the numeric path at all.
             //
-            // `"True"` and `"False"` convert with `CBool`, so `a = "True"`
-            // makes `a = True` come out True while `"True" = -1`, against a
-            // *numeric* partner, is error 13.
+            // A *runtime* string against one is converted with `CBool` and
+            // compared as Booleans, falling back to a text comparison only if
+            // it will not convert. That single rule replaced an earlier
+            // "compares as text" reading, which fit the two cases it was
+            // derived from (`a = "011"` makes `a < False` True either way)
+            // and was wrong about everything else -- `a = "-1"` makes
+            // `a = True` **True**, which no text comparison produces. The
+            // fuzzer found it as a mismatch on a generated case; the full
+            // measured table is at the branch below.
             //
-            // Any other string compares against a static Boolean **as text**,
-            // but only when the string is a runtime value: `a = "011"` makes
-            // `a < False` True, because "011" sorts before "False", where
-            // coercing "011" to 11 and comparing against 0 says the opposite.
-            // A *constant* string falls through to the numeric rules below
-            // instead -- `("abc" < True)` is error 13 and
-            // `((Empty & "1") <= ("" <> Empty))` is False, both of which the
-            // text comparison gets wrong. The one row still unaccounted for
-            // is a numeric string *literal*, where Excel appears to do the
-            // text comparison after all (`("011" < False)` is True there and
-            // False here); see docs/vba-error-ordering.md.
+            // A *folded constant expression* is the one string kind that
+            // stays on the numeric path: `((Empty & "1") <= ("" <> Empty))`
+            // is False, which the conversion gets wrong. A bare literal
+            // converts like everything else, which is what finally accounted
+            // for `("011" < False)` being True in Excel -- a row this file
+            // carried as an unexplained divergence through Phase 1, and which
+            // `fuzz/fuzz_vba.py` re-surfaced as `(False > "12")`.
             if matches!(other, Variant::Boolean(_)) {
-                if let Some(a) = bool_word(text) {
-                    let ord = a.cmp(&other.to_bool()?);
+                // A String against a Boolean the compiler knows statically.
+                // Two axes decide what happens, and both were measured -- the
+                // combination is not guessable and an earlier reading of it
+                // (§11 of docs/vba-error-ordering.md, "compares as text")
+                // stood for a whole phase on two cases that could not tell
+                // the readings apart.
+                //
+                // **The Boolean side** decides *which* comparison:
+                //
+                //   partner is a literal      -> convert the string with CBool
+                //   partner is anything else  -> compare as text
+                //
+                //   TypeName(0) >= False            error 13   (literal)
+                //   TypeName(0) >= (3# >= Empty)    False      (folded, text)
+                //   CStr(0)     >= (3# >= Empty)    False      (folded, text)
+                //   (3# >= Empty) >= TypeName(0)    True       (folded, text)
+                //
+                // Those middle rows rule out both the conversion (which says
+                // True for `CStr(0)`) and the numeric path (likewise):
+                // "Double" and "0" simply sort below "True". Note `(Not True)`
+                // counts as a *literal* -- see `operand_kind`, which folds a
+                // unary chain over one but not a comparison.
+                //
+                // **The String side** decides whether either applies at all:
+                // a folded constant expression takes neither and falls
+                // through to the numeric rules below, which is the only way
+                // `((Empty & "1") <= ("" <> Empty))` comes out False.
+                let stringy = matches!(
+                    str_kind,
+                    Operand::Runtime | Operand::Static | Operand::Literal
+                );
+                if stringy && num_kind == Operand::Literal {
+                    // The conversion is `CBool`, and the comparison then runs
+                    // on the Booleans as *numbers*, so True (-1) sorts below
+                    // False (0). Measured:
+                    //
+                    //   a = "011"  makes  a = True    True
+                    //   a = "0"    makes  a = False   True
+                    //   a = "-1"   makes  a = True    True
+                    //   a = "1.5"  makes  a = True    True
+                    //   a = "011"  makes  a < False   True   -- -1 < 0
+                    //   a = "011"  makes  a > False   False
+                    //   ("011" < False)             True     -- a literal converts too
+                    //   (False > "12")              True
+                    //
+                    // `bool_word` is folded in rather than handled beside
+                    // this: `CBool` takes the words "True"/"False" as well.
+                    let as_bool =
+                        bool_word(text).or_else(|| parse_vba_number(text).ok().map(|n| n != 0.0));
+                    if let Some(a) = as_bool {
+                        let ord = cmp_f64(bool_as_number(a), bool_as_number(other.to_bool()?));
+                        return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
+                    }
+                    // What a string that will *not* convert does depends on
+                    // how well the compiler knows its type. A declared
+                    // `String` (`CStr`, `TypeName`) or a literal is error 13;
+                    // an ordinary runtime Variant falls back to text.
+                    // Measured:
+                    //
+                    //   TypeName(32767) >= False              error 13
+                    //   ("abc" < True)                        error 13
+                    //   a = "abc" : a = True                  False  (text)
+                    //   a = ""    : a = False                 False  (text)
+                    //   a = TypeName(32767) : a >= (Not True) True   (text)
+                    //   LCase("Integer") >= (Not True)        True   (text)
+                    //
+                    // The last two are what make this about the *declared*
+                    // type rather than the value: the same string through a
+                    // Variant, and through a `Variant`-returning intrinsic,
+                    // both compare as text.
+                    if str_kind != Operand::Runtime {
+                        return Err(VbaError::type_mismatch());
+                    }
+                    let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
-                if str_kind == Operand::Runtime && num_kind != Operand::Runtime {
+                if stringy && num_kind != Operand::Runtime {
+                    // A statically known Boolean that is not a literal: text,
+                    // and never an error. This is what §11 recorded, now
+                    // narrowed to the case where it is actually right.
                     let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
@@ -1153,6 +1434,15 @@ pub fn compare_ctx(
         }
         _ => Ok(Some(cmp_f64(numeric(lhs)?, numeric(rhs)?))),
     }
+}
+
+/// A `Boolean` as the number it *is*, which is what ordering compares.
+///
+/// `True` is -1, so it sorts below `False`. Rust's own `bool: Ord` has it the
+/// other way round, and using that here reversed every `<`/`>` between a
+/// string and a Boolean.
+fn bool_as_number(b: bool) -> f64 {
+    if b { -1.0 } else { 0.0 }
 }
 
 fn cmp_f64(a: f64, b: f64) -> std::cmp::Ordering {

@@ -96,6 +96,27 @@ fn round_digits_half_up(digits: &str, exp: i32, keep: usize) -> (String, i32) {
     (out, exp)
 }
 
+/// The Excel error values, spelled exactly as a cell shows them.
+///
+/// A closed set: these are the only strings a cell can hold that are an error
+/// rather than text, which is what makes recognising one on entry safe.
+pub(crate) const EXCEL_ERROR_CODES: &[&str] = &[
+    "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#CALC!", "#SPILL!",
+];
+
+/// Whether a literal cell entry is one of Excel's error values.
+///
+/// Typing `#NUM!` into Excel produces the error, not the text -- measured,
+/// along with the same thing happening when VBA assigns the string through
+/// `Range.Value`. So `Sheet::commit` recognises one, and `xlsx::text_cell_src`
+/// quotes it on import for the same reason it quotes `TRUE` and `6/22/26`:
+/// a cell Excel told us is *text* has to survive the round trip as text.
+pub(crate) fn is_excel_error_code(src: &str) -> bool {
+    EXCEL_ERROR_CODES
+        .iter()
+        .any(|e| src.eq_ignore_ascii_case(e))
+}
+
 pub(crate) fn format_excel_number(f: f64) -> String {
     if f == 0.0 {
         return "0".to_string();

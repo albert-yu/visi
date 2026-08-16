@@ -16,6 +16,15 @@ Sections 2–6 are the first round. Sections 7–13 are the second, which closed
 eleven of the twelve cases that round left behind; §14 is the twelfth, which
 turned out to be Excel misreporting an error and is deliberately not matched.
 
+Sections 16–17 are a third round, found while building Phase 2 — and worth
+noting for *how* they were found rather than what they say. §16 overturns
+§11, which had been derived from two cases that could not tell two rules
+apart and had stood since Phase 1. §17 is a pair of divergences that a return
+value cannot expose at all: the macro returned the right number and left the
+wrong thing in a cell. Both came out of `fuzz_vba.py` once it started
+comparing the data grid, which is the argument for that change in one
+sentence.
+
 **Status:** see [What is left](#what-is-left) for the current per-seed
 numbers, and read [Overfitting](#overfitting-is-real-here) first — the gap
 between a tuned seed and an unseen one is the most useful thing in this
@@ -289,14 +298,10 @@ condition where Excel takes the `Then` branch and reaches a division by zero.
 | `a = "011" : b = False : a < b` | `False` | a Boolean **variable** is not static: the runtime rule applies and the number sorts first |
 | `a = "011" : a < 0` | `False` | a numeric partner is unaffected |
 
-**Done, for the runtime half only.** `value::compare_ctx`, covered by
-`a_string_compares_against_a_static_boolean_as_text`.
-
-A *constant* string keeps the numeric rules — `("abc" < True)` is error 13 and
-`((Empty & "1") <= ("" <> Empty))` is `False`, both of which a text comparison
-gets wrong. That leaves one measured row unexplained: `("011" < False)` is
-`True` in Excel, so a numeric string *literal* does appear to compare as text.
-Implementing that was tried and reverted — see [What is left](#what-is-left).
+**Superseded by §16, which is the same measurements under a rule that also
+explains the rows this one could not.** Left here because the two are easy to
+confuse: every row in the table above holds under both readings, which is
+exactly why the wrong one survived a whole phase.
 
 Accounts for `s2024/145`.
 
@@ -444,6 +449,105 @@ those:
 **Done.** `interp::null_on_the_right`, covered by
 `a_static_string_over_a_null_is_invalid_use_of_null`.
 
+## 16. It was never a text comparison — the string converts with `CBool`
+
+§11 read "a runtime String against a static Boolean compares as text", derived
+from two cases that do not discriminate: `a = "011" : a < False` is `True`
+whether "011" sorts before "False" or `CBool("011")` is `True` (-1) and sorts
+below `False` (0). Every case that *does* discriminate says conversion:
+
+| Expression | Excel | Text says | `CBool` says |
+| --- | --- | --- | --- |
+| `a = "-1" : a = True` | `True` | `False` | `True` |
+| `a = "011" : a = True` | `True` | `False` | `True` |
+| `a = "0" : a = False` | `True` | `False` | `True` |
+| `a = "1.5" : a = True` | `True` | `False` | `True` |
+| `a = "abc" : a = True` | `False` | `False` | error 13 |
+| `a = "" : a = False` | `False` | `False` | error 13 |
+
+So: **convert the string with `CBool`, compare the two Booleans as numbers**
+(`True` is -1, so it sorts *below* `False`), and fall back to a text
+comparison only when the conversion fails. The last two rows are what force
+the fallback rather than an error.
+
+Two axes then decide the details, and the combination is not guessable — this
+took three rounds of measurement, the middle one of which was wrong in a way
+the fuzzer caught.
+
+**The Boolean side decides which comparison runs.** A literal converts;
+anything else statically known compares as text and never errors:
+
+| Expression | Excel | Why |
+| --- | --- | --- |
+| `TypeName(0) >= False` | error 13 | literal partner → `CBool("Double")` raises |
+| `TypeName(0) >= (3# >= Empty)` | `False` | folded partner → text, `"Double" < "True"` |
+| `CStr(0) >= (3# >= Empty)` | `False` | likewise; the conversion would say `True` |
+| `(3# >= Empty) >= TypeName(0)` | `True` | the same, reversed — it is not side-specific |
+
+`(Not True)` counts as a **literal** here and `(3# >= Empty)` does not, which
+is the subtlest part: VBA folds a unary chain over a literal but not a
+comparison. `operand_kind` had to become recursive to tell them apart —
+it previously looked one level down and put `(Not True)` in the wrong bucket.
+
+**The String side decides whether either applies.** A folded constant
+expression takes neither and stays on the numeric path, which is the only way
+`((Empty & "1") <= ("" <> Empty))` comes out `False`.
+
+And on a failed conversion, what happens depends on how well the compiler
+knows the string's type — the same static/runtime axis as §7, §11 and §13:
+
+| String operand | Failed conversion | Example |
+| --- | --- | --- |
+| runtime `Variant` | compares as text | `a = TypeName(32767) : a >= (Not True)` is `True` |
+| declared `String` (`CStr`, `TypeName`) | **error 13** | `TypeName(32767) >= False` |
+| literal | **error 13** | `("abc" < True)` |
+| folded constant expression | numeric path, unchanged | `((Empty & "1") <= ("" <> Empty))` is `False` |
+
+Two consequences worth calling out.
+
+**`TypeName` had to be added to `STATICALLY_NUMERIC`'s string counterpart.**
+`TypeName(32767) >= False` is error 13 while `LCase("Integer") >= (Not True)`
+is `True`, and the only difference is that `TypeName` is declared `As String`
+where `LCase` returns `Variant`. Measured, not read off the signature.
+
+**This closed `("011" < False)`**, the row §11 and *What is left* both carried
+as unexplained. It is not a text comparison after all: `CBool("011")` is
+`True`, i.e. -1, which really is less than `False`. The earlier attempt failed
+because it tried to make literals compare as *text*, which is a different rule
+and regressed six cases.
+
+**Found by the Phase 2 fuzzer**, on a case whose visible symptom was a *cell*
+holding the wrong value — `fuzz_vba.py` now compares the data grid, and the
+return value alone agreed.
+
+**Done**, and verified as a whole: 27 cases spanning every cell of both axes
+agree with Excel. `value::compare_ctx` and `interp::operand_kind`, covered by
+`a_string_converts_with_cbool_against_a_static_boolean`.
+
+## 17. Excel has no infinities in *cells*, and trims numeric text on entry
+
+Two divergences the Phase 2 cell comparison found, both invisible in a return
+value and both about what ends up in the saved file:
+
+| A macro assigns | Excel stores | visi stored |
+| --- | --- | --- |
+| `(-2.5 ^ va)` with `va = 1000`, i.e. `-INF` | `#NUM!` | the `Double` `-inf` |
+| the string `"  3  "` | the `Double` `3` | the `String` `"  3  "` |
+| the string `"#NUM!"` | the error `#NUM!` | the `String` `"#NUM!"` |
+
+`^` is the one VBA operator that yields an infinity rather than raising error
+6 (§4), so a macro genuinely reaches the first row. The other two are ordinary
+cell-entry parsing: entering `  3  ` gives the number and entering `#NUM!`
+gives the error, in Excel and through `Range.Value` alike.
+
+All three are fixed in `Sheet::commit`'s literal parsing rather than in the
+VBA layer, since they are properties of *entering a value into a cell*, not of
+macros — with `xlsx::text_cell_src` quoting the two new ambiguous shapes so an
+imported text cell that spells one still round-trips as text.
+
+**Done.** Covered by `writing_an_infinity_stores_the_num_error_excel_stores`
+and `writing_whitespace_padded_numeric_text_stores_a_number`.
+
 ## What is left
 
 | Seed | Before | After |
@@ -459,16 +563,43 @@ those:
 on a conversion that cannot overflow. It is left in place rather than
 suppressed, so that the harness keeps saying 299 and the reason stays visible.
 
-Two more divergences are known and unfixed, both narrower than a fuzz case
-reaches:
+Phase 2's harness generates different programs — roughly a third of the
+statements now touch the workbook — so its numbers are not comparable with the
+table above and are kept separate. On seeds never used while developing, after
+§16 and §17:
 
-- `("011" < False)` is `True` in Excel and `False` here: a *numeric string
-  literal* appears to compare against a Boolean as text, where a constant
-  expression like `(Empty & "1")` compares numerically (§11).
+| Seed | Cases | Agreed |
+| --- | --- | --- |
+| 909 | 200 | **200** |
+| 4242 | 200 | **200** |
+| 55555 | 200 | **200** |
+| 77 | 200 | 199 |
+| 13579 | 200 | 199 |
+
+998 of 1000. The two remaining are in the list below; both are pure error
+ordering, with every cell agreeing.
+
+`("011" < False)` is no longer among these — see §16, which explains it.
+
+Known and unfixed:
+
 - `("1-2.5" = 1)` and `("1-2.5" = -1)` are both error 13 in Excel, where
   visi's numeric-prefix scan reads a `1`. Trailing-sign parsing (§10) is
   presumably what makes the prefix ambiguous, but the scan's exact rule was
   not measured.
+- `a = -3 : (Len(CStr(a)) / (-32768)) = ((-7) & (0 > "1.5"))` is error 13 in
+  Excel and `False` here. A *constant* string against a runtime number is
+  documented (§"String against number, in full") as comparing as text, and
+  `"2" > b` with `b = 10` being `True` is what established that — but a
+  constant string that does not parse numerically appears to be error 13
+  rather than an unequal text comparison. The candidate rule is "coerce
+  first, then compare as text", the same shape as `"abc" - Null` being error
+  13; it needs two or three more measurements before it is worth
+  implementing. Found by the Phase 2 fuzzer (`s13579/141`).
+- `s77/112` returns `String|Z` here and error 6 in Excel, from a procedure
+  whose sub-expressions all agree individually (`3# ^ 2147483647` is `INF` on
+  both sides, `Len(CStr(INF))` is 3 on both). Not reduced; the reproduction is
+  saved under `fuzz_results/failures/`.
 
 `IsArray` and `IsError` are also unimplemented (error 35); Excel treats both
 as statically Boolean in `Select Case`, and `STATICALLY_BOOLEAN` already lists

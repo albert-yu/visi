@@ -1654,70 +1654,93 @@ fn name_syntax_error(e: visi_core::Error, module: &str) -> visi_core::Error {
 /// Deliberately opt-in and explicit. Nothing else in the CLI runs a macro:
 /// not `eval`, not opening a file, and not a `Workbook_Open` handler. The
 /// notice that a macro ran goes to stderr and survives `--quiet`, because
-/// "this file executed code" is not informational chatter.
+/// "this file executed code" is not informational chatter -- and now that a
+/// macro can write cells, it matters more, not less.
+///
+/// Two shapes, and they are genuinely different runs. Given a workbook, the
+/// macro executes **against** it and can read and write cells, so the result
+/// needs somewhere to go: `--output` or `--in-place`, exactly as every other
+/// write command demands. Given a bare `.bas` file there is no workbook at
+/// all, and anything reaching for one reports so rather than pretending.
 fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
-    let source = if is_vba_source_path(&args.file) {
-        read_source_argument(&args.file)
-    } else {
-        let wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
-            exit_with_error(e, EXIT_IO_ERROR);
-        });
-        let modules = wb.list_vba_modules();
-        let chosen = match &args.module {
-            Some(name) => modules
-                .iter()
-                .find(|m| m.name.eq_ignore_ascii_case(name))
-                .unwrap_or_else(|| {
-                    exit_with_error(
-                        format!("VBA module '{}' not found", name),
-                        EXIT_USAGE_ERROR,
-                    )
-                }),
-            // With no --module, take the one declaring the procedure, so the
-            // common single-module case needs no extra flag.
-            None => modules
-                .iter()
-                .find(|m| {
-                    m.check_syntax()
-                        .map(|s| s.procedures.iter().any(|p| p.eq_ignore_ascii_case(&args.name)))
-                        .unwrap_or(false)
-                })
-                .unwrap_or_else(|| {
-                    exit_with_error(
-                        format!(
-                            "No VBA module declares a procedure named '{}'. Use --module to pick one explicitly.",
-                            args.name
-                        ),
-                        EXIT_USAGE_ERROR,
-                    )
-                }),
-        };
-        chosen.source.clone()
-    };
+    let arg_refs: Vec<&str> = args.args.iter().map(|s| s.as_str()).collect();
 
     eprintln!(
         "Running VBA procedure '{}' from '{}'.",
         args.name, args.file
     );
 
-    let arg_refs: Vec<&str> = args.args.iter().map(|s| s.as_str()).collect();
-    match visi_core::core::run_macro(&source, &args.name, &arg_refs) {
-        Ok(out) => {
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "procedure": args.name,
-                        "type": out.type_name,
-                        "value": out.value,
-                    }))
-                    .unwrap()
-                );
-            } else if let Some(v) = out.value {
-                println!("{v}");
-            }
+    if is_vba_source_path(&args.file) {
+        // Source text with no workbook behind it. A write target makes no
+        // sense here and is refused rather than quietly ignored.
+        if args.output.is_some() || args.in_place {
+            exit_with_error(
+                "--output/--in-place need a workbook to write; running a .bas file has none",
+                EXIT_USAGE_ERROR,
+            );
         }
-        Err(e) => exit_with_error(e, EXIT_ENGINE_ERROR),
+        let source = read_source_argument(&args.file);
+        match visi_core::core::run_macro(&source, &args.name, &arg_refs) {
+            Ok(out) => report_macro_run(&args, &out, None),
+            Err(e) => exit_with_error(e, EXIT_ENGINE_ERROR),
+        }
+        return;
+    }
+
+    let mut wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_IO_ERROR);
+    });
+    let outcome = wb
+        .run_macro(args.module.as_deref(), &args.name, &arg_refs)
+        .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+
+    // A macro that changed the workbook and has nowhere to put it is an
+    // error, not a silent discard: the user asked for the writes, and
+    // throwing them away while printing a cheerful return value is the
+    // failure mode this whole feature is built to avoid.
+    let save_path = if args.output.is_some() || args.in_place {
+        let path = resolve_output_path(args.output.clone(), args.in_place, &args.file);
+        require_xlsm_extension(&path);
+        wb.save_file(&path).unwrap_or_else(|e| {
+            exit_with_error(e, EXIT_IO_ERROR);
+        });
+        Some(path)
+    } else {
+        if outcome.mutated {
+            exit_with_error(
+                "The macro changed the workbook, but no output was given. \
+                 Re-run with --output <PATH> or --in-place (-i) to keep the changes.",
+                EXIT_USAGE_ERROR,
+            );
+        }
+        None
+    };
+
+    report_macro_run(&args, &outcome, save_path.as_deref());
+}
+
+/// The result of a run, in whichever form was asked for.
+///
+/// `saved` is reported even under `--quiet`, alongside the "a macro ran"
+/// notice and for the same reason: which file this wrote is not chatter.
+fn report_macro_run(args: &MacroRunArgs, out: &visi_core::core::RunOutcome, saved: Option<&str>) {
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "procedure": args.name,
+                "type": out.type_name,
+                "value": out.value,
+                "mutated": out.mutated,
+                "saved": saved,
+            }))
+            .unwrap()
+        );
+    } else if let Some(v) = &out.value {
+        println!("{v}");
+    }
+    if let Some(path) = saved {
+        eprintln!("Saved to '{path}'.");
     }
 }
 

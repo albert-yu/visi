@@ -314,3 +314,105 @@ def test_macro_list_parity(tmp_path):
     assert [(m["name"], m["kind"], m["source_lines"]) for m in cli] == [
         (m["name"], m["kind"], m["source_lines"]) for m in got
     ]
+
+
+# `Range("A1")` unqualified is the active sheet, and `C1` reads back what the
+# formula in `B1` computed -- so this exercises a write, a recalculation and a
+# worksheet-function call in four lines.
+RUN_MACRO_SRC = (
+    'Attribute VB_Name = "Runner"\n'
+    "Public Function Go() As Variant\n"
+    '    Range("A1").Value = 4\n'
+    '    Range("B1").Formula = "=A1*2"\n'
+    '    Range("C1").Value = Application.WorksheetFunction.Sum(Range("A1:B1"))\n'
+    '    Go = Range("C1").Value\n'
+    "End Function\n"
+    "Public Function Peek() As Variant\n"
+    "    Peek = ThisWorkbook.Worksheets.Count\n"
+    "End Function\n"
+)
+
+
+@requires_cli
+def test_macro_run_parity(tmp_path):
+    """`visi macro run --output` and `Workbook.run_macro` + `save` must agree.
+
+    Both the returned value and the *cells the macro wrote*: a run that
+    reports the right number while saving the wrong workbook is the failure
+    this whole phase is built to avoid, and it is invisible to a test that
+    only compares return values.
+    """
+    import json
+    import subprocess
+
+    import visi_core
+
+    from visi_driver import resolve_visi_binary
+
+    src = str(tmp_path / "source.xlsm")
+    cli_out = str(tmp_path / "cli.xlsm")
+    bindings_out = str(tmp_path / "bindings.xlsm")
+
+    base = visi_core.Workbook()
+    base.add_macro("Runner", RUN_MACRO_SRC)
+    base.save(src)
+
+    res = subprocess.run(
+        [resolve_visi_binary(None), "macro", "run", src, "--name", "Go",
+         "--output", cli_out, "--json"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    cli = json.loads(res.stdout)
+
+    wb = visi_core.Workbook.load(src)
+    type_name, value, mutated = wb.run_macro("Go")
+    wb.save(bindings_out)
+
+    assert (cli["type"], cli["value"], cli["mutated"]) == (type_name, value, mutated)
+    assert mutated is True
+
+    def cells(path):
+        w = visi_core.Workbook.load(path)
+        return [w.get_display(0, c) for c in range(3)]
+
+    assert cells(cli_out) == cells(bindings_out)
+
+
+@requires_cli
+def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_path):
+    """The CLI refuses to discard a macro's writes; a read-only run is fine.
+
+    The bindings have no equivalent refusal -- nothing there writes a file
+    implicitly, so there is nothing to discard -- which is why this asserts
+    the CLI's rule and only that the bindings agree about `mutated`.
+    """
+    import subprocess
+
+    import visi_core
+
+    from visi_driver import resolve_visi_binary
+
+    src = str(tmp_path / "source.xlsm")
+    base = visi_core.Workbook()
+    base.add_macro("Runner", RUN_MACRO_SRC)
+    base.save(src)
+
+    def run(proc):
+        return subprocess.run(
+            [resolve_visi_binary(None), "macro", "run", src, "--name", proc],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    mutating = run("Go")
+    assert mutating.returncode != 0
+    assert "--output" in mutating.stderr
+
+    reading = run("Peek")
+    assert reading.returncode == 0, reading.stderr
+    # The "a macro ran" notice is not suppressible, and is on stderr so it
+    # cannot be confused with the value.
+    assert "Running VBA procedure" in reading.stderr
+
+    assert visi_core.Workbook.load(src).run_macro("Peek")[2] is False
+    assert visi_core.Workbook.load(src).run_macro("Go")[2] is True

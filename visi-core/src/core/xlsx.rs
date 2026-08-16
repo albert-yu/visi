@@ -40,10 +40,16 @@ fn text_cell_src(s: &str) -> String {
     // parser would otherwise claim -- numbers, booleans, and dates such as
     // "22-Jun" -- has to be quoted to survive the round trip as text.
     let looks_ambiguous = s.starts_with('=')
-        || s.parse::<i64>().is_ok()
-        || s.parse::<f64>().is_ok()
+        // Trimmed, matching `Sheet::commit`: it reads `"  3  "` as the number
+        // 3, so a text cell spelling that has to be quoted to stay text.
+        || s.trim().parse::<i64>().is_ok()
+        || s.trim().parse::<f64>().is_ok()
         || s.eq_ignore_ascii_case("true")
         || s.eq_ignore_ascii_case("false")
+        // An error value typed into a cell *is* the error, so a text cell
+        // that happens to spell one has to be quoted like any other
+        // ambiguous literal.
+        || crate::core::engine::result_data::is_excel_error_code(s)
         || crate::core::date::parse_date(s).is_some();
     if looks_ambiguous {
         format!("\"{}\"", s)
