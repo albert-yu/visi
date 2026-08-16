@@ -437,6 +437,47 @@ Measured with `fuzz/vba_expr_probe.py`; it is why `fuzz_vba.py` case
 
 ---
 
+## 17. VBA: `Err.Number` on a `Range` whose cells were deleted — *No stable answer*
+
+Excel's `Range` objects track a structural edit: `Set r = ws.Range("A5")`
+followed by `ws.Rows(1).Insert` leaves `r` reading `$A$6`, and still holding
+the value that was in `A5`. visi matches that, by interning ranges. But when
+the edit deletes *every* cell a range covered, the object enters a state with
+no reproducible error number:
+
+```vba
+Set r = ws.Range("A5")
+ws.Rows(5).Delete
+s = r.Address              ' raises
+```
+
+What is stable, and what visi reproduces exactly:
+
+| Probe | Excel |
+| --- | --- |
+| `r Is Nothing` | `False` — it is still an object |
+| `TypeName(r)` | `"Range"` |
+| `r.Address` | raises, `Method 'Address' of object 'Range' failed` |
+| `r.Value` | raises, `Method 'Value' of object 'Range' failed` |
+
+What is not stable is `Err.Number`. The *same* case returned `-1667945984` on
+one run and `-1667949824` on the next; two different members returned the same
+number on one run and different numbers on another. These are raw automation
+error values from Excel for Mac, not the documented VBA error codes, and they
+do not survive a re-run.
+
+visi raises **1004** with Excel's description text. 1004 is what Excel on
+Windows documents for `Method '<name>' of object '<object>' failed`, and it is
+the number `vba/host.rs` already uses for the rest of the object-defined error
+family (a bad address, an out-of-sheet `Offset`, a failing
+`WorksheetFunction`). Pinning Excel for Mac's number would be pinning noise.
+
+Measured with `fuzz/vba_range_tracking_probe.py`, which also establishes that
+the *geometry* of the tracking — move vs. grow vs. shrink — is identical to
+`core::grid_edit`'s rules for a formula's range reference, case for case.
+
+---
+
 ## Fixed, not excluded
 
 For contrast, these looked like Excel divergences during investigation and
