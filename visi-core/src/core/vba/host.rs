@@ -1129,6 +1129,7 @@ impl<'w> Host<'w> {
             at: at as usize,
             count: count as usize,
             insert,
+            band: None,
         });
 
         self.mutated = true;

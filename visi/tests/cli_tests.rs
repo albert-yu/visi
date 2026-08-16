@@ -1748,3 +1748,181 @@ fn test_a_whole_column_range_does_not_overflow_on_a_row_edit() {
     assert_eq!(cell_src(&wb, 0, 0, 5), "=SUM(B:D)");
     assert_eq!(cell_value(&wb, 0, 0, 5), "6");
 }
+
+// --------------------------------------------------------------------------
+// Insert / delete cells over a column band -- Excel's "shift down / up",
+// which is what `ListRows.Add` actually is rather than a row insert.
+//
+// Measured with `fuzz/band_insert_probe.py`; the reference rules are the
+// ordinary ones, applied only where the band covers the reference's columns.
+// --------------------------------------------------------------------------
+
+#[test]
+fn test_band_insert_moves_only_the_bands_own_columns() {
+    // The case that forced this operation to exist: adding a row to a table
+    // at A1:C4 moves what is below it in A:C, and leaves what is beside it
+    // alone. Both measured against Excel.
+    let mut wb = workbook_from(
+        "test_band_insert_moves.xlsx",
+        &[(0, 0, "1"), (1, 0, "2"), (7, 0, "BELOW"), (1, 4, "BESIDE")],
+        9,
+        6,
+    );
+    wb.evaluate().unwrap();
+
+    // Insert one row at row 4 (0-based) across A:C only.
+    wb.insert_cells_shift_down(0, 4, 0, 2, 1).unwrap();
+
+    // A8 "BELOW" was inside the band and below the insert: it moved to A9.
+    assert_eq!(cell_value(&wb, 0, 8, 0), "BELOW");
+    assert_eq!(cell_value(&wb, 0, 7, 0), "");
+    // E2 "BESIDE" was outside the band: it did not move, even though it is
+    // below the insert row in its own column.
+    assert_eq!(cell_value(&wb, 0, 1, 4), "BESIDE");
+    // The sheet stays rectangular -- every column the same length.
+    let lengths: Vec<usize> = wb.sheets[0].columns().iter().map(|c| c.len()).collect();
+    assert!(
+        lengths.windows(2).all(|w| w[0] == w[1]),
+        "columns desynced: {lengths:?}"
+    );
+}
+
+#[test]
+fn test_band_insert_shifts_formulas_only_inside_the_band() {
+    let mut wb = workbook_from(
+        "test_band_insert_formulas.xlsx",
+        &[
+            (4, 0, "5"),
+            (4, 4, "50"),
+            // H1..H5, all outside the A:C band so they survive to be read.
+            (0, 7, "=A5"),
+            (1, 7, "=E5"),
+            (2, 7, "=SUM(A5:A6)"),
+            (3, 7, "=SUM(A5:E5)"),
+            (4, 7, "=SUM(A1:A6)"),
+        ],
+        10,
+        8,
+    );
+    wb.evaluate().unwrap();
+
+    wb.insert_cells_shift_down(0, 1, 0, 2, 1).unwrap();
+
+    // Inside the band, below the insert: shifts.
+    assert_eq!(cell_src(&wb, 0, 0, 7), "=A6");
+    // Outside the band: untouched.
+    assert_eq!(cell_src(&wb, 0, 1, 7), "=E5");
+    // Wholly inside: shifts.
+    assert_eq!(cell_src(&wb, 0, 2, 7), "=SUM(A6:A7)");
+    // Straddling the band's edge: unchanged. It cannot both shift and not
+    // shift, and Excel resolves that by leaving it alone.
+    assert_eq!(cell_src(&wb, 0, 3, 7), "=SUM(A5:E5)");
+    // Spanning the insert point, inside the band: grows rather than moves.
+    assert_eq!(cell_src(&wb, 0, 4, 7), "=SUM(A1:A7)");
+}
+
+#[test]
+fn test_band_delete_is_the_inverse_of_band_insert() {
+    let mut wb = workbook_from(
+        "test_band_delete.xlsx",
+        &[(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (1, 4, "BESIDE")],
+        5,
+        6,
+    );
+    wb.evaluate().unwrap();
+
+    wb.delete_cells_shift_up(0, 0, 0, 2, 1).unwrap();
+
+    // Column A moved up; E did not.
+    assert_eq!(cell_value(&wb, 0, 0, 0), "b");
+    assert_eq!(cell_value(&wb, 0, 1, 0), "c");
+    assert_eq!(cell_value(&wb, 0, 1, 4), "BESIDE");
+    let lengths: Vec<usize> = wb.sheets[0].columns().iter().map(|c| c.len()).collect();
+    assert!(
+        lengths.windows(2).all(|w| w[0] == w[1]),
+        "columns desynced: {lengths:?}"
+    );
+}
+
+#[test]
+fn test_a_band_insert_keeps_styles_with_their_cells() {
+    // The invariant that has been broken before: `src`, `data`,
+    // `compiled_src` and `styles` have to move together, or a style ends up
+    // on the wrong row.
+    let mut wb = workbook_from(
+        "test_band_insert_styles.xlsx",
+        &[(3, 0, "styled"), (3, 4, "beside")],
+        6,
+        6,
+    );
+    wb.sheets[0].update_cell_style(3, 0, |s| s.bold = Some(true));
+    wb.sheets[0].update_cell_style(3, 4, |s| s.italic = Some(true));
+    wb.evaluate().unwrap();
+
+    wb.insert_cells_shift_down(0, 1, 0, 2, 1).unwrap();
+
+    // The styled cell in the band moved down with its style.
+    assert_eq!(cell_value(&wb, 0, 4, 0), "styled");
+    assert_eq!(
+        wb.sheets[0].get_cell_style(4, 0).and_then(|s| s.bold),
+        Some(true)
+    );
+    assert!(wb.sheets[0].get_cell_style(3, 0).is_none());
+    // The one outside the band stayed put, style and all.
+    assert_eq!(
+        wb.sheets[0].get_cell_style(3, 4).and_then(|s| s.italic),
+        Some(true)
+    );
+}
+
+#[test]
+fn test_a_band_insert_grows_a_table_it_passes_through() {
+    let mut wb = workbook_from(
+        "test_band_insert_table.xlsx",
+        &[
+            (0, 0, "Region"),
+            (0, 1, "Amount"),
+            (1, 0, "East"),
+            (1, 1, "10"),
+            (2, 0, "West"),
+            (2, 1, "20"),
+            (0, 4, "=SUM(Sales[Amount])"),
+        ],
+        6,
+        6,
+    );
+    wb.add_table(None, "Sales", 0, 0, 2, 1, true, false)
+        .unwrap();
+    wb.evaluate().unwrap();
+    assert_eq!(cell_value(&wb, 0, 0, 4), "30");
+
+    // Insert inside the table's own columns and rows: the table grows.
+    wb.insert_cells_shift_down(0, 2, 0, 1, 1).unwrap();
+    let table = wb.sheets[0].find_table("Sales").unwrap();
+    assert_eq!((table.start_row, table.end_row), (0, 3));
+    // The structured reference still covers the same data.
+    assert_eq!(cell_value(&wb, 0, 0, 4), "30");
+}
+
+#[test]
+fn test_a_band_insert_outside_a_tables_columns_leaves_it_alone() {
+    let mut wb = workbook_from(
+        "test_band_insert_other_table.xlsx",
+        &[
+            (0, 3, "Region"),
+            (0, 4, "Amount"),
+            (1, 3, "East"),
+            (1, 4, "10"),
+        ],
+        6,
+        6,
+    );
+    wb.add_table(None, "Side", 0, 3, 1, 4, true, false).unwrap();
+    wb.evaluate().unwrap();
+
+    // The band is A:C; the table lives in D:E and must not move.
+    wb.insert_cells_shift_down(0, 0, 0, 2, 1).unwrap();
+    let table = wb.sheets[0].find_table("Side").unwrap();
+    assert_eq!((table.start_row, table.end_row), (0, 1));
+    assert_eq!((table.start_col, table.end_col), (3, 4));
+}

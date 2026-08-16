@@ -66,6 +66,21 @@ pub(crate) struct GridEdit {
     pub count: usize,
     /// `true` for an insert, `false` for a delete.
     pub insert: bool,
+    /// Restricts the edit to an inclusive column range, for Excel's
+    /// *Insert / Delete cells, shift down / up* over a band -- which is what
+    /// `ListRows.Add` actually is, not a row insert.
+    ///
+    /// `None` is a whole-row edit. Only meaningful with [`Axis::Row`]; the
+    /// mirrored column-axis form (a shift-right over a *row* band) is not
+    /// implemented, and [`GridEdit::band_rows`] is the only constructor that
+    /// sets this.
+    ///
+    /// Measured: **a reference moves if and only if its columns lie entirely
+    /// inside the band**, and then the ordinary rules apply unchanged. A
+    /// range straddling the band's edge does not move at all -- it cannot
+    /// both shift and not shift, and Excel resolves that by leaving it
+    /// alone. See `fuzz/band_insert_probe.py`.
+    pub band: Option<(usize, usize)>,
 }
 
 impl GridEdit {
@@ -77,6 +92,7 @@ impl GridEdit {
             at,
             count: 1,
             insert: true,
+            band: None,
         }
     }
 
@@ -88,6 +104,7 @@ impl GridEdit {
             at,
             count: 1,
             insert: false,
+            band: None,
         }
     }
 
@@ -99,6 +116,7 @@ impl GridEdit {
             at,
             count: 1,
             insert: true,
+            band: None,
         }
     }
 
@@ -110,6 +128,41 @@ impl GridEdit {
             at,
             count: 1,
             insert: false,
+            band: None,
+        }
+    }
+
+    /// Rows inserted or deleted within an inclusive column band, which is
+    /// Excel's *Insert cells, shift down* rather than a row insert.
+    pub fn band_rows(
+        sheet_id: u64,
+        at: usize,
+        count: usize,
+        first_col: usize,
+        last_col: usize,
+        insert: bool,
+    ) -> Self {
+        Self {
+            sheet_id,
+            axis: Axis::Row,
+            at,
+            count,
+            insert,
+            band: Some((first_col, last_col)),
+        }
+    }
+
+    /// Whether an inclusive column span lies entirely inside the band, which
+    /// is the whole test for whether a reference moves. A whole-row edit has
+    /// no band and so covers everything.
+    ///
+    /// Also the test for whether an Excel Table or pivot rectangle moves --
+    /// same rule, since a table straddling the band's edge is in exactly the
+    /// position a straddling range reference is.
+    pub(crate) fn covers_columns(&self, first_col: usize, last_col: usize) -> bool {
+        match self.band {
+            None => true,
+            Some((lo, hi)) => lo <= first_col && last_col <= hi,
         }
     }
 
@@ -267,7 +320,7 @@ fn shift_part(part: &FormulaPart, edit: &GridEdit, deleted_col_ids: &[u64]) -> (
             row_ref_type,
             col_ref_type,
         } => {
-            if *sheet_id != edit.sheet_id {
+            if *sheet_id != edit.sheet_id || !edit.covers_columns(*col, *col) {
                 return unchanged();
             }
             let (new_row, new_col) = match edit.axis {
@@ -306,7 +359,7 @@ fn shift_part(part: &FormulaPart, edit: &GridEdit, deleted_col_ids: &[u64]) -> (
             end_row_ref_type,
             end_col_ref_type,
         } => {
-            if *sheet_id != edit.sheet_id {
+            if *sheet_id != edit.sheet_id || !edit.covers_columns(*start_col, *end_col) {
                 return unchanged();
             }
             // `A:C` compiles to a range whose `end_row` is the unbounded
@@ -519,5 +572,114 @@ mod tests {
         let (r0, c0, r1, c1) =
             shift_rect(&GridEdit::insert_col(1, 0), rect.0, rect.1, rect.2, rect.3).unwrap();
         assert_eq!((r0, c0, r1, c1), (2, 3, 4, 5));
+    }
+
+    #[test]
+    fn a_band_edit_moves_only_references_wholly_inside_the_band() {
+        // `ListRows.Add` is an insert over the table's columns, not a row
+        // insert, so a formula beside the table must not move. Every case
+        // here is from `fuzz/band_insert_probe.py` with the band A:C and the
+        // insert at row 2 (0-based row 1, cols 0..=2).
+        let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
+        let cell = |row, col| CompiledFormula {
+            parts: vec![FormulaPart::SheetReference {
+                sheet_id: 1,
+                row,
+                col,
+                row_ref_type: RefType::Relative,
+                col_ref_type: RefType::Relative,
+            }],
+        };
+        // `=A5` -> `=A6`: inside the band, below the insert.
+        assert_eq!(
+            shift_formula(&cell(4, 0), &edit, &[]).unwrap().parts,
+            cell(5, 0).parts
+        );
+        // `=A2` -> `=A3`: the insert point itself moves.
+        assert_eq!(
+            shift_formula(&cell(1, 0), &edit, &[]).unwrap().parts,
+            cell(2, 0).parts
+        );
+        // `=A1`: above the insert, untouched.
+        assert!(shift_formula(&cell(0, 0), &edit, &[]).is_none());
+        // `=E5`: outside the band, untouched even though it is below.
+        assert!(shift_formula(&cell(4, 4), &edit, &[]).is_none());
+    }
+
+    #[test]
+    fn a_range_straddling_the_bands_edge_does_not_move_at_all() {
+        // The case with no obvious answer, and the reason `covers_columns`
+        // tests the *whole* span: `=SUM(A5:E5)` cannot both shift (its A part
+        // is inside the band) and not shift (its E part is not), and Excel
+        // resolves that by leaving it alone. Measured.
+        let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
+        let range = |start_col, end_col| CompiledFormula {
+            parts: vec![FormulaPart::RangeReference {
+                sheet_id: 1,
+                start_row: 4,
+                start_col,
+                end_row: 5,
+                end_col,
+                start_row_ref_type: RefType::Relative,
+                start_col_ref_type: RefType::Relative,
+                end_row_ref_type: RefType::Relative,
+                end_col_ref_type: RefType::Relative,
+            }],
+        };
+        // A5:E6 straddles the edge -- unchanged.
+        assert!(shift_formula(&range(0, 4), &edit, &[]).is_none());
+        // A5:C6 is wholly inside -- moves.
+        let moved = shift_formula(&range(0, 2), &edit, &[]).unwrap();
+        let FormulaPart::RangeReference {
+            start_row, end_row, ..
+        } = moved.parts[0]
+        else {
+            panic!("expected a range");
+        };
+        assert_eq!((start_row, end_row), (5, 6));
+        // E5:F6 is wholly outside -- unchanged.
+        assert!(shift_formula(&range(4, 5), &edit, &[]).is_none());
+    }
+
+    #[test]
+    fn a_band_edit_grows_a_range_that_spans_its_insert_point() {
+        // Inside the band the ordinary rules apply unchanged, which is the
+        // point of reusing `shift_span`: `=SUM(A1:A6)` becomes `=SUM(A1:A7)`.
+        let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
+        let formula = CompiledFormula {
+            parts: vec![FormulaPart::RangeReference {
+                sheet_id: 1,
+                start_row: 0,
+                start_col: 0,
+                end_row: 5,
+                end_col: 0,
+                start_row_ref_type: RefType::Relative,
+                start_col_ref_type: RefType::Relative,
+                end_row_ref_type: RefType::Relative,
+                end_col_ref_type: RefType::Relative,
+            }],
+        };
+        let grown = shift_formula(&formula, &edit, &[]).unwrap();
+        let FormulaPart::RangeReference {
+            start_row, end_row, ..
+        } = grown.parts[0]
+        else {
+            panic!("expected a range");
+        };
+        assert_eq!((start_row, end_row), (0, 6));
+    }
+
+    #[test]
+    fn a_whole_column_reference_ignores_a_band_edit() {
+        // Measured: `=SUM(A:A)` is unchanged by an insert inside A:C, since
+        // it already spans every row.
+        let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
+        let whole = CompiledFormula {
+            parts: vec![FormulaPart::ColumnReference {
+                sheet_id: 1,
+                col_id: 7,
+            }],
+        };
+        assert!(shift_formula(&whole, &edit, &[]).is_none());
     }
 }
