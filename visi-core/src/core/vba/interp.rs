@@ -894,10 +894,17 @@ impl<'w> Interpreter<'w> {
                 }
                 let a = self.scalar(a)?;
                 let b = self.scalar(b)?;
-                // Two compile-time constants use fixed-width arithmetic and
-                // overflow; anything involving a variable promotes. See
+                // Two operands the compiler has *typed* use fixed-width
+                // arithmetic and overflow; anything Variant promotes. See
                 // `value::ArithMode`.
-                let mode = if is_constant(lhs) && is_constant(rhs) {
+                //
+                // This is `is_statically_typed`, not `is_constant`, and §28
+                // measured both halves of the difference: `CInt(32767) + 1`
+                // and `Sgn(1) + 32767` are error 6 though neither is a
+                // constant expression, while `(Empty + 32767) + 1` is 32768
+                // though it is one -- `Empty` is a `Variant`, so the
+                // expression promotes like a variable.
+                let mode = if is_statically_typed(lhs) && is_statically_typed(rhs) {
                     ArithMode::Constant
                 } else {
                     ArithMode::Promote
@@ -1189,8 +1196,12 @@ fn compare_with(op: BinOp, ord: std::cmp::Ordering) -> bool {
     }
 }
 
-/// Whether an expression is a compile-time constant, which decides whether
-/// arithmetic over it overflows or promotes.
+/// Whether an expression is a compile-time constant.
+///
+/// This is *constness*, not static typing, and the two come apart in both
+/// directions -- see [`is_statically_typed`], which is what decides whether
+/// arithmetic overflows or promotes (§28). `CInt(32767)` is statically typed
+/// and not constant; `(Empty + 1)` is constant and not statically typed.
 fn is_constant(e: &Expr) -> bool {
     match e {
         // `Null` is not foldable, so nothing containing it is constant.
@@ -1331,10 +1342,30 @@ fn is_statically_boolean(e: &Expr) -> bool {
 /// string must parse *and then compares numerically*, where a `Variant`
 /// partner would compare it as text and say False.
 ///
-/// Only arithmetic propagates. Comparison and `&` are left out because
-/// nothing measured covers them, not because they are known not to.
+/// **Comparison and `&` propagate too**, which §18 left open for want of a
+/// measurement and §24 supplied. A comparison is statically `Boolean` only
+/// when both its operands are statically typed, because a `Variant` operand
+/// could make it `Null` -- and that is the whole of the rule §16 had written
+/// as a 4x4 table with an unexplained cell:
+///
+/// ```text
+/// "0" >= (3# >= CDbl(0))       True    every operand statically typed
+/// "0" >= (Len(CStr(0)) >= 1)   True    likewise
+/// "0" >= ("1" >= -7)           True    a string *literal* is statically typed
+/// "0" >= (3# >= Empty)         False   `Empty` is a Variant, so this is not
+/// b = 1 : "0" >= (3# >= b)     False   nor is a variable
+/// "0" >= IsEmpty(Empty)        True    but a declared-Boolean call is
+/// ```
+///
+/// The last two rows are what say this is about the static *type* rather than
+/// about `Empty` appearing anywhere: `IsEmpty(Empty)` is declared `Boolean`
+/// and converts, while `(3# >= Empty)` does not.
 fn is_statically_typed(e: &Expr) -> bool {
     match e {
+        // `Empty` and `Null` are `Variant`, not statically typed values. This
+        // is the distinction the whole §24 rule turns on: `(3# >= Empty)` is
+        // a compile-time *constant* and still not a compile-time `Boolean`.
+        Expr::Literal(Literal::Empty | Literal::Null) => false,
         Expr::Literal(_) => true,
         Expr::Paren { expr, .. } | Expr::Unary { expr, .. } => is_statically_typed(expr),
         Expr::Binary { op, lhs, rhs, .. } => {
@@ -1347,6 +1378,17 @@ fn is_statically_typed(e: &Expr) -> bool {
                     | BinOp::IntDiv
                     | BinOp::Mod
                     | BinOp::Pow
+                    // `&` yields a `String` whatever it is handed, and a
+                    // comparison a `Boolean` -- provided every operand is
+                    // itself statically typed. `("1" & "3")` is strict
+                    // where `(Empty & "13")` is not.
+                    | BinOp::Concat
+                    | BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Le
+                    | BinOp::Ge
             ) && is_statically_typed(lhs)
                 && is_statically_typed(rhs)
         }
@@ -1381,7 +1423,11 @@ fn operand_kind(e: &Expr) -> Operand {
         {
             Operand::Literal
         }
-        _ if is_constant(e) => Operand::ConstExpr,
+        // Constant *and* statically typed. A constant expression over `Empty`
+        // is neither one thing nor the other -- the compiler can fold it but
+        // its type is `Variant`, so it behaves exactly as a variable does.
+        // `(3# >= Empty)` and `(Empty & "13")` are the measured cases (§24).
+        _ if is_constant(e) && statically_typed => Operand::ConstExpr,
         _ if statically_typed => Operand::Static,
         _ => Operand::Runtime,
     }
@@ -2288,6 +2334,101 @@ mod tests {
     }
 
     #[test]
+    fn overflow_between_constants_is_really_between_statically_typed_operands() {
+        // §28. The fixed-width arithmetic that makes `32767 + 1` error 6 is
+        // chosen by static *typing*, not by constness, and the two come apart
+        // in both directions. Measured; `fuzz/fuzz_vba.py` found it on seed
+        // 314159 through `CInt(vb) ^ (vb Mod va)`.
+        //
+        // Typed but not constant: these overflow.
+        assert_eq!(expr("CStr(CInt(32767) + 1)"), "ERR|6");
+        assert_eq!(expr("CStr(CInt(32767) * 2)"), "ERR|6");
+        assert_eq!(expr("CStr(CInt(32767) + CInt(1))"), "ERR|6");
+        assert_eq!(expr("CStr(Sgn(1) + 32767)"), "ERR|6");
+        assert_eq!(expr("CStr(CLng(2147483647) + 1)"), "ERR|6");
+        assert_eq!(expr("CStr(CInt(32767) ^ 4652)"), "ERR|6");
+        assert_eq!(expr("CStr(CDbl(32767) ^ 4652)"), "ERR|6");
+        assert_eq!(expr("CStr(Len(\"abcde\") ^ 4652)"), "ERR|6");
+        // Constant but not typed: `Empty` is a `Variant`, so this promotes
+        // exactly as a variable does. visi had this backwards.
+        assert_eq!(expr("CStr((Empty + 32767) + 1)"), "String|32768");
+        // Unchanged: literals overflow, a variable promotes.
+        assert_eq!(expr("CStr(32767 + 1)"), "ERR|6");
+        assert_eq!(
+            run("    Dim a\n    a = 32767\n    F = CStr(a + 1)"),
+            "String|32768"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = 1\n    F = CStr(CInt(32767) + a)"),
+            "String|32768"
+        );
+        // Typed, but the width is `Long`, so there is nothing to overflow.
+        assert_eq!(expr("CStr(Len(\"abcde\") + 32763)"), "String|32768");
+        assert_eq!(expr("CStr(CInt(Empty) + 32768)"), "String|32768");
+        // `^` yields an infinity rather than overflowing (§4) whenever the
+        // expression is not statically typed -- which is what makes the
+        // first `^` row above a change and not a contradiction.
+        assert_eq!(
+            run("    Dim vb\n    vb = 4652\n    F = CStr(32767 ^ vb)"),
+            "String|INF"
+        );
+    }
+
+    #[test]
+    fn a_statically_string_value_compares_as_text_against_a_runtime_number() {
+        // §27. The other half of §23's split: a declared `String` against a
+        // *runtime* number compares as text with the number via `CStr`,
+        // exactly as a literal does, where a `Variant`-returning intrinsic
+        // orders. Measured; `fuzz/fuzz_vba.py` found it on seed 987654.
+        //
+        // `a` is a variable throughout, so the number is never static and the
+        // strictness of §13/§23 never applies -- these differ only in how
+        // well the compiler knows the *string*.
+        let with = |setup: &str, e: &str| run(&format!("    Dim a, b\n{setup}\n    F = CStr({e})"));
+        assert_eq!(with("    a = 5", "(a < \"10\")"), "String|False");
+        assert_eq!(with("    a = 5", "(a < CStr(10))"), "String|False");
+        assert_eq!(with("    a = 5", "(a < (CStr(1) & \"0\"))"), "String|False");
+        assert_eq!(
+            with("    a = 5\n    b = 10", "(a < CStr(b))"),
+            "String|False"
+        );
+        // A `Variant`-returning intrinsic is not statically `String`, so the
+        // runtime rule applies instead: the number sorts first.
+        assert_eq!(with("    a = 5", "(a < Trim(\"10\"))"), "String|True");
+        // Text, and never an error, even when the string will not convert --
+        // this is the row the ordering got wrong in both directions.
+        assert_eq!(with("    a = -2", "(a < CStr(\"\"))"), "String|False");
+        assert_eq!(with("    a = -2", "(a < StrReverse(\"\"))"), "String|False");
+        assert_eq!(with("    a = -2", "(a < CStr(\"abc\"))"), "String|True");
+        assert_eq!(with("    a = -2", "(a < \"\")"), "String|False");
+        // The case as the fuzzer found it: the fold is statically `String`
+        // through `&`, so it compares as text and the whole thing is False.
+        assert_eq!(
+            with(
+                "    a = 1\n    b = 1",
+                "(((True * 1E3) & Len(CStr(\"Z\"))) > ((-a) - (b ^ 255)))"
+            ),
+            "String|False"
+        );
+    }
+
+    #[test]
+    fn is_numeric_of_empty_is_true_and_of_null_is_false() {
+        // §26. `Empty` answers as the 0 it coerces to; `Null` answers for
+        // nothing; `""` is not numeric despite comparing equal to `Empty`.
+        // Measured. `fuzz/fuzz_vba.py` found it on seed 862021 as
+        // `(Not vc) Xor IsNumeric(Empty)`, which is 1 when the operand is
+        // False and -2 when it is True.
+        assert_eq!(expr("CStr(IsNumeric(Empty))"), "String|True");
+        assert_eq!(expr("CStr(IsNumeric(Null))"), "String|False");
+        assert_eq!(expr("CStr(IsNumeric(\"\"))"), "String|False");
+        assert_eq!(
+            run("    Dim vc\n    vc = -2.5\n    F = CStr((Not vc) Xor IsNumeric(Empty))"),
+            "String|-2"
+        );
+    }
+
+    #[test]
     fn instr_of_an_empty_haystack_is_zero() {
         // `InStr("", "")` is 0 while `InStr("a", "")` is 1: an empty needle
         // matches at the start position only when there is a string to match
@@ -2326,6 +2467,74 @@ mod tests {
         // *does* parse compares **numerically**, where a Variant partner
         // would compare it as text and say False.
         assert_eq!(with("((CLng(a) * 2) = \"-6.0\")"), "Boolean|True");
+    }
+
+    #[test]
+    fn static_typing_propagates_through_comparison_and_concatenation() {
+        // §24. The half of §18 it explicitly left open: `&` yields a `String`
+        // and a comparison a `Boolean`, provided every operand is itself
+        // statically typed. `Empty` is a `Variant`, so a fold over it is
+        // neither -- which is what §16's "one cell that resists explanation"
+        // actually was.
+        //
+        // The Boolean side. All measured with `fuzz/vba_expr_probe.py`
+        // against the same literal string, so only the partner varies:
+        // convert says True (CBool("0") is 0, and 0 >= -1), text says False
+        // ("0" sorts below "True").
+        assert_eq!(expr("(\"0\" >= (3# >= CDbl(0)))"), "Boolean|True");
+        assert_eq!(expr("(\"0\" >= (Len(CStr(0)) >= 1))"), "Boolean|True");
+        assert_eq!(expr("(\"0\" >= (\"1\" >= -7))"), "Boolean|True");
+        assert_eq!(expr("(\"0\" >= (2 >= 1))"), "Boolean|True");
+        assert_eq!(expr("(\"0\" >= (1 = 1))"), "Boolean|True");
+        // ...and the same shapes with a `Variant` operand, which could yield
+        // `Null` and so is not statically `Boolean`. A declared-Boolean call
+        // over `Empty` still is, which is what says this is about the static
+        // type and not about `Empty` appearing anywhere.
+        assert_eq!(expr("(\"0\" >= (3# >= Empty))"), "Boolean|False");
+        assert_eq!(expr("(\"0\" >= (Empty = Empty))"), "Boolean|False");
+        assert_eq!(expr("(\"0\" < (3# >= Empty))"), "Boolean|True");
+        assert_eq!(expr("(\"0\" >= IsEmpty(Empty))"), "Boolean|True");
+        assert_eq!(expr("(\"0\" >= CBool(Empty))"), "Boolean|True");
+        assert_eq!(
+            run("    Dim b\n    b = 1\n    F = (\"0\" >= (3# >= b))"),
+            "Boolean|False"
+        );
+        // The String side, against a Boolean that is *not* static, where a
+        // statically typed String compares as text and a Variant takes the
+        // numeric rules. `("1" + "3")` is the case the fuzzer reduced to:
+        // a fold of two string literals is a `String` as surely as a literal
+        // is, where a fold over `Empty` is not.
+        let folded = |s: &str| expr(&format!("({s} <= (\"\" <> Empty))"));
+        assert_eq!(folded("\"13\""), "Boolean|True");
+        assert_eq!(folded("(\"1\" + \"3\")"), "Boolean|True");
+        assert_eq!(folded("(\"1\" & \"3\")"), "Boolean|True");
+        assert_eq!(folded("CStr(13)"), "Boolean|True");
+        assert_eq!(folded("(CStr(13) & CStr(0))"), "Boolean|True");
+        assert_eq!(folded("(Empty & \"13\")"), "Boolean|False");
+        assert_eq!(
+            run("    Dim a\n    a = \"13\"\n    F = (a <= (\"\" <> Empty))"),
+            "Boolean|False"
+        );
+        // Against a Boolean that *is* static, every string kind converts --
+        // including the fold, which used to take the numeric path here and
+        // is what `fuzz/fuzz_vba.py` found on seed 271828.
+        assert_eq!(expr("((\"1\" + \"3\") <= False)"), "Boolean|True");
+        assert_eq!(expr("((Empty & \"13\") <= False)"), "Boolean|True");
+        assert_eq!(expr("((\"1\" + \"3\") = True)"), "Boolean|True");
+        assert_eq!(expr("((\"1\" + \"3\") > False)"), "Boolean|False");
+        // A fold that will not convert is error 13, exactly as the literal
+        // it is: the strictness follows the static `String` type.
+        assert_eq!(expr("((\"1\" + \"  3  \") <= False)"), "ERR|13");
+        assert_eq!(expr("((\"abc\" + \"d\") > True)"), "ERR|13");
+        // ...while the same unconvertible string through a Variant orders
+        // above the number (§23) instead of raising.
+        assert_eq!(expr("((Empty & \"1  3  \") <= False)"), "Boolean|False");
+        // Text, not an error, when the Boolean is not static -- even though
+        // the string will not convert.
+        assert_eq!(
+            expr("((\"1\" & \"  3  \") <= (\"\" <> Empty))"),
+            "Boolean|True"
+        );
     }
 
     #[test]
@@ -2390,26 +2599,26 @@ mod tests {
         assert_eq!(expr("(\"011\" < False)"), "Boolean|True");
         assert_eq!(expr("(False > \"12\")"), "Boolean|True");
         assert_eq!(expr("(\"0\" = False)"), "Boolean|True");
-        // A *folded constant expression* is the one string kind that stays on
-        // the numeric path -- `"1"` here becomes 1, and `1 <= 0` is False,
-        // where the conversion would say True.
+        // Neither side is statically typed here -- `Empty` is a `Variant`, so
+        // the fold over it is not a `String` and the comparison is not a
+        // `Boolean` -- so both fall to the numeric rules: `"1"` becomes 1, and
+        // `1 <= 0` is False, where the conversion would say True. See §24.
         assert_eq!(
             expr("((Empty & \"1\") <= (\"\" <> Empty))"),
             "Boolean|False"
         );
-        // The *Boolean* side has its own split, and it decides which
-        // comparison runs: a literal converts, a folded constant expression
-        // compares as text and never errors. `(Not True)` is a literal for
-        // this purpose and `(3# >= Empty)` is not -- see `operand_kind`.
+        // Against a Boolean that is *not* statically `Boolean` -- here a
+        // comparison with an `Empty` operand -- a statically typed `String`
+        // compares as text, with the Boolean rendered "True"/"False".
         assert_eq!(expr("TypeName(0) >= (3# >= Empty)"), "Boolean|False");
         assert_eq!(expr("(3# >= Empty) >= TypeName(0)"), "Boolean|True");
         assert_eq!(expr("CStr(0) >= (3# >= Empty)"), "Boolean|False");
         assert_eq!(expr("(Not True) <= CStr(32767)"), "Boolean|False");
         assert_eq!(expr("False >= TypeName(0)"), "ERR|13");
-        // ...but *only* a static string against a folded Boolean. A literal
-        // or runtime string against the same partner converts, which is the
-        // row that makes this an exception rather than a rule about folded
-        // Booleans.
+        // ...where a comparison whose operands *are* all statically typed is
+        // a statically known Boolean, and converts. This pair looks like an
+        // exception about static strings and is not one: the two differ in
+        // the **Boolean**, not the string -- see §24 and the test below.
         assert_eq!(expr("(\"000\" < (\"1\" >= -7))"), "Boolean|False");
         assert_eq!(
             run("    Dim va\n    va = \"000\"\n    F = (va < (\"1\" >= -7))"),
@@ -2417,8 +2626,7 @@ mod tests {
         );
         assert_eq!(expr("(Right(100000, 3) < (\"1\" >= -7))"), "Boolean|False");
         // A *static* Boolean partner converts against every string kind,
-        // including a static one -- it is specifically the folded partner
-        // that is different.
+        // including a static one.
         assert_eq!(expr("(CStr(0) >= CBool(1))"), "Boolean|True");
         assert_eq!(expr("(\"000\" < CBool(1))"), "Boolean|False");
         assert_eq!(expr("(TypeName(0) >= CBool(1))"), "ERR|13");
