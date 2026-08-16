@@ -14,6 +14,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude Code: `.claude/skills/` is checked in, the per-machine state is not.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
 # Fuzzing test harness artifacts
 venv
 fuzz_results/
