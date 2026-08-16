@@ -1398,24 +1398,41 @@ pub fn compare_ctx(
                     // What a string that will *not* convert does depends on
                     // how well the compiler knows its type. A declared
                     // `String` (`CStr`, `TypeName`) or a literal is error 13;
-                    // an ordinary runtime Variant falls back to text.
-                    // Measured:
+                    // an ordinary runtime Variant falls back to the runtime
+                    // rule below -- **the number sorts first**, whatever the
+                    // two actually are. Measured:
                     //
                     //   TypeName(32767) >= False              error 13
                     //   ("abc" < True)                        error 13
-                    //   a = "abc" : a = True                  False  (text)
-                    //   a = ""    : a = False                 False  (text)
-                    //   a = TypeName(32767) : a >= (Not True) True   (text)
-                    //   LCase("Integer") >= (Not True)        True   (text)
+                    //   a = "abc" : a = True                  False
+                    //   a = ""    : a = False                 False
+                    //   a = TypeName(32767) : a >= (Not True) True
+                    //   LCase("Integer") >= (Not True)        True
+                    //   a = "ABC" : a > True                  True
+                    //   a = "ABC" : a < True                  False
+                    //   a = "ABC" : a >= False                True
+                    //   Chr(65) > True                        True
+                    //   Chr(65) > False                       True
+                    //   StrConv("abc", 1) > True              True
                     //
-                    // The last two are what make this about the *declared*
+                    // The first six are what make this about the *declared*
                     // type rather than the value: the same string through a
                     // Variant, and through a `Variant`-returning intrinsic,
-                    // both compare as text.
+                    // both reach this fallback rather than erroring.
+                    //
+                    // The last five are what say the fallback orders rather
+                    // than compares as text, and they had to be chosen to
+                    // tell those apart: this was written as a text comparison
+                    // on the strength of the six above, every one of which
+                    // holds either way, because their strings all happen to
+                    // sort on the same side of `"True"`/`"False"` as the
+                    // ordering rule puts them. `"ABC"` does not -- text makes
+                    // `a > True` False, and Excel says True. Found by the
+                    // reduction of the `StrReverse` case above.
                     if str_kind != Operand::Runtime {
                         return Err(VbaError::type_mismatch());
                     }
-                    let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
+                    let ord = Ordering::Greater;
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
                 if stringy && num_kind != Operand::Runtime {
@@ -1428,27 +1445,46 @@ pub fn compare_ctx(
                 }
             }
 
+            // A string whose type the compiler knows -- a constant, or a call
+            // declared `As String` -- must convert. Only a Variant gets to
+            // fall back to the ordering. This is the same "declared type, not
+            // value" split the Boolean branch above turns on, and the two are
+            // deliberately spelled the same way. Measured:
+            //
+            //   CStr("abc")       > 5        error 13
+            //   TypeName(1)       > 5        error 13
+            //   CStr("abc")       > CLng(1)  error 13
+            //   StrReverse("abc") > 5        error 13
+            //   Trim("abc")       > 5        True
+            //   Chr(65)           > 5        True
+            //   CStr("11")        > 5        True   -- it converts
+            //
+            // The `Static` half of this was missing, so every declared-String
+            // intrinsic compared as an ordering against a number instead of
+            // raising. `fuzz/fuzz_vba.py` reached it through `StrReverse`,
+            // but `CStr` and `TypeName` were already wrong the same way.
+            let str_typed = str_kind.is_const() || str_kind == Operand::Static;
             // Against a *statically typed* numeric partner the whole string
             // must parse; against a numeric constant only a leading run need
             // parse, as `Val` takes it.
             let ord = if num_kind == Operand::Static {
                 match parse_vba_number(text) {
                     Ok(a) => cmp_f64(a, numeric(other)?),
-                    // Only a *constant* string has to parse. A runtime one
-                    // that does not falls back to the ordering below, exactly
-                    // as it does against a numeric constant:
+                    // Only a string the compiler has typed has to parse. A
+                    // runtime one that does not falls back to the ordering
+                    // below, exactly as it does against a numeric constant:
                     // `CLng(a) < ("abc" & a)` is True, not error 13. An
                     // out-of-range string is a different failure (error 6,
                     // from the conversion) and still propagates.
-                    Err(e) if str_kind.is_const() || e.number != 13 => return Err(e),
+                    Err(e) if str_typed || e.number != 13 => return Err(e),
                     Err(_) => Ordering::Greater,
                 }
             } else if num_kind.is_const() {
                 match numeric_prefix(text) {
                     Some(a) => cmp_f64(a, numeric(other)?),
-                    // No numeric prefix at all. A constant string is an
-                    // error; a runtime one falls back to the ordering below.
-                    None if str_kind.is_const() => return Err(VbaError::type_mismatch()),
+                    // No numeric prefix at all. A typed string is an error; a
+                    // runtime one falls back to the ordering below.
+                    None if str_typed => return Err(VbaError::type_mismatch()),
                     None => Ordering::Greater,
                 }
             } else if str_kind.is_const() {

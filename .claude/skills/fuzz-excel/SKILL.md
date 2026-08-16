@@ -54,9 +54,14 @@ to run the command themselves with a leading `!` so they can click through it.
 | `fuzz_vba.py` | VBA execution + the cells a macro wrote | `vba_exec_case_<N>/` — `source.bas`, `verdicts.txt` |
 | `fuzz_vba_parse.py` | does visi's parser accept what Excel compiles | `vba_parse_<label>/` |
 
-All of them exit non-zero when anything failed, take `--iterations`, `--seed`,
-`--excel-path`, `--driver` and `--output-dir`, and print the per-iteration seed
-next to its verdict — **that seed is the reproduction handle**, always record it.
+All of them exit non-zero when anything failed and take `--iterations`,
+`--seed`, `--excel-path`, `--driver` and `--output-dir`. **Always record the
+reproduction handle**, but note it differs by harness: `fuzz_excel.py`,
+`fuzz_chart.py` and `fuzz_pivot.py` print a per-iteration seed next to each
+verdict, while the two VBA fuzzers seed the whole *run* (`--seed`, random when
+omitted) and identify failures by case number. So a VBA failure is reproduced
+by re-running with that run's seed, and the artifact directory is the durable
+record — the case number alone means nothing against a fresh seed.
 
 ```bash
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20

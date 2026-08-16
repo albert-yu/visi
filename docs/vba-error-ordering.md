@@ -519,7 +519,7 @@ knows the string's type — the same static/runtime axis as §7, §11 and §13:
 
 | String operand | Failed conversion | Example |
 | --- | --- | --- |
-| runtime `Variant` | compares as text | `a = TypeName(32767) : a >= (Not True)` is `True` |
+| runtime `Variant` | ~~compares as text~~ **orders above the number** — see §23 | `a = TypeName(32767) : a >= (Not True)` is `True` |
 | declared `String` (`CStr`, `TypeName`) | **error 13** | `TypeName(32767) >= False` |
 | literal | **error 13** | `("abc" < True)` |
 | folded constant expression | numeric path, unchanged | `((Empty & "1") <= ("" <> Empty))` is `False` |
@@ -683,6 +683,81 @@ any `^` in a procedure ever produced an infinity and then poisoning unrelated
 
 Accounts for `s77/112`, and is the one case left on eight seeds.
 
+## 23. The failed-conversion fallback orders, and *declared* `String` is what makes a comparison strict
+
+Two corrections to §16, from one `fuzz_vba.py` mismatch. The visible symptom
+was a procedure raising **error 11** in visi and **13** in Excel with an
+identical data grid: Excel stopped at a comparison in the first loop, while
+visi took that comparison as `True`, entered the other branch of a later `If`,
+and divided by zero somewhere Excel never reached.
+
+Reduced: `StrReverse(False) > (Not False)` — error 13 in Excel, `True` in visi.
+
+**`StrReverse`, `Replace` and `Join` are declared `As String`.** They are the
+members of the string family with no `$` form, so the plain name *is* the
+typed one — where `LCase`, `UCase`, `Left` and `Trim` return `Variant` and it
+is `LCase$`/`Left$` that are typed. Measured, not read off a signature:
+
+| Expression | Excel |
+| --- | --- |
+| `StrReverse("abc") > True` | error 13 |
+| `Replace("abc", "a", "z") > True` | error 13 |
+| `Join(Array("a", "b")) > True` | error 13 |
+| `Trim("abc") > True` | `True` |
+| `LTrim("abc") > True` | `True` |
+
+**The fallback was never a text comparison either.** §16 corrected §11 from
+"text" to `CBool`, and left text standing as what happens when the conversion
+fails. It does not: the string simply **orders above the number**, which is
+the same runtime rule as everywhere else.
+
+Every case §16 had available agrees with both readings, because `"abc"`,
+`"Integer"` and `""` all sort on the same side of `"True"`/`"False"` as the
+ordering rule puts them. A string that does *not* separates them:
+
+| Expression | Excel | Text says | Ordering says |
+| --- | --- | --- | --- |
+| `a = "ABC" : a > True` | `True` | `False` | `True` |
+| `a = "ABC" : a < True` | `False` | `True` | `False` |
+| `a = "ABC" : a >= False` | `True` | `False` | `True` |
+| `Chr(65) > True` | `True` | `False` | `True` |
+| `Chr(65) > False` | `True` | `False` | `True` |
+| `Hex(255) > True` | `True` | `False` | `True` |
+| `Space(2) > True` | `True` | `False` | `True` |
+| `StrConv("abc", 1) > True` | `True` | `False` | `True` |
+
+**And the same "declared, not constant" split was missing on the numeric
+path**, where it had been wrong for `CStr` and `TypeName` since before
+`StrReverse` joined them — strictness keyed off the string being *constant*,
+so a declared-`String` call against a number ordered instead of raising:
+
+| Expression | Excel | visi was |
+| --- | --- | --- |
+| `CStr("abc") > 5` | error 13 | `True` |
+| `TypeName(1) > 5` | error 13 | `True` |
+| `CStr("abc") > CLng(1)` | error 13 | `True` |
+| `StrReverse("abc") > 5` | error 13 | `True` |
+| `Trim("abc") > 5` | `True` | `True` |
+| `CStr("11") > 5` | `True` — it converts | `True` |
+
+So both branches now turn on the same question — *does the compiler know this
+is a `String`?* — rather than one asking that and the other asking whether the
+value is constant.
+
+This is the third time this corner has been re-measured, and the third time
+the previous reading was one that every then-available case confirmed. §16's
+own closing paragraph predicted it: *two cases that cannot tell two rules
+apart look exactly like confirmation of whichever rule you already believe.*
+The discriminating case has to be constructed deliberately — here, a string
+whose first letter sorts below `T` and `F`.
+
+`value::compare_ctx` and `interp::STATICALLY_STRING`, covered by
+`an_unconvertible_runtime_string_sorts_above_a_static_boolean` and
+`statically_string_intrinsics_are_strict_against_a_boolean`.
+
+`Join` is listed in `STATICALLY_STRING` though it is unimplemented (the call
+raises 35 first), for the reason `IsArray` is listed in `STATICALLY_BOOLEAN`.
+
 ## What is left
 
 | Seed | Before | After |
@@ -737,6 +812,11 @@ Known and unfixed:
 - The *static string against a folded Boolean* cell of §16's table is
   matched but not explained. Every neighbouring cell converts; that one
   compares as text, on three measured rows and no visible principle.
+
+`Join`, `Format`, `StrConv`, `Left$` and `UCase$` are unimplemented (error 35),
+noticed while measuring §23 — the `$`-suffixed forms matter beyond
+completeness, since they are the typed-`String` half of the split §23 turns
+on. `STATICALLY_STRING` already lists `Join` for that reason.
 
 `IsArray` and `IsError` are also unimplemented (error 35); Excel treats both
 as statically Boolean in `Select Case`, and `STATICALLY_BOOLEAN` already lists
