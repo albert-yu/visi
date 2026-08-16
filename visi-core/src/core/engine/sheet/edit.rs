@@ -484,6 +484,92 @@ impl Sheet {
         }
     }
 
+    /// Excel's *Insert cells, shift down* over an inclusive column band.
+    ///
+    /// Unlike [`Sheet::insert_row`] this moves only `first_col..=last_col`,
+    /// leaving every other column where it is -- which is what
+    /// `ListRows.Add` actually does. Measured: adding a row to a table at
+    /// `A1:C4` moves `A8` down to `A9` but leaves `E2` alone.
+    ///
+    /// Every column keeps the same length: the sheet first grows by `count`
+    /// rows, so the rows pushed off the bottom of the band are the blank ones
+    /// just added rather than data. Everything moves through `DataColumn`'s
+    /// paired operations, so `src` / `data` / `compiled_src` / `styles` stay
+    /// aligned.
+    ///
+    /// Out-of-range bands and a zero `count` are no-ops. Formula references
+    /// are *not* rewritten here -- that is
+    /// `WorkbookManager::insert_cells_shift_down`'s job, since it spans
+    /// sheets.
+    pub fn insert_cells_shift_down(
+        &mut self,
+        row: usize,
+        first_col: usize,
+        last_col: usize,
+        count: usize,
+    ) {
+        let last_col = last_col.min(self.columns.len().saturating_sub(1));
+        if count == 0 || self.columns.is_empty() || first_col > last_col {
+            return;
+        }
+        // Grow every column together first, so the band has somewhere to
+        // push into and the sheet stays rectangular throughout.
+        for column in &mut self.columns {
+            for _ in 0..count {
+                column.push_row();
+            }
+        }
+        for column in &mut self.columns[first_col..=last_col] {
+            for _ in 0..count {
+                column.insert_row(row);
+                // Drop the blank row the growth added, so this column ends
+                // the same length as the untouched ones.
+                column.remove_row(column.len() - 1);
+            }
+        }
+        self.uncommitted_actions
+            .push(crate::core::SheetAction::InsertRow {
+                sheet_name: self.name.clone(),
+                index: row,
+            });
+        self.mark_all_dirty();
+    }
+
+    /// Excel's *Delete cells, shift up* over an inclusive column band; the
+    /// inverse of [`Sheet::insert_cells_shift_down`].
+    ///
+    /// The band's rows below `row` move up and blank rows appear at its
+    /// bottom, so the sheet keeps its shape and other columns are untouched.
+    pub fn delete_cells_shift_up(
+        &mut self,
+        row: usize,
+        first_col: usize,
+        last_col: usize,
+        count: usize,
+    ) {
+        let last_col = last_col.min(self.columns.len().saturating_sub(1));
+        if count == 0 || self.columns.is_empty() || first_col > last_col || row >= self.row_count()
+        {
+            return;
+        }
+        for column in &mut self.columns[first_col..=last_col] {
+            for _ in 0..count {
+                if row < column.len() {
+                    column.remove_row(row);
+                    // Keep the length: the band gains a blank row at the
+                    // bottom for each one removed from the middle.
+                    column.push_row();
+                }
+            }
+        }
+        self.uncommitted_actions
+            .push(crate::core::SheetAction::DeleteRow {
+                sheet_name: self.name.clone(),
+                index: row,
+            });
+        self.mark_all_dirty();
+    }
+
     /// Deletes a column, shifting the columns to its right left.
     ///
     /// Out-of-range indices are ignored; everything is marked dirty.

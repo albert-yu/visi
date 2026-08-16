@@ -496,6 +496,47 @@ impl WorkbookManager {
         self.evaluate()
     }
 
+    /// Excel's *Insert cells, shift down* over an inclusive column band,
+    /// with the workbook-wide formula rewrite that goes with it.
+    ///
+    /// This is what `ListRows.Add` is: only `first_col..=last_col` move, so a
+    /// formula beside the band stays put while one inside it shifts. See
+    /// `core::grid_edit`'s `band` field for the reference rules, which are
+    /// measured rather than assumed.
+    pub fn insert_cells_shift_down(
+        &mut self,
+        sheet_idx: usize,
+        row: usize,
+        first_col: usize,
+        last_col: usize,
+        count: usize,
+    ) -> crate::Result<()> {
+        let sheet = &self.sheets[sheet_idx];
+        let edit = GridEdit::band_rows(sheet.id, row, count, first_col, last_col, true);
+        self.apply_grid_edit(edit, &[], |wb| {
+            wb.sheets[sheet_idx].insert_cells_shift_down(row, first_col, last_col, count)
+        });
+        self.evaluate()
+    }
+
+    /// Excel's *Delete cells, shift up* over an inclusive column band; the
+    /// inverse of [`WorkbookManager::insert_cells_shift_down`].
+    pub fn delete_cells_shift_up(
+        &mut self,
+        sheet_idx: usize,
+        row: usize,
+        first_col: usize,
+        last_col: usize,
+        count: usize,
+    ) -> crate::Result<()> {
+        let sheet = &self.sheets[sheet_idx];
+        let edit = GridEdit::band_rows(sheet.id, row, count, first_col, last_col, false);
+        self.apply_grid_edit(edit, &[], |wb| {
+            wb.sheets[sheet_idx].delete_cells_shift_up(row, first_col, last_col, count)
+        });
+        self.evaluate()
+    }
+
     /// Runs a structural edit, keeping everything that holds a coordinate
     /// pointing at what it pointed at before.
     ///
@@ -563,7 +604,11 @@ impl WorkbookManager {
         row: usize,
         col: usize,
     ) -> Option<(usize, usize)> {
-        if self.sheets[sheet_idx].id != edit.sheet_id {
+        // A band edit moves only its own columns, so a formula *beside* the
+        // band stays where it is -- including one below the insert row.
+        // Getting this wrong writes the rewritten formula into the cell below
+        // the right one and leaves the original in place.
+        if self.sheets[sheet_idx].id != edit.sheet_id || !edit.covers_columns(col, col) {
             return Some((row, col));
         }
         let moved = |index: usize| {
@@ -588,6 +633,11 @@ impl WorkbookManager {
                 continue;
             }
             sheet.tables.retain_mut(|table| {
+                // A band edit moves a table only if the table's columns are
+                // wholly inside the band, exactly as for a reference.
+                if !edit.covers_columns(table.start_col, table.end_col) {
+                    return true;
+                }
                 match shift_rect(
                     edit,
                     table.start_row,
@@ -622,6 +672,7 @@ impl WorkbookManager {
                 end_col,
             } = &mut pivot.source
                 && *sheet_id == edit.sheet_id
+                && edit.covers_columns(*start_col, *end_col)
                 && let Some((r0, c0, r1, c1)) =
                     shift_rect(edit, *start_row, *start_col, *end_row, *end_col)
             {
@@ -631,7 +682,9 @@ impl WorkbookManager {
                 *end_col = c1;
             }
 
-            if pivot.dest_sheet_id == edit.sheet_id {
+            if pivot.dest_sheet_id == edit.sheet_id
+                && edit.covers_columns(pivot.dest_col, pivot.dest_col)
+            {
                 // The destination is a corner, not a span. A deleted corner
                 // clamps to the edit rather than vanishing: the grid is
                 // rewritten wholesale on the next refresh anyway, so what

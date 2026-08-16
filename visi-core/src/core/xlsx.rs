@@ -411,6 +411,7 @@ pub(crate) fn import_xlsx_data_raw(
             has_totals_row: parsed.has_totals_row,
             columns: parsed.columns,
             style_name: parsed.style_name,
+            has_insert_row: parsed.has_insert_row,
         });
     }
 
@@ -1619,6 +1620,7 @@ struct ParsedTablePart {
     /// case the table can't be placed and is skipped.
     bounds: Option<(usize, usize, usize, usize)>,
     style_name: Option<String>,
+    has_insert_row: bool,
 }
 
 /// Parses one `xl/tables/tableN.xml` part. Returns `None` if the XML has no
@@ -1638,6 +1640,7 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
     let mut totals_row_count = 0usize;
     let mut bounds = None;
     let mut style_name = None;
+    let mut has_insert_row = false;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1653,6 +1656,12 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
                         totals_row_count = get_attr(e, b"totalsRowCount")
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
+                        // `insertRow="1"` marks a table sitting on its
+                        // insert-row placeholder, i.e. with zero data rows.
+                        // The extent does not say so on its own -- see
+                        // `ExcelTable::has_insert_row`.
+                        has_insert_row = get_attr(e, b"insertRow")
+                            .is_some_and(|s| s == "1" || s.eq_ignore_ascii_case("true"));
                         bounds = get_attr(e, b"ref")
                             .and_then(|s| crate::core::pivot_xlsx::parse_a1_range(&s));
                         if let Some(s) = get_attr(e, b"styleName") {
@@ -1685,6 +1694,7 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
         has_totals_row: totals_row_count != 0,
         bounds,
         style_name,
+        has_insert_row,
     })
 }
 
@@ -2276,6 +2286,23 @@ mod tests {
         assert!(!table.has_totals_row);
         // Zero data rows: the data range is empty (start past end).
         assert!(table.data_start_row() > table.data_end_row());
+    }
+
+    #[test]
+    fn an_insert_row_attribute_is_read_off_the_table_part() {
+        // Excel writes `insertRow="1"` on a table whose only data row was
+        // deleted, keeping `ref` a row taller than the data -- so the extent
+        // alone cannot tell this from a table with one blank row. Sample
+        // trimmed from a file Excel itself saved; see `ExcelTable::has_insert_row`.
+        let with_flag = r#"<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Hollow" displayName="Hollow" ref="A1:C2" insertRow="1" totalsRowShown="0"><tableColumns count="3"><tableColumn id="1" name="Region"/><tableColumn id="2" name="Product"/><tableColumn id="3" name="Amount"/></tableColumns></table>"#;
+        let parsed = parse_table_part_xml(with_flag).expect("parses");
+        assert!(parsed.has_insert_row);
+        assert_eq!(parsed.bounds, Some((0, 0, 1, 2)));
+
+        // The ordinary case, where the same extent really does hold data.
+        let without = with_flag.replace(" insertRow=\"1\"", "");
+        let parsed = parse_table_part_xml(&without).expect("parses");
+        assert!(!parsed.has_insert_row);
     }
 
     #[test]

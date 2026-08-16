@@ -56,9 +56,9 @@
 
 use std::collections::HashMap;
 
-use crate::core::CellStyle;
 use crate::core::engine::{CellRef, ResultData, Sheet};
 use crate::core::grid_edit::{Axis, GridEdit, shift_span};
+use crate::core::{CellStyle, ExcelTable};
 
 use super::color;
 use crate::core::parser::{Expr as FExpr, col_idx_to_letters};
@@ -108,6 +108,23 @@ pub enum ObjRef {
     /// One worksheet, by its stable id. Identity *is* the id: Excel hands out
     /// a cached object per sheet, so `ws Is wb.Worksheets(1)` is True.
     Worksheet(u64),
+    /// The `ListObjects` collection of one worksheet, by sheet id.
+    ListObjects(u64),
+    /// One Excel Table, by its workbook-unique id.
+    ///
+    /// By id rather than by name because the id is what survives a rename --
+    /// and `ListObject.Name = "X"` is a supported write, so a macro can hold
+    /// a table across one.
+    ListObject(u64),
+    /// A table's `ListColumns` collection, by table id.
+    ListColumns(u64),
+    /// One table column, by table id and 0-based position within the table.
+    ListColumn(u64, u32),
+    /// A table's `ListRows` collection, by table id.
+    ListRows(u64),
+    /// One table data row, by table id and 0-based position within the data
+    /// body.
+    ListRow(u64, u32),
     /// `Range.Interior`, by the handle of the range it belongs to.
     ///
     /// Excel hands out a distinct object (`TypeName` is `"Interior"`,
@@ -198,6 +215,12 @@ impl ObjRef {
             ObjRef::Range(_) => "Range",
             ObjRef::Interior(_) => "Interior",
             ObjRef::Font(_) => "Font",
+            ObjRef::ListObjects(_) => "ListObjects",
+            ObjRef::ListObject(_) => "ListObject",
+            ObjRef::ListColumns(_) => "ListColumns",
+            ObjRef::ListColumn(..) => "ListColumn",
+            ObjRef::ListRows(_) => "ListRows",
+            ObjRef::ListRow(..) => "ListRow",
         }
     }
 
@@ -215,6 +238,14 @@ impl ObjRef {
             (ObjRef::Range(a), ObjRef::Range(b)) => a == b,
             (ObjRef::Interior(a), ObjRef::Interior(b)) => a == b,
             (ObjRef::Font(a), ObjRef::Font(b)) => a == b,
+            // A table is identified by its id, so it stays the same object
+            // across a rename -- the same reasoning as a worksheet.
+            (ObjRef::ListObjects(a), ObjRef::ListObjects(b))
+            | (ObjRef::ListObject(a), ObjRef::ListObject(b))
+            | (ObjRef::ListColumns(a), ObjRef::ListColumns(b))
+            | (ObjRef::ListRows(a), ObjRef::ListRows(b)) => a == b,
+            (ObjRef::ListColumn(a, i), ObjRef::ListColumn(b, j))
+            | (ObjRef::ListRow(a, i), ObjRef::ListRow(b, j)) => a == b && i == j,
             _ => false,
         }
     }
@@ -434,6 +465,12 @@ impl<'w> Host<'w> {
             ObjRef::Range(token) => self.range_member(*token, name, args),
             ObjRef::Interior(token) => self.interior_member(*token, name),
             ObjRef::Font(token) => self.font_member(*token, name),
+            ObjRef::ListObjects(sheet_id) => self.list_objects_member(*sheet_id, name, args),
+            ObjRef::ListObject(id) => self.list_object_member(*id, name, args),
+            ObjRef::ListColumns(id) => self.list_columns_member(*id, name, args),
+            ObjRef::ListColumn(id, idx) => self.list_column_member(*id, *idx, name),
+            ObjRef::ListRows(id) => self.list_rows_member(*id, name, args),
+            ObjRef::ListRow(id, idx) => self.list_row_member(*id, *idx, name),
         }
     }
 
@@ -446,6 +483,75 @@ impl<'w> Host<'w> {
         value: &Variant,
     ) -> VResult<()> {
         match (obj, name.to_ascii_lowercase().as_str()) {
+            // `ListObject.Name` is not a field write: names are unique
+            // workbook-wide and a rename cascades into formula *text*
+            // everywhere. Routing through `WorkbookManager` is what keeps
+            // `Sales[Amount]` pointing at the renamed table -- measured, the
+            // formula really does change. A name already in use is error
+            // 1004, also measured, and notably *not* the 9 that a failed
+            // lookup gives.
+            (ObjRef::ListObject(id), "name") => {
+                let (_, t) = self.table(*id)?;
+                let new_name = value.to_vba_string()?;
+                self.wb
+                    .rename_table(&t.name, &new_name)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                self.mutated = true;
+                self.stale = false;
+                Ok(())
+            }
+            (ObjRef::ListObject(id), "showtotals") => {
+                let (sheet_idx, t) = self.table(*id)?;
+                let on = value.to_bool()?;
+                if on == t.has_totals_row {
+                    return Ok(());
+                }
+                if on {
+                    // The totals row is a new row at the bottom of the
+                    // table's own columns, so it shifts what is under it.
+                    self.wb
+                        .insert_cells_shift_down(
+                            sheet_idx,
+                            t.end_row + 1,
+                            t.start_col,
+                            t.end_col,
+                            1,
+                        )
+                        .map_err(|e| app_defined(e.to_string()))?;
+                } else {
+                    self.wb
+                        .delete_cells_shift_up(sheet_idx, t.end_row, t.start_col, t.end_col, 1)
+                        .map_err(|e| app_defined(e.to_string()))?;
+                }
+                let (sheet_idx, _) = self.table(*id)?;
+                if let Some(table) = self.wb.sheets[sheet_idx]
+                    .tables
+                    .iter_mut()
+                    .find(|t| t.id == *id)
+                {
+                    table.has_totals_row = on;
+                    table.end_row = if on {
+                        t.end_row + 1
+                    } else {
+                        t.end_row.saturating_sub(1)
+                    };
+                }
+                self.mutated = true;
+                self.stale = false;
+                Ok(())
+            }
+            // Same cascade, for a column: renaming one rewrites every
+            // structured reference that names it.
+            (ObjRef::ListColumn(id, idx), "name") => {
+                let (_, t) = self.table(*id)?;
+                let new_name = value.to_vba_string()?;
+                self.wb
+                    .rename_table_column(&t.name, *idx as usize, &new_name)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                self.mutated = true;
+                self.stale = false;
+                Ok(())
+            }
             (ObjRef::Interior(_) | ObjRef::Font(_), _) => {
                 if !args.is_empty() {
                     return Err(unsupported(&format!(
@@ -510,6 +616,18 @@ impl<'w> Host<'w> {
             ObjRef::Range(token) => {
                 let r = self.range(*token, "Item")?;
                 self.range_index(r, args)
+            }
+            ObjRef::ListObjects(sheet_id) => {
+                let key = args.first().ok_or_else(VbaError::subscript)?;
+                Ok(Variant::Object(self.table_by_key(*sheet_id, key)?))
+            }
+            ObjRef::ListColumns(id) => {
+                let key = args.first().ok_or_else(VbaError::subscript)?;
+                Ok(Variant::Object(self.list_column_by_key(*id, key)?))
+            }
+            ObjRef::ListRows(id) => {
+                let key = args.first().ok_or_else(VbaError::subscript)?;
+                Ok(Variant::Object(self.list_row_by_index(*id, key)?))
             }
             _ => Err(unsupported(&format!("calling a {}", obj.type_name()))),
         }
@@ -663,6 +781,12 @@ impl<'w> Host<'w> {
             // `TypeName(ws.Rows(3))` is `"Range"` and its `.Address` is
             // `$3:$3`, which `format_address` already renders from a
             // full-width rectangle.
+            "listobjects" => {
+                if args.is_empty() {
+                    return Ok(Variant::Object(ObjRef::ListObjects(id)));
+                }
+                self.call_object(&ObjRef::ListObjects(id), args)
+            }
             "rows" => {
                 let (at, count) = band_args(args, MAX_ROWS, parse_row)?;
                 Ok(Variant::Object(self.new_range(id, at, 0, count, MAX_COLS)))
@@ -816,6 +940,13 @@ impl<'w> Host<'w> {
             // Measured: `ws.Range("B5").EntireRow.Address` is `$5:$5` and
             // `.EntireColumn` is `$B:$B`, so each widens one axis to the
             // whole grid and leaves the other alone.
+            // Measured: the table containing the range's top-left, or
+            // `Nothing` for a cell outside every table.
+            "listobject" => Ok(Variant::Object(
+                self.table_at(r.sheet_id, r.row, r.col)
+                    .map(ObjRef::ListObject)
+                    .unwrap_or(ObjRef::Nothing),
+            )),
             // A view onto the same cells, riding on this range's handle, so
             // it tracks a structural edit exactly as the range does.
             "interior" => Ok(Variant::Object(ObjRef::Interior(token))),
@@ -849,6 +980,312 @@ impl<'w> Host<'w> {
             // `Range.Interior` reads like the refusal it is.
             _ => Err(unsupported(&format!("Range.{name}"))),
         }
+    }
+
+    // -- Excel Tables (`ListObjects`) --------------------------------------
+
+    /// The sheet index and a snapshot of the table with this id.
+    ///
+    /// Returns a copy for the same reason every host object is a value: the
+    /// caller needs the workbook mutably a moment later. Tables are small
+    /// (an extent plus its column names), and this is not a hot path.
+    ///
+    /// A table that no longer exists reports error 9, the same number every
+    /// other "no such table" case does -- measured for the lookup cases.
+    fn table(&self, id: u64) -> VResult<(usize, ExcelTable)> {
+        self.wb
+            .sheets
+            .iter()
+            .enumerate()
+            .find_map(|(i, sheet)| {
+                sheet
+                    .tables
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| (i, t.clone()))
+            })
+            .ok_or_else(VbaError::subscript)
+    }
+
+    /// The id of the table covering a cell, or `None` if it is in no table.
+    fn table_at(&self, sheet_id: u64, row: u32, col: u32) -> Option<u64> {
+        let (row, col) = (row as usize, col as usize);
+        self.wb
+            .sheets
+            .iter()
+            .find(|s| s.id == sheet_id)?
+            .tables
+            .iter()
+            .find(|t| {
+                (t.start_row..=t.end_row).contains(&row) && (t.start_col..=t.end_col).contains(&col)
+            })
+            .map(|t| t.id)
+    }
+
+    /// `ListObjects(x)`, where `x` is a 1-based index or a name.
+    ///
+    /// Measured: a missing name and an out-of-range index are both error 9,
+    /// and the name match is case-insensitive.
+    fn table_by_key(&mut self, sheet_id: u64, key: &Variant) -> VResult<ObjRef> {
+        let sheet = self.sheet(sheet_id)?;
+        let table = match key {
+            Variant::Str(name) => sheet
+                .tables
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(name)),
+            other => {
+                let n = other.to_f64()?;
+                let idx = crate::core::vba::value::bankers_round(n) as i64;
+                if idx < 1 {
+                    return Err(VbaError::subscript());
+                }
+                sheet.tables.get(idx as usize - 1)
+            }
+        };
+        table
+            .map(|t| ObjRef::ListObject(t.id))
+            .ok_or_else(VbaError::subscript)
+    }
+
+    fn list_objects_member(
+        &mut self,
+        sheet_id: u64,
+        name: &str,
+        args: &[Variant],
+    ) -> VResult<Variant> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Ok(Variant::Long(self.sheet(sheet_id)?.tables.len() as i32)),
+            "item" => self.call_object(&ObjRef::ListObjects(sheet_id), args),
+            _ => Err(unsupported(&format!("ListObjects.{name}"))),
+        }
+    }
+
+    /// A `Range` over a table sub-rectangle, or `Nothing` when the part does
+    /// not exist -- which is measured behaviour for all three of
+    /// `HeaderRowRange` on a headerless table, `TotalsRowRange` without a
+    /// totals row, and `DataBodyRange` on a table with zero data rows.
+    fn table_part(&mut self, t: &ExcelTable, rows: Option<(usize, usize)>) -> Variant {
+        match rows {
+            Some((first, last)) if first <= last => Variant::Object(self.new_range(
+                t.sheet_id,
+                first as u32,
+                t.start_col as u32,
+                (last - first + 1) as u32,
+                t.col_count() as u32,
+            )),
+            _ => Variant::Object(ObjRef::Nothing),
+        }
+    }
+
+    fn list_object_member(&mut self, id: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
+        let (_, t) = self.table(id)?;
+        match name.to_ascii_lowercase().as_str() {
+            "name" => Ok(Variant::Str(t.name.clone())),
+            "range" => Ok(self.table_part(&t, Some((t.start_row, t.end_row)))),
+            "headerrowrange" => {
+                let rows = t.header_row().map(|r| (r, r));
+                Ok(self.table_part(&t, rows))
+            }
+            // Measured: `Nothing` when the table has no data rows, which is
+            // *not* the same as an empty range -- see `ExcelTable::has_insert_row`.
+            "databodyrange" => {
+                let rows = (t.data_row_count() > 0).then(|| (t.data_start_row(), t.data_end_row()));
+                Ok(self.table_part(&t, rows))
+            }
+            "totalsrowrange" => {
+                let rows = t.totals_row().map(|r| (r, r));
+                Ok(self.table_part(&t, rows))
+            }
+            "showtotals" => Ok(Variant::Boolean(t.has_totals_row)),
+            "showheaders" => Ok(Variant::Boolean(t.has_header_row)),
+            "listcolumns" => {
+                if args.is_empty() {
+                    return Ok(Variant::Object(ObjRef::ListColumns(id)));
+                }
+                self.call_object(&ObjRef::ListColumns(id), args)
+            }
+            "listrows" => {
+                if args.is_empty() {
+                    return Ok(Variant::Object(ObjRef::ListRows(id)));
+                }
+                self.call_object(&ObjRef::ListRows(id), args)
+            }
+            _ => Err(unsupported(&format!("ListObject.{name}"))),
+        }
+    }
+
+    fn list_columns_member(&mut self, id: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Ok(Variant::Long(self.table(id)?.1.col_count() as i32)),
+            "item" => self.call_object(&ObjRef::ListColumns(id), args),
+            _ => Err(unsupported(&format!("ListColumns.{name}"))),
+        }
+    }
+
+    fn list_column_by_key(&mut self, id: u64, key: &Variant) -> VResult<ObjRef> {
+        let (_, t) = self.table(id)?;
+        let idx = match key {
+            Variant::Str(name) => t.local_column_index(name).ok_or_else(VbaError::subscript)?,
+            other => {
+                let n = crate::core::vba::value::bankers_round(other.to_f64()?) as i64;
+                if n < 1 || n as usize > t.col_count() {
+                    return Err(VbaError::subscript());
+                }
+                n as usize - 1
+            }
+        };
+        Ok(ObjRef::ListColumn(id, idx as u32))
+    }
+
+    fn list_column_member(&mut self, id: u64, idx: u32, name: &str) -> VResult<Variant> {
+        let (_, t) = self.table(id)?;
+        let idx = idx as usize;
+        if idx >= t.col_count() {
+            return Err(VbaError::subscript());
+        }
+        let col = (t.start_col + idx) as u32;
+        match name.to_ascii_lowercase().as_str() {
+            "name" => Ok(Variant::Str(
+                t.columns.get(idx).cloned().unwrap_or_default(),
+            )),
+            "index" => Ok(Variant::Long(idx as i32 + 1)),
+            // Measured: `.Range` on a column includes the header row.
+            "range" => Ok(Variant::Object(self.new_range(
+                t.sheet_id,
+                t.start_row as u32,
+                col,
+                t.row_count() as u32,
+                1,
+            ))),
+            "databodyrange" => {
+                if t.data_row_count() == 0 {
+                    return Ok(Variant::Object(ObjRef::Nothing));
+                }
+                Ok(Variant::Object(self.new_range(
+                    t.sheet_id,
+                    t.data_start_row() as u32,
+                    col,
+                    t.data_row_count() as u32,
+                    1,
+                )))
+            }
+            _ => Err(unsupported(&format!("ListColumn.{name}"))),
+        }
+    }
+
+    fn list_rows_member(&mut self, id: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Ok(Variant::Long(self.table(id)?.1.data_row_count() as i32)),
+            "item" => self.call_object(&ObjRef::ListRows(id), args),
+            "add" => self.list_rows_add(id, args),
+            _ => Err(unsupported(&format!("ListRows.{name}"))),
+        }
+    }
+
+    fn list_row_by_index(&mut self, id: u64, key: &Variant) -> VResult<ObjRef> {
+        let (_, t) = self.table(id)?;
+        let n = crate::core::vba::value::bankers_round(key.to_f64()?) as i64;
+        if n < 1 || n as usize > t.data_row_count() {
+            return Err(VbaError::subscript());
+        }
+        Ok(ObjRef::ListRow(id, n as u32 - 1))
+    }
+
+    fn list_row_member(&mut self, id: u64, idx: u32, name: &str) -> VResult<Variant> {
+        let (sheet_idx, t) = self.table(id)?;
+        if idx as usize >= t.data_row_count() {
+            return Err(VbaError::subscript());
+        }
+        let row = t.data_start_row() + idx as usize;
+        match name.to_ascii_lowercase().as_str() {
+            "index" => Ok(Variant::Long(idx as i32 + 1)),
+            "range" => Ok(Variant::Object(self.new_range(
+                t.sheet_id,
+                row as u32,
+                t.start_col as u32,
+                1,
+                t.col_count() as u32,
+            ))),
+            "delete" => {
+                // Deleting a table row shifts only the table's own columns
+                // up, exactly as adding one shifts them down.
+                self.wb
+                    .delete_cells_shift_up(sheet_idx, row, t.start_col, t.end_col, 1)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                self.resize_table_rows(id, t.end_row, -1)?;
+                self.mutated = true;
+                self.stale = false;
+                Ok(Variant::Empty)
+            }
+            _ => Err(unsupported(&format!("ListRow.{name}"))),
+        }
+    }
+
+    /// `ListRows.Add([Position])`, which appends by default.
+    ///
+    /// Measured: the new row is blank, the table grows by one row, and the
+    /// returned object is a `ListRow` pointing at it. A table sitting on its
+    /// insert-row placeholder already has the row reserved, so that case only
+    /// clears the flag -- which is why `.Add` on an emptied table leaves the
+    /// extent at `A1:C2` rather than growing it to `A1:C3`.
+    fn list_rows_add(&mut self, id: u64, args: &[Variant]) -> VResult<Variant> {
+        let (sheet_idx, t) = self.table(id)?;
+        let position = match args.first().filter(|v| !v.is_empty()) {
+            Some(v) => {
+                let n = crate::core::vba::value::bankers_round(v.to_f64()?) as i64;
+                if n < 1 || n as usize > t.data_row_count() + 1 {
+                    return Err(VbaError::subscript());
+                }
+                n as usize - 1
+            }
+            None => t.data_row_count(),
+        };
+
+        if t.has_insert_row {
+            // The placeholder row is already there and already blank.
+            if let Some(table) = self.wb.sheets[sheet_idx]
+                .tables
+                .iter_mut()
+                .find(|t| t.id == id)
+            {
+                table.has_insert_row = false;
+            }
+        } else {
+            let row = t.data_start_row() + position;
+            self.wb
+                .insert_cells_shift_down(sheet_idx, row, t.start_col, t.end_col, 1)
+                .map_err(|e| app_defined(e.to_string()))?;
+            self.resize_table_rows(id, t.end_row, 1)?;
+        }
+        self.mutated = true;
+        self.stale = false;
+        Ok(Variant::Object(ObjRef::ListRow(id, position as u32)))
+    }
+
+    /// Sets a table's bottom edge to `old_end_row + delta`, or marks it as
+    /// sitting on its insert row when that would leave it with no data.
+    ///
+    /// Assigns absolutely rather than adding, because
+    /// `WorkbookManager::apply_grid_edit` may already have grown the extent:
+    /// an insert *inside* the table moves its bottom edge, an insert just
+    /// past it does not, and the caller should not have to know which.
+    fn resize_table_rows(&mut self, id: u64, old_end_row: usize, delta: isize) -> VResult<()> {
+        let (sheet_idx, _) = self.table(id)?;
+        let Some(table) = self.wb.sheets[sheet_idx]
+            .tables
+            .iter_mut()
+            .find(|t| t.id == id)
+        else {
+            return Err(VbaError::subscript());
+        };
+        table.end_row = old_end_row.saturating_add_signed(delta);
+        // Removing the last data row leaves the extent alone and raises the
+        // insert-row flag, which is what Excel writes to the file.
+        if delta < 0 && table.data_row_count() == 0 && !table.has_insert_row {
+            table.end_row = old_end_row;
+            table.has_insert_row = true;
+        }
+        Ok(())
     }
 
     /// A style attribute read over a range, or `Null` where the cells
@@ -1129,6 +1566,7 @@ impl<'w> Host<'w> {
             at: at as usize,
             count: count as usize,
             insert,
+            band: None,
         });
 
         self.mutated = true;
@@ -2383,9 +2821,9 @@ mod tests {
         // `NumberFormat` have left this list because they are now
         // implemented, which is the only reason a member may leave it.
         for case in [
-            "ws.ListObjects(1).Name",
             "wb.PivotTables(1).Name",
             "ws.Range(\"A1:B2\").Sort",
+            "ws.Range(\"A1:B2\").Find(\"x\")",
             "ws.Range(\"A1\").Interior.Pattern",
             "ws.Range(\"A1\").Font.Strikethrough",
             "ws.Range(\"A1\").Borders",
@@ -2949,6 +3387,361 @@ mod tests {
                 r#"Set r = ws.Range("A5") :: r.Interior.Color = RGB(255, 0, 0)\nws.Rows(1).Insert :: r.Address & "/" & CStr(r.Interior.Color)"#
             ),
             "String|$A$6/255"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Excel Tables (`ListObjects`).
+    //
+    // `table_fixture` is the grid `fuzz/vba_table_probe.py` builds, so every
+    // expectation is what Excel for Mac 16.112 returned for the same
+    // expression. `Sales` is A1:C4 with a header row and no totals row, and
+    // `E1` holds `=SUM(Sales[Amount])` so a rename's cascade is observable.
+    // ---------------------------------------------------------------
+
+    fn table_fixture() -> WorkbookManager {
+        let mut wb = WorkbookManager {
+            sheets: vec![Sheet::new(SheetInit {
+                name: Some("Sheet1".to_string()),
+                rows: 10,
+                cols: 6,
+                ..Default::default()
+            })],
+            charts: Vec::new(),
+            pivot_tables: Vec::new(),
+            vba_project: None,
+        };
+        let rows: [[&str; 3]; 4] = [
+            ["Region", "Product", "Amount"],
+            ["East", "Widget", "10"],
+            ["West", "Gadget", "20"],
+            ["North", "Widget", "30"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                wb.sheets[0].set_cell_src(r, c, v.to_string());
+            }
+        }
+        // A second table, so the duplicate-name case has a real collision.
+        wb.sheets[0].set_cell_src(7, 0, "Key".to_string());
+        wb.sheets[0].set_cell_src(7, 1, "Val".to_string());
+        wb.sheets[0].set_cell_src(8, 0, "k".to_string());
+        wb.sheets[0].set_cell_src(8, 1, "1".to_string());
+        wb.sheets[0].set_cell_src(0, 4, "=SUM(Sales[Amount])".to_string());
+        wb.evaluate().unwrap();
+        wb.add_table(None, "Sales", 0, 0, 3, 2, true, false)
+            .unwrap();
+        wb.add_table(None, "Other", 7, 0, 8, 1, true, false)
+            .unwrap();
+        wb.evaluate().unwrap();
+        wb
+    }
+
+    fn table_probe(setup_and_expr: &str) -> String {
+        let (setup, expr) = match setup_and_expr.rsplit_once("::") {
+            Some((s, e)) => (s.replace("\\n", "\n    "), e.to_string()),
+            None => (String::new(), setup_and_expr.to_string()),
+        };
+        let source = format!(
+            "Attribute VB_Name = \"H\"\n\
+             Function Gen()\n    \
+             Dim ws As Worksheet, wb As Workbook\n    \
+             Set wb = ThisWorkbook\n    \
+             Set ws = wb.Worksheets(\"Sheet1\")\n    \
+             Dim lo, v, s\n    \
+             {setup}\n    \
+             Gen = {expr}\nEnd Function\n"
+        );
+        let mut wb = table_fixture();
+        wb.ensure_vba_project().unwrap();
+        wb.add_vba_module(
+            "H".to_string(),
+            crate::core::VbaModuleKind::Standard,
+            source,
+            None,
+        )
+        .unwrap();
+        match wb.run_macro(Some("H"), "Gen", &[]) {
+            Ok(out) => format!("{}|{}", out.type_name, out.value.unwrap_or_default()),
+            Err(crate::Error::VbaRuntime { number, .. }) => format!("ERR|{number}"),
+            Err(e) => format!("FAIL|{e}"),
+        }
+    }
+
+    #[test]
+    fn table_objects_report_the_type_names_excel_reports() {
+        assert_eq!(
+            table_probe("TypeName(ws.ListObjects)"),
+            "String|ListObjects"
+        );
+        assert_eq!(
+            table_probe("TypeName(ws.ListObjects(1))"),
+            "String|ListObject"
+        );
+        assert_eq!(
+            table_probe(r#"TypeName(ws.ListObjects("Sales"))"#),
+            "String|ListObject"
+        );
+        assert_eq!(
+            table_probe("TypeName(ws.ListObjects(1).ListColumns)"),
+            "String|ListColumns"
+        );
+        assert_eq!(
+            table_probe("TypeName(ws.ListObjects(1).ListRows)"),
+            "String|ListRows"
+        );
+        assert_eq!(table_probe("CStr(ws.ListObjects.Count)"), "String|2");
+        assert_eq!(table_probe("ws.ListObjects(1).Name"), "String|Sales");
+    }
+
+    #[test]
+    fn a_tables_ranges_are_the_ones_excel_reports() {
+        assert_eq!(
+            table_probe("ws.ListObjects(1).Range.Address"),
+            "String|$A$1:$C$4"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).HeaderRowRange.Address"),
+            "String|$A$1:$C$1"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).DataBodyRange.Address"),
+            "String|$A$2:$C$4"
+        );
+        // No totals row: `Nothing`, not an empty range and not an error.
+        assert_eq!(
+            table_probe("TypeName(ws.ListObjects(1).TotalsRowRange)"),
+            "String|Nothing"
+        );
+        assert_eq!(
+            table_probe("CStr(ws.ListObjects(1).ShowTotals)"),
+            "String|False"
+        );
+        assert_eq!(
+            table_probe("CStr(ws.ListObjects(1).ShowHeaders)"),
+            "String|True"
+        );
+    }
+
+    #[test]
+    fn table_columns_and_rows_address_what_excel_addresses() {
+        assert_eq!(
+            table_probe("CStr(ws.ListObjects(1).ListColumns.Count)"),
+            "String|3"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListColumns(1).Name"),
+            "String|Region"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListColumns(3).Name"),
+            "String|Amount"
+        );
+        // A column's `.Range` includes the header row; its `.DataBodyRange`
+        // does not.
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListColumns(3).Range.Address"),
+            "String|$C$1:$C$4"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListColumns(3).DataBodyRange.Address"),
+            "String|$C$2:$C$4"
+        );
+        assert_eq!(
+            table_probe(r#"ws.ListObjects(1).ListColumns("Amount").Range.Address"#),
+            "String|$C$1:$C$4"
+        );
+        assert_eq!(
+            table_probe("CStr(ws.ListObjects(1).ListColumns(3).Index)"),
+            "String|3"
+        );
+        // `ListRows` counts data rows only.
+        assert_eq!(
+            table_probe("CStr(ws.ListObjects(1).ListRows.Count)"),
+            "String|3"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListRows(1).Range.Address"),
+            "String|$A$2:$C$2"
+        );
+    }
+
+    #[test]
+    fn a_range_knows_which_table_it_is_in() {
+        assert_eq!(
+            table_probe(r#"TypeName(ws.Range("A2").ListObject)"#),
+            "String|ListObject"
+        );
+        assert_eq!(
+            table_probe(r#"ws.Range("A2").ListObject.Name"#),
+            "String|Sales"
+        );
+        // Outside every table: `Nothing`.
+        assert_eq!(
+            table_probe(r#"TypeName(ws.Range("G1").ListObject)"#),
+            "String|Nothing"
+        );
+    }
+
+    #[test]
+    fn a_missing_table_is_error_9_not_1004() {
+        // Measured, and worth pinning: every *lookup* failure is 9, while a
+        // duplicate name on assignment is 1004. The two are easy to conflate.
+        assert_eq!(table_probe(r#"ws.ListObjects("nope").Name"#), "ERR|9");
+        assert_eq!(table_probe("ws.ListObjects(5).Name"), "ERR|9");
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListColumns(9).Name"),
+            "ERR|9"
+        );
+        assert_eq!(
+            table_probe("ws.ListObjects(1).ListRows(9).Range.Address"),
+            "ERR|9"
+        );
+    }
+
+    #[test]
+    fn renaming_a_table_cascades_into_formula_text() {
+        // The reason `.Name` routes through `WorkbookManager` rather than
+        // writing the field: measured, Excel rewrites the formula too.
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects(1).Name = "Revenue" :: ws.ListObjects(1).Name & "|" & ws.Range("E1").Formula"#
+            ),
+            "String|Revenue|=SUM(Revenue[Amount])"
+        );
+        // A name already taken workbook-wide is 1004.
+        assert_eq!(
+            table_probe(r#"ws.ListObjects(1).Name = "Other" :: "unreachable""#),
+            "ERR|1004"
+        );
+        // Renaming a column cascades the same way.
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects(1).ListColumns(3).Name = "Total" :: ws.ListObjects(1).ListColumns(3).Name & "|" & ws.Range("E1").Formula"#
+            ),
+            "String|Total|=SUM(Sales[Total])"
+        );
+    }
+
+    #[test]
+    fn list_rows_add_grows_the_table_and_returns_the_new_row() {
+        assert_eq!(
+            table_probe(
+                "Set lo = ws.ListObjects(1)\\nlo.ListRows.Add :: lo.Range.Address & \"|\" & CStr(lo.ListRows.Count)"
+            ),
+            "String|$A$1:$C$5|4"
+        );
+        assert_eq!(
+            table_probe("Set lo = ws.ListObjects(1)\\nSet v = lo.ListRows.Add :: TypeName(v)"),
+            "String|ListRow"
+        );
+        assert_eq!(
+            table_probe("Set v = ws.ListObjects(1).ListRows.Add :: v.Range.Address"),
+            "String|$A$5:$C$5"
+        );
+        // Adding at a position pushes the existing rows down, and the new row
+        // is blank.
+        assert_eq!(
+            table_probe(
+                r#"Set v = ws.ListObjects(1).ListRows.Add(1) :: v.Range.Address & "/" & CStr(ws.Range("A2").Value)"#
+            ),
+            "String|$A$2:$C$2/"
+        );
+    }
+
+    #[test]
+    fn adding_a_table_row_shifts_only_the_tables_own_columns() {
+        // The measurement that forced the band operation to exist: content
+        // below the table in its columns moves, content beside it does not.
+        assert_eq!(
+            table_probe(
+                "ws.Range(\"A8\").Value = \"BELOW\"\\n\
+                 ws.Range(\"E2\").Value = \"BESIDE\"\\n\
+                 ws.ListObjects(1).ListRows.Add :: \
+                 CStr(ws.Range(\"A9\").Value) & \"/\" & CStr(ws.Range(\"E2\").Value)"
+            ),
+            "String|BELOW/BESIDE"
+        );
+    }
+
+    #[test]
+    fn a_table_with_no_data_rows_has_no_data_body_range() {
+        // Issue #11's shape, and #58's explicit question. Measured: deleting
+        // the only data row leaves the extent alone -- the table keeps its
+        // insert-row placeholder -- while `DataBodyRange` becomes `Nothing`
+        // and `ListRows.Count` becomes 0.
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: TypeName(ws.ListObjects("Other").DataBodyRange)"#
+            ),
+            "String|Nothing"
+        );
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: CStr(ws.ListObjects("Other").DataBodyRange Is Nothing)"#
+            ),
+            "String|True"
+        );
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: CStr(ws.ListObjects("Other").ListRows.Count)"#
+            ),
+            "String|0"
+        );
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: ws.ListObjects("Other").Range.Address"#
+            ),
+            "String|$A$8:$B$9"
+        );
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: ws.ListObjects("Other").HeaderRowRange.Address"#
+            ),
+            "String|$A$8:$B$8"
+        );
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: CStr(ws.ListObjects("Other").ListColumns.Count)"#
+            ),
+            "String|2"
+        );
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects("Other").ListRows(1).Delete :: TypeName(ws.ListObjects("Other").ListColumns(1).DataBodyRange)"#
+            ),
+            "String|Nothing"
+        );
+        // Adding a row back reuses the reserved row rather than growing the
+        // extent -- measured, `$A$8:$B$9` again, not `$A$8:$B$10`.
+        assert_eq!(
+            table_probe(
+                "ws.ListObjects(\"Other\").ListRows(1).Delete\\n\
+                 Set lo = ws.ListObjects(\"Other\")\\n\
+                 lo.ListRows.Add :: lo.Range.Address & \"|\" & lo.DataBodyRange.Address"
+            ),
+            "String|$A$8:$B$9|$A$9:$B$9"
+        );
+    }
+
+    #[test]
+    fn show_totals_adds_a_row_to_the_table() {
+        assert_eq!(
+            table_probe(
+                "Set lo = ws.ListObjects(1)\\nlo.ShowTotals = True :: \
+                 lo.Range.Address & \"|\" & lo.TotalsRowRange.Address"
+            ),
+            "String|$A$1:$C$5|$A$5:$C$5"
+        );
+    }
+
+    #[test]
+    fn writing_through_a_table_range_reaches_the_cells() {
+        assert_eq!(
+            table_probe(
+                r#"ws.ListObjects(1).DataBodyRange.Cells(1, 3).Value = 999 :: CStr(ws.Range("C2").Value)"#
+            ),
+            "String|999"
         );
     }
 }
