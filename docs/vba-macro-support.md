@@ -350,10 +350,12 @@ same way.
 
 **Where it stands.** On eight seeds never used while developing,
 **1599 of 1600** generated procedures agree with Excel on value, subtype,
-error number *and* every cell in the data grid. The one remaining is Excel
-raising an overflow that depends on the *statement kind* rather than on any
-value, and is deliberately not matched; the per-seed numbers and the full
-accounting are in [`vba-error-ordering.md`](vba-error-ordering.md) §16–§22.
+error number *and* every cell in the data grid, and a later round of seventeen
+more unseen seeds stands at **3394 of 3400**. Every case left standing is
+attributed: Excel misreporting a fault as an overflow once a `^` has produced
+an infinity, two error-ordering cases, and one gap in the intrinsic-typing
+lists — each left for its own round of measurement. The per-seed numbers and the full accounting are in
+[`vba-error-ordering.md`](vba-error-ordering.md) §16–§26.
 
 The fuzzer earned its keep several times over, and the findings split into
 three kinds worth distinguishing:
@@ -371,7 +373,9 @@ three kinds worth distinguishing:
 
 The process lesson is in §16's own history: the corrected rule was itself
 wrong on the first attempt, in the same way, and only a seed added afterwards
-caught it. Each of the eight seeds kept finding something until the last.
+caught it. Each of the eight seeds kept finding something until the last —
+and a fourth round later corrected the same corner twice more (§24, §27),
+having declared it settled three times.
 
 ### Security posture
 

@@ -208,9 +208,21 @@ impl VarArray {
 ///
 /// The distinction is real and measured: `32767 + 1` written with two
 /// literals is error 6, but the same addition with a variable on either side
-/// promotes to `Long`. VBA compiles a constant expression with the literals'
-/// own fixed widths and evaluates a Variant expression through a path that
-/// widens.
+/// promotes to `Long`. VBA compiles a **statically typed** expression with
+/// its operands' own fixed widths and evaluates a `Variant` expression
+/// through a path that widens.
+///
+/// It is static typing that decides this and not constness, which §28
+/// measured in both directions -- see `interp::is_statically_typed`:
+///
+/// ```text
+/// CInt(32767) + 1        error 6    typed, not constant
+/// Sgn(1) + 32767         error 6    likewise
+/// CInt(32767) + CInt(1)  error 6    likewise
+/// (Empty + 32767) + 1    32768      constant, not typed -- `Empty` is Variant
+/// a = 32767 : a + 1      32768      a variable, as before
+/// Len("abcde") + 32763   32768      typed, but `Len` is Long: no overflow
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithMode {
     /// Both operands are compile-time constants: overflow is an error.
@@ -1305,75 +1317,38 @@ pub fn compare_ctx(
             } else {
                 (rhs_kind, lhs_kind)
             };
-            // A Boolean partner the compiler knows statically -- a literal, a
-            // folded constant, or a call like `CBool`/`IsNull` -- does not go
-            // down the numeric path at all.
+            // A String against a Boolean asks **two independent questions,
+            // one per side**, and neither is about the values:
             //
-            // A *runtime* string against one is converted with `CBool` and
-            // compared as Booleans, falling back to a text comparison only if
-            // it will not convert. That single rule replaced an earlier
-            // "compares as text" reading, which fit the two cases it was
-            // derived from (`a = "011"` makes `a < False` True either way)
-            // and was wrong about everything else -- `a = "-1"` makes
-            // `a = True` **True**, which no text comparison produces. The
-            // fuzzer found it as a mismatch on a generated case; the full
-            // measured table is at the branch below.
+            //   is the Boolean statically `Boolean`?  -> convert with `CBool`
+            //   is the String  statically `String`?   -> if not, be lenient
             //
-            // A *folded constant expression* is the one string kind that
-            // stays on the numeric path: `((Empty & "1") <= ("" <> Empty))`
-            // is False, which the conversion gets wrong. A bare literal
-            // converts like everything else, which is what finally accounted
-            // for `("011" < False)` being True in Excel -- a row this file
-            // carried as an unexplained divergence through Phase 1, and which
-            // `fuzz/fuzz_vba.py` re-surfaced as `(False > "12")`.
+            // §16 of docs/vba-error-ordering.md had this as a 4x4 table with
+            // one cell it could not explain. The cell was an artifact: it
+            // read `(3# >= Empty)` as a folded constant, when what actually
+            // matters is that `Empty` is a `Variant`, so the comparison is
+            // not statically `Boolean` at all. See `interp::is_statically_typed`.
+            //
+            // The two questions, measured (§24):
+            //
+            //   "0" >= (3# >= CDbl(0))   True    static Boolean -> convert
+            //   "0" >= ("1" >= -7)       True    likewise
+            //   "0" >= IsEmpty(Empty)    True    a declared-Boolean call
+            //   "0" >= (3# >= Empty)     False   a Variant operand -> text
+            //   b = 1 : "0" >= (3# >= b) False   likewise
+            //
+            // and on the String side, against a Boolean that is *not* static:
+            //
+            //   "13"          <= ("" <> Empty)   True    text: "13" < "False"
+            //   ("1" + "3")   <= ("" <> Empty)   True    a fold of literals is
+            //   CStr(13)      <= ("" <> Empty)   True    a declared String is
+            //   a = "13" : a  <= ("" <> Empty)   False   a Variant is not
+            //   (Empty & "13")<= ("" <> Empty)   False   nor is a fold over Empty
             if matches!(other, Variant::Boolean(_)) {
-                // A String against a Boolean the compiler knows statically.
-                // Two axes decide what happens, and both were measured -- the
-                // combination is not guessable and an earlier reading of it
-                // (§11 of docs/vba-error-ordering.md, "compares as text")
-                // stood for a whole phase on two cases that could not tell
-                // the readings apart.
-                //
-                // The measured table, by how well the compiler knows each
-                // side. `cv` is the `CBool` conversion, `txt` a text
-                // comparison, `num` the numeric rules further below:
-                //
-                //            | Bool literal | Bool static | Bool folded |
-                //   ---------|--------------|-------------|-------------|
-                //   str rt   |      cv      |     cv      |     cv      |
-                //   str lit  |      cv      |     cv      |     cv      |
-                //   str stat |      cv      |     cv      |    *txt*    |
-                //   str fold |     num      |     num     |     num     |
-                //
-                // A *folded* string takes none of this and falls through,
-                // which is the only way `((Empty & "1") <= ("" <> Empty))`
-                // comes out False. Note `(Not True)` counts as a **literal**
-                // and `(3# >= Empty)` as folded -- see `operand_kind`, which
-                // follows a unary chain down to a literal but not a
-                // comparison.
-                let stringy = matches!(
-                    str_kind,
-                    Operand::Runtime | Operand::Static | Operand::Literal
-                );
-                // The one cell that does *not* convert. Three measured rows
-                // put it there and no principle explains it, so it is written
-                // as the exception it is rather than dressed up as a rule:
-                //
-                //   CStr(0)       >= (3# >= Empty)   False  (conversion says True)
-                //   TypeName(0)   >= (3# >= Empty)   False  (conversion says error 13)
-                //   (3# >= Empty) >= TypeName(0)     True
-                //
-                // A *literal* or *runtime* string against the same folded
-                // Boolean does convert -- `("000" < ("1" >= -7))` and
-                // `a = "000" : a < ("1" >= -7)` are both False, which only
-                // `CBool` gives.
-                let static_against_folded =
-                    str_kind == Operand::Static && num_kind == Operand::ConstExpr;
-                // A Boolean held in a *variable* is not statically known at
-                // all, so none of the table applies and the ordinary runtime
-                // rule takes over -- `a = "011" : b = False : a < b` is False
-                // there, where every static partner makes it True.
-                if stringy && num_kind != Operand::Runtime && !static_against_folded {
+                // Everything but `Runtime` is a Boolean the compiler knows:
+                // a literal, `(Not True)`, a `CBool`/`IsEmpty` call, or a
+                // comparison whose every operand is statically typed.
+                if num_kind != Operand::Runtime {
                     // The conversion is `CBool`, and the comparison then runs
                     // on the Booleans as *numbers*, so True (-1) sorts below
                     // False (0). Measured:
@@ -1435,11 +1410,21 @@ pub fn compare_ctx(
                     let ord = Ordering::Greater;
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
-                if stringy && num_kind != Operand::Runtime {
-                    // The exception above: text, and never an error. This is
-                    // what §11 of docs/vba-error-ordering.md recorded as the
-                    // whole rule, now narrowed to the one cell where it is
-                    // actually right.
+                // The Boolean is *not* statically `Boolean` -- a variable, or
+                // a comparison with a `Variant` operand. A statically typed
+                // `String` then compares as text, with the Boolean rendered
+                // "True"/"False", and never errors:
+                //
+                //   "0"          >= (3# >= Empty)   False   "0"    < "True"
+                //   CStr(0)      >= (3# >= Empty)   False   "0"    < "True"
+                //   TypeName(0)  >= (3# >= Empty)   False   "Integer" < "True"
+                //   "0"          <  (3# >= Empty)   True    the same, inverted
+                //   ("1" & "  3  ") <= ("" <> Empty) True   unconvertible, still text
+                //
+                // Anything else -- a Variant, or a fold over one -- falls
+                // through to the numeric rules below, which is what makes
+                // `((Empty & "1") <= ("" <> Empty))` False.
+                if str_kind != Operand::Runtime {
                     let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
@@ -1487,7 +1472,22 @@ pub fn compare_ctx(
                     None if str_typed => return Err(VbaError::type_mismatch()),
                     None => Ordering::Greater,
                 }
-            } else if str_kind.is_const() {
+            } else if str_typed {
+                // A *runtime* number, against a string whose type the compiler
+                // knows: text, with the number via `CStr`. A declared `String`
+                // behaves exactly as a literal does here -- the same split as
+                // the strictness above, and it was missing on this branch for
+                // the same reason, so every `CStr`/`StrReverse`/fold ordered
+                // against a runtime number instead of comparing. Measured
+                // (§27), with `a` a variable so the number is never static:
+                //
+                //   a = 5  : a < "10"           False  -- "5" sorts above "1"
+                //   a = 5  : a < CStr(10)       False  -- declared String, same
+                //   a = 5  : a < (CStr(1) & "0") False -- a fold of them, same
+                //   b = 10 : a = 5 : a < CStr(b) False -- the value may be runtime
+                //   a = 5  : a < Trim("10")     True   -- a Variant orders
+                //   a = -2 : a < CStr("")       False  -- and it never errors
+                //   a = -2 : a < CStr("abc")    True
                 text.as_str().cmp(other.to_vba_string()?.as_str())
             } else {
                 // Both runtime: the number sorts first, whatever it is.

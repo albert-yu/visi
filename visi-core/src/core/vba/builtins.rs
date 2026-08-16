@@ -335,7 +335,15 @@ fn numeric_arg(args: &[Variant], i: usize) -> VResult<f64> {
 fn is_numeric(v: &Variant) -> bool {
     match v {
         Variant::Str(s) => value::parse_vba_number(s).is_ok() && !s.trim().is_empty(),
-        Variant::Empty | Variant::Null => false,
+        // `IsNumeric(Empty)` is **True** and `IsNumeric(Null)` is False.
+        // Measured; `Empty` behaves as the 0 it coerces to, where `Null` is
+        // the absence of a value and answers for nothing. `IsNumeric("")` is
+        // False despite `""` and `Empty` comparing equal, which is the same
+        // asymmetry `value.rs` records for `"" = 0` (error 13) against
+        // `Empty = 0` (True). Found by `fuzz/fuzz_vba.py` on seed 862021,
+        // through `(Not vc) Xor IsNumeric(Empty)`.
+        Variant::Empty => true,
+        Variant::Null => false,
         Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => false,
         _ => true,
     }
