@@ -2715,6 +2715,173 @@ mod tests {
         }
     }
 
+    /// The emitted pivot XML, as one string per part, for shape assertions.
+    ///
+    /// These stand in for a check CI cannot run: the only authority on
+    /// whether Excel accepts a pivot part is Excel, and
+    /// `fuzz/pivot_filter_probe.py --variant visi` is what actually asks it.
+    /// What these pin is the two specific things that were wrong, so a
+    /// regression shows up here rather than as an unopenable file.
+    fn emitted_pivot_parts(
+        sheets: &[Sheet],
+        pivots: &[crate::core::pivot::PivotTable],
+    ) -> std::collections::HashMap<String, String> {
+        let bytes = export_xlsx_data(sheets, &[], pivots, None).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut out = std::collections::HashMap::new();
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).unwrap();
+            let name = f.name().to_string();
+            // `_rels` parts share the same stem, and the map is unordered --
+            // matching one of those instead was a genuinely flaky test.
+            if name.contains("pivot") && !name.contains("_rels") {
+                let mut buf = String::new();
+                use std::io::Read;
+                f.read_to_string(&mut buf).unwrap();
+                out.insert(name, buf);
+            }
+        }
+        out
+    }
+
+    fn pivot_shape_fixture() -> (Vec<Sheet>, Vec<crate::core::pivot::PivotTable>) {
+        use crate::core::pivot::{
+            PivotAggregation, PivotField, PivotFilterField, PivotSource, PivotTable,
+            PivotValueField,
+        };
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Data".to_string()),
+            rows: 7,
+            cols: 3,
+            ..Default::default()
+        });
+        for (c, h) in ["Region", "Product", "Amount"].iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        // First-seen order is East, West, North -- deliberately *not*
+        // alphabetical, which is what makes the two orderings distinguishable.
+        let rows = [
+            ["East", "Widget", "10"],
+            ["East", "Gadget", "5"],
+            ["West", "Widget", "30"],
+            ["West", "Gadget", "40"],
+            ["North", "Doohickey", "7"],
+            ["North", "Widget", "3"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                sheet.set_cell_src(r + 1, c, v.to_string());
+            }
+        }
+        sheet.commit(None).unwrap();
+        let sheet_id = sheet.id;
+        let pivot = PivotTable {
+            id: 1,
+            name: "P1".to_string(),
+            source: PivotSource::Range {
+                sheet_id,
+                start_row: 0,
+                start_col: 0,
+                end_row: 6,
+                end_col: 2,
+            },
+            dest_sheet_id: sheet_id,
+            dest_row: 0,
+            dest_col: 5,
+            row_fields: vec![PivotField::new("Region")],
+            col_fields: vec![],
+            value_fields: vec![PivotValueField::new("Amount", PivotAggregation::Sum)],
+            filter_fields: vec![PivotFilterField::new("Product")],
+            grand_totals_row: true,
+            grand_totals_col: true,
+            last_output_end_row: None,
+            last_output_end_col: None,
+        };
+        (vec![sheet], vec![pivot])
+    }
+
+    #[test]
+    fn shared_items_carry_the_values_in_first_seen_order() {
+        // An `<item x="N"/>` indexes this list. Leaving it empty -- which is
+        // what visi did -- makes every one of those indices dangle, and Excel
+        // refuses to open the file. openpyxl does not resolve them, which is
+        // how it went unnoticed. Verified against Excel with
+        // `fuzz/pivot_filter_probe.py --variant visi`.
+        let (sheets, pivots) = pivot_shape_fixture();
+        let parts = emitted_pivot_parts(&sheets, &pivots);
+        let cache = parts
+            .iter()
+            .find(|(k, _)| k.contains("pivotCacheDefinition"))
+            .map(|(_, v)| v.as_str())
+            .expect("a cache definition");
+        assert!(
+            cache.contains(
+                "<sharedItems count=\"3\"><s v=\"East\"/><s v=\"West\"/><s v=\"North\"/></sharedItems>"
+            ),
+            "Region's shared items must be in first-seen order: {cache}"
+        );
+        assert!(
+            cache.contains(
+                "<sharedItems count=\"3\"><s v=\"Widget\"/><s v=\"Gadget\"/><s v=\"Doohickey\"/></sharedItems>"
+            ),
+            "Product's shared items must be in first-seen order: {cache}"
+        );
+    }
+
+    #[test]
+    fn item_indices_map_display_order_onto_the_cache_order() {
+        // The display order is sorted (East, North, West) while the cache is
+        // first-seen (East, West, North), so the indices must be 0, 2, 1.
+        // Identical to what Excel writes for the same data.
+        let (sheets, pivots) = pivot_shape_fixture();
+        let parts = emitted_pivot_parts(&sheets, &pivots);
+        let table = parts
+            .iter()
+            .find(|(k, _)| k.contains("pivotTables/"))
+            .map(|(_, v)| v.as_str())
+            .expect("a pivot table part");
+        assert!(
+            table.contains(
+                "<items count=\"4\"><item x=\"0\"/><item x=\"2\"/><item x=\"1\"/><item t=\"default\"/></items>"
+            ),
+            "row field items must index the cache order: {table}"
+        );
+    }
+
+    #[test]
+    fn a_page_field_gets_the_all_placeholder_item() {
+        // Without the trailing `<item t="default"/>` a `<pageField>` with no
+        // `item` attribute selects a default item that is not there, and
+        // Excel will not open the file -- measured, with and without an
+        // actual selection.
+        let (sheets, mut pivots) = pivot_shape_fixture();
+        for selection in [None, Some(vec!["Widget".to_string()])] {
+            pivots[0].filter_fields[0].selected_values = selection.clone();
+            let parts = emitted_pivot_parts(&sheets, &pivots);
+            let table = parts
+                .iter()
+                .find(|(k, _)| k.contains("pivotTables/"))
+                .map(|(_, v)| v.as_str())
+                .expect("a pivot table part");
+            let page = table
+                .split("axis=\"axisPage\"")
+                .nth(1)
+                .expect("a page field");
+            assert!(
+                page.starts_with(|_c: char| true) && page.contains("<item t=\"default\"/></items>"),
+                "page field items must end with the (All) placeholder ({selection:?}): {table}"
+            );
+            // And the selection is marked by hiding the others, against the
+            // cache indices.
+            if selection.is_some() {
+                assert!(
+                    page.contains("<item h=\"1\""),
+                    "a selection hides the unselected items: {table}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_xlsx_pivot_table_round_trip() {
         use crate::core::pivot::{

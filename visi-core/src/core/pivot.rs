@@ -234,10 +234,45 @@ pub struct PivotFilterField {
     pub column: String,
     /// `None` means every value is allowed (no filtering applied yet).
     ///
-    /// Not reconstructed on xlsx import -- a selection resets to "all",
-    /// since restoring it would mean trusting index-based item references
-    /// against source data that may since have changed.
+    /// **Reconstructed on xlsx import**, resolved through the cache's
+    /// `<sharedItems>` to plain value strings rather than kept as indices --
+    /// which is what makes it safe. The indices are trusted only against the
+    /// cache definition in the same file, which is self-consistent by
+    /// construction, and a value that no longer exists in changed source data
+    /// simply matches nothing.
+    ///
+    /// Two things do not survive, both because the format cannot hold them:
+    ///
+    /// - A selection covering *every* value marks nothing hidden, so it is
+    ///   indistinguishable from no filter and reads back as `None`. The
+    ///   grid is the same either way.
+    /// - A filter on a column that is *also* a row or column field is lost
+    ///   entirely: a pivot field carries one `axis`, so there is nowhere to
+    ///   record it. Excel cannot express that config at all -- a field has
+    ///   exactly one orientation there.
+    ///
+    /// Matching is case-insensitive, because the items themselves are merged
+    /// that way; a selection naming `east` picks the merged `East` item.
     pub selected_values: Option<Vec<String>>,
+    /// Whether the field is in Excel's *multi-select* page mode
+    /// (`multipleItemSelectionAllowed` in the file) rather than its classic
+    /// single-select one.
+    ///
+    /// The two differ in what the page-field cell says, which is observable:
+    /// with one item chosen, multi-select shows `(Multiple Items)` while
+    /// single-select shows the **item's own name**. Both measured -- the
+    /// first through `PivotItems(x).Visible = False`, the second through
+    /// `PivotField.CurrentPage = "Widget"`, which is what puts a field into
+    /// single-select mode in the first place.
+    ///
+    /// Defaults to `true`, matching `set_pivot_filter` and the CLI, which
+    /// select a set of values rather than one page.
+    #[serde(default = "default_true")]
+    pub multiple_selection: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PivotFilterField {
@@ -246,6 +281,7 @@ impl PivotFilterField {
         Self {
             column: column.into(),
             selected_values: None,
+            multiple_selection: true,
         }
     }
 }
@@ -341,8 +377,13 @@ pub(crate) fn row_label_width(pivot: &PivotTable) -> usize {
 /// the classic single-select page-field mode Excel no longer defaults to).
 #[derive(Debug, Clone)]
 pub struct PivotGrid {
-    /// One `(field name, "(All)" | "(Multiple Items)")` pair per filter
-    /// field, in the order they were added.
+    /// One `(field name, state)` pair per filter field, in the order they
+    /// were added.
+    ///
+    /// The state is `"(All)"` when every value is allowed, the **item's own
+    /// name** when exactly one is selected, and `"(Multiple Items)"`
+    /// otherwise -- which is what Excel puts in the page-field cell, and what
+    /// `PivotField.CurrentPage` reports alongside it.
     pub filter_rows: Vec<(String, String)>,
     /// The column-header block above the body: one row per column field,
     /// plus a value-field row when there is more than one value field.
@@ -816,6 +857,18 @@ pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid,
                     && distinct.iter().all(|v| selected_set.contains(v));
                 if is_all {
                     "(All)".to_string()
+                } else if !ff.multiple_selection && selected_set.len() == 1 {
+                    // Single-select mode names the item; multi-select says
+                    // `(Multiple Items)` even for one. Both measured -- see
+                    // `PivotFilterField::multiple_selection`. The item's own
+                    // casing is used, since the cache merges case variants
+                    // onto whichever it saw first.
+                    let wanted = &selected_set;
+                    all_rows
+                        .iter()
+                        .map(|row| group_key(&row[idx]))
+                        .find(|v| wanted.contains(&v.to_ascii_lowercase()))
+                        .unwrap_or_else(|| "(Multiple Items)".to_string())
                 } else {
                     "(Multiple Items)".to_string()
                 }
@@ -1360,20 +1413,35 @@ pub fn getpivotdata(
 /// otherwise case-insensitive ascending text) -- used by the xlsx exporter
 /// to build a pivot field's flat `<items>` enumeration.
 pub(crate) fn sorted_distinct_strings(values: &[String], numeric: bool) -> Vec<String> {
-    // Case-insensitive dedup (first-seen casing kept), matching
-    // `build_group_tree`'s merge -- this feeds the exported pivot cache's
-    // `<items>` enumeration, so it must agree with how `compute_pivot`
-    // actually groups these same values or a reimported/refreshed pivot's
-    // item list would fall out of sync with its own displayed grouping.
+    let mut pairs: Vec<(String, Vec<usize>)> = distinct_strings(values)
+        .into_iter()
+        .map(|s| (s, Vec::new()))
+        .collect();
+    sort_group_entries(&mut pairs, numeric);
+    pairs.into_iter().map(|(s, _)| s).collect()
+}
+
+/// The distinct values in **first-seen** order, which is the order a pivot
+/// cache stores them in.
+///
+/// Measured: Excel's `<sharedItems>` are in source order while a pivot
+/// field's `<items>` are sorted for display and reference sharedItems by
+/// index, so the two orders are both needed and are different. See
+/// `fuzz/pivot_filter_probe.py`.
+///
+/// Case-insensitive dedup (first-seen casing kept), matching
+/// `build_group_tree`'s merge -- this feeds the exported pivot cache, so it
+/// must agree with how `compute_pivot` actually groups these same values or a
+/// reimported or refreshed pivot's item list falls out of sync with its own
+/// displayed grouping.
+pub(crate) fn distinct_strings(values: &[String]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for v in values {
         if !seen.iter().any(|s| s.eq_ignore_ascii_case(v)) {
             seen.push(v.clone());
         }
     }
-    let mut pairs: Vec<(String, Vec<usize>)> = seen.into_iter().map(|s| (s, Vec::new())).collect();
-    sort_group_entries(&mut pairs, numeric);
-    pairs.into_iter().map(|(s, _)| s).collect()
+    seen
 }
 
 #[cfg(test)]
@@ -1628,6 +1696,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Product".to_string(),
             selected_values: Some(vec!["Widget".to_string()]),
+            multiple_selection: true,
         }];
         pivot.grand_totals_row = false;
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
@@ -1679,6 +1748,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Mixed".to_string(),
             selected_values: Some(vec!["east".to_string()]),
+            multiple_selection: true,
         }];
         pivot.grand_totals_row = false;
         pivot.grand_totals_col = false;
@@ -1705,6 +1775,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Product".to_string(),
             selected_values: None,
+            multiple_selection: true,
         }];
 
         // No selection at all -> "(All)".
@@ -1728,6 +1799,13 @@ mod tests {
         pivot.filter_fields[0].selected_values = Some(vec!["Widget".to_string()]);
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
         assert_eq!(grid.filter_rows[0].1, "(Multiple Items)");
+
+        // ...and that single-select mode is exactly where the item's own
+        // name does show, which is what `PivotField.CurrentPage = "Widget"`
+        // produces. Measured: the page-field cell reads `Widget`.
+        pivot.filter_fields[0].multiple_selection = false;
+        let grid = compute_pivot(&[&sheet], &pivot).unwrap();
+        assert_eq!(grid.filter_rows[0].1, "Widget");
     }
 
     #[test]
@@ -1963,6 +2041,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Region".to_string(),
             selected_values: Some(vec!["East".to_string()]),
+            multiple_selection: true,
         }];
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
         assert!(grid.body_rows.iter().any(|r| r.is_grand_total));
@@ -2068,6 +2147,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Cat".to_string(),
             selected_values: Some(vec!["Beta".to_string()]),
+            multiple_selection: true,
         }];
         pivot.grand_totals_row = false;
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
@@ -2628,6 +2708,7 @@ mod tests {
             filter_fields.push(PivotFilterField {
                 column: col_names[fcol].clone(),
                 selected_values: selected,
+                multiple_selection: true,
             });
         }
 
@@ -2956,14 +3037,6 @@ mod tests {
                     .collect::<Vec<_>>(),
                 "seed {seed}: col field subtotal toggle should round-trip"
             );
-            assert!(
-                reimported
-                    .filter_fields
-                    .iter()
-                    .all(|f| f.selected_values.is_none()),
-                "seed {seed}: filter selection should reset to None on import"
-            );
-
             // If nothing lossy was actually in play, the reimported grid
             // must be structurally identical -- this is where a genuine
             // round-trip bug (e.g. losing a value field's aggregation)
@@ -2971,21 +3044,93 @@ mod tests {
             // diff the assertions above already caught. Subtotal toggles
             // now round-trip exactly, so only filter selections remain
             // lossy.
-            let nothing_lossy = pivot
-                .filter_fields
-                .iter()
-                .all(|f| f.selected_values.is_none());
+            // Filter selections round-trip now too, so a lossless round trip
+            // is the ordinary case rather than the exception.
+            let nothing_lossy = true;
+            let any_filter_is_also_an_axis_field = pivot.filter_fields.iter().any(|ff| {
+                pivot
+                    .row_fields
+                    .iter()
+                    .chain(pivot.col_fields.iter())
+                    .any(|f| f.column.eq_ignore_ascii_case(&ff.column))
+            });
             let reimported_sheets: Vec<Sheet> =
                 imported_sheets.into_iter().map(|s| s.sheet).collect();
             let reimported_sheet_refs: Vec<&Sheet> = reimported_sheets.iter().collect();
             let reimported_grid = compute_pivot(&reimported_sheet_refs, reimported)
                 .unwrap_or_else(|e| panic!("seed {seed}: reimported compute_pivot failed: {e}"));
-            if nothing_lossy {
+            // A field Excel could not represent at all -- see
+            // `axis_bound` below -- is excluded from the shape check for the
+            // same reason it is excluded from the selection check.
+            if nothing_lossy && !any_filter_is_also_an_axis_field {
                 assert_eq!(
                     reimported_grid.body_rows.len(),
                     grid.body_rows.len(),
                     "seed {seed}: grid shape changed on lossless round-trip"
                 );
+            }
+
+            // Filter selections round-trip now: they are written as indices
+            // into the cache's `<sharedItems>` and resolved back to plain
+            // values on import. What must match is the *set* of selected
+            // values, since the file stores them in the cache's first-seen
+            // order rather than the caller's.
+            //
+            // The one legitimate difference: a selection covering every
+            // value marks nothing hidden, so it is indistinguishable from no
+            // filter once written and comes back as `None`. That is only
+            // acceptable if it really was a no-op, which the grid proves.
+            // Compared case-insensitively, because the engine merges
+            // case-variant values into one item (keyed by the first casing
+            // seen in the source). So a selection naming both `WEST` and
+            // `west` picks a single item and legitimately reads back as
+            // whichever casing the cache stored -- a canonicalization, not a
+            // loss.
+            let sorted = |f: &PivotFilterField| {
+                f.selected_values.as_ref().map(|v| {
+                    let mut v: Vec<String> = v.iter().map(|s| s.to_lowercase()).collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+            };
+            // A filter column that is *also* a row or column field has no
+            // representation in the file: a pivot field carries one `axis`,
+            // so the row/column orientation wins and there is nowhere left to
+            // record the selection. Excel cannot express that config either
+            // -- a field has exactly one orientation there -- so this is a
+            // shape visi's model admits and the format does not, rather than
+            // a round-trip bug.
+            let axis_bound = |column: &str| {
+                pivot
+                    .row_fields
+                    .iter()
+                    .chain(pivot.col_fields.iter())
+                    .any(|f| f.column.eq_ignore_ascii_case(column))
+            };
+            for (before, after) in pivot
+                .filter_fields
+                .iter()
+                .zip(reimported.filter_fields.iter())
+            {
+                if axis_bound(&before.column) {
+                    continue;
+                }
+                if before.selected_values.is_some() && after.selected_values.is_none() {
+                    assert_eq!(
+                        reimported_grid.body_rows.len(),
+                        grid.body_rows.len(),
+                        "seed {seed}: filter on '{}' was dropped and it mattered",
+                        before.column
+                    );
+                } else {
+                    assert_eq!(
+                        sorted(before),
+                        sorted(after),
+                        "seed {seed}: filter selection should round-trip for '{}'",
+                        before.column
+                    );
+                }
             }
         }
     }
