@@ -1251,7 +1251,6 @@ const STATICALLY_BOOLEAN: &[&str] = &[
 ///
 /// The pair `True Eqv CStr(True)` (error 13) against `LCase("TRUE") Eqv True`
 /// (True) is what pins the distinction down -- see [`value::logical_pair`].
-/// `CStr` and `TypeName`, the two intrinsics declared `As String`.
 ///
 /// `TypeName` was added on the strength of a measurement, not its signature:
 /// `TypeName(32767) >= False` is error 13 in Excel while
@@ -1259,7 +1258,25 @@ const STATICALLY_BOOLEAN: &[&str] = &[
 /// that `TypeName` returns `String` where `LCase` returns `Variant`. Found by
 /// `fuzz/fuzz_vba.py`. `LCase`, `UCase`, `Left` and the rest stay out for the
 /// reason above -- it is their `$`-suffixed forms that are typed `String`.
-const STATICALLY_STRING: &[&str] = &["cstr", "typename"];
+///
+/// `StrReverse`, `Replace` and `Join` are the members of that same family with
+/// **no** `$` form, so the plain name is the typed-`String` one. Measured, and
+/// the contrast with their Variant-returning neighbours is what places them:
+///
+///   StrReverse("abc")        > True    error 13
+///   Replace("abc", "a", "z") > True    error 13
+///   Join(Array("a", "b"))    > True    error 13
+///   Trim("abc")              > True    True
+///   LTrim("abc")             > True    True
+///
+/// `StrReverse` is the one `fuzz/fuzz_vba.py` found, as a whole procedure
+/// diverging on which error it raised: Excel stopped at the comparison with
+/// 13 while visi ran on to a later division by zero and raised 11.
+///
+/// `Join` is listed though it is not implemented yet (the call raises 35
+/// first), for the reason `IsArray` is listed in [`STATICALLY_BOOLEAN`] -- so
+/// it arrives with the right type rather than silently as a Variant.
+const STATICALLY_STRING: &[&str] = &["cstr", "typename", "strreverse", "replace", "join"];
 
 /// Whether an expression's *static* type is `Boolean`, as the VBA compiler
 /// would know it.
@@ -2321,8 +2338,8 @@ mod tests {
         // visible symptom was a *cell* holding the wrong value.
         //
         // The rule: convert the string with `CBool`, compare as Booleans, and
-        // fall back to text only when the conversion fails. Ordering is
-        // numeric, so True (-1) sorts below False (0).
+        // fall back to the ordinary runtime ordering only when the conversion
+        // fails. Ordering is numeric, so True (-1) sorts below False (0).
         let with = |setup: &str, e: &str| run(&format!("    Dim va, vb\n{setup}\n    F = {e}"));
         assert_eq!(with("    va = \"011\"", "(va = True)"), "Boolean|True");
         assert_eq!(with("    va = \"0\"", "(va = False)"), "Boolean|True");
@@ -2333,15 +2350,17 @@ mod tests {
         assert_eq!(with("    va = \"011\"", "(va < False)"), "Boolean|True");
         assert_eq!(with("    va = \"011\"", "(va > False)"), "Boolean|False");
         assert_eq!(with("    va = \"011\"", "(va > True)"), "Boolean|False");
-        // The two that pin down the fallback: `CBool` raises for both, yet
-        // neither comparison does -- so an unconvertible string compares as
-        // text, where it is simply unequal.
+        // The two that pin down *that* there is a fallback: `CBool` raises for
+        // both, yet neither comparison does -- they are simply unequal. What
+        // the fallback *is* takes the ordering cases in
+        // `an_unconvertible_runtime_string_sorts_above_a_static_boolean`;
+        // equality cannot tell text from ordering.
         assert_eq!(with("    va = \"abc\"", "(va = True)"), "Boolean|False");
         assert_eq!(with("    va = \"\"", "(va = False)"), "Boolean|False");
         // A *statically* String operand takes the same conversion but does
-        // **not** get the text fallback -- it is error 13 instead. The
-        // discriminating rows, all measured: the same string reaches text
-        // comparison through a Variant or through a Variant-returning
+        // **not** get that fallback -- it is error 13 instead. The
+        // discriminating rows, all measured: the same string reaches the
+        // fallback through a Variant or through a Variant-returning
         // intrinsic, and error 13 only through one declared `As String`.
         assert_eq!(expr("CStr(32767) >= (Not True)"), "Boolean|False");
         assert_eq!(expr("TypeName(32767) >= False"), "ERR|13");
@@ -2424,6 +2443,86 @@ mod tests {
         // A numeric partner is unaffected, and still refuses the words.
         assert_eq!(with("    va = \"011\"", "(va < 0)"), "Boolean|False");
         assert_eq!(expr("(\"True\" = -1)"), "ERR|13");
+    }
+
+    #[test]
+    fn an_unconvertible_runtime_string_sorts_above_a_static_boolean() {
+        // When `CBool` will not take the string, a *runtime* one falls back to
+        // the ordinary runtime rule -- the number sorts first, so the string
+        // is Greater whatever the two spell. This was written as a text
+        // comparison, which every case available at the time agreed with:
+        // `"abc"`, `"Integer"` and `""` all sort on the same side of
+        // `"True"`/`"False"` as the ordering rule puts them, so the two
+        // readings only come apart on a string that does not -- `"ABC"`,
+        // whose `A` sorts below both words.
+        //
+        // Measured with `fuzz/vba_expr_probe.py`; every expectation here is
+        // what Excel returned. Found while reducing the `StrReverse` case in
+        // `statically_string_intrinsics_are_strict_against_a_boolean`.
+        let with = |setup: &str, e: &str| run(&format!("    Dim va\n{setup}\n    F = {e}"));
+        assert_eq!(with("    va = \"ABC\"", "(va > True)"), "Boolean|True");
+        assert_eq!(with("    va = \"ABC\"", "(va < True)"), "Boolean|False");
+        assert_eq!(with("    va = \"ABC\"", "(va >= False)"), "Boolean|True");
+        // The same through a `Variant`-returning intrinsic, which is how the
+        // fuzzer's generated code reaches it.
+        assert_eq!(expr("Chr(65) > True"), "Boolean|True");
+        assert_eq!(expr("Chr(65) > False"), "Boolean|True");
+        assert_eq!(expr("Hex(255) > True"), "Boolean|True");
+        assert_eq!(expr("Space(2) > True"), "Boolean|True");
+        // The cases the text reading was derived from still hold -- they are
+        // simply blind to the difference.
+        assert_eq!(with("    va = \"abc\"", "(va = True)"), "Boolean|False");
+        assert_eq!(expr("LCase(\"Integer\") >= (Not True)"), "Boolean|True");
+    }
+
+    #[test]
+    fn statically_string_intrinsics_are_strict_against_a_boolean() {
+        // `StrReverse`, `Replace` and `Join` are declared `As String` and have
+        // no `$` form, so the plain name is the typed one -- an unconvertible
+        // result against a statically known Boolean is error 13, where the
+        // Variant-returning neighbours fall back to ordering instead.
+        //
+        // `fuzz/fuzz_vba.py` found this as a whole-procedure divergence: Excel
+        // stopped at `StrReverse(False) > (Not False)` with 13 while visi took
+        // the comparison as True, ran into the other branch, and raised 11 on
+        // a division by zero Excel never reached. Measured with
+        // `fuzz/vba_expr_probe.py`; see `STATICALLY_STRING`.
+        assert_eq!(expr("StrReverse(False) > (Not False)"), "ERR|13");
+        assert_eq!(expr("StrReverse(\"abc\") > True"), "ERR|13");
+        assert_eq!(expr("StrReverse(\"abc\") > 5"), "ERR|13");
+        assert_eq!(expr("True > StrReverse(\"abc\")"), "ERR|13");
+        assert_eq!(expr("Replace(\"abc\", \"a\", \"z\") > True"), "ERR|13");
+        // A *numeric* partner is strict the same way, and was already wrong
+        // for `CStr`/`TypeName` before `StrReverse` joined them: the strictness
+        // keyed off the string being *constant* rather than merely typed.
+        assert_eq!(expr("CStr(\"abc\") > 5"), "ERR|13");
+        assert_eq!(expr("TypeName(1) > 5"), "ERR|13");
+        assert_eq!(expr("CStr(\"abc\") >= 0"), "ERR|13");
+        assert_eq!(expr("CStr(\"abc\") > CLng(1)"), "ERR|13");
+        assert_eq!(expr("TypeName(1) > CLng(5)"), "ERR|13");
+        // Variant-returning neighbours are unaffected, against either partner.
+        assert_eq!(expr("Trim(\"abc\") > True"), "Boolean|True");
+        assert_eq!(expr("LTrim(\"abc\") > True"), "Boolean|True");
+        assert_eq!(expr("Trim(\"abc\") > 5"), "Boolean|True");
+        assert_eq!(expr("Chr(65) > 5"), "Boolean|True");
+        // A typed string that *does* convert is not an error.
+        assert_eq!(expr("CStr(\"11\") > 5"), "Boolean|True");
+        // Two strings still compare as text, whatever their kinds.
+        assert_eq!(expr("TypeName(1) > \"5\""), "Boolean|True");
+        // The same string through a Variant is not statically typed, so it
+        // compares rather than erroring -- the row that makes this about the
+        // declared return type and not the value.
+        assert_eq!(
+            run("    Dim va\n    va = StrReverse(\"abc\")\n    F = (va > True)"),
+            "Boolean|True"
+        );
+        assert_eq!(
+            run("    Dim va\n    va = 5\n    F = (StrReverse(\"abc\") > va)"),
+            "Boolean|True"
+        );
+        // A convertible result still converts: `CBool("11")` is True (-1),
+        // which sorts below False (0).
+        assert_eq!(expr("StrReverse(\"11\") > False"), "Boolean|False");
     }
 
     #[test]
