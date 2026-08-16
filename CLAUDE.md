@@ -43,6 +43,7 @@ python fuzz/vba_range_tracking_probe.py                  # does a held Range fol
 python fuzz/vba_style_probe.py --paint                   # BGR vs RGB, checked against the saved file not the object model
 python fuzz/vba_table_probe.py                           # ListObjects; --empty is the zero-data-row case, one round trip per case
 python fuzz/band_insert_probe.py                         # what a partial (column-band) insert does to formulas
+python fuzz/pivot_filter_probe.py --variant visi         # can Excel open a pivot visi wrote? (exits non-zero if not)
 python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
 
 pytest fuzz/test_backend_parity.py visi-python/tests/    # bindings must match the CLI
@@ -183,6 +184,8 @@ Table names are unique **workbook-wide** (enforced in `WorkbookManager`), and lo
 A `PivotTable` is workbook-level (like `Chart`), not sheet-scoped like `ExcelTable`, since its source and destination ranges can live on different sheets; `WorkbookManager.pivot_tables: Vec<PivotTable>` holds them. `PivotSource` is either an `ExcelTable` name (re-resolved by name on every refresh, so table renames/resizes are picked up automatically) or a raw sheet range.
 
 `pivot::compute_pivot(sheets, &pivot)` is a pure function: reads source rows, applies `filter_fields`, groups nested `row_fields`/`col_fields` (with per-field subtotal toggles and grand totals), aggregates `value_fields` (`Sum`/`Count`/`CountNumbers`/`Average`/`Max`/`Min`), and returns a `PivotGrid` — display-ready header/body rows plus the underlying `row_axis`/`col_axis` (`PivotAxisItem`s) that the xlsx writer needs to reconstruct native `rowItems`/`colItems`. `WorkbookManager::refresh_pivot_table` (`visi/src/engine.rs`) is the only thing that writes the grid into cells, as literal values via `set_cell`/`ensure_capacity` — **like Excel, nothing recomputes a pivot table automatically**; every CRUD op (`add_pivot_field`, `remove_pivot_field`, `set_pivot_filter`) explicitly calls refresh afterward.
+
+**The emitted pivot XML is now verified against real Excel** (`fuzz/pivot_filter_probe.py --variant visi`), which the openpyxl-only check could not do — openpyxl never resolves an `<item x="N"/>` against `<sharedItems>`, so two fatal defects read as fine there and made every visi-written pivot **fail to open in Excel**: `<sharedItems/>` was emitted empty while items indexed into it, and a page field lacked the trailing `<item t="default"/>` "(All)" entry. Both fixed. Two orderings are load-bearing and easy to conflate — `<sharedItems>` is in **first-seen** order, a field's `<items>` are in **sorted display** order and their `x` indexes the former, and `rowItems`/`colItems` `<x v="N"/>` indexes the *items-list position*. Re-run the probe after any change here; CI cannot.
 
 Neither xlsx library used here has pivot table support: calamine doesn't expose `xl/pivotCache/*` or `xl/pivotTables/*`, and rust_xlsxwriter has no writer for them at all. `pivot_xlsx.rs` hand-rolls both directions:
 

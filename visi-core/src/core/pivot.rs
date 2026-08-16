@@ -1360,20 +1360,35 @@ pub fn getpivotdata(
 /// otherwise case-insensitive ascending text) -- used by the xlsx exporter
 /// to build a pivot field's flat `<items>` enumeration.
 pub(crate) fn sorted_distinct_strings(values: &[String], numeric: bool) -> Vec<String> {
-    // Case-insensitive dedup (first-seen casing kept), matching
-    // `build_group_tree`'s merge -- this feeds the exported pivot cache's
-    // `<items>` enumeration, so it must agree with how `compute_pivot`
-    // actually groups these same values or a reimported/refreshed pivot's
-    // item list would fall out of sync with its own displayed grouping.
+    let mut pairs: Vec<(String, Vec<usize>)> = distinct_strings(values)
+        .into_iter()
+        .map(|s| (s, Vec::new()))
+        .collect();
+    sort_group_entries(&mut pairs, numeric);
+    pairs.into_iter().map(|(s, _)| s).collect()
+}
+
+/// The distinct values in **first-seen** order, which is the order a pivot
+/// cache stores them in.
+///
+/// Measured: Excel's `<sharedItems>` are in source order while a pivot
+/// field's `<items>` are sorted for display and reference sharedItems by
+/// index, so the two orders are both needed and are different. See
+/// `fuzz/pivot_filter_probe.py`.
+///
+/// Case-insensitive dedup (first-seen casing kept), matching
+/// `build_group_tree`'s merge -- this feeds the exported pivot cache, so it
+/// must agree with how `compute_pivot` actually groups these same values or a
+/// reimported or refreshed pivot's item list falls out of sync with its own
+/// displayed grouping.
+pub(crate) fn distinct_strings(values: &[String]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for v in values {
         if !seen.iter().any(|s| s.eq_ignore_ascii_case(v)) {
             seen.push(v.clone());
         }
     }
-    let mut pairs: Vec<(String, Vec<usize>)> = seen.into_iter().map(|s| (s, Vec::new())).collect();
-    sort_group_entries(&mut pairs, numeric);
-    pairs.into_iter().map(|(s, _)| s).collect()
+    seen
 }
 
 #[cfg(test)]

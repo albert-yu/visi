@@ -59,14 +59,19 @@ struct PivotXmlUnit {
 
 use crate::core::pivot::field_is_numeric as is_all_numeric;
 
-/// Builds the `<items>` child element for a row/column pivotField: one
-/// `<item x="i"/>` per sorted distinct value, plus a trailing
-/// `<item t="default"/>` subtotal placeholder when `with_default` is set.
-fn build_items_xml(item_count: usize, with_default: bool) -> String {
-    let total = item_count + if with_default { 1 } else { 0 };
-    let mut s = format!("<items count=\"{}\">", total);
-    for idx in 0..item_count {
-        s.push_str(&format!("<item x=\"{}\"/>", idx));
+/// One `<item x="N"/>` per value in *display* order, where `N` is that
+/// value's index in the cache's `<sharedItems>` -- which is in a different
+/// (first-seen) order. Optionally followed by the `<item t="default"/>`
+/// subtotal placeholder.
+///
+/// The indices are the whole point: they are what ties a pivot field's items
+/// back to the cache. Emitting `0..n` here while the cache stored the values
+/// in another order is how visi produced files Excel refused to open.
+fn build_items_xml(shared_idx: &[usize], with_default: bool) -> String {
+    let count = shared_idx.len() + usize::from(with_default);
+    let mut s = format!("<items count=\"{count}\">");
+    for idx in shared_idx {
+        s.push_str(&format!("<item x=\"{idx}\"/>"));
     }
     if with_default {
         s.push_str("<item t=\"default\"/>");
@@ -75,21 +80,29 @@ fn build_items_xml(item_count: usize, with_default: bool) -> String {
     s
 }
 
-/// Builds the `<items>` child for a page/filter pivotField: every distinct
-/// value, marked `h="1"` (hidden) when it isn't in `selected`.
-fn build_filter_items_xml(values: &[String], selected: &Option<Vec<String>>) -> String {
-    let mut s = format!("<items count=\"{}\">", values.len());
-    for (idx, v) in values.iter().enumerate() {
+/// The `<items>` child for a page/filter pivotField: every value in display
+/// order, marked `h="1"` (hidden) when it isn't in `selected`.
+///
+/// `display` pairs each value with its `<sharedItems>` index, for the same
+/// reason [`build_items_xml`] takes them.
+fn build_filter_items_xml(display: &[(usize, String)], selected: &Option<Vec<String>>) -> String {
+    // The trailing `<item t="default"/>` is the "(All)" entry, and it is not
+    // optional: a `<pageField>` with no `item` attribute selects the default
+    // item, so omitting it leaves the field pointing at nothing. Measured --
+    // Excel writes `count="4"` for three values, and a file without it does
+    // not open at all, with or without a selection.
+    let mut s = format!("<items count=\"{}\">", display.len() + 1);
+    for (idx, value) in display {
         let hidden = selected
             .as_ref()
-            .is_some_and(|sel| !sel.iter().any(|s| s == v));
+            .is_some_and(|sel| !sel.iter().any(|s| s == value));
         if hidden {
-            s.push_str(&format!("<item x=\"{}\" h=\"1\"/>", idx));
+            s.push_str(&format!("<item h=\"1\" x=\"{idx}\"/>"));
         } else {
-            s.push_str(&format!("<item x=\"{}\"/>", idx));
+            s.push_str(&format!("<item x=\"{idx}\"/>"));
         }
     }
-    s.push_str("</items>");
+    s.push_str("<item t=\"default\"/></items>");
     s
 }
 
@@ -253,17 +266,120 @@ fn build_pivot_xml_unit(
         records.push(row);
     }
 
+    let row_field_idxs: Vec<usize> = pivot
+        .row_fields
+        .iter()
+        .map(|f| pivot::column_index(&col_names, &f.column))
+        .collect::<Result<_, _>>()?;
+    let col_field_idxs: Vec<usize> = pivot
+        .col_fields
+        .iter()
+        .map(|f| pivot::column_index(&col_names, &f.column))
+        .collect::<Result<_, _>>()?;
+    let page_field_idxs: Vec<usize> = pivot
+        .filter_fields
+        .iter()
+        .map(|f| pivot::column_index(&col_names, &f.column))
+        .collect::<Result<_, _>>()?;
+    let data_field_idxs: Vec<usize> = pivot
+        .value_fields
+        .iter()
+        .map(|f| pivot::column_index(&col_names, &f.column))
+        .collect::<Result<_, _>>()?;
+
+    // Two orders, both needed and different -- measured with
+    // `fuzz/pivot_filter_probe.py`. `cache_items` is the cache's own
+    // first-seen order, which is what `<sharedItems>` stores and what an
+    // `<item x="N"/>` indexes; `field_items` is the sorted display order the
+    // grid is drawn in.
+    let axis_field_idxs: Vec<usize> = row_field_idxs
+        .iter()
+        .chain(col_field_idxs.iter())
+        .chain(page_field_idxs.iter())
+        .copied()
+        .collect();
+    let cache_items: HashMap<usize, Vec<String>> = axis_field_idxs
+        .iter()
+        .map(|&idx| {
+            let vals: Vec<String> = records.iter().map(|r| pivot::group_key(&r[idx])).collect();
+            (idx, pivot::distinct_strings(&vals))
+        })
+        .collect();
+    let field_items: HashMap<usize, Vec<String>> = axis_field_idxs
+        .iter()
+        .map(|&idx| {
+            let vals: Vec<String> = records.iter().map(|r| pivot::group_key(&r[idx])).collect();
+            (
+                idx,
+                sorted_distinct_strings(&vals, is_all_numeric(&records, idx)),
+            )
+        })
+        .collect();
+
+    /// Just the `<sharedItems>` indices, in display order.
+    fn shared_idx_for(
+        field_items: &HashMap<usize, Vec<String>>,
+        cache_items: &HashMap<usize, Vec<String>>,
+        i: usize,
+    ) -> Vec<usize> {
+        display_with_shared_idx(
+            field_items.get(&i).map(|v| v.as_slice()).unwrap_or(&[]),
+            cache_items.get(&i).map(|v| v.as_slice()).unwrap_or(&[]),
+        )
+        .into_iter()
+        .map(|(idx, _)| idx)
+        .collect()
+    }
+
+    /// A display-ordered field's values paired with their `<sharedItems>`
+    /// index. Values are matched case-insensitively, the same way
+    /// `distinct_strings` dedups them.
+    fn display_with_shared_idx(display: &[String], cache: &[String]) -> Vec<(usize, String)> {
+        display
+            .iter()
+            .map(|v| {
+                let idx = cache
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case(v))
+                    .unwrap_or(0);
+                (idx, v.clone())
+            })
+            .collect()
+    }
+
     let mut cache_fields_xml = String::new();
     for (i, name) in col_names.iter().enumerate() {
-        let shared_items_attrs = if is_all_numeric(&records, i) {
+        let numeric = is_all_numeric(&records, i);
+        let shared_items_attrs = if numeric {
             " containsSemiMixedTypes=\"0\" containsString=\"0\" containsNumber=\"1\""
         } else {
             ""
         };
+        // A field used on an axis has to list its values here: an
+        // `<item x="N"/>` in the pivot table part indexes *this* list, so
+        // leaving it empty makes every one of those indices dangle. Excel
+        // rejects such a file outright (openpyxl does not, which is how it
+        // went unnoticed -- see `fuzz/pivot_filter_probe.py --variant visi`).
+        // A field that is only aggregated needs no items, and Excel writes
+        // none for one either.
+        let shared_items = match cache_items.get(&i) {
+            Some(values) if !values.is_empty() => {
+                let mut body = format!(
+                    "<sharedItems{shared_items_attrs} count=\"{}\">",
+                    values.len()
+                );
+                for v in values {
+                    let tag = if numeric { "n" } else { "s" };
+                    body.push_str(&format!("<{tag} v=\"{}\"/>", escape_xml(v)));
+                }
+                body.push_str("</sharedItems>");
+                body
+            }
+            _ => format!("<sharedItems{shared_items_attrs}/>"),
+        };
         cache_fields_xml.push_str(&format!(
-            "<cacheField name=\"{}\" numFmtId=\"0\"><sharedItems{}/></cacheField>",
+            "<cacheField name=\"{}\" numFmtId=\"0\">{shared_items}</cacheField>",
             escape_xml(name),
-            shared_items_attrs
         ));
     }
 
@@ -335,40 +451,6 @@ fn build_pivot_xml_unit(
         records = cache_records_xml,
     );
 
-    let row_field_idxs: Vec<usize> = pivot
-        .row_fields
-        .iter()
-        .map(|f| pivot::column_index(&col_names, &f.column))
-        .collect::<Result<_, _>>()?;
-    let col_field_idxs: Vec<usize> = pivot
-        .col_fields
-        .iter()
-        .map(|f| pivot::column_index(&col_names, &f.column))
-        .collect::<Result<_, _>>()?;
-    let page_field_idxs: Vec<usize> = pivot
-        .filter_fields
-        .iter()
-        .map(|f| pivot::column_index(&col_names, &f.column))
-        .collect::<Result<_, _>>()?;
-    let data_field_idxs: Vec<usize> = pivot
-        .value_fields
-        .iter()
-        .map(|f| pivot::column_index(&col_names, &f.column))
-        .collect::<Result<_, _>>()?;
-
-    let field_items: HashMap<usize, Vec<String>> = row_field_idxs
-        .iter()
-        .chain(col_field_idxs.iter())
-        .chain(page_field_idxs.iter())
-        .map(|&idx| {
-            let vals: Vec<String> = records.iter().map(|r| pivot::group_key(&r[idx])).collect();
-            (
-                idx,
-                sorted_distinct_strings(&vals, is_all_numeric(&records, idx)),
-            )
-        })
-        .collect();
-
     let value_multiplier = if pivot.value_fields.len() > 1 {
         pivot.value_fields.len()
     } else {
@@ -397,18 +479,21 @@ fn build_pivot_xml_unit(
             // would already have forgotten that setting by the time the
             // second field's `add-field` call read it back in.
             let subtotal_enabled = pivot.row_fields[pos].subtotal;
-            let n_items = field_items.get(&i).map(|v| v.len()).unwrap_or(0);
-            items_xml = Some(build_items_xml(n_items, subtotal_enabled));
+            let idxs = shared_idx_for(&field_items, &cache_items, i);
+            items_xml = Some(build_items_xml(&idxs, subtotal_enabled));
         } else if let Some(pos) = col_field_idxs.iter().position(|&x| x == i) {
             attrs.push_str(" axis=\"axisCol\"");
             let subtotal_enabled = pivot.col_fields[pos].subtotal;
-            let n_items = field_items.get(&i).map(|v| v.len()).unwrap_or(0);
-            items_xml = Some(build_items_xml(n_items, subtotal_enabled));
+            let idxs = shared_idx_for(&field_items, &cache_items, i);
+            items_xml = Some(build_items_xml(&idxs, subtotal_enabled));
         } else if let Some(pos) = page_field_idxs.iter().position(|&x| x == i) {
             attrs.push_str(" axis=\"axisPage\" multipleItemSelectionAllowed=\"1\"");
-            let values = field_items.get(&i).cloned().unwrap_or_default();
+            let display = display_with_shared_idx(
+                field_items.get(&i).map(|v| v.as_slice()).unwrap_or(&[]),
+                cache_items.get(&i).map(|v| v.as_slice()).unwrap_or(&[]),
+            );
             let selected = &pivot.filter_fields[pos].selected_values;
-            items_xml = Some(build_filter_items_xml(&values, selected));
+            items_xml = Some(build_filter_items_xml(&display, selected));
         }
         if data_field_idxs.contains(&i) {
             attrs.push_str(" dataField=\"1\"");
