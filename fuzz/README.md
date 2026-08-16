@@ -386,7 +386,7 @@ Failure artifacts land under `fuzz_results/failures/vba_parse_<label>/` as `sour
 
 ## VBA Execution Fuzzing (`fuzz_vba.py`)
 
-Phase 1 of the VBA plan. Generates a VBA procedure, runs it in `visi`'s interpreter and in real Excel, and compares **value, subtype and error number** together.
+Phases 1 and 2 of the VBA plan. Generates a VBA procedure, runs it in `visi`'s interpreter and in real Excel **against the same workbook**, and compares four things: **value, subtype, error number, and every cell of the data grid**.
 
 ```bash
 python3 fuzz/fuzz_vba.py --driver mock --iterations 50    # visi only, no Excel
@@ -399,17 +399,43 @@ Fast, unlike the other Excel-driven harnesses — 60 cases in about 4 seconds. B
 
 **It has already paid for itself twice over.** It corrected a `Variant` rule that a careful hand-probe had got *backwards*: `32767 + 1` really does raise error 6, so the probe suggested "Variant arithmetic never promotes" — but that is true only between two **compile-time constants**. With a variable involved, `a = 32767 : a + 1` is the `Long` 32768 and `a = 100000 : a * a` is the `Double` 1e10. It also found that Excel's `CStr` keeps the sign on negative zero (`-0`), and that an empty string is not a zero (`"" = 0` is error 13, unlike `Empty`).
 
+**The cell comparison is the Phase 2 half, and it is not optional.** A macro that returns the right number while writing the wrong cell is exactly the failure this feature can produce, and nothing else would catch it — the return value is compared by every earlier phase, the saved workbook by none of them. Every case reports the grid, including the ones that never touch it, so a macro that writes when it should not is a mismatch rather than a silence.
+
+The grid is serialised **by the harness itself, in VBA** (`ResetGrid` / `GridState`), not by reading the two saved files. That is what keeps the two engines running literally the same code: the string Excel returns and the string `visi` returns come from one implementation and are compared directly, with `fuzz_excel.py`'s float tolerance applied field by field. It also means a case that *raises* still reports the cells it wrote first — the measured Excel behaviour, since nothing rolls back.
+
+Roughly a third of generated statements now touch the workbook: reads and writes through `.Value`/`.Value2`/`.Formula`/`.Text`, `Cells`/`Range`/`Offset`/`Resize`, `For Each` over a range, `With`, `Is`, and both `Application.WorksheetFunction.X` and `Application.X`. Cell coordinates are always **literal**, never generated expressions — a computed index lands outside the grid and both engines just agree on error 1004, which is a result, but a boring one that would crowd out the interesting cases.
+
 Three things shape the design:
 
 - **The generated procedure is invoked through an `On Error GoTo` harness.** Without it an untrapped error goes modal, `osascript` never returns, and Excel needs a SIGKILL — see the VBA probe section above.
 - **Nothing non-deterministic is generated** (`Now`, `Rnd`, `Timer`): the two engines would differ by construction and every iteration would be noise.
 - **`Len` is never applied to a raw expression**, only to `CStr(...)`. `Len(False)` — `Len` of a *Boolean literal* — is a compile error in Excel, which hangs the batch. It is another instance of the Phase 0 boundary: a check needing the argument's static type, which a parser does not track.
+- **The generator must emit compilable source *by construction*, and this is checked in Python.** A host local named `vc` once collided with the generated variable `vc`, making a duplicate `Dim` — a compile error, so the symptom was a modal dialog and a hung `osascript` rather than a failed comparison, and `visi macro check` cannot warn about it either (Phase 0 resolves no names). `check_no_duplicate_dims` now rejects it before Excel ever sees it. Prefer that shape of guard to fixing the one instance.
+- **`HARNESS_TEMPLATE` must stay self-contained.** `vba_expr_probe.py` and `vba_host_probe.py` both import it into modules that define nothing else, so a call to a helper living only in `fuzz_vba.py` compiles there and is "Sub or Function not defined" here — another modal hang. `GRID_HARNESS_TEMPLATE` is the variant that may depend on this file's own helpers.
 
 It found and drove out eleven distinct rule families in the value model — three-valued `And`/`Or`/`Imp`, the four string-vs-number comparison rules, `For` counter semantics, count-argument rounding, `(-1) ^ 1.5`, `Select Case Null`, infinity handling, `CStr(Null)`, `Single` with `Long`, Null coercion order, and `Val` typing — taking agreement from 54/60 to **493/500**. Each is documented with its measured Excel result in [`docs/vba-macro-support.md`](../docs/vba-macro-support.md) under "Phase 1, as built".
 
 The seven that remained were disagreements about *which error surfaces*, never about a value, and have all been root-caused and fixed — see [`docs/vba-error-ordering.md`](../docs/vba-error-ordering.md), measured with [`vba_ordering_probe.bas`](vba_ordering_probe.bas). **Re-run on a seed you have not tuned against before believing a number:** this harness read 500/500 on its development seed while unseen seeds still showed ~2%, one systematic family of which (`CStr` rendering 16 significant digits in exponent form and 14 in fixed form, where Excel shows 15 of each) appeared on every unseen seed and none of the tuned one. One of the seven turned out to be a bug in this driver rather than in either engine: it was calling `.strip()` on the value parsed out of the AppleScript reply, eating the padding on a result like `OK|String|  3  `. Worth remembering as the failure mode a differential harness is most prone to — **a harness bug looks exactly like an engine bug, and the engine gets the blame.**
 
+**Phase 2 kept the pattern going.** On eight unseen seeds it stands at **1599 of 1600**, and what it found is the argument for the cell comparison in miniature. Two divergences **no return value could expose**, where the macro returned the same number on both sides and left the wrong thing in a cell: assigning an infinity left `-inf` here and `#NUM!` in Excel, and assigning `"  3  "` left text here and the number 3 in Excel. Three rules that were wrong or incomplete, including one that had stood since Phase 1 (§16 of the error-ordering doc) and two that stopped one level short of where they should have (§18, §21). Two ordinary bugs (§19, §20). And one genuine Excel artifact, left unmatched (§22).
+
+**Add seeds, and keep adding them.** Every one of those was found on a seed introduced *after* the previous round reported clean, and the corrected §16 was itself wrong on the first attempt in exactly the way the original was — two cases that cannot separate two rules look like confirmation of whichever you already believe. A clean run on the seeds you already have says much less than one more seed does.
+
 Failure artifacts land under `fuzz_results/failures/vba_exec_case_<N>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers.
+
+---
+
+## VBA Host Object Model Probe (`vba_host_probe.py`)
+
+Not a fuzzer: a fixed set of ~120 questions about what Excel's object model actually *does*, run against a workbook with data in it, printed rather than compared. It is the measurement record behind `core/vba/host.rs`, and every inline test there asserts a string this produced.
+
+```bash
+python3 fuzz/vba_host_probe.py
+```
+
+Use it the way `vba_variant_probe.bas` was used for the value model: before implementing a host behaviour, not after a fuzz mismatch. Several answers are the opposite of the obvious design — `ws.Range("A1") Is ws.Range("A1")` is **False** while `ws Is wb.Worksheets(1)` is **True**, `ws.Cells.Count` is **error 6**, a date-formatted cell reads back as `Date` through `.Value` and `Double` through `.Value2`, and a numeric cell is always `Double` and never `Integer`.
+
+Two structural notes. Cases run **in order in one session against one workbook**, so every case that writes is at the end, after every case that reads — a read case moved below a write silently measures the wrong thing. And reads are chunked small deliberately: an unknown member on an early-bound object (`Range`, `WorksheetFunction`) is a *compile* error, so one bad case costs a chunk rather than the run. Two such cases took down two whole batches before they were removed, which is why the file names them in a comment rather than just omitting them.
 
 ## VBA Expression Probe (`vba_expr_probe.py`)
 

@@ -200,6 +200,32 @@ impl WorkbookManager {
         Ok(())
     }
 
+    /// Evaluates one Excel function against this workbook, outside any cell.
+    ///
+    /// What `Application.WorksheetFunction.X` calls. Every sheet is in the
+    /// context, so an argument naming a range on any of them resolves; the
+    /// call itself is hosted on the first sheet, which only matters for the
+    /// handful of functions that read the calling cell's position -- and a
+    /// macro's call has no calling cell to read.
+    pub(crate) fn call_worksheet_function(
+        &self,
+        name: &str,
+        args: &[crate::core::parser::Expr],
+    ) -> Result<ResultData, crate::core::EngineError> {
+        let Some(host) = self.sheets.first() else {
+            return Err(crate::core::EngineError::EvalError(
+                crate::core::EvalError::UnknownFunction("no worksheets".to_string()),
+            ));
+        };
+        let mut context = Context::new();
+        for s in &self.sheets {
+            context.add_table(s.name.clone(), s);
+        }
+        context.pivot_tables = &self.pivot_tables;
+        context.sheet_order = self.sheets.iter().map(|s| s.name.clone()).collect();
+        host.call_worksheet_function(name, args, Some(&context))
+    }
+
     /// Find index of sheet by name, or return default index 0 if name is None.
     pub fn find_sheet_index(&self, name_opt: Option<&str>) -> crate::Result<usize> {
         if self.sheets.is_empty() {

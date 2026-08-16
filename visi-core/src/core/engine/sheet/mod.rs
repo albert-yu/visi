@@ -347,14 +347,34 @@ impl Sheet {
             let (result, new_deps, compiled_to_cache) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
                 if !src.starts_with('=') {
+                    // Numeric text is trimmed before it is parsed, because
+                    // that is what entering it does: a cell given `"  3  "`
+                    // holds the *number* 3, in Excel and (measured through
+                    // `fuzz/fuzz_vba.py`, where a macro assigned exactly that
+                    // string) through VBA's `Range.Value` as well.
+                    // `xlsx::text_cell_src` trims to match when deciding
+                    // whether an imported *text* cell needs quoting.
                     let res = if src.is_empty() {
                         ResultData::None
                     } else if src.starts_with('"') && src.ends_with('"') && src.len() >= 2 {
                         ResultData::String(src[1..src.len() - 1].to_string())
-                    } else if let Ok(i) = src.parse::<i64>() {
+                    } else if let Ok(i) = src.trim().parse::<i64>() {
                         ResultData::Integer(i)
-                    } else if let Ok(f) = src.parse::<f64>() {
+                    } else if let Ok(f) = src.trim().parse::<f64>()
+                        // Rust's `f64::from_str` accepts "inf" and "NaN";
+                        // Excel has neither, and reports #NUM! for both. A
+                        // non-finite literal here would otherwise become a
+                        // Float that no formula could have produced -- found
+                        // by `fuzz/fuzz_vba.py`, where a macro assigned
+                        // `-2.5 ^ 1000` to a cell and this stored `-inf`
+                        // where Excel stored `#NUM!`.
+                        && f.is_finite()
+                    {
                         ResultData::Float(f)
+                    } else if crate::core::engine::result_data::is_excel_error_code(src) {
+                        // Typing an error value into a cell produces the
+                        // error, not the text. See `is_excel_error_code`.
+                        ResultData::Error(src.to_uppercase())
                     } else if src.eq_ignore_ascii_case("true") {
                         ResultData::Boolean(true)
                     } else if src.eq_ignore_ascii_case("false") {

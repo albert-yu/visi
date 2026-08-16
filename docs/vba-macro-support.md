@@ -128,7 +128,7 @@ real Excel, using the harness in Part 2.
 | --- | --- | --- |
 | 0 ✅ | Lexer + parser + AST; `visi macro check` reports syntax errors, no execution | Parse-only: does Excel agree this compiles? |
 | 1 ✅ | `Variant` model, expressions, `If`/`For`/`Do`/`Select Case`, `Sub`/`Function`, `On Error` | Yes — the bulk of the differential value |
-| 2 | Range and Worksheet object model, `WorksheetFunction` bridge | Yes |
+| 2 ✅ | Range and Worksheet object model, `WorksheetFunction` bridge | Yes |
 | 3 | Styles, tables, pivots, row/column edits | Yes |
 | — | Events (`Worksheet_Change`, `Workbook_Open`), classes | Separate design; ordering is observable and Excel's is subtle |
 
@@ -254,6 +254,125 @@ seeds the harness reports 294–297 of 300, not the 300/300 the tuned seed
 shows, and the gap between those two figures is worth reading before trusting
 any of these counts.
 
+### Phase 2, as built
+
+Landed as `core/vba/host.rs`, `WorkbookManager::run_macro`, the `--output` /
+`--in-place` half of `visi macro run`, `Workbook.run_macro` in the bindings,
+and a `fuzz/fuzz_vba.py` that compares cells as well as return values. The
+allow-list is the one this document proposed and nothing beyond it; everything
+else still raises 438 naming the construct.
+
+`fuzz/vba_host_probe.py` is the measurement record — a hundred-odd fixed
+questions run against a workbook with data in it — and every rule below cites
+it. The inline tests in `host.rs` assert the exact strings it got back from
+Excel, so an expectation there can be read straight off a probe run.
+
+**An object is a value, not a pointer.** `ObjRef` holds ids and coordinates,
+never a borrow, so the interpreter can hold `&mut WorkbookManager` for the
+whole run without fighting the borrow checker at every statement. A `Range` is
+`(sheet_id, row, col, height, width)` and a `Worksheet` is a `sheet_id` — an
+id rather than an index or a name, for the same reason compiled formulas store
+one: a macro can rename or reorder sheets mid-run.
+
+**`Is` compares an identity token, and this was the one design the plan got
+wrong.** The issue proposed comparing the coordinate tuples. Excel disagrees:
+`ws.Range("A1") Is ws.Range("A1")` is **False**, because each call constructs
+a fresh object, while `Set r = ws.Range("A1") : Set q = r` makes `q Is r`
+True. So a `Range` carries a token that copying preserves and reconstructing
+does not. Worksheets go the other way — `ws Is wb.Worksheets(1)` is True —
+because Excel hands out a cached object per sheet, so a worksheet's identity
+really is its id.
+
+**A read recalculates only if a write is outstanding.** Excel in automatic
+mode recalculates after every assignment and it is observable: writing `A1`
+and then reading a `D1` holding `=A1*2` gives the new value. Doing that
+literally would mean running `WorkbookManager::evaluate` — three passes over
+every sheet — once per assignment, which a loop writing a thousand cells
+cannot afford. A write instead sets a `stale` flag and the next read that
+could observe it pays for one recalculation, so a run of consecutive writes
+costs one rather than one each. Same observable behaviour, different timing.
+The deeper staleness risk is `evaluate`'s own fixed three-pass limit, which a
+macro-driven write makes observable where it previously was not.
+
+**Default members are resolved in the interpreter, and are easy to get
+silently wrong.** `x = ws.Range("A1")` reads the cell while
+`Set r = ws.Range("A1")` binds the object, and the parser sees the same
+expression for both. Every context wanting a scalar funnels through one
+`Interpreter::scalar`; `Set`, `Is`, `TypeName`, a `With` subject and a user
+procedure's arguments deliberately skip it. Getting this wrong does not raise
+— it produces the wrong kind of value.
+
+**Dates come back as `Date`, and that needed a real subtype.** A cell whose
+style carries a date number format reads back through `.Value` as a `Date`
+variant and through `.Value2` as a plain `Double` — measured, including for a
+*fractional* serial, which is still a `Date` and whose `CStr` shows the time.
+`Variant::Date` is a VBA-side type only; the engine keeps having no date value
+type, exactly as `core/date.rs` argues. Writing a `Date` back writes the
+serial *and* the number format, since a date in this model is both.
+
+Other measurements worth knowing before touching this:
+
+| Behaviour | Measured |
+| --- | --- |
+| `For Each` over a range | **row-major** — `A1 B1 A2 B2` over `A1:B2` |
+| a numeric cell's `.Value` | always `Double`, never `Integer`, even for `1` |
+| a multi-cell `.Value` | a 2-D array indexed `(row, column)` from 1; `CStr` of it is error 13 |
+| an array assigned to one cell | writes its first element |
+| `Worksheets("nope")`, `Worksheets(5)` | error 9 |
+| a bad address, an off-sheet `Offset`, `Resize(0, 1)` | error 1004 |
+| `ws.Cells.Count` | **error 6** — the property is `Long` and the grid does not fit |
+| `ws.Cells.Address` | `$1:$1048576`, the whole-row form |
+| `.Value = "=G1*3"` | makes a *formula*; `.Value = "6/22/2026"` makes a *date* |
+| a cell holding `=1/0`, read | an error `Variant`; `CLng` of it is 2007 |
+| `WorksheetFunction.VLookup` failing | raises 1004 |
+| `Application.VLookup` failing | returns an error `Variant` that `IsError` detects |
+| `Sum` over a range | skips text and booleans; `Sum("1", 2)` coerces them |
+
+That last pair is the whole reason `Application` and
+`Application.WorksheetFunction` are two objects over one implementation.
+
+**The bridge is a bridge.** `Application.WorksheetFunction.X` builds formula
+argument expressions — a `Range` becomes a real range reference — and hands
+them to `Sheet::call_worksheet_function`, a `pub(crate)` entry point onto the
+existing `evaluate_function`. That is what makes the range-versus-scalar
+coercion split above fall out rather than being written twice. The engine's
+own non-Excel functions (`GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, `STR`) are
+blocked: a macro using one would work here and fail in Excel, which is the one
+direction of divergence a differential harness cannot catch, since it only
+generates what Excel accepts.
+
+**Two limits are ours, not Excel's.** Excel's grid is sparse and `visi`'s
+`Sheet` is a dense `Vec` per column, so `ws.Range("XFD1048576").Value = 1`
+would ask for seventeen billion cells. It reports error 7 ("Out of memory")
+past four million instead — a number VBA itself produces, so a macro sees
+something plausible. Reading or iterating a range that large is capped the
+same way.
+
+**Where it stands.** On eight seeds never used while developing,
+**1599 of 1600** generated procedures agree with Excel on value, subtype,
+error number *and* every cell in the data grid. The one remaining is Excel
+raising an overflow that depends on the *statement kind* rather than on any
+value, and is deliberately not matched; the per-seed numbers and the full
+accounting are in [`vba-error-ordering.md`](vba-error-ordering.md) §16–§22.
+
+The fuzzer earned its keep several times over, and the findings split into
+three kinds worth distinguishing:
+
+- **Two cell divergences no return value could have exposed.** A macro
+  assigning an infinity left `-inf` in a cell where Excel leaves `#NUM!`; one
+  assigning `"  3  "` left text where Excel leaves the number 3. Both engines
+  returned the same value in each case.
+- **A Phase 1 rule that had been wrong since it was written.** §11's "a
+  runtime String against a static Boolean compares as text" was derived from
+  two cases that could not distinguish it from the truth, which is that the
+  string converts with `CBool`. Two more rules (§13's static typing, §7's
+  `Select Case` conversion) turned out to stop one level too early.
+- **Two ordinary bugs** in `InStr` and in negating the `Long` minimum.
+
+The process lesson is in §16's own history: the corrected rule was itself
+wrong on the first attempt, in the same way, and only a seed added afterwards
+caught it. Each of the eight seeds kept finding something until the last.
+
 ### Security posture
 
 Executing a macro from an untrusted workbook is a materially different act
@@ -264,6 +383,22 @@ files they did not author. Execution must be opt-in per invocation
 triggered by opening a file, and never wired to `Workbook_Open` without a
 separate explicit flag. `--quiet` must not suppress the notice that a macro
 ran.
+
+As of Phase 2 that "can rewrite the workbook arbitrarily" is literal rather
+than prospective, and the posture holds unchanged and is enforced in code:
+
+- `WorkbookManager::run_macro` is the only entry point that binds a workbook,
+  and nothing calls it implicitly — not `load_bytes`, not `evaluate`, not the
+  bindings' `roundtrip`.
+- `visi macro run` takes `--output` / `--in-place` like every other write
+  command, and a macro that **changed the workbook with neither is an error**,
+  not a silent discard. Reporting a cheerful return value while throwing the
+  writes away is the failure mode this whole feature exists to avoid.
+- The "Running VBA procedure ..." notice goes to stderr and is not
+  suppressible. Now that a macro can write cells it matters more, not less.
+- A macro that raises **after** writing keeps its writes, matching Excel,
+  which does not roll back. Reporting the error while quietly reverting would
+  be a subtler kind of wrong.
 
 ---
 

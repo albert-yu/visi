@@ -20,6 +20,8 @@ const HANDLES_NULL: &[&str] = &[
     "isnumeric",
     "isdate",
     "isobject",
+    "iserror",
+    "isarray",
     "typename",
     "vartype",
     "iif",
@@ -94,13 +96,39 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         "isempty" => Variant::Boolean(arg(args, 0).is_empty()),
         "isnumeric" => Variant::Boolean(is_numeric(&arg(args, 0))),
         "isdate" => Variant::Boolean(matches!(arg(args, 0), Variant::Date(_))),
-        "isobject" => Variant::Boolean(false),
+        "isobject" => Variant::Boolean(matches!(arg(args, 0), Variant::Object(_))),
+        // Measured: `IsError(CVErr(2042))` and `IsError` of a cell holding
+        // `=1/0` are both True. This is the whole point of the error Variant
+        // -- `Application.VLookup` returning one is how a macro tests for a
+        // failed lookup without trapping a run-time error.
+        "iserror" => Variant::Boolean(matches!(arg(args, 0), Variant::ErrValue(_))),
+        "isarray" => Variant::Boolean(matches!(arg(args, 0), Variant::Array(_))),
+        "cverr" => Variant::ErrValue(need(args, 0)?.to_f64()? as i32),
+
+        // ---- arrays ------------------------------------------------------
+        // Only a `Range.Value` read produces one of these, so the bounds are
+        // always 1-based and two-dimensional.
+        "ubound" | "lbound" => {
+            let Variant::Array(a) = need(args, 0)? else {
+                return Err(VbaError::type_mismatch());
+            };
+            let dim = match args.get(1) {
+                Some(d) => d.to_f64()? as usize,
+                None => 1,
+            };
+            if lower == "lbound" {
+                a.ubound(dim)?;
+                Variant::Long(1)
+            } else {
+                Variant::Long(a.ubound(dim)? as i32)
+            }
+        }
 
         // ---- conversion --------------------------------------------------
         "cstr" => Variant::Str(need(args, 0)?.to_vba_string()?),
-        "cint" => pack_int(need(args, 0)?.to_f64()?)?,
-        "clng" => pack_long(need(args, 0)?.to_f64()?)?,
-        "cdbl" => Variant::Double(need(args, 0)?.to_f64()?),
+        "cint" => pack_int(numeric_arg(args, 0)?)?,
+        "clng" => pack_long(numeric_arg(args, 0)?)?,
+        "cdbl" => Variant::Double(numeric_arg(args, 0)?),
         "csng" => {
             let f = need(args, 0)?.to_f64()? as f32;
             if !f.is_finite() {
@@ -266,6 +294,25 @@ fn vartype(v: &Variant) -> i16 {
         Variant::Date(_) => 7,
         Variant::Str(_) => 8,
         Variant::Boolean(_) => 11,
+        // The documented VarType constants: vbObject, vbError, and an array
+        // is vbArray (8192) added to its element type, which for a range read
+        // is always vbVariant (12).
+        Variant::Object(_) => 9,
+        Variant::ErrValue(_) => 10,
+        Variant::Array(_) => 8192 + 12,
+    }
+}
+
+/// A numeric argument for the explicit conversions, which unlike arithmetic
+/// accept an error value and give its `CVErr` number back.
+///
+/// Measured: `v = Application.VLookup(...)` failing makes `CLng(v)` `2042`,
+/// while `v + 1` is error 13. Only this path may look through an error value.
+fn numeric_arg(args: &[Variant], i: usize) -> VResult<f64> {
+    let v = need(args, i)?;
+    match v.error_number() {
+        Some(n) => Ok(n as f64),
+        None => v.to_f64(),
     }
 }
 
@@ -273,6 +320,7 @@ fn is_numeric(v: &Variant) -> bool {
     match v {
         Variant::Str(s) => value::parse_vba_number(s).is_ok() && !s.trim().is_empty(),
         Variant::Empty | Variant::Null => false,
+        Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => false,
         _ => true,
     }
 }
@@ -398,7 +446,15 @@ fn instr(args: &[Variant]) -> VResult<Variant> {
         )
     };
     let hay_chars: Vec<char> = hay.chars().collect();
-    if start >= hay_chars.len() && !(start == 0 && hay_chars.is_empty()) {
+    // A zero-length string to search in is 0, whatever the needle -- so
+    // `InStr("", "")` is 0 while `InStr("a", "")` is 1. Measured; this used
+    // to report 1 for the empty/empty pair, on the reasoning that an empty
+    // needle matches at the start, which is true only when there is a string
+    // to match in. `Empty` reaches here as `""` and behaves the same way.
+    if hay_chars.is_empty() {
+        return Ok(Variant::Long(0));
+    }
+    if start >= hay_chars.len() {
         return Ok(Variant::Long(0));
     }
     // Empty needle matches at the start position, as VBA has it.

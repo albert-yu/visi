@@ -71,6 +71,30 @@ fn post_process(r: Result<ResultData, EngineError>) -> Result<ResultData, Engine
 }
 
 impl Sheet {
+    /// Evaluates a worksheet function from already-built argument
+    /// expressions, outside any cell.
+    ///
+    /// The entry point `Application.WorksheetFunction.X` reaches, so that the
+    /// VBA host bridges onto the *existing* function library rather than
+    /// reimplementing it. Deliberately `pub(crate)` and deliberately not a
+    /// widening of [`Sheet::evaluate_function`]'s visibility: the caller
+    /// supplies arguments and a context and gets a value, with no access to
+    /// the dependency plumbing or the `LET` scope a real cell evaluation
+    /// carries.
+    ///
+    /// Dependencies are discarded because there is no cell to record them
+    /// against -- a macro's call is a one-off read, not an edge in the
+    /// recalculation graph.
+    pub(crate) fn call_worksheet_function(
+        &self,
+        name: &str,
+        args: &[Expr],
+        context: Option<&Context>,
+    ) -> Result<ResultData, EngineError> {
+        let mut deps = Vec::new();
+        self.evaluate_function(name, args, context, None, None, &mut deps, &LetScope::Empty)
+    }
+
     /// Evaluates a function call by name.
     ///
     /// Handles the lazy/short-circuit functions itself, since their arguments

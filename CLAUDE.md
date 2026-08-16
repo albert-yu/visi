@@ -36,8 +36,21 @@ python fuzz/fuzz_excel.py --driver mock --iterations 5   # no Excel needed; exer
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 python fuzz/fuzz_excel.py --seed 48291 --iterations 1    # reproduce a specific failure
 
+python fuzz/fuzz_vba.py --iterations 200 --seed 909      # VBA execution + the cells a macro wrote
+python fuzz/vba_host_probe.py                            # what Excel's object model actually does
+python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
+
 pytest fuzz/test_backend_parity.py visi-python/tests/    # bindings must match the CLI
 ```
+
+Anything in `fuzz/` that becomes VBA *source* has a trap worth knowing: an
+undefined name or a duplicate `Dim` is a **compile** error, which the `On Error`
+harness cannot catch, so Excel goes modal and `osascript` never returns. A run
+that produces no output at all is a compile error, not a slow run -- `killall
+"Microsoft Excel"` and look at the generated source. `HARNESS_TEMPLATE` in
+`fuzz_vba.py` is imported and spliced into modules by both probe scripts, so it
+has to stay self-contained; `fuzz_vba.GRID_HARNESS_TEMPLATE` is the one that may
+depend on that file's own helpers.
 
 Each fuzzer takes `--backend {auto,bindings,subprocess}`. `auto` prefers the
 bindings and falls back to the CLI with a warning. Reach for `subprocess` when
@@ -163,7 +176,8 @@ Two layers that share a directory but not much else:
 
 - **Storage** (`mod.rs`, plus `ovba.rs`/`vba_xlsx.rs`/`vba_synth.rs` outside it) — `VbaProject`/`VbaModule` and the `vbaProject.bin` round trip. Workbook-level like `Chart`, not sheet-scoped. Read those files' own doc comments before touching them; the p-code prefix and MODULECOOKIE handling are both load-bearing in ways that are not guessable.
 - **Syntax** (`lexer.rs`, `ast.rs`, `parser.rs`) — Phase 0 of `docs/vba-macro-support.md`. Parses only: no name resolution, no types, no evaluation, which is why a `Call` node cannot distinguish a procedure call from an array index.
-- **Execution** (`value.rs`, `interp.rs`, `builtins.rs`) — Phase 1. A tree-walking interpreter over the AST, with **no host object model**: anything touching a workbook raises error 438 naming what it was, rather than being skipped. Driven by `visi macro run`, which is opt-in per invocation and never implicit in `eval`.
+- **Execution** (`value.rs`, `interp.rs`, `builtins.rs`) — Phase 1. A tree-walking interpreter over the AST. Driven by `visi macro run`, which is opt-in per invocation and never implicit in `eval`.
+- **Host object model** (`host.rs`) — Phase 2. Binds the interpreter to a `WorkbookManager` so a macro can read and write cells, walk sheets, and call `Application.WorksheetFunction`. Anything **outside** its allow-list still raises 438 naming what it was, rather than being skipped — the refusal is the feature, and widening the list is a decision. `core::run_macro` (source text, no workbook) and `WorkbookManager::run_macro` (workbook-bound) are the two entry points; only the latter can mutate anything, and `visi macro run` demands `--output`/`--in-place` when it does.
 
 Things that will bite:
 
@@ -171,6 +185,10 @@ Things that will bite:
 - **Keywords are not reserved.** The lexer emits every one as a plain `Ident` and the parser matches case-insensitively, because VBA's keyword set is contextual — `Name`, `Line`, `Get`, and `Width` are all statements in one position and ordinary property names in another. The `Stmt::Opaque` guards in `parser.rs` are narrow for exactly this reason.
 - **Excel compiles VBA lazily, per invoked procedure.** Nothing short of calling a procedure compiles it — not a probe in the same module, not a reference from a dead branch. This is why `fuzz/fuzz_vba_parse.py` wraps generated source in `If False Then ... End If` inside the procedure it calls, and why there is no way to ask Excel whether an arbitrary module compiles without also running something.
 - A **compile** error in Excel hangs the AppleScript bridge and, unlike a runtime error, is *not* catchable by an `On Error` wrapper.
+- **An object is a value, not a pointer.** `ObjRef` holds ids and coordinates and never borrows the workbook, which is what lets the interpreter hold `&mut WorkbookManager` for a whole run. `Is` compares an identity *token*, not the coordinates: `ws.Range("A1") Is ws.Range("A1")` is **False** in Excel (each call builds a fresh object) while `ws Is wb.Worksheets(1)` is True (worksheets are cached). Measured; the obvious tuple comparison is wrong.
+- **A plain `=` reads an object's default member and `Set` does not**, and the parser cannot tell them apart. Everything wanting a scalar goes through `Interpreter::scalar`; `Set`, `Is`, `TypeName`, a `With` subject and a user procedure's arguments deliberately skip it. Getting this wrong does not raise — it silently produces the wrong kind of value.
+- **A write marks the workbook stale; the next read that could observe it recalculates.** Excel recalculates per assignment and it is observable (`A1 = 5` then reading a `D1` holding `=A1*2`), but `WorkbookManager::evaluate` is three passes over every sheet, so doing it literally would be unaffordable in a write loop. Same behaviour, one recalculation per run of consecutive writes.
+- **`Application.WorksheetFunction.X` raises where `Application.X` returns.** A failing `WorksheetFunction.VLookup` is a trappable 1004; `Application.VLookup` returns an error `Variant` that `IsError` detects. Two call paths, one implementation — `Sheet::call_worksheet_function`, a `pub(crate)` entry onto `evaluate_function`. The engine's own non-Excel functions (`GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, `STR`) are deliberately not exposed: a macro using one would work here and fail in Excel, the one direction the differential harness cannot catch.
 - **Every `Variant` rule in `value.rs` was measured against real Excel**, not taken from documentation, and each cites the `fuzz/vba_variant_probe.bas` case it came from. Re-measure rather than "correcting" one from memory — a careful hand-probe already got one backwards. **Overflow promotes at runtime but not between literals**: `32767 + 1` written with two literals is error 6, but `a = 32767 : a + 1` is the `Long` 32768. `value::ArithMode` carries which applies. Also non-obvious: `"1" + 1` is a `Double` but `"1" + "2"` is a `String`; `7.6 \ 2` is `4` and typed `Long`; every conversion is banker's rounding; `CStr(-0.0)` is `"-0"`; and `""` is *not* a zero (`"" = 0` is error 13) while `Empty` is.
 
 ### xlsx I/O (`visi-core/src/core/xlsx.rs`)
@@ -191,4 +209,5 @@ Follows clig.dev. `-` means stdin/stdout for the file argument. Writes require e
 - `visi-core/src/core/engine/tests/unit.rs` — hand-written engine tests.
 - `visi-core/src/core/engine/tests/{aggregate,logical,math,rounding,text}.rs` — **regression cases harvested from the differential fuzzer**, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell. When the Python harness finds an Excel mismatch, minimize it and add it here.
 - `visi-core/src/core/table.rs`, `pivot.rs`, and `xlsx.rs` have inline `#[cfg(test)] mod tests` for table CRUD, pivot computation/grouping, and xlsx round-tripping (including a pivot table round-trip through the hand-rolled OOXML).
+- `visi-core/src/core/vba/host.rs` has inline tests over the VBA host object model, each asserting the exact string `fuzz/vba_host_probe.py` got back from real Excel for the same expression. Read one off a probe run rather than reasoning about it.
 - `visi/tests/cli_tests.rs` — integration tests that drive `WorkbookManager` (the same API the CLI handlers call) through real file round-trips.

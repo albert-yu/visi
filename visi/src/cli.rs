@@ -879,9 +879,18 @@ pub enum MacroSubcommands {
 
 /// Running a macro executes code the workbook's author wrote, so it is never
 /// implicit: no other subcommand runs one, and `eval` in particular does not.
-/// The Phase 1 interpreter has no host object model, so a macro cannot reach
-/// the workbook -- anything that tries reports an error rather than silently
-/// doing nothing.
+///
+/// Given a workbook the macro runs *against* it and can read and write cells,
+/// so it needs `--output` or `--in-place` like any other write command -- a
+/// macro that changes the workbook with neither is an error rather than a
+/// silent discard. Given a `.bas` file there is no workbook, and anything
+/// reaching for one reports so rather than doing nothing quietly.
+///
+/// Only part of Excel's object model is implemented (`Range`, `Cells`,
+/// `Worksheets`, `WorksheetFunction`, and the properties in the Phase 2 list
+/// of `docs/vba-macro-support.md`). Everything else -- styles, tables,
+/// pivots, `CreateObject`, `MsgBox`, file and network I/O -- raises a
+/// run-time error naming the construct.
 #[derive(Args, Debug)]
 pub struct MacroRunArgs {
     /// Input Excel file path, or a .bas source file, or - for stdin
@@ -895,6 +904,12 @@ pub struct MacroRunArgs {
     /// Argument to pass, repeatable and positional in order
     #[arg(short = 'a', long = "arg")]
     pub args: Vec<String>,
+    /// Where to write the workbook the macro changed (must end in .xlsm)
+    #[arg(short, long)]
+    pub output: Option<String>,
+    /// Write the changed workbook back over the input file
+    #[arg(short, long, conflicts_with = "output")]
+    pub in_place: bool,
     /// Output the result as JSON
     #[arg(long)]
     pub json: bool,
