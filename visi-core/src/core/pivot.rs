@@ -254,6 +254,25 @@ pub struct PivotFilterField {
     /// Matching is case-insensitive, because the items themselves are merged
     /// that way; a selection naming `east` picks the merged `East` item.
     pub selected_values: Option<Vec<String>>,
+    /// Whether the field is in Excel's *multi-select* page mode
+    /// (`multipleItemSelectionAllowed` in the file) rather than its classic
+    /// single-select one.
+    ///
+    /// The two differ in what the page-field cell says, which is observable:
+    /// with one item chosen, multi-select shows `(Multiple Items)` while
+    /// single-select shows the **item's own name**. Both measured -- the
+    /// first through `PivotItems(x).Visible = False`, the second through
+    /// `PivotField.CurrentPage = "Widget"`, which is what puts a field into
+    /// single-select mode in the first place.
+    ///
+    /// Defaults to `true`, matching `set_pivot_filter` and the CLI, which
+    /// select a set of values rather than one page.
+    #[serde(default = "default_true")]
+    pub multiple_selection: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PivotFilterField {
@@ -262,6 +281,7 @@ impl PivotFilterField {
         Self {
             column: column.into(),
             selected_values: None,
+            multiple_selection: true,
         }
     }
 }
@@ -357,8 +377,13 @@ pub(crate) fn row_label_width(pivot: &PivotTable) -> usize {
 /// the classic single-select page-field mode Excel no longer defaults to).
 #[derive(Debug, Clone)]
 pub struct PivotGrid {
-    /// One `(field name, "(All)" | "(Multiple Items)")` pair per filter
-    /// field, in the order they were added.
+    /// One `(field name, state)` pair per filter field, in the order they
+    /// were added.
+    ///
+    /// The state is `"(All)"` when every value is allowed, the **item's own
+    /// name** when exactly one is selected, and `"(Multiple Items)"`
+    /// otherwise -- which is what Excel puts in the page-field cell, and what
+    /// `PivotField.CurrentPage` reports alongside it.
     pub filter_rows: Vec<(String, String)>,
     /// The column-header block above the body: one row per column field,
     /// plus a value-field row when there is more than one value field.
@@ -832,6 +857,18 @@ pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid,
                     && distinct.iter().all(|v| selected_set.contains(v));
                 if is_all {
                     "(All)".to_string()
+                } else if !ff.multiple_selection && selected_set.len() == 1 {
+                    // Single-select mode names the item; multi-select says
+                    // `(Multiple Items)` even for one. Both measured -- see
+                    // `PivotFilterField::multiple_selection`. The item's own
+                    // casing is used, since the cache merges case variants
+                    // onto whichever it saw first.
+                    let wanted = &selected_set;
+                    all_rows
+                        .iter()
+                        .map(|row| group_key(&row[idx]))
+                        .find(|v| wanted.contains(&v.to_ascii_lowercase()))
+                        .unwrap_or_else(|| "(Multiple Items)".to_string())
                 } else {
                     "(Multiple Items)".to_string()
                 }
@@ -1659,6 +1696,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Product".to_string(),
             selected_values: Some(vec!["Widget".to_string()]),
+            multiple_selection: true,
         }];
         pivot.grand_totals_row = false;
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
@@ -1710,6 +1748,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Mixed".to_string(),
             selected_values: Some(vec!["east".to_string()]),
+            multiple_selection: true,
         }];
         pivot.grand_totals_row = false;
         pivot.grand_totals_col = false;
@@ -1736,6 +1775,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Product".to_string(),
             selected_values: None,
+            multiple_selection: true,
         }];
 
         // No selection at all -> "(All)".
@@ -1759,6 +1799,13 @@ mod tests {
         pivot.filter_fields[0].selected_values = Some(vec!["Widget".to_string()]);
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
         assert_eq!(grid.filter_rows[0].1, "(Multiple Items)");
+
+        // ...and that single-select mode is exactly where the item's own
+        // name does show, which is what `PivotField.CurrentPage = "Widget"`
+        // produces. Measured: the page-field cell reads `Widget`.
+        pivot.filter_fields[0].multiple_selection = false;
+        let grid = compute_pivot(&[&sheet], &pivot).unwrap();
+        assert_eq!(grid.filter_rows[0].1, "Widget");
     }
 
     #[test]
@@ -1994,6 +2041,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Region".to_string(),
             selected_values: Some(vec!["East".to_string()]),
+            multiple_selection: true,
         }];
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
         assert!(grid.body_rows.iter().any(|r| r.is_grand_total));
@@ -2099,6 +2147,7 @@ mod tests {
         pivot.filter_fields = vec![PivotFilterField {
             column: "Cat".to_string(),
             selected_values: Some(vec!["Beta".to_string()]),
+            multiple_selection: true,
         }];
         pivot.grand_totals_row = false;
         let grid = compute_pivot(&[&sheet], &pivot).unwrap();
@@ -2659,6 +2708,7 @@ mod tests {
             filter_fields.push(PivotFilterField {
                 column: col_names[fcol].clone(),
                 selected_values: selected,
+                multiple_selection: true,
             });
         }
 

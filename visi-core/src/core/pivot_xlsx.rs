@@ -492,7 +492,10 @@ fn build_pivot_xml_unit(
             let idxs = shared_idx_for(&field_items, &cache_items, i);
             items_xml = Some(build_items_xml(&idxs, subtotal_enabled));
         } else if let Some(pos) = page_field_idxs.iter().position(|&x| x == i) {
-            attrs.push_str(" axis=\"axisPage\" multipleItemSelectionAllowed=\"1\"");
+            attrs.push_str(" axis=\"axisPage\"");
+            if pivot.filter_fields[pos].multiple_selection {
+                attrs.push_str(" multipleItemSelectionAllowed=\"1\"");
+            }
             let display = display_with_shared_idx(
                 field_items.get(&i).map(|v| v.as_slice()).unwrap_or(&[]),
                 cache_items.get(&i).map(|v| v.as_slice()).unwrap_or(&[]),
@@ -525,8 +528,27 @@ fn build_pivot_xml_unit(
         col_fields_xml.push_str("<field x=\"-2\"/>");
     }
     let mut page_fields_xml = String::new();
-    for &idx in &page_field_idxs {
-        page_fields_xml.push_str(&format!("<pageField fld=\"{}\" hier=\"-1\"/>", idx));
+    for (pos, &idx) in page_field_idxs.iter().enumerate() {
+        let ff = &pivot.filter_fields[pos];
+        // Single-select mode records the choice as `item="N"`, a *position*
+        // in the field's display-ordered `<items>`; multi-select records it
+        // by hiding the others and carries no `item` at all. Both measured;
+        // see `fuzz/pivot_filter_probe.py`.
+        let item_attr = match (&ff.selected_values, ff.multiple_selection) {
+            (Some(selected), false) if selected.len() == 1 => field_items
+                .get(&idx)
+                .and_then(|display| {
+                    display
+                        .iter()
+                        .position(|v| v.eq_ignore_ascii_case(&selected[0]))
+                })
+                .map(|pos| format!(" item=\"{pos}\""))
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        page_fields_xml.push_str(&format!(
+            "<pageField fld=\"{idx}\"{item_attr} hier=\"-1\"/>"
+        ));
     }
 
     let value_field_default_labels = pivot::value_field_labels(&pivot.value_fields);
@@ -1384,6 +1406,11 @@ pub fn import_pivot_tables(
             .enumerate()
             .map(|(pos, &fld)| {
                 let mut field = PivotFilterField::new(field_name(fld));
+                // A `<pageField item="N">` is the single-select form; without
+                // it the field is multi-select, which is also the default for
+                // a field with no selection at all.
+                field.multiple_selection =
+                    parsed.page_field_item.get(pos).copied().flatten().is_none();
                 let items = parsed.field_items.get(&fld);
                 let values = cache_shared_items(fld);
                 let value_at = |shared_idx: usize| values.get(shared_idx).cloned();

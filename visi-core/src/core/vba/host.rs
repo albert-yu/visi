@@ -58,7 +58,7 @@ use std::collections::HashMap;
 
 use crate::core::engine::{CellRef, ResultData, Sheet};
 use crate::core::grid_edit::{Axis, GridEdit, shift_span};
-use crate::core::{CellStyle, ExcelTable};
+use crate::core::{CellStyle, ExcelTable, PivotTable};
 
 use super::color;
 use crate::core::parser::{Expr as FExpr, col_idx_to_letters};
@@ -125,6 +125,16 @@ pub enum ObjRef {
     /// One table data row, by table id and 0-based position within the data
     /// body.
     ListRow(u64, u32),
+    /// The `PivotTables` collection of one worksheet, by sheet id.
+    PivotTables(u64),
+    /// One pivot table, by its workbook-unique id.
+    PivotTable(u64),
+    /// A pivot table's `PivotFields` collection, by pivot id.
+    PivotFields(u64),
+    /// One pivot field, by pivot id and source-column position -- Excel's
+    /// `PivotFields` has one entry per *source column*, whatever area (if
+    /// any) it currently occupies.
+    PivotField(u64, u32),
     /// `Range.Interior`, by the handle of the range it belongs to.
     ///
     /// Excel hands out a distinct object (`TypeName` is `"Interior"`,
@@ -221,6 +231,10 @@ impl ObjRef {
             ObjRef::ListColumn(..) => "ListColumn",
             ObjRef::ListRows(_) => "ListRows",
             ObjRef::ListRow(..) => "ListRow",
+            ObjRef::PivotTables(_) => "PivotTables",
+            ObjRef::PivotTable(_) => "PivotTable",
+            ObjRef::PivotFields(_) => "PivotFields",
+            ObjRef::PivotField(..) => "PivotField",
         }
     }
 
@@ -245,7 +259,11 @@ impl ObjRef {
             | (ObjRef::ListColumns(a), ObjRef::ListColumns(b))
             | (ObjRef::ListRows(a), ObjRef::ListRows(b)) => a == b,
             (ObjRef::ListColumn(a, i), ObjRef::ListColumn(b, j))
-            | (ObjRef::ListRow(a, i), ObjRef::ListRow(b, j)) => a == b && i == j,
+            | (ObjRef::ListRow(a, i), ObjRef::ListRow(b, j))
+            | (ObjRef::PivotField(a, i), ObjRef::PivotField(b, j)) => a == b && i == j,
+            (ObjRef::PivotTables(a), ObjRef::PivotTables(b))
+            | (ObjRef::PivotTable(a), ObjRef::PivotTable(b))
+            | (ObjRef::PivotFields(a), ObjRef::PivotFields(b)) => a == b,
             _ => false,
         }
     }
@@ -277,6 +295,11 @@ fn unsupported(what: &str) -> VbaError {
         format!("Object doesn't support this property or method: {what}"),
     )
 }
+
+/// What `PivotField.CurrentPage` reads as when the field is unfiltered --
+/// and, measured, also when *several* items are selected. It only ever
+/// reflects a single selection.
+const ALL_PAGES: &str = "(All)";
 
 /// Error 1004 -- what Excel reports for a bad address, an out-of-sheet
 /// `Offset`, and a `WorksheetFunction` call that fails. All measured.
@@ -471,6 +494,10 @@ impl<'w> Host<'w> {
             ObjRef::ListColumn(id, idx) => self.list_column_member(*id, *idx, name),
             ObjRef::ListRows(id) => self.list_rows_member(*id, name, args),
             ObjRef::ListRow(id, idx) => self.list_row_member(*id, *idx, name),
+            ObjRef::PivotTables(sheet_id) => self.pivot_tables_member(*sheet_id, name, args),
+            ObjRef::PivotTable(id) => self.pivot_table_member(*id, name, args),
+            ObjRef::PivotFields(id) => self.pivot_fields_member(*id, name, args),
+            ObjRef::PivotField(id, idx) => self.pivot_field_member(*id, *idx, name),
         }
     }
 
@@ -552,6 +579,64 @@ impl<'w> Host<'w> {
                 self.stale = false;
                 Ok(())
             }
+            // The property issue #58 gated on the import gap being closed
+            // first, since a macro can set a filter, save, and carry on.
+            //
+            // Measured: assigning re-renders the grid **immediately**, with
+            // no `RefreshTable` -- reading a pivot cell straight afterwards
+            // shows the filtered value. That is a deliberate exception to
+            // this crate's rule that nothing recomputes a pivot implicitly;
+            // the rule describes visi's CRUD, and here Excel's behaviour
+            // wins because a macro can observe the difference.
+            (ObjRef::PivotField(id, idx), "currentpage") => {
+                let (_, p) = self.pivot(*id)?;
+                let columns = self.pivot_source_columns(&p)?;
+                let column = columns
+                    .get(*idx as usize)
+                    .cloned()
+                    .ok_or_else(|| app_defined("Unable to set the CurrentPage property"))?;
+                if !p
+                    .filter_fields
+                    .iter()
+                    .any(|f| f.column.eq_ignore_ascii_case(&column))
+                {
+                    return Err(app_defined("Unable to set the CurrentPage property"));
+                }
+                let wanted = value.to_vba_string()?;
+                let selection = if wanted == ALL_PAGES {
+                    None
+                } else {
+                    // Measured: a value that is not one of the field's items
+                    // is 1004 rather than an empty selection, which would
+                    // silently blank the grid.
+                    if !self.pivot_field_has_item(&p, &column, &wanted)? {
+                        return Err(app_defined(
+                            "Unable to set the CurrentPage property of the PivotField class",
+                        ));
+                    }
+                    Some(vec![wanted])
+                };
+                self.wb
+                    .set_pivot_filter(&p.name, &column, selection)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                // `CurrentPage` *is* the single-select page mode, which is
+                // what makes the page-field cell show the item's own name
+                // rather than `(Multiple Items)`.
+                if let Some(pivot) = self.wb.pivot_tables.iter_mut().find(|t| t.id == *id)
+                    && let Some(f) = pivot
+                        .filter_fields
+                        .iter_mut()
+                        .find(|f| f.column.eq_ignore_ascii_case(&column))
+                {
+                    f.multiple_selection = false;
+                }
+                self.wb
+                    .refresh_pivot_table(&p.name)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                self.mutated = true;
+                self.stale = false;
+                Ok(())
+            }
             (ObjRef::Interior(_) | ObjRef::Font(_), _) => {
                 if !args.is_empty() {
                     return Err(unsupported(&format!(
@@ -628,6 +713,18 @@ impl<'w> Host<'w> {
             ObjRef::ListRows(id) => {
                 let key = args.first().ok_or_else(VbaError::subscript)?;
                 Ok(Variant::Object(self.list_row_by_index(*id, key)?))
+            }
+            ObjRef::PivotTables(sheet_id) => {
+                let key = args
+                    .first()
+                    .ok_or_else(|| app_defined("PivotTables needs a key"))?;
+                Ok(Variant::Object(self.pivot_by_key(*sheet_id, key)?))
+            }
+            ObjRef::PivotFields(id) => {
+                let key = args
+                    .first()
+                    .ok_or_else(|| app_defined("PivotFields needs a key"))?;
+                Ok(Variant::Object(self.pivot_field_by_key(*id, key)?))
             }
             _ => Err(unsupported(&format!("calling a {}", obj.type_name()))),
         }
@@ -786,6 +883,12 @@ impl<'w> Host<'w> {
                     return Ok(Variant::Object(ObjRef::ListObjects(id)));
                 }
                 self.call_object(&ObjRef::ListObjects(id), args)
+            }
+            "pivottables" => {
+                if args.is_empty() {
+                    return Ok(Variant::Object(ObjRef::PivotTables(id)));
+                }
+                self.call_object(&ObjRef::PivotTables(id), args)
             }
             "rows" => {
                 let (at, count) = band_args(args, MAX_ROWS, parse_row)?;
@@ -1286,6 +1389,230 @@ impl<'w> Host<'w> {
             table.has_insert_row = true;
         }
         Ok(())
+    }
+
+    // -- Pivot tables ------------------------------------------------------
+    //
+    // Every failure in this surface is **1004**, not the 9 the `ListObjects`
+    // collection uses for the same shape of mistake. Measured, and the two
+    // are easy to conflate.
+
+    /// Whether a pivot field actually has an item with this value, matched
+    /// the way the pivot engine merges them (case-insensitively).
+    fn pivot_field_has_item(&self, p: &PivotTable, column: &str, wanted: &str) -> VResult<bool> {
+        let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
+        let (src, names, cols, rows) =
+            crate::core::pivot::resolve_source(&sheets, &p.source).map_err(app_defined)?;
+        let idx = crate::core::pivot::column_index(&names, column).map_err(app_defined)?;
+        Ok(rows.iter().any(|&r| {
+            crate::core::pivot::group_key(&src.get_result_data(&CellRef::new(r, cols[idx])))
+                .eq_ignore_ascii_case(wanted)
+        }))
+    }
+
+    /// A snapshot of the pivot with this id, and its index.
+    fn pivot(&self, id: u64) -> VResult<(usize, PivotTable)> {
+        self.wb
+            .pivot_tables
+            .iter()
+            .position(|p| p.id == id)
+            .map(|i| (i, self.wb.pivot_tables[i].clone()))
+            .ok_or_else(|| app_defined("The pivot table no longer exists"))
+    }
+
+    /// The source column names of a pivot, which is what `PivotFields`
+    /// enumerates -- one entry per source column, whatever area it occupies.
+    fn pivot_source_columns(&self, pivot: &PivotTable) -> VResult<Vec<String>> {
+        let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
+        crate::core::pivot::resolve_source(&sheets, &pivot.source)
+            .map(|(_, names, _, _)| names)
+            .map_err(app_defined)
+    }
+
+    fn pivot_by_key(&mut self, sheet_id: u64, key: &Variant) -> VResult<ObjRef> {
+        // Excel scopes `PivotTables` to a worksheet by where the pivot is
+        // *drawn*, which is `dest_sheet_id` here -- a pivot's source may be
+        // on another sheet entirely.
+        let on_sheet: Vec<&PivotTable> = self
+            .wb
+            .pivot_tables
+            .iter()
+            .filter(|p| p.dest_sheet_id == sheet_id)
+            .collect();
+        let found = match key {
+            Variant::Str(name) => on_sheet.iter().find(|p| p.name.eq_ignore_ascii_case(name)),
+            other => {
+                let n = crate::core::vba::value::bankers_round(other.to_f64()?) as i64;
+                if n < 1 {
+                    return Err(app_defined("PivotTables index must be 1 or more"));
+                }
+                on_sheet.get(n as usize - 1)
+            }
+        };
+        found
+            .map(|p| ObjRef::PivotTable(p.id))
+            .ok_or_else(|| app_defined("Unable to get the PivotTables property"))
+    }
+
+    fn pivot_tables_member(
+        &mut self,
+        sheet_id: u64,
+        name: &str,
+        args: &[Variant],
+    ) -> VResult<Variant> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Ok(Variant::Long(
+                self.wb
+                    .pivot_tables
+                    .iter()
+                    .filter(|p| p.dest_sheet_id == sheet_id)
+                    .count() as i32,
+            )),
+            "item" => self.call_object(&ObjRef::PivotTables(sheet_id), args),
+            _ => Err(unsupported(&format!("PivotTables.{name}"))),
+        }
+    }
+
+    fn pivot_table_member(&mut self, id: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
+        let (_, p) = self.pivot(id)?;
+        match name.to_ascii_lowercase().as_str() {
+            "name" => Ok(Variant::Str(p.name.clone())),
+            // Measured: returns the Boolean True.
+            "refreshtable" => {
+                self.wb
+                    .refresh_pivot_table(&p.name)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                self.mutated = true;
+                self.stale = false;
+                Ok(Variant::Boolean(true))
+            }
+            "pivotfields" => {
+                if args.is_empty() {
+                    return Ok(Variant::Object(ObjRef::PivotFields(id)));
+                }
+                self.call_object(&ObjRef::PivotFields(id), args)
+            }
+            // Measured: `TableRange1` is the grid alone and `TableRange2`
+            // includes the page-field rows above it -- `$F$3:$G$7` and
+            // `$F$1:$G$7` for the same pivot at `F1` with one filter.
+            "tablerange1" | "tablerange2" => {
+                let (end_row, end_col) = self.pivot_extent(&p)?;
+                let with_pages = name.eq_ignore_ascii_case("tablerange2");
+                let offset = if with_pages || p.filter_fields.is_empty() {
+                    0
+                } else {
+                    // One row per filter field plus the blank one under them,
+                    // the same reservation `pivot_xlsx` makes on export.
+                    p.filter_fields.len() + 1
+                };
+                let top = p.dest_row + offset;
+                if top > end_row {
+                    return Err(app_defined("The pivot table has no output yet"));
+                }
+                Ok(Variant::Object(self.new_range(
+                    p.dest_sheet_id,
+                    top as u32,
+                    p.dest_col as u32,
+                    (end_row - top + 1) as u32,
+                    (end_col - p.dest_col + 1) as u32,
+                )))
+            }
+            _ => Err(unsupported(&format!("PivotTable.{name}"))),
+        }
+    }
+
+    /// The pivot's rendered bottom-right corner.
+    ///
+    /// Prefers the extent the last refresh recorded, and computes one
+    /// otherwise so that reading a range is a read -- refreshing here would
+    /// make a property access mutate the workbook.
+    fn pivot_extent(&self, p: &PivotTable) -> VResult<(usize, usize)> {
+        if let (Some(r), Some(c)) = (p.last_output_end_row, p.last_output_end_col) {
+            return Ok((r, c));
+        }
+        let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
+        let grid = crate::core::pivot::compute_pivot(&sheets, p).map_err(app_defined)?;
+        let rows = grid.filter_rows.len()
+            + usize::from(!grid.filter_rows.is_empty())
+            + grid.header_rows.len()
+            + grid.body_rows.len();
+        Ok((
+            p.dest_row + rows.saturating_sub(1),
+            p.dest_col + grid.width.saturating_sub(1),
+        ))
+    }
+
+    fn pivot_fields_member(&mut self, id: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => {
+                let (_, p) = self.pivot(id)?;
+                Ok(Variant::Long(self.pivot_source_columns(&p)?.len() as i32))
+            }
+            "item" => self.call_object(&ObjRef::PivotFields(id), args),
+            _ => Err(unsupported(&format!("PivotFields.{name}"))),
+        }
+    }
+
+    fn pivot_field_by_key(&mut self, id: u64, key: &Variant) -> VResult<ObjRef> {
+        let (_, p) = self.pivot(id)?;
+        let columns = self.pivot_source_columns(&p)?;
+        let idx = match key {
+            Variant::Str(name) => columns
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(name))
+                .ok_or_else(|| app_defined("Unable to get the PivotFields property"))?,
+            other => {
+                let n = crate::core::vba::value::bankers_round(other.to_f64()?) as i64;
+                if n < 1 || n as usize > columns.len() {
+                    return Err(app_defined("Unable to get the PivotFields property"));
+                }
+                n as usize - 1
+            }
+        };
+        Ok(ObjRef::PivotField(id, idx as u32))
+    }
+
+    fn pivot_field_member(&mut self, id: u64, idx: u32, name: &str) -> VResult<Variant> {
+        let (_, p) = self.pivot(id)?;
+        let columns = self.pivot_source_columns(&p)?;
+        let column = columns
+            .get(idx as usize)
+            .cloned()
+            .ok_or_else(|| app_defined("Unable to get the PivotFields property"))?;
+        let matches = |c: &String| c.eq_ignore_ascii_case(&column);
+        match name.to_ascii_lowercase().as_str() {
+            "name" => Ok(Variant::Str(column)),
+            // xlRowField 1, xlColumnField 2, xlPageField 3, xlHidden 0.
+            // Measured: a *data* field reports 0, not xlDataField -- the
+            // orientation belongs to the source field, and aggregating one
+            // leaves it unoriented.
+            "orientation" => Ok(Variant::Long(
+                if p.row_fields.iter().any(|f| matches(&f.column)) {
+                    1
+                } else if p.col_fields.iter().any(|f| matches(&f.column)) {
+                    2
+                } else if p.filter_fields.iter().any(|f| matches(&f.column)) {
+                    3
+                } else {
+                    0
+                },
+            )),
+            // Measured: `(All)` when nothing is filtered *and* when several
+            // items are selected -- `CurrentPage` only ever reflects a single
+            // selection. On a field that is not a page field it raises.
+            "currentpage" => {
+                let field = p
+                    .filter_fields
+                    .iter()
+                    .find(|f| matches(&f.column))
+                    .ok_or_else(|| app_defined("Unable to get the CurrentPage property"))?;
+                Ok(Variant::Str(match &field.selected_values {
+                    Some(values) if values.len() == 1 => values[0].clone(),
+                    _ => ALL_PAGES.to_string(),
+                }))
+            }
+            _ => Err(unsupported(&format!("PivotField.{name}"))),
+        }
     }
 
     /// A style attribute read over a range, or `Null` where the cells
@@ -3743,5 +4070,224 @@ mod tests {
             ),
             "String|999"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Pivot tables.
+    //
+    // `pivot_fixture` is the grid `fuzz/vba_pivot_probe.py` builds, and the
+    // pivot has the same shape: Region down the rows, Sum of Amount as the
+    // value, Product as a page field, drawn at F1. Every expectation is what
+    // Excel for Mac 16.112 returned for the same expression.
+    //
+    // Note the error number: **1004** throughout, where the `ListObjects`
+    // collection uses 9 for the same shape of mistake. Both measured.
+    // ---------------------------------------------------------------
+
+    fn pivot_fixture() -> WorkbookManager {
+        use crate::core::pivot::{PivotAggregation, PivotArea};
+        let mut wb = WorkbookManager {
+            sheets: vec![Sheet::new(SheetInit {
+                name: Some("Sheet1".to_string()),
+                rows: 8,
+                cols: 8,
+                ..Default::default()
+            })],
+            charts: Vec::new(),
+            pivot_tables: Vec::new(),
+            vba_project: None,
+        };
+        let rows: [[&str; 3]; 7] = [
+            ["Region", "Product", "Amount"],
+            ["East", "Widget", "10"],
+            ["East", "Gadget", "5"],
+            ["West", "Widget", "30"],
+            ["West", "Gadget", "40"],
+            ["North", "Doohickey", "7"],
+            ["North", "Widget", "3"],
+        ];
+        for (r, row) in rows.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                wb.sheets[0].set_cell_src(r, c, v.to_string());
+            }
+        }
+        wb.evaluate().unwrap();
+        wb.add_pivot_table_from_range("P1", None, 0, 0, 6, 2, None, 0, 5, true, true)
+            .unwrap();
+        wb.add_pivot_field("P1", PivotArea::Row, "Region", None)
+            .unwrap();
+        wb.add_pivot_field(
+            "P1",
+            PivotArea::Value,
+            "Amount",
+            Some(PivotAggregation::Sum),
+        )
+        .unwrap();
+        wb.add_pivot_field("P1", PivotArea::Filter, "Product", None)
+            .unwrap();
+        wb.refresh_pivot_table("P1").unwrap();
+        wb
+    }
+
+    fn pivot_probe(setup_and_expr: &str) -> String {
+        let (setup, expr) = match setup_and_expr.rsplit_once("::") {
+            Some((s, e)) => (s.replace("\\n", "\n    "), e.to_string()),
+            None => (String::new(), setup_and_expr.to_string()),
+        };
+        let source = format!(
+            "Attribute VB_Name = \"H\"\n\
+             Function Gen()\n    \
+             Dim ws As Worksheet, wb As Workbook, pt As PivotTable\n    \
+             Set wb = ThisWorkbook\n    \
+             Set ws = wb.Worksheets(\"Sheet1\")\n    \
+             Set pt = ws.PivotTables(\"P1\")\n    \
+             Dim v, s\n    \
+             {setup}\n    \
+             Gen = {expr}\nEnd Function\n"
+        );
+        let mut wb = pivot_fixture();
+        wb.ensure_vba_project().unwrap();
+        wb.add_vba_module(
+            "H".to_string(),
+            crate::core::VbaModuleKind::Standard,
+            source,
+            None,
+        )
+        .unwrap();
+        match wb.run_macro(Some("H"), "Gen", &[]) {
+            Ok(out) => format!("{}|{}", out.type_name, out.value.unwrap_or_default()),
+            Err(crate::Error::VbaRuntime { number, .. }) => format!("ERR|{number}"),
+            Err(e) => format!("FAIL|{e}"),
+        }
+    }
+
+    #[test]
+    fn pivot_objects_report_the_type_names_excel_reports() {
+        assert_eq!(
+            pivot_probe("TypeName(ws.PivotTables)"),
+            "String|PivotTables"
+        );
+        assert_eq!(
+            pivot_probe("TypeName(ws.PivotTables(1))"),
+            "String|PivotTable"
+        );
+        assert_eq!(
+            pivot_probe(r#"TypeName(ws.PivotTables("P1"))"#),
+            "String|PivotTable"
+        );
+        assert_eq!(
+            pivot_probe(r#"TypeName(pt.PivotFields("Product"))"#),
+            "String|PivotField"
+        );
+        assert_eq!(pivot_probe("CStr(ws.PivotTables.Count)"), "String|1");
+        assert_eq!(pivot_probe("pt.Name"), "String|P1");
+        // One entry per *source column*, whatever area it occupies.
+        assert_eq!(pivot_probe("CStr(pt.PivotFields.Count)"), "String|3");
+    }
+
+    #[test]
+    fn a_missing_pivot_is_1004_not_the_9_a_missing_table_gives() {
+        assert_eq!(pivot_probe(r#"ws.PivotTables("nope").Name"#), "ERR|1004");
+        assert_eq!(pivot_probe("ws.PivotTables(5).Name"), "ERR|1004");
+        assert_eq!(
+            pivot_probe(r#"pt.PivotFields("nope").Orientation"#),
+            "ERR|1004"
+        );
+    }
+
+    #[test]
+    fn orientation_is_the_area_and_a_data_field_reports_hidden() {
+        // xlRowField 1, xlPageField 3, xlHidden 0. The surprise is `Amount`:
+        // it is the value field, yet reports 0 rather than xlDataField --
+        // aggregating a column leaves the *source* field unoriented.
+        assert_eq!(
+            pivot_probe(r#"CStr(pt.PivotFields("Region").Orientation)"#),
+            "String|1"
+        );
+        assert_eq!(
+            pivot_probe(r#"CStr(pt.PivotFields("Product").Orientation)"#),
+            "String|3"
+        );
+        assert_eq!(
+            pivot_probe(r#"CStr(pt.PivotFields("Amount").Orientation)"#),
+            "String|0"
+        );
+    }
+
+    #[test]
+    fn current_page_reads_all_until_exactly_one_item_is_selected() {
+        assert_eq!(
+            pivot_probe(r#"pt.PivotFields("Product").CurrentPage"#),
+            "String|(All)"
+        );
+        assert_eq!(
+            pivot_probe(
+                r#"pt.PivotFields("Product").CurrentPage = "Widget" :: pt.PivotFields("Product").CurrentPage"#
+            ),
+            "String|Widget"
+        );
+        // Reading it on a field that is not a page field raises.
+        assert_eq!(
+            pivot_probe(r#"pt.PivotFields("Region").CurrentPage"#),
+            "ERR|1004"
+        );
+        // A value the field does not have raises rather than blanking the
+        // grid with an empty selection.
+        assert_eq!(
+            pivot_probe(r#"pt.PivotFields("Product").CurrentPage = "Nonesuch" :: "unreachable""#),
+            "ERR|1004"
+        );
+    }
+
+    #[test]
+    fn setting_current_page_rerenders_without_an_explicit_refresh() {
+        // The deliberate exception to "nothing recomputes a pivot
+        // implicitly": measured, the grid is already filtered on the very
+        // next read, with no `RefreshTable` in between. G5 is the second
+        // data row -- North, which is 3 for Widget alone and 10 overall.
+        assert_eq!(
+            pivot_probe(
+                r#"pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G5").Value)"#
+            ),
+            "String|3"
+        );
+        // An explicit refresh afterwards changes nothing.
+        assert_eq!(
+            pivot_probe(
+                "pt.PivotFields(\"Product\").CurrentPage = \"Widget\"\\n\
+                 pt.RefreshTable :: CStr(ws.Range(\"G5\").Value)"
+            ),
+            "String|3"
+        );
+        // The page-field cell shows the selection.
+        assert_eq!(
+            pivot_probe(
+                r#"pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G1").Value)"#
+            ),
+            "String|Widget"
+        );
+        // And `(All)` puts it back.
+        assert_eq!(
+            pivot_probe(
+                "pt.PivotFields(\"Product\").CurrentPage = \"Widget\"\\n\
+                 pt.PivotFields(\"Product\").CurrentPage = \"(All)\" :: \
+                 pt.PivotFields(\"Product\").CurrentPage & \"/\" & CStr(ws.Range(\"G5\").Value)"
+            ),
+            "String|(All)/10"
+        );
+    }
+
+    #[test]
+    fn refresh_table_returns_true() {
+        assert_eq!(pivot_probe("TypeName(pt.RefreshTable)"), "String|Boolean");
+        assert_eq!(pivot_probe("CStr(pt.RefreshTable)"), "String|True");
+    }
+
+    #[test]
+    fn table_range_1_is_the_grid_and_2_includes_the_page_rows() {
+        // Measured for a pivot at F1 with one filter field: the filter row
+        // and the blank under it sit above the grid.
+        assert_eq!(pivot_probe("pt.TableRange1.Address"), "String|$F$3:$G$7");
+        assert_eq!(pivot_probe("pt.TableRange2.Address"), "String|$F$1:$G$7");
     }
 }
