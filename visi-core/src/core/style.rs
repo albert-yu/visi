@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Cell formatting style attributes (font color, background color, font styles, font family, font size).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+// No `Eq`: `font_size` is an `f64`, matching Excel's `Double`-typed
+// `Font.Size`. `PartialEq` is what the codebase actually uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CellStyle {
     /// Font color as Hex (e.g. "#FF0000" or "FF0000") or standard color name ("red", "blue", etc.)
     pub font_color: Option<String>,
@@ -17,8 +19,12 @@ pub struct CellStyle {
     pub underline: Option<bool>,
     /// Font family name (e.g. "Arial", "Calibri", "Courier New")
     pub font_family: Option<String>,
-    /// Font size in points (e.g. 11, 12, 14)
-    pub font_size: Option<u16>,
+    /// Font size in points (e.g. 11, 12, 14.5).
+    ///
+    /// `f64` rather than an integer because Excel's is: `Font.Size` reports
+    /// as a `Double` and a half-point size round-trips (`.Font.Size = 10.5`
+    /// reads back as `10.5`), both measured with `fuzz/vba_style_probe.py`.
+    pub font_size: Option<f64>,
     /// Excel number-format code (e.g. `m/d/yy`, `yyyy-mm-dd`).
     ///
     /// This is how a date cell remembers the notation it was written in: the
@@ -104,7 +110,7 @@ mod tests {
         let style2 = CellStyle {
             bg_color: Some("#00FF00".to_string()),
             font_color: Some("#0000FF".to_string()),
-            font_size: Some(14),
+            font_size: Some(14.0),
             ..Default::default()
         };
 
@@ -112,6 +118,6 @@ mod tests {
         assert_eq!(style1.font_color, Some("#0000FF".to_string()));
         assert_eq!(style1.bg_color, Some("#00FF00".to_string()));
         assert_eq!(style1.bold, Some(true));
-        assert_eq!(style1.font_size, Some(14));
+        assert_eq!(style1.font_size, Some(14.0));
     }
 }

@@ -219,7 +219,7 @@ pub struct SetArgs {
 
     /// Font size in points (e.g. 11, 12, 14)
     #[arg(long = "font-size")]
-    pub font_size: Option<u16>,
+    pub font_size: Option<f64>,
 }
 
 #[derive(Args, Debug)]
@@ -1104,7 +1104,7 @@ pub struct StyleCellArgs {
 
     /// Font size in points (e.g. 11, 12, 14)
     #[arg(long = "font-size")]
-    pub font_size: Option<u16>,
+    pub font_size: Option<f64>,
 
     /// Write updated workbook to target output file path
     #[arg(short, long)]

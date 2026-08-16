@@ -1033,7 +1033,7 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
             bold: Some(true),
             italic: Some(true),
             font_family: Some("Arial".to_string()),
-            font_size: Some(14),
+            font_size: Some(14.0),
             ..Default::default()
         },
     )
@@ -1061,7 +1061,7 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
     assert_eq!(style_a1.bold, Some(true));
     assert_eq!(style_a1.italic, Some(true));
     assert_eq!(style_a1.font_family, Some("Arial".to_string()));
-    assert_eq!(style_a1.font_size, Some(14));
+    assert_eq!(style_a1.font_size, Some(14.0));
 
     let style_b2 = wb.get_cell_style(None, 1, 1).unwrap().unwrap();
     assert_eq!(style_b2.bold, Some(true));

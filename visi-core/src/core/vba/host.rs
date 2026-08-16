@@ -56,8 +56,11 @@
 
 use std::collections::HashMap;
 
+use crate::core::CellStyle;
 use crate::core::engine::{CellRef, ResultData, Sheet};
 use crate::core::grid_edit::{Axis, GridEdit, shift_span};
+
+use super::color;
 use crate::core::parser::{Expr as FExpr, col_idx_to_letters};
 use crate::core::workbook::WorkbookManager;
 
@@ -105,6 +108,16 @@ pub enum ObjRef {
     /// One worksheet, by its stable id. Identity *is* the id: Excel hands out
     /// a cached object per sheet, so `ws Is wb.Worksheets(1)` is True.
     Worksheet(u64),
+    /// `Range.Interior`, by the handle of the range it belongs to.
+    ///
+    /// Excel hands out a distinct object (`TypeName` is `"Interior"`,
+    /// measured) but it has no identity of its own worth modelling: it is a
+    /// view onto the same cells, so it rides on the range's handle and
+    /// tracks structural edits for free.
+    Interior(u64),
+    /// `Range.Font`, by the handle of the range it belongs to. `TypeName` is
+    /// `"Font"`, measured.
+    Font(u64),
     /// A rectangular range of cells, by handle into [`Host::ranges`].
     ///
     /// A handle rather than the coordinates because a `Range` **tracks
@@ -183,6 +196,8 @@ impl ObjRef {
             ObjRef::Worksheets => "Sheets",
             ObjRef::Worksheet(_) => "Worksheet",
             ObjRef::Range(_) => "Range",
+            ObjRef::Interior(_) => "Interior",
+            ObjRef::Font(_) => "Font",
         }
     }
 
@@ -198,6 +213,8 @@ impl ObjRef {
             // The handle *is* the identity, so a range that moved is still
             // the same object and two ranges over the same cells are not.
             (ObjRef::Range(a), ObjRef::Range(b)) => a == b,
+            (ObjRef::Interior(a), ObjRef::Interior(b)) => a == b,
+            (ObjRef::Font(a), ObjRef::Font(b)) => a == b,
             _ => false,
         }
     }
@@ -415,6 +432,8 @@ impl<'w> Host<'w> {
             ObjRef::Worksheets => self.worksheets_member(name, args),
             ObjRef::Worksheet(id) => self.worksheet_member(*id, name, args),
             ObjRef::Range(token) => self.range_member(*token, name, args),
+            ObjRef::Interior(token) => self.interior_member(*token, name),
+            ObjRef::Font(token) => self.font_member(*token, name),
         }
     }
 
@@ -427,6 +446,25 @@ impl<'w> Host<'w> {
         value: &Variant,
     ) -> VResult<()> {
         match (obj, name.to_ascii_lowercase().as_str()) {
+            (ObjRef::Interior(_) | ObjRef::Font(_), _) => {
+                if !args.is_empty() {
+                    return Err(unsupported(&format!(
+                        "{}.{name} with arguments",
+                        obj.type_name()
+                    )));
+                }
+                self.style_set(obj, name, value)
+            }
+            (ObjRef::Range(token), "numberformat") => {
+                let r = self.range(*token, name)?;
+                let format = value.to_vba_string()?;
+                // Measured: setting `General` on a date cell leaves the
+                // serial alone -- the value stays a number and only the
+                // rendering changes, which is exactly `core::date`'s model.
+                let stored =
+                    (!format.eq_ignore_ascii_case(color::GENERAL_FORMAT)).then_some(format);
+                self.style_write(r, move |s| s.num_format = stored.clone())
+            }
             (ObjRef::Range(token), "value" | "value2" | "formula") => {
                 if !args.is_empty() {
                     return Err(unsupported(&format!("Range.{name} with arguments")));
@@ -778,6 +816,21 @@ impl<'w> Host<'w> {
             // Measured: `ws.Range("B5").EntireRow.Address` is `$5:$5` and
             // `.EntireColumn` is `$B:$B`, so each widens one axis to the
             // whole grid and leaves the other alone.
+            // A view onto the same cells, riding on this range's handle, so
+            // it tracks a structural edit exactly as the range does.
+            "interior" => Ok(Variant::Object(ObjRef::Interior(token))),
+            "font" => Ok(Variant::Object(ObjRef::Font(token))),
+            // Measured: `General` on a cell carrying no format, and `Null`
+            // over a range whose cells disagree.
+            "numberformat" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| {
+                    s.and_then(|s| s.num_format.clone())
+                        .unwrap_or_else(|| color::GENERAL_FORMAT.to_string())
+                },
+                Variant::Str,
+            ),
             "entirerow" => Ok(Variant::Object(
                 self.new_range(r.sheet_id, r.row, 0, r.height, MAX_COLS),
             )),
@@ -795,6 +848,209 @@ impl<'w> Host<'w> {
             // user-facing and `Range.interior` reads like a typo where
             // `Range.Interior` reads like the refusal it is.
             _ => Err(unsupported(&format!("Range.{name}"))),
+        }
+    }
+
+    /// A style attribute read over a range, or `Null` where the cells
+    /// disagree.
+    ///
+    /// Measured, and the asymmetry is Excel's: `Font.Bold`, `Font.Size`,
+    /// `Font.Name`, `NumberFormat` and `Interior.ColorIndex` all report
+    /// `Null` over a range whose cells differ, but `Interior.Color` reports
+    /// **0**. Callers pass `mixed` for that one case rather than it being
+    /// inferred, because 0 is also a legitimate uniform value (black).
+    fn style_fold<T: PartialEq>(
+        &mut self,
+        r: RangeRef,
+        mixed: Variant,
+        read: impl Fn(Option<&CellStyle>) -> T,
+        wrap: impl Fn(T) -> Variant,
+    ) -> VResult<Variant> {
+        let sheet = self.sheet(r.sheet_id)?;
+        let mut seen: Option<T> = None;
+        for row in r.row..r.row.saturating_add(r.height).min(MAX_ROWS) {
+            for col in r.col..r.col.saturating_add(r.width).min(MAX_COLS) {
+                let value = read(sheet.get_cell_style(row as usize, col as usize));
+                match &seen {
+                    None => seen = Some(value),
+                    Some(first) if *first == value => {}
+                    Some(_) => return Ok(mixed),
+                }
+            }
+        }
+        Ok(seen.map(wrap).unwrap_or(Variant::Empty))
+    }
+
+    /// Applies a style change to every cell of a range.
+    fn style_write(&mut self, r: RangeRef, edit: impl Fn(&mut CellStyle)) -> VResult<()> {
+        if r.count() > MAX_ALLOCATED_CELLS {
+            return Err(VbaError::new(7, "Out of memory: range too large to style"));
+        }
+        let idx = self.sheet_index(r.sheet_id)?;
+        let sheet = &mut self.wb.sheets[idx];
+        for row in r.row..r.row.saturating_add(r.height).min(MAX_ROWS) {
+            for col in r.col..r.col.saturating_add(r.width).min(MAX_COLS) {
+                sheet.update_cell_style(row as usize, col as usize, &edit);
+            }
+        }
+        self.mutated = true;
+        Ok(())
+    }
+
+    fn interior_member(&mut self, token: u64, name: &str) -> VResult<Variant> {
+        let r = self.range(token, name)?;
+        match name.to_ascii_lowercase().as_str() {
+            // Measured: an unfilled cell reports white (16777215), and a
+            // range whose fills differ reports 0 rather than Null -- the one
+            // property that breaks the Null rule.
+            "color" => self.style_fold(r, Variant::Double(0.0), color::interior_color, |c| {
+                Variant::Double(f64::from(c))
+            }),
+            // Measured: an *unfilled* cell is `xlNone` (-4142), but a fill
+            // that is not one of the 56 slots reports the **nearest** slot
+            // rather than `xlNone` -- `RGB(250, 10, 10)` reports 3.
+            "colorindex" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| {
+                    s.and_then(|s| s.bg_color.as_deref())
+                        .and_then(color::nearest_color_index)
+                        .unwrap_or(color::COLOR_INDEX_NONE)
+                },
+                Variant::Long,
+            ),
+            _ => Err(unsupported(&format!("Interior.{name}"))),
+        }
+    }
+
+    fn font_member(&mut self, token: u64, name: &str) -> VResult<Variant> {
+        let r = self.range(token, name)?;
+        match name.to_ascii_lowercase().as_str() {
+            "bold" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| s.and_then(|s| s.bold).unwrap_or(false),
+                Variant::Boolean,
+            ),
+            "italic" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| s.and_then(|s| s.italic).unwrap_or(false),
+                Variant::Boolean,
+            ),
+            // Measured: `Font.Size` is a `Double`, not a `Long`, and a
+            // half-point size round-trips -- which is why `CellStyle`'s is an
+            // `f64`.
+            "size" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| {
+                    s.and_then(|s| s.font_size)
+                        .unwrap_or(color::DEFAULT_FONT_SIZE)
+                        .to_bits()
+                },
+                |bits| Variant::Double(f64::from_bits(bits)),
+            ),
+            "name" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| {
+                    s.and_then(|s| s.font_family.clone())
+                        .unwrap_or_else(|| color::DEFAULT_FONT_NAME.to_string())
+                },
+                Variant::Str,
+            ),
+            "color" => self.style_fold(r, Variant::Null, color::font_color, |c| {
+                Variant::Double(f64::from(c))
+            }),
+            // Measured: a cell with no explicit font colour reports slot 1
+            // (black), not `xlNone` -- the opposite of `Interior.ColorIndex`.
+            "colorindex" => self.style_fold(
+                r,
+                Variant::Null,
+                |s| {
+                    s.and_then(|s| s.font_color.as_deref())
+                        .and_then(color::nearest_color_index)
+                        .unwrap_or(color::FONT_COLOR_INDEX_AUTOMATIC)
+                },
+                Variant::Long,
+            ),
+            _ => Err(unsupported(&format!("Font.{name}"))),
+        }
+    }
+
+    /// Writing `Interior.X` / `Font.X`, which is where the BGR conversion
+    /// actually happens.
+    fn style_set(&mut self, obj: &ObjRef, name: &str, value: &Variant) -> VResult<()> {
+        let (token, on_font) = match obj {
+            ObjRef::Interior(t) => (*t, false),
+            ObjRef::Font(t) => (*t, true),
+            _ => unreachable!("style_set is only reached for Interior and Font"),
+        };
+        let r = self.range(token, name)?;
+        let lower = name.to_ascii_lowercase();
+
+        // `Color` is a BGR `Long`; `CellStyle` stores `"#RRGGBB"`. Getting
+        // this backwards is the failure issue #58 singled out.
+        if lower == "color" {
+            let hex = color::bgr_to_hex(long_arg(value)?);
+            return self.style_write(r, move |s| {
+                if on_font {
+                    s.font_color = Some(hex.clone());
+                } else {
+                    s.bg_color = Some(hex.clone());
+                }
+            });
+        }
+        if lower == "colorindex" {
+            let index = long_arg(value)?;
+            // Measured: setting `xlNone` clears the fill, after which
+            // `Interior.Color` reads white again.
+            let hex = if index == color::COLOR_INDEX_NONE {
+                None
+            } else {
+                let slot = usize::try_from(index)
+                    .ok()
+                    .filter(|i| (1..=color::COLOR_INDEX_PALETTE.len()).contains(i))
+                    .ok_or_else(|| app_defined("ColorIndex is out of range"))?;
+                Some(color::COLOR_INDEX_PALETTE[slot - 1].to_string())
+            };
+            return self.style_write(r, move |s| {
+                if on_font {
+                    s.font_color = hex.clone();
+                } else {
+                    s.bg_color = hex.clone();
+                }
+            });
+        }
+        if !on_font {
+            return Err(unsupported(&format!("Interior.{name}")));
+        }
+        match lower.as_str() {
+            "bold" => {
+                let on = value.to_bool()?;
+                self.style_write(r, move |s| s.bold = Some(on))
+            }
+            "italic" => {
+                let on = value.to_bool()?;
+                self.style_write(r, move |s| s.italic = Some(on))
+            }
+            "underline" => {
+                let on = value.to_bool()?;
+                self.style_write(r, move |s| s.underline = Some(on))
+            }
+            "size" => {
+                let size = value.to_f64()?;
+                if !size.is_finite() || size <= 0.0 {
+                    return Err(app_defined("Font.Size must be a positive number"));
+                }
+                self.style_write(r, move |s| s.font_size = Some(size))
+            }
+            "name" => {
+                let family = value.to_vba_string()?;
+                self.style_write(r, move |s| s.font_family = Some(family.clone()))
+            }
+            _ => Err(unsupported(&format!("Font.{name}"))),
         }
     }
 
@@ -1194,6 +1450,16 @@ fn int_arg(args: &[Variant], i: usize) -> VResult<i64> {
         return Err(VbaError::overflow());
     }
     Ok(crate::core::vba::value::bankers_round(f) as i64)
+}
+
+/// A colour or palette index written to a style property.
+///
+/// Excel's colour properties are typed `Long`, so a fractional value rounds
+/// rather than erroring; `int_arg`'s banker's rounding is the conversion the
+/// rest of the interpreter uses.
+fn long_arg(v: &Variant) -> VResult<i32> {
+    let n = int_arg(std::slice::from_ref(v), 0)?;
+    i32::try_from(n).map_err(|_| VbaError::overflow())
 }
 
 /// A `Resize` dimension, which Excel rejects at zero or below.
@@ -2113,14 +2379,16 @@ mod tests {
     #[test]
     fn out_of_scope_members_still_name_themselves() {
         // The refusal is the feature. Each of these is a real Excel member
-        // that this phase deliberately does not implement.
+        // that is still out of scope; `Interior.Color`, `Font.Bold` and
+        // `NumberFormat` have left this list because they are now
+        // implemented, which is the only reason a member may leave it.
         for case in [
-            "ws.Range(\"A1\").Interior.Color",
             "ws.ListObjects(1).Name",
             "wb.PivotTables(1).Name",
-            "ws.Range(\"A1\").Font.Bold",
             "ws.Range(\"A1:B2\").Sort",
-            "ws.Range(\"A1\").NumberFormat",
+            "ws.Range(\"A1\").Interior.Pattern",
+            "ws.Range(\"A1\").Font.Strikethrough",
+            "ws.Range(\"A1\").Borders",
         ] {
             assert_eq!(probe(case), "ERR|438", "{case}");
         }
@@ -2391,6 +2659,296 @@ mod tests {
                 r#"ws.Range("E1").Formula = "=A5" :: ws.Rows(1).Insert :: ws.Range("E2").Formula"#
             ),
             "String|=A6"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Styles: `.Interior`, `.Font` and `.NumberFormat`.
+    //
+    // Every expectation is what `fuzz/vba_style_probe.py` returned from Excel
+    // for Mac 16.112 for the same expression. The colour cases are also
+    // pinned from the *other* side by that probe's `--paint` channel, which
+    // has Excel save the workbook and reads the real ARGB back with openpyxl
+    // -- the VBA channel alone cannot catch a consistent-but-wrong
+    // convention, since both engines would round-trip the same wrong Long.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rgb_is_a_builtin_returning_the_long_excel_returns() {
+        assert_eq!(probe("CStr(RGB(255, 0, 0))"), "String|255");
+        assert_eq!(probe("CStr(RGB(0, 255, 0))"), "String|65280");
+        assert_eq!(probe("CStr(RGB(0, 0, 255))"), "String|16711680");
+        assert_eq!(probe("CStr(RGB(1, 2, 3))"), "String|197121");
+        assert_eq!(probe("TypeName(RGB(1, 2, 3))"), "String|Long");
+        // Measured: clamps rather than carrying into the next byte, which
+        // would have made `RGB(300, 0, 0)` green.
+        assert_eq!(probe("CStr(RGB(300, 0, 0))"), "String|255");
+        // Measured: a negative component is error 5, not a clamp to zero.
+        assert_eq!(probe("CStr(RGB(-1, 0, 0))"), "ERR|5");
+    }
+
+    #[test]
+    fn interior_color_is_bgr_so_ff0000_is_blue() {
+        // The failure issue #58 named as most likely. `&HFF0000` must land in
+        // the *blue* channel of the stored style, not the red one.
+        assert_eq!(
+            probe(
+                r#"ws.Range("G2").Interior.Color = &HFF0000 :: CStr(ws.Range("G2").Interior.Color)"#
+            ),
+            "String|16711680"
+        );
+        assert_eq!(
+            probe(
+                r#"ws.Range("G1").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("G1").Interior.Color)"#
+            ),
+            "String|255"
+        );
+        // And the same read through the stored representation, which is where
+        // a byte swap would show up rather than cancelling out.
+        let mut wb = fixture();
+        wb.ensure_vba_project().unwrap();
+        wb.add_vba_module(
+            "H".to_string(),
+            crate::core::VbaModuleKind::Standard,
+            "Attribute VB_Name = \"H\"\nSub Go()\n    \
+             ThisWorkbook.Worksheets(\"Sheet1\").Range(\"G1\").Interior.Color = &HFF0000\n    \
+             ThisWorkbook.Worksheets(\"Sheet1\").Range(\"G2\").Interior.Color = RGB(255, 0, 0)\n\
+             End Sub\n"
+                .to_string(),
+            None,
+        )
+        .unwrap();
+        wb.run_macro(Some("H"), "Go", &[]).unwrap();
+        assert_eq!(
+            wb.sheets[0]
+                .get_cell_style(0, 6)
+                .unwrap()
+                .bg_color
+                .as_deref(),
+            Some("#0000FF"),
+            "&HFF0000 must store as blue"
+        );
+        assert_eq!(
+            wb.sheets[0]
+                .get_cell_style(1, 6)
+                .unwrap()
+                .bg_color
+                .as_deref(),
+            Some("#FF0000"),
+            "RGB(255,0,0) must store as red"
+        );
+    }
+
+    #[test]
+    fn an_unstyled_cell_reports_excels_style_defaults() {
+        assert_eq!(
+            probe(r#"TypeName(ws.Range("A1").Interior)"#),
+            "String|Interior"
+        );
+        assert_eq!(probe(r#"TypeName(ws.Range("A1").Font)"#), "String|Font");
+        // White, not zero -- an unfilled cell is not "no colour" to Excel.
+        assert_eq!(
+            probe(r#"CStr(ws.Range("A1").Interior.Color)"#),
+            "String|16777215"
+        );
+        assert_eq!(
+            probe(r#"CStr(ws.Range("A1").Interior.ColorIndex)"#),
+            "String|-4142"
+        );
+        assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Bold)"#), "String|False");
+        assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Italic)"#), "String|False");
+        assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Size)"#), "String|11");
+        // A `Double`, not a `Long` -- which is why `CellStyle::font_size` is
+        // an `f64`.
+        assert_eq!(
+            probe(r#"TypeName(ws.Range("A1").Font.Size)"#),
+            "String|Double"
+        );
+        assert_eq!(probe(r#"ws.Range("A1").Font.Name"#), "String|Calibri");
+        assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Color)"#), "String|0");
+        // Slot 1 (black), *not* xlNone -- the opposite of Interior's default.
+        assert_eq!(probe(r#"CStr(ws.Range("A1").Font.ColorIndex)"#), "String|1");
+        assert_eq!(probe(r#"ws.Range("A1").NumberFormat"#), "String|General");
+    }
+
+    #[test]
+    fn font_attributes_round_trip() {
+        assert_eq!(
+            probe(r#"ws.Range("H1").Font.Bold = True :: CStr(ws.Range("H1").Font.Bold)"#),
+            "String|True"
+        );
+        assert_eq!(
+            probe(r#"ws.Range("H2").Font.Italic = True :: CStr(ws.Range("H2").Font.Italic)"#),
+            "String|True"
+        );
+        assert_eq!(
+            probe(r#"ws.Range("H3").Font.Size = 14 :: CStr(ws.Range("H3").Font.Size)"#),
+            "String|14"
+        );
+        // A half-point size survives, which an integer `font_size` could not
+        // have stored.
+        assert_eq!(
+            probe(r#"ws.Range("M1").Font.Size = 10.5 :: CStr(ws.Range("M1").Font.Size)"#),
+            "String|10.5"
+        );
+        assert_eq!(
+            probe(r#"ws.Range("H4").Font.Name = "Courier New" :: ws.Range("H4").Font.Name"#),
+            "String|Courier New"
+        );
+        assert_eq!(
+            probe(
+                r#"ws.Range("H5").Font.Color = RGB(0, 0, 255) :: CStr(ws.Range("H5").Font.Color)"#
+            ),
+            "String|16711680"
+        );
+    }
+
+    #[test]
+    fn color_index_is_the_palette_excel_reported() {
+        // Setting a colour reports the slot it occupies...
+        assert_eq!(
+            probe(
+                r#"ws.Range("G4").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("G4").Interior.ColorIndex)"#
+            ),
+            "String|3"
+        );
+        // ...and setting the slot gives back the colour.
+        assert_eq!(
+            probe(
+                r#"ws.Range("G5").Interior.ColorIndex = 3 :: CStr(ws.Range("G5").Interior.Color)"#
+            ),
+            "String|255"
+        );
+        // An off-palette colour reports the *nearest* slot, not xlNone. The
+        // first implementation here guessed xlNone and was wrong; these three
+        // are what Excel actually returned.
+        assert_eq!(
+            probe(
+                r#"ws.Range("G7").Interior.Color = RGB(250, 10, 10) :: CStr(ws.Range("G7").Interior.ColorIndex)"#
+            ),
+            "String|3"
+        );
+        assert_eq!(
+            probe(
+                r#"ws.Range("G8").Interior.Color = RGB(10, 200, 10) :: CStr(ws.Range("G8").Interior.ColorIndex)"#
+            ),
+            "String|4"
+        );
+        assert_eq!(
+            probe(
+                r#"ws.Range("G9").Interior.Color = RGB(1, 2, 3) :: CStr(ws.Range("G9").Interior.ColorIndex)"#
+            ),
+            "String|1"
+        );
+        // xlNone clears the fill, after which Color reads white again.
+        assert_eq!(
+            probe(
+                "ws.Range(\"G6\").Interior.Color = RGB(255, 0, 0)\\n\
+                 ws.Range(\"G6\").Interior.ColorIndex = -4142 :: CStr(ws.Range(\"G6\").Interior.Color)"
+            ),
+            "String|16777215"
+        );
+    }
+
+    #[test]
+    fn a_mixed_range_reads_null_except_interior_color_which_reads_zero() {
+        // Excel's own asymmetry, and the reason `style_fold` takes the
+        // mixed-value rather than inferring it: 0 is also a legitimate
+        // uniform answer, so it cannot double as a sentinel.
+        assert_eq!(
+            probe(
+                r#"ws.Range("K1").Font.Bold = True :: CStr(IsNull(ws.Range("K1:K2").Font.Bold))"#
+            ),
+            "String|True"
+        );
+        assert_eq!(
+            probe(r#"ws.Range("Q1").Font.Size = 14 :: TypeName(ws.Range("Q1:Q2").Font.Size)"#),
+            "String|Null"
+        );
+        assert_eq!(
+            probe(
+                r#"ws.Range("R1").Font.Name = "Courier New" :: TypeName(ws.Range("R1:R2").Font.Name)"#
+            ),
+            "String|Null"
+        );
+        assert_eq!(
+            probe(
+                r#"ws.Range("S1").NumberFormat = "m/d/yy" :: TypeName(ws.Range("S1:S2").NumberFormat)"#
+            ),
+            "String|Null"
+        );
+        // The exception.
+        assert_eq!(
+            probe(
+                r#"ws.Range("L1").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("L1:L2").Interior.Color)"#
+            ),
+            "String|0"
+        );
+        // A range whose cells *agree* reports the value, not the sentinel.
+        assert_eq!(
+            probe(
+                "ws.Range(\"N1\").Interior.Color = RGB(255, 0, 0)\\n\
+                 ws.Range(\"N2\").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range(\"N1:N2\").Interior.Color)"
+            ),
+            "String|255"
+        );
+    }
+
+    #[test]
+    fn a_style_written_over_a_range_reaches_every_cell() {
+        assert_eq!(
+            probe(
+                r#"ws.Range("J1:J3").Interior.Color = RGB(0, 255, 0) :: CStr(ws.Range("J3").Interior.Color)"#
+            ),
+            "String|65280"
+        );
+        assert_eq!(
+            probe(r#"ws.Range("J1:J3").Font.Bold = True :: CStr(ws.Range("J2").Font.Bold)"#),
+            "String|True"
+        );
+    }
+
+    #[test]
+    fn number_format_changes_the_rendering_and_leaves_the_serial_alone() {
+        // Issue #58 asked for this explicitly: writing `NumberFormat` from a
+        // macro can turn a date cell into a plain number *visually* while the
+        // serial stays put, which is correct and is exactly `core::date`'s
+        // model -- there is no date value type to lose.
+        assert_eq!(
+            probe(
+                "ws.Range(\"I1\").Value = 46195\\n\
+                 ws.Range(\"I1\").NumberFormat = \"m/d/yy\" :: ws.Range(\"I1\").Text"
+            ),
+            "String|6/22/26"
+        );
+        assert_eq!(
+            probe(
+                "ws.Range(\"C1\").NumberFormat = \"General\" :: \
+                 CStr(ws.Range(\"C1\").Value2) & \"|\" & TypeName(ws.Range(\"C1\").Value)"
+            ),
+            "String|46195|Double"
+        );
+        assert_eq!(
+            probe(
+                "ws.Range(\"I2\").Value = 46195\\n\
+                 ws.Range(\"I2\").NumberFormat = \"m/d/yy\"\\n\
+                 ws.Range(\"I2\").NumberFormat = \"General\" :: \
+                 ws.Range(\"I2\").Text & \"|\" & CStr(ws.Range(\"I2\").Value2)"
+            ),
+            "String|46195|46195"
+        );
+    }
+
+    #[test]
+    fn a_styled_range_tracks_a_structural_edit_like_any_other() {
+        // `Interior` and `Font` ride on the range's handle rather than
+        // carrying coordinates, so this falls out rather than needing its own
+        // mechanism -- but it would be silently wrong if they did carry them.
+        assert_eq!(
+            tracking_probe(
+                r#"Set r = ws.Range("A5") :: r.Interior.Color = RGB(255, 0, 0)\nws.Rows(1).Insert :: r.Address & "/" & CStr(r.Interior.Color)"#
+            ),
+            "String|$A$6/255"
         );
     }
 }

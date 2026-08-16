@@ -262,6 +262,22 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
                 std::cmp::Ordering::Greater => 1,
             })
         }
+        // `RGB` composes the BGR `Long` that `Interior.Color` and
+        // `Font.Color` take -- the low byte is red, which is why `&HFF0000`
+        // is blue. See `vba::color`. Measured: a component above 255 clamps
+        // rather than carrying into the next byte (`RGB(300, 0, 0)` is 255),
+        // and a negative one is error 5 rather than clamping to zero.
+        "rgb" => {
+            let part = |i: usize| -> VResult<i64> {
+                let v = to_i64(need(args, i)?.to_f64()?)?;
+                if v < 0 {
+                    return Err(VbaError::new(5, "Invalid procedure call or argument"));
+                }
+                Ok(v)
+            };
+            let (r, g, b) = (part(0)?, part(1)?, part(2)?);
+            Variant::Long(crate::core::vba::color::rgb(r, g, b))
+        }
         "hex" => Variant::Str(format!("{:X}", to_i64(need(args, 0)?.to_f64()?)?)),
         "oct" => Variant::Str(format!("{:o}", to_i64(need(args, 0)?.to_f64()?)?)),
 
