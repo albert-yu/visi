@@ -93,9 +93,14 @@ fn build_filter_items_xml(display: &[(usize, String)], selected: &Option<Vec<Str
     // not open at all, with or without a selection.
     let mut s = format!("<items count=\"{}\">", display.len() + 1);
     for (idx, value) in display {
+        // Case-insensitive, because the items themselves are merged that
+        // way (`distinct_strings` keeps the first casing seen in the source).
+        // Comparing exactly meant a selection naming `east` matched none of
+        // the merged `East` item, so nothing was hidden and the filter
+        // silently became "select everything".
         let hidden = selected
             .as_ref()
-            .is_some_and(|sel| !sel.iter().any(|s| s == value));
+            .is_some_and(|sel| !sel.iter().any(|s| s.eq_ignore_ascii_case(value)));
         if hidden {
             s.push_str(&format!("<item h=\"1\" x=\"{idx}\"/>"));
         } else {
@@ -952,6 +957,18 @@ struct ParsedPivotTable {
     /// (fields with no `<items>` at all, e.g. plain non-axis columns)
     /// default to `true` at the lookup site, same as `PivotField::new`.
     field_has_subtotal_item: HashMap<usize, bool>,
+    /// Per `<pivotFields>` position, that field's `<items>` as
+    /// `(shared-items index, hidden)` pairs, in the order they appear -- the
+    /// display order. The `<item t="default"/>` placeholder is not included.
+    ///
+    /// This is what a filter selection is recorded against, in both of the
+    /// forms Excel writes: `h="1"` marks a hidden item in the multi-select
+    /// form, and a `<pageField item="N">` names a *position in this list* in
+    /// the single-select form. Measured; see `fuzz/pivot_filter_probe.py`.
+    field_items: HashMap<usize, Vec<(usize, bool)>>,
+    /// Per page field, in `page_field_fld` order, the `item` attribute of its
+    /// `<pageField>` -- a position into that field's `field_items`.
+    page_field_item: Vec<Option<usize>>,
 }
 
 fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
@@ -977,6 +994,9 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
     let mut pivot_field_idx: i64 = -1;
     let mut current_field_has_default = false;
     let mut field_has_subtotal_item: HashMap<usize, bool> = HashMap::new();
+    let mut field_items: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+    let mut current_field_items: Vec<(usize, bool)> = Vec::new();
+    let mut page_field_item: Vec<Option<usize>> = Vec::new();
 
     loop {
         let event = match reader.read_event_into(&mut buf) {
@@ -1013,6 +1033,8 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
                         if let Some(fld) = get_attr(e, b"fld").and_then(|s| s.parse::<usize>().ok())
                         {
                             page_field_fld.push(fld);
+                            page_field_item
+                                .push(get_attr(e, b"item").and_then(|s| s.parse::<usize>().ok()));
                         }
                     }
                     b"dataField" => {
@@ -1035,14 +1057,20 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
                     b"pivotField" if in_pivot_fields => {
                         pivot_field_idx += 1;
                         current_field_has_default = false;
+                        current_field_items.clear();
                         if is_empty {
                             field_has_subtotal_item.insert(pivot_field_idx as usize, false);
                         }
                     }
-                    b"item"
-                        if in_pivot_fields && get_attr(e, b"t").as_deref() == Some("default") =>
-                    {
-                        current_field_has_default = true;
+                    b"item" if in_pivot_fields => {
+                        if get_attr(e, b"t").as_deref() == Some("default") {
+                            current_field_has_default = true;
+                        } else if let Some(x) =
+                            get_attr(e, b"x").and_then(|s| s.parse::<usize>().ok())
+                        {
+                            let hidden = get_attr(e, b"h").as_deref() == Some("1");
+                            current_field_items.push((x, hidden));
+                        }
                     }
                     _ => {}
                 }
@@ -1056,6 +1084,10 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
                 } else if local == b"pivotField" && in_pivot_fields {
                     field_has_subtotal_item
                         .insert(pivot_field_idx as usize, current_field_has_default);
+                    field_items.insert(
+                        pivot_field_idx as usize,
+                        std::mem::take(&mut current_field_items),
+                    );
                 }
             }
             _ => {}
@@ -1077,6 +1109,8 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
         page_field_fld,
         data_fields,
         field_has_subtotal_item,
+        field_items,
+        page_field_item,
     })
 }
 
@@ -1107,6 +1141,10 @@ struct ParsedCacheDefinition {
     field_names: Vec<String>,
     source_sheet: String,
     source_ref: String,
+    /// Each field's `<sharedItems>` values, in the cache's own first-seen
+    /// order -- which is the index space an `<item x="N"/>` refers to.
+    /// Empty for a field that stores none (an aggregated-only column).
+    shared_items: Vec<Vec<String>>,
 }
 
 fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
@@ -1115,6 +1153,7 @@ fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
     let mut field_names = Vec::new();
     let mut source_sheet = String::new();
     let mut source_ref = String::new();
+    let mut shared_items: Vec<Vec<String>> = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Eof) => break,
@@ -1124,6 +1163,17 @@ fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
                 let local = e.name().local_name().into_inner();
                 if local == b"cacheField" {
                     field_names.push(get_attr(e, b"name").unwrap_or_default());
+                    shared_items.push(Vec::new());
+                } else if matches!(local, b"s" | b"n" | b"d" | b"b") {
+                    // A `<sharedItems>` entry. Typed by element name (`s`
+                    // string, `n` number, `b` boolean, `d` date); the pivot
+                    // engine groups on the rendered string either way, so
+                    // only the value is kept.
+                    if let Some(v) = get_attr(e, b"v")
+                        && let Some(last) = shared_items.last_mut()
+                    {
+                        last.push(v);
+                    }
                 } else if local == b"worksheetSource" {
                     source_sheet = get_attr(e, b"sheet").unwrap_or_default();
                     source_ref = get_attr(e, b"ref").unwrap_or_default();
@@ -1140,6 +1190,7 @@ fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
             field_names,
             source_sheet,
             source_ref,
+            shared_items,
         })
     }
 }
@@ -1290,6 +1341,8 @@ pub fn import_pivot_tables(
         };
 
         let field_name = |idx: usize| cache_def.field_names.get(idx).cloned().unwrap_or_default();
+        let cache_shared_items =
+            |idx: usize| cache_def.shared_items.get(idx).cloned().unwrap_or_default();
 
         let field_subtotal = |x: usize| {
             parsed
@@ -1314,10 +1367,48 @@ pub fn import_pivot_tables(
                 subtotal: field_subtotal(x),
             })
             .collect();
+        // A filter selection *is* reconstructed, resolved through the
+        // cache's `<sharedItems>` to plain value strings rather than kept as
+        // indices. That is what makes it safe: the indices are trusted only
+        // against the cache definition in the same file, which is
+        // self-consistent by construction, and a value that no longer exists
+        // in changed source data simply matches nothing.
+        //
+        // Both of Excel's forms are read, because a macro can produce either
+        // -- `h="1"` on hidden items (multi-select), or `<pageField item="N">`
+        // naming a position in the display list (single). Measured with
+        // `fuzz/pivot_filter_probe.py`.
         let filter_fields: Vec<PivotFilterField> = parsed
             .page_field_fld
             .iter()
-            .map(|&fld| PivotFilterField::new(field_name(fld)))
+            .enumerate()
+            .map(|(pos, &fld)| {
+                let mut field = PivotFilterField::new(field_name(fld));
+                let items = parsed.field_items.get(&fld);
+                let values = cache_shared_items(fld);
+                let value_at = |shared_idx: usize| values.get(shared_idx).cloned();
+
+                field.selected_values =
+                    match (parsed.page_field_item.get(pos).copied().flatten(), items) {
+                        // Single selection: one position in the display list.
+                        (Some(display_pos), Some(items)) => items
+                            .get(display_pos)
+                            .and_then(|&(shared_idx, _)| value_at(shared_idx))
+                            .map(|v| vec![v]),
+                        // Multi-selection: everything not hidden. All-visible
+                        // means no filter at all, which stays `None` so it is
+                        // not confused with "every value happens to be picked".
+                        (None, Some(items)) if items.iter().any(|&(_, hidden)| hidden) => Some(
+                            items
+                                .iter()
+                                .filter(|&&(_, hidden)| !hidden)
+                                .filter_map(|&(shared_idx, _)| value_at(shared_idx))
+                                .collect(),
+                        ),
+                        _ => None,
+                    };
+                field
+            })
             .collect();
         let value_fields: Vec<PivotValueField> = {
             let raw: Vec<PivotValueField> = parsed

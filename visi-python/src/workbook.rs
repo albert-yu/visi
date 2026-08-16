@@ -459,9 +459,12 @@ impl Workbook {
     /// `visi pivot filter` command cannot express, since it requires either a
     /// value list or `--clear`.
     ///
-    /// A selection does not survive `roundtrip()`: `PivotFilterField`'s
-    /// selected values are deliberately not reconstructed on import, so this
-    /// must be the last mutation before saving.
+    /// A selection survives `roundtrip()` -- it is written as indices into
+    /// the pivot cache's shared items and resolved back to values on import.
+    /// Two cases still cannot: selecting *every* value marks nothing hidden
+    /// and so reads back as no filter (the grid is identical either way), and
+    /// a filter on a column that is also a row or column field has nowhere to
+    /// be recorded, since a pivot field carries one orientation.
     #[pyo3(signature = (pivot, column, values))]
     fn set_pivot_filter(
         &mut self,

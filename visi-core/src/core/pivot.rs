@@ -234,9 +234,25 @@ pub struct PivotFilterField {
     pub column: String,
     /// `None` means every value is allowed (no filtering applied yet).
     ///
-    /// Not reconstructed on xlsx import -- a selection resets to "all",
-    /// since restoring it would mean trusting index-based item references
-    /// against source data that may since have changed.
+    /// **Reconstructed on xlsx import**, resolved through the cache's
+    /// `<sharedItems>` to plain value strings rather than kept as indices --
+    /// which is what makes it safe. The indices are trusted only against the
+    /// cache definition in the same file, which is self-consistent by
+    /// construction, and a value that no longer exists in changed source data
+    /// simply matches nothing.
+    ///
+    /// Two things do not survive, both because the format cannot hold them:
+    ///
+    /// - A selection covering *every* value marks nothing hidden, so it is
+    ///   indistinguishable from no filter and reads back as `None`. The
+    ///   grid is the same either way.
+    /// - A filter on a column that is *also* a row or column field is lost
+    ///   entirely: a pivot field carries one `axis`, so there is nowhere to
+    ///   record it. Excel cannot express that config at all -- a field has
+    ///   exactly one orientation there.
+    ///
+    /// Matching is case-insensitive, because the items themselves are merged
+    /// that way; a selection naming `east` picks the merged `East` item.
     pub selected_values: Option<Vec<String>>,
 }
 
@@ -2971,14 +2987,6 @@ mod tests {
                     .collect::<Vec<_>>(),
                 "seed {seed}: col field subtotal toggle should round-trip"
             );
-            assert!(
-                reimported
-                    .filter_fields
-                    .iter()
-                    .all(|f| f.selected_values.is_none()),
-                "seed {seed}: filter selection should reset to None on import"
-            );
-
             // If nothing lossy was actually in play, the reimported grid
             // must be structurally identical -- this is where a genuine
             // round-trip bug (e.g. losing a value field's aggregation)
@@ -2986,21 +2994,93 @@ mod tests {
             // diff the assertions above already caught. Subtotal toggles
             // now round-trip exactly, so only filter selections remain
             // lossy.
-            let nothing_lossy = pivot
-                .filter_fields
-                .iter()
-                .all(|f| f.selected_values.is_none());
+            // Filter selections round-trip now too, so a lossless round trip
+            // is the ordinary case rather than the exception.
+            let nothing_lossy = true;
+            let any_filter_is_also_an_axis_field = pivot.filter_fields.iter().any(|ff| {
+                pivot
+                    .row_fields
+                    .iter()
+                    .chain(pivot.col_fields.iter())
+                    .any(|f| f.column.eq_ignore_ascii_case(&ff.column))
+            });
             let reimported_sheets: Vec<Sheet> =
                 imported_sheets.into_iter().map(|s| s.sheet).collect();
             let reimported_sheet_refs: Vec<&Sheet> = reimported_sheets.iter().collect();
             let reimported_grid = compute_pivot(&reimported_sheet_refs, reimported)
                 .unwrap_or_else(|e| panic!("seed {seed}: reimported compute_pivot failed: {e}"));
-            if nothing_lossy {
+            // A field Excel could not represent at all -- see
+            // `axis_bound` below -- is excluded from the shape check for the
+            // same reason it is excluded from the selection check.
+            if nothing_lossy && !any_filter_is_also_an_axis_field {
                 assert_eq!(
                     reimported_grid.body_rows.len(),
                     grid.body_rows.len(),
                     "seed {seed}: grid shape changed on lossless round-trip"
                 );
+            }
+
+            // Filter selections round-trip now: they are written as indices
+            // into the cache's `<sharedItems>` and resolved back to plain
+            // values on import. What must match is the *set* of selected
+            // values, since the file stores them in the cache's first-seen
+            // order rather than the caller's.
+            //
+            // The one legitimate difference: a selection covering every
+            // value marks nothing hidden, so it is indistinguishable from no
+            // filter once written and comes back as `None`. That is only
+            // acceptable if it really was a no-op, which the grid proves.
+            // Compared case-insensitively, because the engine merges
+            // case-variant values into one item (keyed by the first casing
+            // seen in the source). So a selection naming both `WEST` and
+            // `west` picks a single item and legitimately reads back as
+            // whichever casing the cache stored -- a canonicalization, not a
+            // loss.
+            let sorted = |f: &PivotFilterField| {
+                f.selected_values.as_ref().map(|v| {
+                    let mut v: Vec<String> = v.iter().map(|s| s.to_lowercase()).collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+            };
+            // A filter column that is *also* a row or column field has no
+            // representation in the file: a pivot field carries one `axis`,
+            // so the row/column orientation wins and there is nowhere left to
+            // record the selection. Excel cannot express that config either
+            // -- a field has exactly one orientation there -- so this is a
+            // shape visi's model admits and the format does not, rather than
+            // a round-trip bug.
+            let axis_bound = |column: &str| {
+                pivot
+                    .row_fields
+                    .iter()
+                    .chain(pivot.col_fields.iter())
+                    .any(|f| f.column.eq_ignore_ascii_case(column))
+            };
+            for (before, after) in pivot
+                .filter_fields
+                .iter()
+                .zip(reimported.filter_fields.iter())
+            {
+                if axis_bound(&before.column) {
+                    continue;
+                }
+                if before.selected_values.is_some() && after.selected_values.is_none() {
+                    assert_eq!(
+                        reimported_grid.body_rows.len(),
+                        grid.body_rows.len(),
+                        "seed {seed}: filter on '{}' was dropped and it mattered",
+                        before.column
+                    );
+                } else {
+                    assert_eq!(
+                        sorted(before),
+                        sorted(after),
+                        "seed {seed}: filter selection should round-trip for '{}'",
+                        before.column
+                    );
+                }
             }
         }
     }

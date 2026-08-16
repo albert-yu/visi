@@ -353,11 +353,11 @@ def test_empty_filter_selection_is_expressible():
     assert wb.pivots()[0]["filter_selections"]["Region"] is None
 
 
-def test_filter_selection_does_not_survive_a_roundtrip():
-    """Why the filter must be the last mutation before saving.
+def test_filter_selection_survives_a_roundtrip():
+    """A selection is written as `<sharedItems>` indices and read back as values.
 
-    visi-core deliberately does not reconstruct selected values on import, so
-    a round trip past this point silently resets the filter to "all".
+    This used not to hold -- the selection reset to "all" on import, so the
+    filter had to be the last mutation before saving. It round-trips now.
     """
     wb, name, last = _pivot_source()
     wb.add_pivot_from_range(
@@ -369,6 +369,24 @@ def test_filter_selection_does_not_survive_a_roundtrip():
     wb.set_pivot_filter("P", "Region", ["East"])
 
     assert wb.pivots()[0]["filter_selections"]["Region"] == ["East"]
+    assert wb.roundtrip().pivots()[0]["filter_selections"]["Region"] == ["East"]
+
+
+def test_a_filter_selecting_everything_reads_back_as_no_filter():
+    """Nothing is marked hidden, so the file cannot tell the two apart.
+
+    Harmless: an all-inclusive filter and no filter produce the same grid.
+    """
+    wb, name, last = _pivot_source()
+    wb.add_pivot_from_range(
+        "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
+    )
+    wb.add_pivot_field("P", "row", "Product")
+    wb.add_pivot_field("P", "value", "Amount", agg="sum")
+    wb.add_pivot_field("P", "filter", "Region")
+    every = wb.pivots()[0]
+    wb.set_pivot_filter("P", "Region", ["East", "West"])
+
     assert wb.roundtrip().pivots()[0]["filter_selections"]["Region"] is None
 
 
