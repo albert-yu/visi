@@ -20,6 +20,10 @@ pub enum Expr {
     Number(f64),
     String(String),
     Boolean(bool),
+    /// An Excel error value written literally in the formula, as in `=#REF!`.
+    /// Evaluates to itself, so it propagates through enclosing operators and
+    /// functions exactly as an error read out of a cell does.
+    Error(&'static str),
     CellRef {
         sheet: Option<String>,
         row: usize,
@@ -67,6 +71,9 @@ pub enum EvalToken {
     String(String),
     Boolean(bool),
     Identifier(String),
+    /// An Excel error value written literally, as in `=#REF!`. One of
+    /// `result_data::EXCEL_ERROR_CODES`, canonically cased.
+    Error(&'static str),
     Op(Op),
     OpenParen,
     CloseParen,
@@ -1230,6 +1237,25 @@ fn take_number_exponent(chars: &[char], i: &mut usize, num_str: &mut String) {
     }
 }
 
+/// The Excel error value spelled at `start`, in its canonical casing, or
+/// `None` if the `#` starts something else.
+///
+/// Longest match wins, so a code that is a prefix of another cannot shadow it.
+fn match_error_code(chars: &[char], start: usize) -> Option<&'static str> {
+    crate::core::engine::result_data::EXCEL_ERROR_CODES
+        .iter()
+        .filter(|code| {
+            let wanted: Vec<char> = code.chars().collect();
+            chars.len() - start >= wanted.len()
+                && chars[start..start + wanted.len()]
+                    .iter()
+                    .zip(&wanted)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+        .max_by_key(|code| code.len())
+        .copied()
+}
+
 pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
     let chars: Vec<char> = input.chars().collect();
     let mut tokens = Vec::new();
@@ -1282,6 +1308,17 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
                 section,
             });
             i = next_i;
+            continue;
+        }
+
+        // An Excel error written literally in a formula, as in `=#REF!` or
+        // `=1+#N/A`. Lexed before the operator table so `#DIV/0!`'s embedded
+        // `/` is not taken as division.
+        if c == '#'
+            && let Some(code) = match_error_code(&chars, i)
+        {
+            i += code.chars().count();
+            tokens.push(EvalToken::Error(code));
             continue;
         }
 
@@ -1709,6 +1746,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::String(val.clone()))
             }
             EvalToken::Boolean(val) => Ok(Expr::Boolean(val)),
+            EvalToken::Error(code) => Ok(Expr::Error(code)),
             EvalToken::OpenParen => {
                 let expr = self.parse()?;
                 self.consume(EvalToken::CloseParen)?;
@@ -2514,5 +2552,42 @@ mod tests {
         // so an overshot `i` doesn't actually panic here today. Kept as a
         // safety-net regression test in case that changes.
         let _ = rewrite_structured_table_reference("=Sales[Amount]&\"\\", "Sales", None, None);
+    }
+
+    #[test]
+    fn an_error_value_lexes_as_a_literal_rather_than_as_punctuation() {
+        // Excel accepts an error written out in a formula, and a structural
+        // edit produces one (`=A3` less row 3 is `=#REF!`), so this has to
+        // lex or a broken reference would turn into a broken formula.
+        assert_eq!(lex_eval("#REF!").unwrap(), vec![EvalToken::Error("#REF!")]);
+        // `#DIV/0!` has to beat the operator table to its `/`, and `#N/A` its
+        // own -- both are matched whole before any operator is considered.
+        assert_eq!(
+            lex_eval("#DIV/0!").unwrap(),
+            vec![EvalToken::Error("#DIV/0!")]
+        );
+        assert_eq!(lex_eval("#N/A").unwrap(), vec![EvalToken::Error("#N/A")]);
+        // Recognition is case-insensitive but the token carries the canonical
+        // spelling, so `serialize_formula` cannot reintroduce a variant.
+        assert_eq!(lex_eval("#ref!").unwrap(), vec![EvalToken::Error("#REF!")]);
+        // It composes like any other operand.
+        assert_eq!(
+            lex_eval("1+#REF!").unwrap(),
+            vec![
+                EvalToken::Number(1.0),
+                EvalToken::Op(Op::Add),
+                EvalToken::Error("#REF!"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hash_that_starts_nothing_recognisable_is_left_alone() {
+        // `#NOPE` is not in the closed set, so the lexer must not swallow it
+        // as an error -- it stays whatever it was, which is an error at a
+        // later stage rather than a silently wrong value.
+        assert!(match_error_code(&"#NOPE".chars().collect::<Vec<_>>(), 0).is_none());
+        // A prefix of a real code with nothing after it, likewise.
+        assert!(match_error_code(&"#RE".chars().collect::<Vec<_>>(), 0).is_none());
     }
 }

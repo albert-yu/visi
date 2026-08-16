@@ -670,7 +670,7 @@ pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwrit
         format = format.set_font_name(family);
     }
     if let Some(size) = style.font_size {
-        format = format.set_font_size(size as f64);
+        format = format.set_font_size(size);
     }
     if let Some(code) = &style.num_format {
         format = format.set_num_format(code);

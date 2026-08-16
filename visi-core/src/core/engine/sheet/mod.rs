@@ -619,6 +619,7 @@ impl Sheet {
             Expr::Number(n) => Ok(ResultData::Float(*n)),
             Expr::String(s) => Ok(ResultData::String(s.clone())),
             Expr::Boolean(b) => Ok(ResultData::Boolean(*b)),
+            Expr::Error(code) => Ok(ResultData::Error(code.to_string())),
             Expr::Identifier(name) => match scope.get(name) {
                 Some(val) => Ok(val.clone()),
                 None => Ok(ResultData::Error("#NAME?".to_string())),

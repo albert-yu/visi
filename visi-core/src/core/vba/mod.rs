@@ -30,6 +30,7 @@
 pub mod ast;
 #[doc(hidden)]
 pub mod builtins;
+pub(crate) mod color;
 #[doc(hidden)]
 pub mod host;
 #[doc(hidden)]

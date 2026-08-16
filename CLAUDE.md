@@ -36,8 +36,11 @@ python fuzz/fuzz_excel.py --driver mock --iterations 5   # no Excel needed; exer
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 python fuzz/fuzz_excel.py --seed 48291 --iterations 1    # reproduce a specific failure
 
+python fuzz/grid_edit_probe.py                           # what a row/col insert/delete does to formula text
 python fuzz/fuzz_vba.py --iterations 200 --seed 909      # VBA execution + the cells a macro wrote
 python fuzz/vba_host_probe.py                            # what Excel's object model actually does
+python fuzz/vba_range_tracking_probe.py                  # does a held Range follow a row/col edit (one case per round trip)
+python fuzz/vba_style_probe.py --paint                   # BGR vs RGB, checked against the saved file not the object model
 python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
 
 pytest fuzz/test_backend_parity.py visi-python/tests/    # bindings must match the CLI
@@ -151,6 +154,20 @@ Formula text goes through **two distinct representations**, which is the single 
 
 Cross-sheet evaluation always needs a `Context`; without one, remote refs error out.
 
+### Structural edits (`visi-core/src/core/grid_edit.rs`)
+
+Inserting or deleting a row/column does not just move cells — every formula in the **whole workbook** has to be rewritten so its references follow, or `=A3` keeps pointing at row 3 after the value it meant slid to row 4. `WorkbookManager::{insert,delete}_{row,col}` go through `apply_grid_edit`, which is deliberately **three phases**:
+
+1. compile every formula *before* the edit (compiling needs the grid the text was written against),
+2. apply the edit, and move `ExcelTable` extents and `PivotSource::Range`/destination coordinates with it,
+3. serialize the shifted formulas back to text *after* the edit, at wherever each formula's own cell moved to.
+
+Phase 3 cannot be folded into phase 1: a whole-column reference is held by `col_id` and renders as the column's *current* letter, so serializing `=SUM(B:B)` before a column is inserted to its left writes `B:B` into a cell where `B` now names a different column — and `src` is what the next recompile reads, so the wrong text wins.
+
+The shift rules were **measured against real Excel** via `fuzz/grid_edit_probe.py` (15 cases, all agreeing), not taken from documentation. The counterintuitive ones: **`$` does not pin a reference against a structural edit** (`$A$3` shifts exactly as `A3` does); inserting at a range's *first* row moves the range while inserting one row lower grows it; deleting part of a range shrinks it but deleting all of it is `#REF!`; and `#REF!` replaces the *reference*, not the formula (`=A3+1` becomes `=#REF!+1`). Re-run the probe rather than "fixing" one from memory.
+
+`shift_span` takes a real index — the whole-column sentinel (`end_row: usize::MAX`, what `A:C` compiles to) must be screened out first or `end + 1` overflows. `parser::lex_eval` grew an `EvalToken::Error` over the closed `EXCEL_ERROR_CODES` set for this, since a formula could not previously hold a literal `#REF!` at all.
+
 ### Excel Tables vs sheets (naming trap)
 
 A `Sheet` is informally called a "table" throughout this codebase (`Sheet::new` defaults to `"table_1"`, `Context::add_table`). An **`ExcelTable`** (`core/table.rs`) is a different thing: a ListObject — a named rectangular sub-range *on* a sheet with a header row, optional totals row, and named columns.
@@ -185,7 +202,13 @@ Things that will bite:
 - **Keywords are not reserved.** The lexer emits every one as a plain `Ident` and the parser matches case-insensitively, because VBA's keyword set is contextual — `Name`, `Line`, `Get`, and `Width` are all statements in one position and ordinary property names in another. The `Stmt::Opaque` guards in `parser.rs` are narrow for exactly this reason.
 - **Excel compiles VBA lazily, per invoked procedure.** Nothing short of calling a procedure compiles it — not a probe in the same module, not a reference from a dead branch. This is why `fuzz/fuzz_vba_parse.py` wraps generated source in `If False Then ... End If` inside the procedure it calls, and why there is no way to ask Excel whether an arbitrary module compiles without also running something.
 - A **compile** error in Excel hangs the AppleScript bridge and, unlike a runtime error, is *not* catchable by an `On Error` wrapper.
-- **An object is a value, not a pointer.** `ObjRef` holds ids and coordinates and never borrows the workbook, which is what lets the interpreter hold `&mut WorkbookManager` for a whole run. `Is` compares an identity *token*, not the coordinates: `ws.Range("A1") Is ws.Range("A1")` is **False** in Excel (each call builds a fresh object) while `ws Is wb.Worksheets(1)` is True (worksheets are cached). Measured; the obvious tuple comparison is wrong.
+- **An object is a handle, not a pointer.** `ObjRef` holds ids and never borrows the workbook, which is what lets the interpreter hold `&mut WorkbookManager` for a whole run. `Is` compares an identity *token*, not the coordinates: `ws.Range("A1") Is ws.Range("A1")` is **False** in Excel (each call builds a fresh object) while `ws Is wb.Worksheets(1)` is True (worksheets are cached). Measured; the obvious tuple comparison is wrong.
+- **A `Range` tracks structural edits, so its coordinates live in `Host::ranges`, not in the `ObjRef`.** `Set r = ws.Range("A5")` then `ws.Rows(1).Insert` leaves `r` reading `$A$6` *and* still holding what was in `A5` — and a copy of `r` taken **before** the edit moves too, which is what forced interning over a by-value `Range`. The geometry turned out to be exactly `core::grid_edit`'s, case for case, so `Rows.Insert` and a formula's range reference share `shift_span` rather than two hand-written rules. A range whose every cell is deleted becomes `RangeState::Dead`: **not** `Nothing`, still `TypeName` `"Range"`, but every member access raises. All measured with `fuzz/vba_range_tracking_probe.py`; the one deliberate divergence is the error *number* (Excel for Mac's is not reproducible run to run — see `docs/excel-discrepancies.md` #17).
+- **`Interior.Color` / `Font.Color` are a BGR `Long`, so `&HFF0000` is blue.** `CellStyle` stores `"#RRGGBB"`; `core::vba::color` is the only place that swaps. Verified from *both* sides — `fuzz/vba_style_probe.py --paint` has Excel save a workbook and reads the real ARGB back with openpyxl, because the VBA channel alone cannot catch a consistent-but-wrong convention (both engines would round-trip the same wrong `Long`). `RGB()` clamps components over 255 and raises error 5 on a negative one.
+- **`ColorIndex` is a nearest-colour match, not a lookup.** The 56-slot palette in `color.rs` was read out of Excel by `--palette`, and an off-palette fill reports the *nearest* slot (`RGB(250,10,10)` → 3), not `xlNone`. Guessing `xlNone` here was wrong and the measurement caught it. An *unfilled* cell is `xlNone`; a cell with no font colour is slot 1.
+- **Over a range whose cells disagree, every style property reads `Null` except `Interior.Color`, which reads `0`.** Excel's own asymmetry, measured. `style_fold` takes the mixed-value as a parameter rather than inferring it, since 0 is also a legitimate uniform answer (black).
+- **`CellStyle::font_size` is an `f64`** because Excel's `Font.Size` reports as a `Double` and `10.5` round-trips.
+- **`Insert`/`Delete` are refused on a partial range.** Excel accepts one and picks the shift direction from the range's shape — measured, `Range("A2:A3").Insert` shifts *right*, not down. Guessing silently moves a macro's data sideways, so only a whole-row or whole-column band is accepted.
 - **A plain `=` reads an object's default member and `Set` does not**, and the parser cannot tell them apart. Everything wanting a scalar goes through `Interpreter::scalar`; `Set`, `Is`, `TypeName`, a `With` subject and a user procedure's arguments deliberately skip it. Getting this wrong does not raise — it silently produces the wrong kind of value.
 - **A write marks the workbook stale; the next read that could observe it recalculates.** Excel recalculates per assignment and it is observable (`A1 = 5` then reading a `D1` holding `=A1*2`), but `WorkbookManager::evaluate` is three passes over every sheet, so doing it literally would be unaffordable in a write loop. Same behaviour, one recalculation per run of consecutive writes.
 - **`Application.WorksheetFunction.X` raises where `Application.X` returns.** A failing `WorksheetFunction.VLookup` is a trappable 1004; `Application.VLookup` returns an error `Variant` that `IsError` detects. Two call paths, one implementation — `Sheet::call_worksheet_function`, a `pub(crate)` entry onto `evaluate_function`. The engine's own non-Excel functions (`GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, `STR`) are deliberately not exposed: a macro using one would work here and fail in Excel, the one direction the differential harness cannot catch.
