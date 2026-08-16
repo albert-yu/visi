@@ -46,6 +46,19 @@ pub struct ExcelTable {
     /// Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1", or custom theme)
     #[serde(default)]
     pub style_name: Option<String>,
+    /// Whether the last row of the range is Excel's *insert row* placeholder
+    /// rather than data -- i.e. the table has **zero data rows**.
+    ///
+    /// This cannot be inferred from the extent, which is the surprise:
+    /// deleting a one-data-row table's only row leaves `ref` at `A1:C2` and
+    /// sets `insertRow="1"` in `xl/tables/tableN.xml`, so a zero-row table
+    /// and a table with one *blank* data row have identical bounds. Excel
+    /// tells them apart by this flag and so must we -- `ListObject`'s
+    /// `.DataBodyRange` is `Nothing` and `.ListRows.Count` is 0 for the
+    /// former and a real range and 1 for the latter. Measured with
+    /// `fuzz/vba_table_probe.py --empty`, which is issue #11's shape.
+    #[serde(default)]
+    pub has_insert_row: bool,
 }
 
 impl ExcelTable {
@@ -69,10 +82,27 @@ impl ExcelTable {
         self.start_row + usize::from(self.has_header_row)
     }
 
-    /// Last row of the table's actual data body (excludes the totals row).
-    /// May be less than `data_start_row()` for a table with no data rows.
+    /// Last row of the table's actual data body, excluding the totals row
+    /// and Excel's insert-row placeholder.
+    ///
+    /// May be less than `data_start_row()` for a table with no data rows, so
+    /// callers building a range from the pair must handle the empty case
+    /// rather than assuming `start..=end` is non-empty. See
+    /// [`ExcelTable::data_row_count`].
     pub fn data_end_row(&self) -> usize {
-        self.end_row - usize::from(self.has_totals_row)
+        self.end_row
+            .saturating_sub(usize::from(self.has_totals_row))
+            .saturating_sub(usize::from(self.has_insert_row))
+    }
+
+    /// How many data rows the table actually has, which is 0 for a table
+    /// sitting on its insert-row placeholder.
+    ///
+    /// Use this rather than comparing `data_start_row()` with
+    /// `data_end_row()`: an empty table's end is *below* its start, so the
+    /// subtraction underflows.
+    pub fn data_row_count(&self) -> usize {
+        (self.data_end_row() + 1).saturating_sub(self.data_start_row())
     }
 
     /// The header row's sheet-row index, or `None` if the table has no
@@ -256,6 +286,7 @@ impl Sheet {
             has_totals_row,
             columns,
             style_name: None,
+            has_insert_row: false,
         });
         Ok(id)
     }
@@ -602,5 +633,59 @@ mod tests {
             .unwrap();
         let err = sheet.rename_table_column("Sales", 1, "Name").unwrap_err();
         assert!(err.contains("already has a column"));
+    }
+
+    #[test]
+    fn an_insert_row_placeholder_means_zero_data_rows() {
+        // Excel's own shape for an emptied table, measured with
+        // `fuzz/vba_table_probe.py --empty`: deleting the only data row of an
+        // `A1:C2` table leaves the extent at `A1:C2` and sets `insertRow="1"`,
+        // so the flag is the *only* thing distinguishing this from a table
+        // with one blank data row. `ListObject.DataBodyRange` is `Nothing`
+        // for the former and `$A$2:$C$2` for the latter.
+        let mut table = ExcelTable {
+            id: 1,
+            name: "Hollow".to_string(),
+            sheet_id: 1,
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 2,
+            has_header_row: true,
+            has_totals_row: false,
+            columns: vec!["Region".into(), "Product".into(), "Amount".into()],
+            style_name: None,
+            has_insert_row: false,
+        };
+        // One blank data row.
+        assert_eq!(table.data_row_count(), 1);
+        assert_eq!(table.data_start_row(), 1);
+        assert_eq!(table.data_end_row(), 1);
+
+        // The same extent, sitting on its insert row: zero data rows.
+        table.has_insert_row = true;
+        assert_eq!(table.data_row_count(), 0);
+        // The end is now *below* the start, which is why `data_row_count`
+        // exists rather than callers subtracting the two.
+        assert!(table.data_end_row() < table.data_start_row());
+    }
+
+    #[test]
+    fn data_row_count_does_not_underflow_on_a_header_only_table() {
+        let table = ExcelTable {
+            id: 1,
+            name: "T".to_string(),
+            sheet_id: 1,
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 1,
+            has_header_row: true,
+            has_totals_row: false,
+            columns: vec!["A".into(), "B".into()],
+            style_name: None,
+            has_insert_row: false,
+        };
+        assert_eq!(table.data_row_count(), 0);
     }
 }
