@@ -36,6 +36,7 @@ python fuzz/fuzz_excel.py --driver mock --iterations 5   # no Excel needed; exer
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 python fuzz/fuzz_excel.py --seed 48291 --iterations 1    # reproduce a specific failure
 
+python fuzz/grid_edit_probe.py                           # what a row/col insert/delete does to formula text
 python fuzz/fuzz_vba.py --iterations 200 --seed 909      # VBA execution + the cells a macro wrote
 python fuzz/vba_host_probe.py                            # what Excel's object model actually does
 python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
@@ -150,6 +151,20 @@ Formula text goes through **two distinct representations**, which is the single 
 **`commit` only propagates local dependencies.** Cross-sheet propagation is handled a level up by `WorkbookManager::evaluate()`, which marks every sheet dirty and runs **3 fixed passes** over all sheets, rebuilding a `Context` (name → `&Sheet`) for each target sheet via `split_at_mut`. Deep cross-sheet chains can therefore need more passes than exist. Circular references are bounded by `max_ops` inside `commit`, not detected properly.
 
 Cross-sheet evaluation always needs a `Context`; without one, remote refs error out.
+
+### Structural edits (`visi-core/src/core/grid_edit.rs`)
+
+Inserting or deleting a row/column does not just move cells — every formula in the **whole workbook** has to be rewritten so its references follow, or `=A3` keeps pointing at row 3 after the value it meant slid to row 4. `WorkbookManager::{insert,delete}_{row,col}` go through `apply_grid_edit`, which is deliberately **three phases**:
+
+1. compile every formula *before* the edit (compiling needs the grid the text was written against),
+2. apply the edit, and move `ExcelTable` extents and `PivotSource::Range`/destination coordinates with it,
+3. serialize the shifted formulas back to text *after* the edit, at wherever each formula's own cell moved to.
+
+Phase 3 cannot be folded into phase 1: a whole-column reference is held by `col_id` and renders as the column's *current* letter, so serializing `=SUM(B:B)` before a column is inserted to its left writes `B:B` into a cell where `B` now names a different column — and `src` is what the next recompile reads, so the wrong text wins.
+
+The shift rules were **measured against real Excel** via `fuzz/grid_edit_probe.py` (15 cases, all agreeing), not taken from documentation. The counterintuitive ones: **`$` does not pin a reference against a structural edit** (`$A$3` shifts exactly as `A3` does); inserting at a range's *first* row moves the range while inserting one row lower grows it; deleting part of a range shrinks it but deleting all of it is `#REF!`; and `#REF!` replaces the *reference*, not the formula (`=A3+1` becomes `=#REF!+1`). Re-run the probe rather than "fixing" one from memory.
+
+`shift_span` takes a real index — the whole-column sentinel (`end_row: usize::MAX`, what `A:C` compiles to) must be screened out first or `end + 1` overflows. `parser::lex_eval` grew an `EvalToken::Error` over the closed `EXCEL_ERROR_CODES` set for this, since a formula could not previously hold a literal `#REF!` at all.
 
 ### Excel Tables vs sheets (naming trap)
 

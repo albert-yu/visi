@@ -8,6 +8,7 @@ pub(crate) mod ets;
 pub(crate) mod extended_fn;
 pub(crate) mod finance;
 pub(crate) mod formula;
+pub(crate) mod grid_edit;
 pub(crate) mod math_trig;
 #[doc(hidden)]
 pub mod ovba;

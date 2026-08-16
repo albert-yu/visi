@@ -15,6 +15,8 @@
 //! including on wasm. The `visi` CLI layers path- and stdio-based helpers on
 //! top via its own `WorkbookFile` trait.
 
+use crate::core::formula::CompiledFormula;
+use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::parser::col_idx_to_letters;
 use crate::core::xlsx::{export_xlsx_data, import_xlsx_data};
 use crate::core::{
@@ -26,6 +28,46 @@ use crate::core::{
     validate_vba_module_name,
 };
 use crate::{Error, ObjectKind};
+
+/// Keeps a table's column names lined up with its sheet columns after a
+/// column insert or delete cut through it.
+///
+/// `ExcelTable::columns` has one entry per sheet column in
+/// `start_col..=end_col`, so a column added or removed inside that span has to
+/// add or remove a name at the matching offset -- otherwise every name past
+/// the edit describes the wrong column. Called with the table's *pre-edit*
+/// extent still in place, which is what `edit.at` is compared against.
+fn resize_table_columns(
+    table: &mut ExcelTable,
+    new_start_col: usize,
+    new_end_col: usize,
+    edit: &GridEdit,
+) {
+    if edit.insert {
+        // Inserting at or before the table's first column moves the table
+        // rather than widening it, so only a strictly-interior insert adds a
+        // column -- the same asymmetry `shift_span` encodes for references.
+        if edit.at > table.start_col && edit.at <= table.end_col {
+            let offset = (edit.at - table.start_col).min(table.columns.len());
+            for _ in 0..edit.count {
+                table.columns.insert(offset, String::new());
+            }
+        }
+    } else {
+        let first = edit.at.max(table.start_col);
+        let last = (edit.at + edit.count).min(table.end_col + 1);
+        if first < last {
+            let lo = (first - table.start_col).min(table.columns.len());
+            let hi = (last - table.start_col).min(table.columns.len());
+            table.columns.drain(lo..hi);
+        }
+    }
+    // A table loaded from elsewhere may already disagree with its own extent;
+    // the new width is the authority either way.
+    table
+        .columns
+        .resize(new_end_col - new_start_col + 1, String::new());
+}
 
 /// A single sheet's line in a [`WorkbookSummary`].
 pub struct SheetSummary {
@@ -391,16 +433,27 @@ impl WorkbookManager {
         sheet.set_cell_src(row, col, value);
     }
 
-    /// Insert row at 0-based index
+    /// Insert row at 0-based index.
+    ///
+    /// Formulas throughout the workbook are rewritten to follow the cells
+    /// that moved, as in Excel, and Excel Table and pivot ranges move with
+    /// the cells they cover. See `core::grid_edit` for the rules.
     pub fn insert_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
-        let sheet = &mut self.sheets[sheet_idx];
-        sheet.insert_row(row_idx);
-        Ok(())
+        let sheet = &self.sheets[sheet_idx];
+        // `Sheet::insert_row` appends when the index is past the end, so the
+        // edit the rewrite is told about has to say the same thing.
+        let at = row_idx.min(sheet.row_count());
+        let edit = GridEdit::insert_row(sheet.id, at);
+        self.apply_grid_edit(edit, &[], |wb| wb.sheets[sheet_idx].insert_row(at));
+        self.evaluate()
     }
 
-    /// Delete row at 0-based index
+    /// Delete row at 0-based index.
+    ///
+    /// References to the deleted row become `#REF!` and references below it
+    /// move up, as in Excel.
     pub fn delete_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
-        let sheet = &mut self.sheets[sheet_idx];
+        let sheet = &self.sheets[sheet_idx];
         if row_idx >= sheet.row_count() {
             return Err(Error::OutOfBounds {
                 what: "row",
@@ -408,20 +461,23 @@ impl WorkbookManager {
                 len: sheet.row_count(),
             });
         }
-        sheet.delete_row(row_idx);
-        Ok(())
+        let edit = GridEdit::delete_row(sheet.id, row_idx);
+        self.apply_grid_edit(edit, &[], |wb| wb.sheets[sheet_idx].delete_row(row_idx));
+        self.evaluate()
     }
 
-    /// Insert column at 0-based index
+    /// Insert column at 0-based index.
     pub fn insert_col(&mut self, sheet_idx: usize, col_idx: usize) -> crate::Result<()> {
-        let sheet = &mut self.sheets[sheet_idx];
-        sheet.insert_col(col_idx);
-        Ok(())
+        let sheet = &self.sheets[sheet_idx];
+        let at = col_idx.min(sheet.col_count());
+        let edit = GridEdit::insert_col(sheet.id, at);
+        self.apply_grid_edit(edit, &[], |wb| wb.sheets[sheet_idx].insert_col(at));
+        self.evaluate()
     }
 
-    /// Delete column at 0-based index
+    /// Delete column at 0-based index.
     pub fn delete_col(&mut self, sheet_idx: usize, col_idx: usize) -> crate::Result<()> {
-        let sheet = &mut self.sheets[sheet_idx];
+        let sheet = &self.sheets[sheet_idx];
         if col_idx >= sheet.col_count() {
             return Err(Error::OutOfBounds {
                 what: "column",
@@ -429,8 +485,176 @@ impl WorkbookManager {
                 len: sheet.col_count(),
             });
         }
-        sheet.delete_col(col_idx);
-        Ok(())
+        // A whole-column reference is held by column id, not position, so the
+        // only way to tell whether the edit broke one is to note the id
+        // before the column is gone.
+        let deleted_col_ids = vec![sheet.columns()[col_idx].id];
+        let edit = GridEdit::delete_col(sheet.id, col_idx);
+        self.apply_grid_edit(edit, &deleted_col_ids, |wb| {
+            wb.sheets[sheet_idx].delete_col(col_idx)
+        });
+        self.evaluate()
+    }
+
+    /// Runs a structural edit, keeping everything that holds a coordinate
+    /// pointing at what it pointed at before.
+    ///
+    /// Three phases, and the order is the whole point:
+    ///
+    /// 1. **Before the edit**, compile every formula in the workbook and
+    ///    shift its references. Compiling needs the grid the formula text was
+    ///    written against.
+    /// 2. Apply the edit itself, via `apply`.
+    /// 3. **After the edit**, serialize the shifted formulas back to text and
+    ///    write each one at wherever its own cell moved to.
+    ///
+    /// Phase 3 cannot be folded into phase 1. A whole-column reference
+    /// renders as the column's *current* letter, so serializing `=SUM(B:B)`
+    /// before a column is inserted to its left would write `B:B` into a cell
+    /// where `B` now names a different column -- and `src` is what the next
+    /// recompile reads, so the wrong text wins.
+    fn apply_grid_edit(
+        &mut self,
+        edit: GridEdit,
+        deleted_col_ids: &[u64],
+        apply: impl FnOnce(&mut Self),
+    ) {
+        // Phase 1: compile against the pre-edit grid and shift. Formulas the
+        // edit does not touch are skipped outright rather than rewritten to
+        // an equivalent spelling.
+        let mut shifted: Vec<(usize, usize, usize, CompiledFormula)> = Vec::new();
+        for (sheet_idx, sheet) in self.sheets.iter().enumerate() {
+            for (col_idx, column) in sheet.columns().iter().enumerate() {
+                for row_idx in 0..column.len() {
+                    let Some(src) = column.src(row_idx).filter(|s| s.starts_with('=')) else {
+                        continue;
+                    };
+                    let compiled = crate::core::parser::compile_formula(src, &self.sheets);
+                    if let Some(next) =
+                        crate::core::grid_edit::shift_formula(&compiled, &edit, deleted_col_ids)
+                    {
+                        shifted.push((sheet_idx, col_idx, row_idx, next));
+                    }
+                }
+            }
+        }
+
+        // Phase 2.
+        apply(self);
+        self.shift_table_and_pivot_ranges(&edit);
+
+        // Phase 3.
+        for (sheet_idx, col_idx, row_idx, compiled) in shifted {
+            let Some((row, col)) = self.moved_cell(&edit, sheet_idx, row_idx, col_idx) else {
+                // The cell holding the formula was itself deleted.
+                continue;
+            };
+            let text = crate::core::parser::serialize_formula(&compiled, &self.sheets);
+            self.sheets[sheet_idx].set_cell_src(row, col, text);
+        }
+    }
+
+    /// Where the cell at `(row, col)` on `sheet_idx` ends up after `edit`, or
+    /// `None` if the edit deleted it.
+    fn moved_cell(
+        &self,
+        edit: &GridEdit,
+        sheet_idx: usize,
+        row: usize,
+        col: usize,
+    ) -> Option<(usize, usize)> {
+        if self.sheets[sheet_idx].id != edit.sheet_id {
+            return Some((row, col));
+        }
+        let moved = |index: usize| {
+            crate::core::grid_edit::shift_point(index, edit.at, edit.count, edit.insert)
+        };
+        match edit.axis {
+            Axis::Row => Some((moved(row)?, col)),
+            Axis::Col => Some((row, moved(col)?)),
+        }
+    }
+
+    /// Moves the Excel Table and pivot rectangles the edit passed through.
+    ///
+    /// A table or a pivot source whose every row (or every column) was
+    /// deleted has nothing left to describe, so it is dropped -- the same
+    /// thing Excel does when you delete the last row of a one-row table.
+    fn shift_table_and_pivot_ranges(&mut self, edit: &GridEdit) {
+        use crate::core::grid_edit::{shift_point, shift_rect};
+
+        for sheet in &mut self.sheets {
+            if sheet.id != edit.sheet_id {
+                continue;
+            }
+            sheet.tables.retain_mut(|table| {
+                match shift_rect(
+                    edit,
+                    table.start_row,
+                    table.start_col,
+                    table.end_row,
+                    table.end_col,
+                ) {
+                    Some((r0, c0, r1, c1)) => {
+                        // Column names are per sheet-column, so dropping a
+                        // column has to drop its name with it or every name
+                        // past it shifts onto the wrong column.
+                        if edit.axis == Axis::Col {
+                            resize_table_columns(table, c0, c1, edit);
+                        }
+                        table.start_row = r0;
+                        table.start_col = c0;
+                        table.end_row = r1;
+                        table.end_col = c1;
+                        true
+                    }
+                    None => false,
+                }
+            });
+        }
+
+        for pivot in &mut self.pivot_tables {
+            if let PivotSource::Range {
+                sheet_id,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+            } = &mut pivot.source
+                && *sheet_id == edit.sheet_id
+                && let Some((r0, c0, r1, c1)) =
+                    shift_rect(edit, *start_row, *start_col, *end_row, *end_col)
+            {
+                *start_row = r0;
+                *start_col = c0;
+                *end_row = r1;
+                *end_col = c1;
+            }
+
+            if pivot.dest_sheet_id == edit.sheet_id {
+                // The destination is a corner, not a span. A deleted corner
+                // clamps to the edit rather than vanishing: the grid is
+                // rewritten wholesale on the next refresh anyway, so what
+                // matters is that it names a live cell.
+                match edit.axis {
+                    Axis::Row => {
+                        pivot.dest_row =
+                            shift_point(pivot.dest_row, edit.at, edit.count, edit.insert)
+                                .unwrap_or(edit.at);
+                    }
+                    Axis::Col => {
+                        pivot.dest_col =
+                            shift_point(pivot.dest_col, edit.at, edit.count, edit.insert)
+                                .unwrap_or(edit.at);
+                    }
+                }
+                // The last rendered extent is only used to clear stale cells,
+                // so a stale one over-clears rather than under-clears; drop it
+                // and let the next refresh re-record it.
+                pivot.last_output_end_row = None;
+                pivot.last_output_end_col = None;
+            }
+        }
     }
 
     /// Add new sheet with specified name

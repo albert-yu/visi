@@ -1356,3 +1356,395 @@ fn test_macro_run_parses_output_and_in_place() {
         .is_err()
     );
 }
+
+// --------------------------------------------------------------------------
+// Structural edits: what a row or column insert/delete does to everything
+// that holds a coordinate.
+//
+// Every expectation below is Excel's own behaviour. The cases that look
+// arbitrary -- a `$` not pinning a reference, an insert at a range's first
+// row moving the range while an insert one row lower grows it -- are the ones
+// most worth having written down.
+// --------------------------------------------------------------------------
+
+/// A workbook with one sheet of the given cell sources, round-tripped through
+/// a real `.xlsx` so the test exercises import and export too.
+fn workbook_from(
+    name: &str,
+    cells: &[(usize, usize, &str)],
+    rows: usize,
+    cols: usize,
+) -> WorkbookManager {
+    let mut sheet = visi_core::core::Sheet::new(visi_core::core::SheetInit {
+        id: None,
+        name: Some("Sheet1".to_string()),
+        rows,
+        cols,
+    });
+    for (row, col, src) in cells {
+        sheet.set_cell_src(*row, *col, (*src).to_string());
+    }
+    let bytes = visi_core::export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+    let path = std::env::temp_dir().join(name);
+    fs::write(&path, bytes).unwrap();
+    let wb = WorkbookManager::load_file(path.to_str().unwrap()).unwrap();
+    let _ = fs::remove_file(&path);
+    wb
+}
+
+/// The raw source text of a cell -- what a reference shift actually rewrites.
+/// The computed value can agree by coincidence; the text cannot.
+fn cell_src(wb: &WorkbookManager, sheet: usize, row: usize, col: usize) -> String {
+    wb.sheets[sheet].columns()[col]
+        .src(row)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn cell_value(wb: &WorkbookManager, sheet: usize, row: usize, col: usize) -> String {
+    wb.sheets[sheet]
+        .get_result_data(&visi_core::core::CellRef::new(row, col))
+        .to_string()
+}
+
+#[test]
+fn test_insert_row_shifts_references_the_way_excel_does() {
+    // C1 =A3, C2 =SUM(A1:A3), C3 =SUM(A3:A4), C4 =$A$3*10
+    let mut wb = workbook_from(
+        "test_insert_row_shift.xlsx",
+        &[
+            (0, 0, "1"),
+            (1, 0, "2"),
+            (2, 0, "3"),
+            (0, 2, "=A3"),
+            (1, 2, "=SUM(A1:A3)"),
+            (2, 2, "=SUM(A3:A4)"),
+            (3, 2, "=$A$3*10"),
+        ],
+        4,
+        3,
+    );
+    wb.evaluate().unwrap();
+
+    // Insert above everything. The formulas move down a row *and* their
+    // references move down a row.
+    wb.insert_row(0, 0).unwrap();
+
+    assert_eq!(cell_src(&wb, 0, 1, 2), "=A4");
+    // The whole range was at or below the insert, so it moves rather than
+    // growing.
+    assert_eq!(cell_src(&wb, 0, 2, 2), "=SUM(A2:A4)");
+    assert_eq!(cell_src(&wb, 0, 3, 2), "=SUM(A4:A5)");
+    // A `$` governs fill and copy, not a structural edit: $A$3 shifts too.
+    assert_eq!(cell_src(&wb, 0, 4, 2), "=$A$4*10");
+
+    // And the values are the ones they had before the insert.
+    assert_eq!(cell_value(&wb, 0, 1, 2), "3");
+    assert_eq!(cell_value(&wb, 0, 2, 2), "6");
+    assert_eq!(cell_value(&wb, 0, 4, 2), "30");
+}
+
+#[test]
+fn test_insert_row_inside_a_range_grows_it_instead_of_moving_it() {
+    let mut wb = workbook_from(
+        "test_insert_row_grows.xlsx",
+        &[(0, 0, "1"), (1, 0, "2"), (2, 0, "3"), (0, 2, "=SUM(A1:A3)")],
+        3,
+        3,
+    );
+    wb.evaluate().unwrap();
+
+    // Insert at row 2 (0-based 1), which is inside A1:A3.
+    wb.insert_row(0, 1).unwrap();
+    assert_eq!(cell_src(&wb, 0, 0, 2), "=SUM(A1:A4)");
+    // The new row is empty, so the sum is unchanged -- the range grew to keep
+    // covering the same three values.
+    assert_eq!(cell_value(&wb, 0, 0, 2), "6");
+}
+
+#[test]
+fn test_delete_row_breaks_only_the_reference_that_pointed_at_it() {
+    let mut wb = workbook_from(
+        "test_delete_row_ref.xlsx",
+        &[
+            (0, 0, "1"),
+            (1, 0, "2"),
+            (2, 0, "3"),
+            (0, 2, "=A3"),
+            (1, 2, "=SUM(A1:A3)"),
+            (2, 2, "=A3+1"),
+        ],
+        3,
+        3,
+    );
+    wb.evaluate().unwrap();
+
+    wb.delete_row(0, 2).unwrap();
+
+    // The reference is replaced, not the formula, so the rest still
+    // evaluates -- to #REF!, by ordinary error propagation.
+    assert_eq!(cell_src(&wb, 0, 0, 2), "=#REF!");
+    assert_eq!(cell_value(&wb, 0, 0, 2), "Error: #REF!");
+    // A range that only partly overlapped the deleted row shrinks.
+    assert_eq!(cell_src(&wb, 0, 1, 2), "=SUM(A1:A2)");
+    assert_eq!(cell_value(&wb, 0, 1, 2), "3");
+    // C3 held `=A3+1` and was itself in the deleted row, so it is gone.
+    assert_eq!(wb.sheets[0].row_count(), 2);
+}
+
+#[test]
+fn test_a_ref_error_survives_an_xlsx_round_trip() {
+    let mut wb = workbook_from(
+        "test_ref_error_roundtrip.xlsx",
+        &[(2, 0, "3"), (0, 2, "=A3"), (1, 2, "=A3+1")],
+        3,
+        3,
+    );
+    wb.evaluate().unwrap();
+    wb.delete_row(0, 2).unwrap();
+
+    let out = std::env::temp_dir().join("test_ref_error_roundtrip_out.xlsx");
+    wb.save_file(out.to_str().unwrap()).unwrap();
+    let mut reloaded = WorkbookManager::load_file(out.to_str().unwrap()).unwrap();
+    reloaded.evaluate().unwrap();
+    let _ = fs::remove_file(&out);
+
+    // A `#REF!` written into a formula has to lex on the way back in, or the
+    // reload turns a broken reference into a broken *formula*.
+    assert_eq!(cell_src(&reloaded, 0, 0, 2), "=#REF!");
+    assert_eq!(cell_value(&reloaded, 0, 0, 2), "Error: #REF!");
+    assert_eq!(cell_value(&reloaded, 0, 1, 2), "Error: #REF!");
+}
+
+#[test]
+fn test_column_edits_shift_references_including_whole_column_ones() {
+    let mut wb = workbook_from(
+        "test_col_shift.xlsx",
+        &[
+            (0, 0, "1"),
+            (0, 1, "2"),
+            (0, 2, "3"),
+            (0, 4, "=C1"),
+            (1, 4, "=SUM(A1:C1)"),
+            (2, 4, "=SUM(B:B)"),
+        ],
+        3,
+        5,
+    );
+    wb.evaluate().unwrap();
+
+    // Insert a column at B. A whole-column reference is held by column id, so
+    // it has to be re-rendered *after* the edit or it would keep the letter
+    // `B`, which now names a different column.
+    wb.insert_col(0, 1).unwrap();
+    assert_eq!(cell_src(&wb, 0, 0, 5), "=D1");
+    assert_eq!(cell_src(&wb, 0, 1, 5), "=SUM(A1:D1)");
+    assert_eq!(cell_src(&wb, 0, 2, 5), "=SUM(C:C)");
+    assert_eq!(cell_value(&wb, 0, 2, 5), "2");
+}
+
+#[test]
+fn test_delete_column_breaks_the_references_that_named_it() {
+    let mut wb = workbook_from(
+        "test_col_delete.xlsx",
+        &[
+            (0, 0, "1"),
+            (0, 1, "2"),
+            (0, 2, "3"),
+            (0, 4, "=B1"),
+            (1, 4, "=SUM(A1:C1)"),
+            (2, 4, "=SUM(B:B)"),
+        ],
+        3,
+        5,
+    );
+    wb.evaluate().unwrap();
+
+    wb.delete_col(0, 1).unwrap();
+    assert_eq!(cell_src(&wb, 0, 0, 3), "=#REF!");
+    assert_eq!(cell_src(&wb, 0, 1, 3), "=SUM(A1:B1)");
+    // The whole column it named is gone, and nothing about the remaining
+    // grid stands in for it.
+    assert_eq!(cell_src(&wb, 0, 2, 3), "=SUM(#REF!)");
+    assert_eq!(cell_value(&wb, 0, 2, 3), "Error: #REF!");
+}
+
+#[test]
+fn test_a_structural_edit_shifts_references_from_other_sheets_only() {
+    let mut sheet1 = visi_core::core::Sheet::new(visi_core::core::SheetInit {
+        id: None,
+        name: Some("Sheet1".to_string()),
+        rows: 6,
+        cols: 1,
+    });
+    sheet1.set_cell_src(0, 0, "=Data!A3".to_string());
+    sheet1.set_cell_src(1, 0, "=SUM(Data!A1:A3)".to_string());
+    sheet1.set_cell_src(2, 0, "=SUM(Sheet1!A5:A6)".to_string());
+
+    let mut data = visi_core::core::Sheet::new(visi_core::core::SheetInit {
+        id: None,
+        name: Some("Data".to_string()),
+        rows: 3,
+        cols: 1,
+    });
+    data.set_cell_src(0, 0, "10".to_string());
+    data.set_cell_src(1, 0, "20".to_string());
+    data.set_cell_src(2, 0, "30".to_string());
+
+    let bytes = visi_core::export_xlsx_data(&[sheet1, data], &[], &[], None).unwrap();
+    let path = std::env::temp_dir().join("test_cross_sheet_shift.xlsx");
+    fs::write(&path, bytes).unwrap();
+    let mut wb = WorkbookManager::load_file(path.to_str().unwrap()).unwrap();
+    let _ = fs::remove_file(&path);
+    wb.evaluate().unwrap();
+    assert_eq!(cell_value(&wb, 0, 0, 0), "30");
+
+    let data_idx = wb.sheets.iter().position(|s| s.name == "Data").unwrap();
+    wb.insert_row(data_idx, 0).unwrap();
+
+    // References *into* the edited sheet move.
+    assert_eq!(cell_src(&wb, 0, 0, 0), "=Data!A4");
+    assert_eq!(cell_src(&wb, 0, 1, 0), "=SUM(Data!A2:A4)");
+    // A reference to the sheet that was *not* edited must not.
+    assert_eq!(cell_src(&wb, 0, 2, 0), "=SUM(Sheet1!A5:A6)");
+    assert_eq!(cell_value(&wb, 0, 0, 0), "30");
+    assert_eq!(cell_value(&wb, 0, 1, 0), "60");
+}
+
+#[test]
+fn test_a_table_extent_follows_a_structural_edit() {
+    let mut wb = workbook_from(
+        "test_table_extent_shift.xlsx",
+        &[
+            (0, 0, "Region"),
+            (0, 1, "Amount"),
+            (1, 0, "East"),
+            (1, 1, "10"),
+            (2, 0, "West"),
+            (2, 1, "20"),
+            (3, 0, "North"),
+            (3, 1, "30"),
+            (0, 3, "=SUM(Sales[Amount])"),
+        ],
+        4,
+        4,
+    );
+    wb.add_table(None, "Sales", 0, 0, 3, 1, true, false)
+        .unwrap();
+    wb.evaluate().unwrap();
+    assert_eq!(cell_value(&wb, 0, 0, 3), "60");
+
+    // A row inserted inside the table body grows the table, so the structured
+    // reference keeps covering the same data.
+    wb.insert_row(0, 2).unwrap();
+    let table = wb.sheets[0].find_table("Sales").unwrap();
+    assert_eq!((table.start_row, table.end_row), (0, 4));
+    assert_eq!(cell_value(&wb, 0, 0, 3), "60");
+
+    // A column inserted inside it widens it, and the column names stay lined
+    // up with the sheet columns they describe.
+    wb.insert_col(0, 1).unwrap();
+    let table = wb.sheets[0].find_table("Sales").unwrap();
+    assert_eq!((table.start_col, table.end_col), (0, 2));
+    assert_eq!(table.columns.len(), 3);
+    assert_eq!(table.columns[0], "Region");
+    assert_eq!(table.columns[2], "Amount");
+    assert_eq!(cell_value(&wb, 0, 0, 4), "60");
+}
+
+#[test]
+fn test_deleting_every_row_of_a_table_removes_the_table() {
+    let mut wb = workbook_from(
+        "test_table_fully_deleted.xlsx",
+        &[(2, 0, "Region"), (2, 1, "Amount")],
+        3,
+        2,
+    );
+    wb.add_table(None, "Solo", 2, 0, 2, 1, true, false).unwrap();
+    wb.delete_row(0, 2).unwrap();
+    // Nothing is left for the table to describe, so it goes rather than
+    // lingering over cells that are now something else.
+    assert!(wb.sheets[0].find_table("Solo").is_none());
+}
+
+#[test]
+fn test_a_pivot_source_range_and_destination_follow_a_structural_edit() {
+    use visi_core::core::{PivotAggregation, PivotArea, PivotSource};
+
+    let mut wb = workbook_from(
+        "test_pivot_range_shift.xlsx",
+        &[
+            (0, 0, "Region"),
+            (0, 1, "Amount"),
+            (1, 0, "East"),
+            (1, 1, "10"),
+            (2, 0, "West"),
+            (2, 1, "20"),
+            (3, 0, "East"),
+            (3, 1, "30"),
+        ],
+        4,
+        6,
+    );
+    wb.evaluate().unwrap();
+    wb.add_pivot_table_from_range("P1", None, 0, 0, 3, 1, None, 0, 4, true, true)
+        .unwrap();
+    wb.add_pivot_field("P1", PivotArea::Row, "Region", None)
+        .unwrap();
+    wb.add_pivot_field(
+        "P1",
+        PivotArea::Value,
+        "Amount",
+        Some(PivotAggregation::Sum),
+    )
+    .unwrap();
+    wb.refresh_pivot_table("P1").unwrap();
+    assert_eq!(cell_value(&wb, 0, 1, 5), "40");
+
+    // A row inserted above everything slides the source range and the
+    // destination corner down together.
+    wb.insert_row(0, 0).unwrap();
+
+    let pivot = wb.find_pivot_table("P1").unwrap();
+    let PivotSource::Range {
+        start_row, end_row, ..
+    } = pivot.source
+    else {
+        panic!("expected a range source");
+    };
+    assert_eq!((start_row, end_row), (1, 4));
+    assert_eq!(pivot.dest_row, 1);
+
+    // Nothing recomputes a pivot table on its own -- as in Excel -- so the
+    // check that matters is that an explicit refresh still finds the data and
+    // writes the grid where the destination moved to.
+    wb.refresh_pivot_table("P1").unwrap();
+    assert_eq!(cell_value(&wb, 0, 2, 5), "40");
+    assert_eq!(cell_value(&wb, 0, 3, 5), "20");
+}
+
+#[test]
+fn test_a_whole_column_range_does_not_overflow_on_a_row_edit() {
+    // `A:C` compiles to a range whose end row is the unbounded sentinel.
+    // Shifting it as an ordinary span overflows; it must be screened out.
+    let mut wb = workbook_from(
+        "test_unbounded_range_shift.xlsx",
+        &[(0, 0, "1"), (0, 1, "2"), (0, 2, "3"), (0, 4, "=SUM(A:C)")],
+        2,
+        5,
+    );
+    wb.evaluate().unwrap();
+    assert_eq!(cell_value(&wb, 0, 0, 4), "6");
+
+    // A row edit leaves it alone: it already covers every row.
+    wb.insert_row(0, 0).unwrap();
+    assert_eq!(cell_src(&wb, 0, 1, 4), "=SUM(A:C)");
+    assert_eq!(cell_value(&wb, 0, 1, 4), "6");
+    wb.delete_row(0, 0).unwrap();
+    assert_eq!(cell_src(&wb, 0, 0, 4), "=SUM(A:C)");
+
+    // A column edit still moves its column bounds.
+    wb.insert_col(0, 0).unwrap();
+    assert_eq!(cell_src(&wb, 0, 0, 5), "=SUM(B:D)");
+    assert_eq!(cell_value(&wb, 0, 0, 5), "6");
+}
