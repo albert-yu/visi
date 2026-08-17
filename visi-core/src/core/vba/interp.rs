@@ -1,36 +1,12 @@
-//! A tree-walking interpreter for the VBA subset in Phase 1 of
-//! `docs/vba-macro-support.md`.
+//! A tree-walking interpreter for VBA execution.
 //!
-//! Scope is expressions, control flow, `Sub`/`Function` calls, `On Error`,
-//! and — when a [`Host`] is attached — the Phase 2 object model in
-//! [`super::host`]. Without a host, `Range`, `Worksheets`, `ThisWorkbook` and
-//! everything else that touches a workbook raise [`VbaError`] 438, and so
-//! does anything outside the object model's allow-list even with one. That
-//! refusal is deliberate — a macro that skips a line it does not understand
-//! and then reports success has produced a wrong answer in the most
-//! dangerous way available.
-//!
-//! **A plain `=` reads an object's default member; `Set` does not.**
-//! `x = ws.Range("A1")` puts the cell's *value* in `x` while
-//! `Set r = ws.Range("A1")` puts the object there, and the parser cannot tell
-//! the two apart — it sees the same `Member` expression. So every context
-//! that wants a scalar funnels through [`Interpreter::scalar`], and the few
-//! that want the object (`Set`, `Is`, `TypeName`, a `With` subject, an
-//! argument to a user procedure) deliberately skip it. Getting this wrong
-//! does not raise; it silently produces the wrong kind of value.
-//!
-//! Two more structural notes:
-//!
-//! **`On Error Resume Next` is handled where the statement fails, not at the
-//! procedure level.** [`Interpreter::exec_block`] catches the error from each
-//! statement it runs, so resumption continues with the next statement *in
-//! that block* — inside the loop body, if that is where the failure was.
-//! Handling it only at the top would resume in the wrong place for anything
-//! nested, which is most real error handling.
-//!
-//! **Every loop and every call is bounded.** `max_ops` caps total statement
-//! executions and `max_depth` caps recursion, because this runs on source the
-//! user did not necessarily write, and `Do While True` is one keystroke away.
+//! Scope includes expressions, control flow, `Sub`/`Function`/`Property` calls,
+//! `On Error`, class modules, `Dim As New` auto-instantiation, `Class_Initialize` /
+//! `Class_Terminate` lifecycle tracking, custom events (`Event`/`RaiseEvent`/`WithEvents`),
+//! document modules, and — when a [`Host`] is attached — the workbook host object
+//! model and synchronous host events (`Worksheet_Change`, `Worksheet_Calculate`,
+//! `Workbook_SheetChange`, `Workbook_SheetCalculate`, `Workbook_Open`, `Auto_Open`,
+//! `Workbook_BeforeClose`, `Workbook_BeforeSave`).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -39,15 +15,11 @@ use super::ast::*;
 use super::builtins;
 use super::host::{Host, ObjRef};
 use super::value::{self, ArithMode, Operand, VResult, Variant, VbaError};
+use super::{VbaModule, VbaModuleKind, VbaProject};
 
 /// How many statements a single `run` may execute before giving up.
 const DEFAULT_MAX_OPS: u64 = 5_000_000;
 /// How deep procedure calls may nest.
-///
-/// Well below VBA's own limit, and deliberately so: each VBA frame costs
-/// several Rust frames, and an unbounded-recursion test overflowed the real
-/// stack at 256 before this guard could fire. A guard that aborts the process
-/// instead of returning an error is not a guard.
 const DEFAULT_MAX_DEPTH: usize = 64;
 
 /// Error 438 — the "object doesn't support this property or method" that
@@ -59,13 +31,7 @@ fn out_of_scope(what: &str) -> VbaError {
     )
 }
 
-/// The same refusal, for something that needs a workbook when none is
-/// attached.
-///
-/// Distinct wording from [`out_of_scope`] on purpose: "no workbook is
-/// attached" is a fixable mistake by the *caller* (run the macro against a
-/// file, not a bare `.bas`), where a plain 438 means the construct is not
-/// implemented at all and never will be by trying harder.
+/// The same refusal, for something that needs a workbook when none is attached.
 fn needs_workbook(what: &str) -> VbaError {
     VbaError::new(
         438,
@@ -102,35 +68,237 @@ enum Handler {
     Goto(String),
 }
 
+/// Procedures sharing a name in a module (e.g. Sub/Function vs Property Get/Let/Set).
+#[derive(Debug, Clone, Default)]
+pub struct MemberProcs {
+    pub sub_or_func: Option<Rc<Procedure>>,
+    pub prop_get: Option<Rc<Procedure>>,
+    pub prop_let: Option<Rc<Procedure>>,
+    pub prop_set: Option<Rc<Procedure>>,
+}
+
+impl MemberProcs {
+    pub fn insert(&mut self, proc: Rc<Procedure>) {
+        match proc.kind {
+            ProcKind::Sub | ProcKind::Function => self.sub_or_func = Some(proc),
+            ProcKind::PropertyGet => self.prop_get = Some(proc),
+            ProcKind::PropertyLet => self.prop_let = Some(proc),
+            ProcKind::PropertySet => self.prop_set = Some(proc),
+        }
+    }
+
+    pub fn first(&self) -> Option<Rc<Procedure>> {
+        self.sub_or_func
+            .as_ref()
+            .or(self.prop_get.as_ref())
+            .or(self.prop_let.as_ref())
+            .or(self.prop_set.as_ref())
+            .cloned()
+    }
+}
+
+/// A parsed module environment in the VBA project.
+#[derive(Debug, Clone)]
+pub struct ModuleEnv {
+    pub name: String,
+    pub kind: VbaModuleKind,
+    pub bound_sheet_id: Option<u64>,
+    pub procs: HashMap<String, MemberProcs>,
+    pub events: HashMap<String, Rc<Stmt>>,
+    pub globals: HashMap<String, Variant>,
+    pub auto_new_vars: HashMap<String, String>,
+    pub with_events_vars: HashMap<String, String>,
+    pub default_member: Option<String>,
+    pub ast: Module,
+}
+
+impl ModuleEnv {
+    pub fn new(
+        name: String,
+        kind: VbaModuleKind,
+        bound_sheet_id: Option<u64>,
+        ast: Module,
+    ) -> Self {
+        let mut procs: HashMap<String, MemberProcs> = HashMap::new();
+        let mut events: HashMap<String, Rc<Stmt>> = HashMap::new();
+        let mut globals: HashMap<String, Variant> = HashMap::new();
+        let mut auto_new_vars: HashMap<String, String> = HashMap::new();
+        let mut with_events_vars: HashMap<String, String> = HashMap::new();
+        let mut default_member: Option<String> = None;
+
+        for item in &ast.items {
+            match item {
+                ModuleItem::Attribute {
+                    name: attr_name,
+                    values,
+                    ..
+                } => {
+                    if attr_name.to_ascii_lowercase().ends_with(".vb_usermemid")
+                        && let Some(val_expr) = values.first()
+                        && is_zero_expr(val_expr)
+                        && let Some((member, _)) = attr_name.split_once('.')
+                    {
+                        default_member = Some(member.to_ascii_lowercase());
+                    }
+                }
+                ModuleItem::Declaration(stmt) => match stmt {
+                    Stmt::Dim {
+                        vars, with_events, ..
+                    } => {
+                        for v in vars {
+                            let key = v.name.to_ascii_lowercase();
+                            if *with_events {
+                                let ty_name =
+                                    v.ty.as_ref()
+                                        .and_then(|t| t.path.last())
+                                        .cloned()
+                                        .unwrap_or_default();
+                                with_events_vars.insert(key.clone(), ty_name);
+                                globals.insert(key, Variant::Object(ObjRef::Nothing));
+                            } else if v.ty.as_ref().is_some_and(|t| t.is_new) {
+                                let cls_name =
+                                    v.ty.as_ref()
+                                        .unwrap()
+                                        .path
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_default();
+                                auto_new_vars.insert(key.clone(), cls_name);
+                                globals.insert(key, Variant::Object(ObjRef::Nothing));
+                            } else {
+                                globals.insert(key, default_for(v.ty.as_ref()));
+                            }
+                        }
+                    }
+                    Stmt::Const { vars, .. } => {
+                        for v in vars {
+                            let key = v.name.to_ascii_lowercase();
+                            globals.insert(key, default_for(v.ty.as_ref()));
+                        }
+                    }
+                    Stmt::EventDef {
+                        name: event_name, ..
+                    } => {
+                        events.insert(event_name.to_ascii_lowercase(), Rc::new(stmt.clone()));
+                    }
+                    _ => {}
+                },
+                ModuleItem::Procedure(p) => {
+                    let key = p.name.to_ascii_lowercase();
+                    for s in &p.body {
+                        if let Stmt::Attribute {
+                            name: attr_name,
+                            values,
+                            ..
+                        } = s
+                            && (attr_name.to_ascii_lowercase().ends_with(".vb_usermemid")
+                                || attr_name.eq_ignore_ascii_case("vb_usermemid"))
+                            && let Some(val_expr) = values.first()
+                            && is_zero_expr(val_expr)
+                        {
+                            default_member = Some(key.clone());
+                        }
+                    }
+                    procs.entry(key).or_default().insert(Rc::new(p.clone()));
+                }
+                ModuleItem::Conditional {
+                    branches,
+                    else_items,
+                    ..
+                } => {
+                    for (_, b_items) in branches {
+                        for b_item in b_items {
+                            if let ModuleItem::Procedure(p) = b_item {
+                                procs
+                                    .entry(p.name.to_ascii_lowercase())
+                                    .or_default()
+                                    .insert(Rc::new(p.clone()));
+                            }
+                        }
+                    }
+                    if let Some(e_items) = else_items {
+                        for e_item in e_items {
+                            if let ModuleItem::Procedure(p) = e_item {
+                                procs
+                                    .entry(p.name.to_ascii_lowercase())
+                                    .or_default()
+                                    .insert(Rc::new(p.clone()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Self {
+            name,
+            kind,
+            bound_sheet_id,
+            procs,
+            events,
+            globals,
+            auto_new_vars,
+            with_events_vars,
+            default_member,
+            ast,
+        }
+    }
+}
+
+fn is_zero_expr(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(Literal::Number { value, .. }) => *value == 0.0,
+        Expr::Literal(Literal::Str(s)) => s == "0",
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EventSubscription {
+    pub event_name: String,
+    pub listener_module: String,
+    pub listener_var_name: String,
+    pub listener_instance: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserClassInstance {
+    pub id: u64,
+    pub class_name: String,
+    pub fields: HashMap<String, Variant>,
+    pub auto_new_fields: HashMap<String, String>,
+    pub with_events_fields: HashMap<String, String>,
+    pub event_sinks: Vec<EventSubscription>,
+    pub ref_count: usize,
+    pub terminating: bool,
+}
+
 /// One procedure activation.
 struct Frame {
     locals: HashMap<String, Variant>,
+    auto_new_locals: HashMap<String, String>,
+    with_events_locals: HashMap<String, String>,
     handler: Handler,
-    /// Whether we are running inside an error handler, during which VBA
-    /// disables the active handler so a second error propagates instead of
-    /// looping back into the same handler forever.
     in_handler: bool,
-    /// The index, in the procedure body, of the top-level statement that
-    /// raised the error a handler is currently dealing with. `Resume Next`
-    /// continues after it.
     failed_at: Option<usize>,
-    /// Enclosing `With` subjects, innermost last, against which a
-    /// leading-dot member reference resolves.
-    ///
-    /// Per frame rather than per interpreter because a `With` block does not
-    /// reach into a procedure it calls: a bare `.Value` inside the callee is
-    /// a compile error in VBA, not a reference to the caller's subject.
     with_stack: Vec<Variant>,
+    me: Option<ObjRef>,
+    module_name: String,
 }
 
 impl Frame {
     fn new() -> Self {
         Self {
             locals: HashMap::new(),
+            auto_new_locals: HashMap::new(),
+            with_events_locals: HashMap::new(),
             handler: Handler::None,
             in_handler: false,
             failed_at: None,
             with_stack: Vec::new(),
+            me: None,
+            module_name: String::new(),
         }
     }
 }
@@ -142,49 +310,145 @@ struct ErrState {
     description: String,
 }
 
-/// Runs VBA procedures from a parsed [`Module`].
-///
-/// The lifetime is the workbook's: an interpreter with a [`Host`] borrows it
-/// mutably for the whole run. `Interpreter::new` alone leaves the parameter
-/// free, so a host-free run has no lifetime obligations at all.
+/// Runs VBA procedures across single-module or multi-module projects.
 pub struct Interpreter<'w> {
-    module: Module,
-    /// Procedures indexed by lowercased name. Behind an `Rc` so a call can
-    /// hold one while `&mut self` runs its body, without cloning the body.
-    procs: HashMap<String, Rc<Procedure>>,
-    /// Module-level variables, keyed by lowercased name (VBA is
-    /// case-insensitive).
-    globals: HashMap<String, Variant>,
+    modules: HashMap<String, ModuleEnv>,
+    instances: HashMap<u64, UserClassInstance>,
+    next_instance_id: u64,
+    active_module: String,
     err: ErrState,
     ops: u64,
     max_ops: u64,
     depth: usize,
     max_depth: usize,
-    /// The workbook, if this run has one. `None` is a real mode, not a
-    /// degraded one: `visi macro run` over a bare `.bas` file has no workbook
-    /// to offer, and every host construct then reports so.
     host: Option<Host<'w>>,
+    event_depth: usize,
 }
 
 impl<'w> Interpreter<'w> {
-    /// Builds an interpreter over a parsed module.
+    /// Builds an interpreter over a single parsed module.
     pub fn new(module: Module) -> Self {
-        let procs = module
-            .procedures()
-            .into_iter()
-            .map(|p| (p.name.to_ascii_lowercase(), Rc::new(p.clone())))
-            .collect();
+        let mut name = "Module1".to_string();
+        for item in &module.items {
+            if let ModuleItem::Attribute {
+                name: attr_name,
+                values,
+                ..
+            } = item
+                && attr_name.eq_ignore_ascii_case("vb_name")
+                && let Some(Expr::Literal(Literal::Str(n))) = values.first()
+            {
+                name = n.clone();
+            }
+        }
+        let env = ModuleEnv::new(name.clone(), VbaModuleKind::Standard, None, module);
+        let mut modules = HashMap::new();
+        modules.insert(name.to_ascii_lowercase(), env);
         Self {
-            module,
-            procs,
-            globals: HashMap::new(),
+            modules,
+            instances: HashMap::new(),
+            next_instance_id: 1,
+            active_module: name.to_ascii_lowercase(),
             err: ErrState::default(),
             ops: 0,
             max_ops: DEFAULT_MAX_OPS,
             depth: 0,
             max_depth: DEFAULT_MAX_DEPTH,
             host: None,
+            event_depth: 0,
         }
+    }
+
+    /// Builds an interpreter from a list of project modules.
+    pub fn from_modules(modules_list: Vec<VbaModule>, target_module: Option<&str>) -> Self {
+        let mut modules = HashMap::new();
+        let mut default_active = String::new();
+
+        for m in modules_list {
+            let parsed = super::parser::parse_module(&m.source)
+                .unwrap_or_else(|_| Module { items: Vec::new() });
+            let env = ModuleEnv::new(m.name.clone(), m.kind, m.bound_sheet_id, parsed);
+            let lower = m.name.to_ascii_lowercase();
+            if default_active.is_empty() || m.kind == VbaModuleKind::Standard {
+                default_active = lower.clone();
+            }
+            modules.insert(lower, env);
+        }
+
+        let active_module = target_module
+            .map(|t| t.to_ascii_lowercase())
+            .unwrap_or(default_active);
+
+        Self {
+            modules,
+            instances: HashMap::new(),
+            next_instance_id: 1,
+            active_module,
+            err: ErrState::default(),
+            ops: 0,
+            max_ops: DEFAULT_MAX_OPS,
+            depth: 0,
+            max_depth: DEFAULT_MAX_DEPTH,
+            host: None,
+            event_depth: 0,
+        }
+    }
+
+    /// Builds an interpreter from a `VbaProject`.
+    pub fn from_project(project: &VbaProject, target_module: Option<&str>) -> VResult<Self> {
+        let mut modules = HashMap::new();
+        let mut default_active = String::new();
+
+        for m in &project.modules {
+            let parsed = super::parser::parse_module(&m.source).map_err(|e| {
+                VbaError::new(
+                    13,
+                    format!("Syntax error in module {}: {}", m.name, e.message),
+                )
+            })?;
+            let env = ModuleEnv::new(m.name.clone(), m.kind, m.bound_sheet_id, parsed);
+            let lower = m.name.to_ascii_lowercase();
+            if default_active.is_empty() || m.kind == VbaModuleKind::Standard {
+                default_active = lower.clone();
+            }
+            modules.insert(lower, env);
+        }
+
+        let active_module = if let Some(t) = target_module {
+            let lower_t = t.to_ascii_lowercase();
+            if !modules.contains_key(&lower_t) {
+                return Err(VbaError::new(35, format!("Module not found: {t}")));
+            }
+            lower_t
+        } else {
+            default_active
+        };
+
+        Ok(Self {
+            modules,
+            instances: HashMap::new(),
+            next_instance_id: 1,
+            active_module,
+            err: ErrState::default(),
+            ops: 0,
+            max_ops: DEFAULT_MAX_OPS,
+            depth: 0,
+            max_depth: DEFAULT_MAX_DEPTH,
+            host: None,
+            event_depth: 0,
+        })
+    }
+
+    /// Adds a parsed module to this interpreter.
+    pub fn add_module(
+        &mut self,
+        name: &str,
+        kind: VbaModuleKind,
+        bound_sheet_id: Option<u64>,
+        ast: Module,
+    ) {
+        let env = ModuleEnv::new(name.to_string(), kind, bound_sheet_id, ast);
+        self.modules.insert(name.to_ascii_lowercase(), env);
     }
 
     /// Binds a workbook, enabling the host object model.
@@ -193,17 +457,25 @@ impl<'w> Interpreter<'w> {
         self
     }
 
-    /// Whether the run changed the workbook, and so whether the caller has
-    /// something worth writing back.
+    /// Whether the run changed the workbook.
     pub fn mutated(&self) -> bool {
         self.host.as_ref().is_some_and(|h| h.mutated())
     }
 
-    /// Settles any outstanding recalculation so a workbook about to be saved
-    /// holds what a reader inside the macro would have seen.
+    /// Settles any outstanding recalculation.
     pub fn finish(&mut self) {
         if let Some(h) = self.host.as_mut() {
             h.finish();
+        }
+        // Clean up remaining global class instances
+        let mut all_globals = Vec::new();
+        for m in self.modules.values_mut() {
+            for v in m.globals.values() {
+                all_globals.push(v.clone());
+            }
+        }
+        for g in all_globals {
+            self.dec_ref(&g);
         }
     }
 
@@ -217,60 +489,633 @@ impl<'w> Interpreter<'w> {
         self
     }
 
-    /// Runs the named procedure and returns its value (`Empty` for a `Sub`).
-    pub fn run(&mut self, name: &str, args: Vec<Variant>) -> VResult<Variant> {
-        self.ops = 0;
-        self.init_module_level()?;
-        self.call_procedure(name, args)
+    /// Whether events are currently enabled.
+    pub fn enable_events(&self) -> bool {
+        self.host.as_ref().is_none_or(|h| h.enable_events)
     }
 
-    /// Executes module-level declarations so their initialisers are in scope.
-    fn init_module_level(&mut self) -> VResult<()> {
-        let items = std::mem::take(&mut self.module.items);
-        for item in &items {
-            if let ModuleItem::Declaration(stmt) = item {
-                let mut frame = Frame::new();
-                // Module-level declarations write to globals, so run them
-                // against a throwaway frame and lift the results.
-                let r = self.exec_stmt(stmt, &mut frame, true);
-                for (k, v) in frame.locals {
-                    self.globals.insert(k, v);
+    /// Returns the resolved type name for a variant (e.g. "Class1" for UserClass).
+    pub fn type_name_of(&self, v: &Variant) -> String {
+        match v {
+            Variant::Object(ObjRef::UserClass(id)) => {
+                if let Some(inst) = self.instances.get(id) {
+                    inst.class_name.clone()
+                } else {
+                    "Object".to_string()
                 }
-                r?;
+            }
+            Variant::Object(ObjRef::Nothing) => "Nothing".to_string(),
+            _ => v.type_name().to_string(),
+        }
+    }
+
+    pub fn class_name_of(&self, id: u64) -> String {
+        self.instances
+            .get(&id)
+            .map(|i| i.class_name.clone())
+            .unwrap_or_else(|| "Object".to_string())
+    }
+
+    /// Runs the named procedure and returns its value.
+    pub fn run(&mut self, name: &str, args: Vec<Variant>) -> VResult<Variant> {
+        self.ops = 0;
+        self.init_all_modules()?;
+        let res = self.call_procedure(name, args)?;
+        self.drain_and_fire_events()?;
+        Ok(res)
+    }
+
+    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
+    pub fn run_open_events(&mut self) -> VResult<()> {
+        self.ops = 0;
+        self.init_all_modules()?;
+
+        // 1. Workbook_Open in ThisWorkbook (document module)
+        if let Some(m_env) = self.modules.get("thisworkbook")
+            && let Some(mp) = m_env.procs.get("workbook_open")
+            && let Some(sub) = mp.first()
+        {
+            let mut frame = Frame::new();
+            frame.module_name = "thisworkbook".to_string();
+            frame.me = Some(ObjRef::Workbook);
+            let old_active = self.active_module.clone();
+            self.active_module = "thisworkbook".to_string();
+            let res = self.call_body_with_frame(&sub, Vec::new(), &mut frame);
+            self.active_module = old_active;
+            res?;
+        }
+
+        // 2. Auto_Open in standard modules
+        let std_mods: Vec<String> = self
+            .modules
+            .values()
+            .filter(|m| m.kind == VbaModuleKind::Standard)
+            .map(|m| m.name.clone())
+            .collect();
+
+        for mod_name in std_mods {
+            if let Some(m_env) = self.modules.get(&mod_name.to_ascii_lowercase())
+                && let Some(mp) = m_env.procs.get("auto_open")
+                && let Some(sub) = mp.first()
+            {
+                let mut frame = Frame::new();
+                frame.module_name = mod_name.clone();
+                let old_active = self.active_module.clone();
+                self.active_module = mod_name.to_ascii_lowercase();
+                let res = self.call_body_with_frame(&sub, Vec::new(), &mut frame);
+                self.active_module = old_active;
+                res?;
             }
         }
-        self.module.items = items;
+
+        self.drain_and_fire_events()?;
         Ok(())
     }
 
-    fn find_procedure(&self, name: &str) -> Option<Rc<Procedure>> {
-        self.procs.get(&name.to_ascii_lowercase()).cloned()
+    /// Fires `Workbook_BeforeClose` event. Returns true if canceled.
+    pub fn fire_workbook_before_close(&mut self) -> VResult<bool> {
+        if !self.enable_events() {
+            return Ok(false);
+        }
+        if let Some(m_env) = self.modules.get("thisworkbook")
+            && let Some(mp) = m_env.procs.get("workbook_beforeclose")
+            && let Some(sub) = mp.first()
+        {
+            let mut frame = Frame::new();
+            frame.module_name = "thisworkbook".to_string();
+            frame.me = Some(ObjRef::Workbook);
+            let param_name = sub
+                .params
+                .first()
+                .map(|p| p.name.to_ascii_lowercase())
+                .unwrap_or_else(|| "cancel".to_string());
+            frame
+                .locals
+                .insert(param_name.clone(), Variant::Boolean(false));
+            let old_active = self.active_module.clone();
+            self.active_module = "thisworkbook".to_string();
+            self.exec_procedure_body(&sub.body, &mut frame)?;
+            self.active_module = old_active;
+            let canceled = frame
+                .locals
+                .get(&param_name)
+                .is_some_and(|v| v.to_bool().unwrap_or(false));
+            return Ok(canceled);
+        }
+        Ok(false)
+    }
+
+    /// Fires `Workbook_BeforeSave` event. Returns true if canceled.
+    pub fn fire_workbook_before_save(&mut self, save_as_ui: bool) -> VResult<bool> {
+        if !self.enable_events() {
+            return Ok(false);
+        }
+        if let Some(m_env) = self.modules.get("thisworkbook")
+            && let Some(mp) = m_env.procs.get("workbook_beforesave")
+            && let Some(sub) = mp.first()
+        {
+            let mut frame = Frame::new();
+            frame.module_name = "thisworkbook".to_string();
+            frame.me = Some(ObjRef::Workbook);
+            if let Some(p1) = sub.params.first() {
+                frame
+                    .locals
+                    .insert(p1.name.to_ascii_lowercase(), Variant::Boolean(save_as_ui));
+            }
+            let cancel_name = sub
+                .params
+                .get(1)
+                .map(|p| p.name.to_ascii_lowercase())
+                .unwrap_or_else(|| "cancel".to_string());
+            frame
+                .locals
+                .insert(cancel_name.clone(), Variant::Boolean(false));
+            let old_active = self.active_module.clone();
+            self.active_module = "thisworkbook".to_string();
+            self.exec_procedure_body(&sub.body, &mut frame)?;
+            self.active_module = old_active;
+            let canceled = frame
+                .locals
+                .get(&cancel_name)
+                .is_some_and(|v| v.to_bool().unwrap_or(false));
+            return Ok(canceled);
+        }
+        Ok(false)
+    }
+
+    fn init_all_modules(&mut self) -> VResult<()> {
+        let mod_names: Vec<String> = self.modules.keys().cloned().collect();
+        for mod_name in mod_names {
+            let items = if let Some(m) = self.modules.get(&mod_name) {
+                m.ast.items.clone()
+            } else {
+                continue;
+            };
+            for item in &items {
+                if let ModuleItem::Declaration(stmt) = item {
+                    let mut frame = Frame::new();
+                    frame.module_name = mod_name.clone();
+                    let old_active = self.active_module.clone();
+                    self.active_module = mod_name.clone();
+                    let r = self.exec_stmt(stmt, &mut frame, true);
+                    self.active_module = old_active;
+                    if let Some(m) = self.modules.get_mut(&mod_name) {
+                        for (k, v) in frame.locals {
+                            m.globals.insert(k, v);
+                        }
+                    }
+                    r?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn find_class_module(&self, class_name: &str) -> Option<&ModuleEnv> {
+        let lower = class_name.to_ascii_lowercase();
+        self.modules
+            .get(&lower)
+            .filter(|m| m.kind == VbaModuleKind::Class)
+    }
+
+    fn find_document_module_name_by_sheet_id(&self, sheet_id: u64) -> Option<String> {
+        self.modules
+            .values()
+            .find(|m| m.kind == VbaModuleKind::Document && m.bound_sheet_id == Some(sheet_id))
+            .map(|m| m.name.to_ascii_lowercase())
+    }
+
+    pub fn instantiate_class(&mut self, class_name: &str) -> VResult<Variant> {
+        let module = self.find_class_module(class_name).cloned().ok_or_else(|| {
+            VbaError::new(
+                424,
+                format!("Object required: Class '{class_name}' not defined"),
+            )
+        })?;
+
+        let id = self.next_instance_id;
+        self.next_instance_id += 1;
+
+        let mut fields = HashMap::new();
+        let mut auto_new_fields = HashMap::new();
+        let mut with_events_fields = HashMap::new();
+
+        for (name, val) in &module.globals {
+            fields.insert(name.clone(), val.clone());
+        }
+        for (name, cls) in &module.auto_new_vars {
+            auto_new_fields.insert(name.clone(), cls.clone());
+        }
+        for (name, cls) in &module.with_events_vars {
+            with_events_fields.insert(name.clone(), cls.clone());
+        }
+
+        let instance = UserClassInstance {
+            id,
+            class_name: module.name.clone(),
+            fields,
+            auto_new_fields,
+            with_events_fields,
+            event_sinks: Vec::new(),
+            ref_count: 1,
+            terminating: false,
+        };
+        self.instances.insert(id, instance);
+
+        // Call Class_Initialize if present
+        let init_proc = module
+            .procs
+            .get("class_initialize")
+            .and_then(|mp| mp.first());
+        if let Some(proc) = init_proc {
+            let mut frame = Frame::new();
+            frame.module_name = module.name.to_ascii_lowercase();
+            frame.me = Some(ObjRef::UserClass(id));
+            let old_active = self.active_module.clone();
+            self.active_module = module.name.to_ascii_lowercase();
+            let res = self.call_body_with_frame(&proc, Vec::new(), &mut frame);
+            self.active_module = old_active;
+            res?;
+        }
+
+        Ok(Variant::Object(ObjRef::UserClass(id)))
+    }
+
+    fn inc_ref(&mut self, val: &Variant) {
+        if let Variant::Object(ObjRef::UserClass(id)) = val
+            && let Some(inst) = self.instances.get_mut(id)
+        {
+            inst.ref_count += 1;
+        }
+    }
+
+    fn dec_ref(&mut self, val: &Variant) {
+        if let Variant::Object(ObjRef::UserClass(id)) = val {
+            let mut terminate_proc = None;
+            let mut class_mod_name = String::new();
+            let mut fields_to_dec = Vec::new();
+
+            if let Some(inst) = self.instances.get_mut(id) {
+                if inst.ref_count > 0 {
+                    inst.ref_count -= 1;
+                }
+                if inst.ref_count == 0 && !inst.terminating {
+                    inst.terminating = true;
+                    class_mod_name = inst.class_name.to_ascii_lowercase();
+                    if let Some(m_env) = self.modules.get(&class_mod_name)
+                        && let Some(mp) = m_env.procs.get("class_terminate")
+                    {
+                        terminate_proc = mp.first();
+                    }
+                    fields_to_dec = inst.fields.values().cloned().collect();
+                }
+            }
+
+            if let Some(proc) = terminate_proc {
+                let mut frame = Frame::new();
+                frame.module_name = class_mod_name.clone();
+                frame.me = Some(ObjRef::UserClass(*id));
+                let old_active = self.active_module.clone();
+                self.active_module = class_mod_name;
+                let _ = self.call_body_with_frame(&proc, Vec::new(), &mut frame);
+                self.active_module = old_active;
+            }
+
+            if let Some(inst) = self.instances.get(id)
+                && inst.terminating
+                && inst.ref_count == 0
+            {
+                for f in fields_to_dec {
+                    self.dec_ref(&f);
+                }
+                self.instances.remove(id);
+            }
+        }
+    }
+
+    fn add_event_subscriptions(
+        &mut self,
+        target_inst_id: u64,
+        listener_module: &str,
+        listener_var_name: &str,
+        listener_inst: Option<ObjRef>,
+    ) {
+        let listener_inst_id = match listener_inst {
+            Some(ObjRef::UserClass(lid)) => Some(lid),
+            _ => None,
+        };
+        let class_name = if let Some(inst) = self.instances.get(&target_inst_id) {
+            inst.class_name.to_ascii_lowercase()
+        } else {
+            return;
+        };
+
+        let events: Vec<String> = if let Some(m_env) = self.modules.get(&class_name) {
+            m_env.events.keys().cloned().collect()
+        } else {
+            Vec::new()
+        };
+
+        if let Some(inst) = self.instances.get_mut(&target_inst_id) {
+            for evt in events {
+                inst.event_sinks.push(EventSubscription {
+                    event_name: evt,
+                    listener_module: listener_module.to_string(),
+                    listener_var_name: listener_var_name.to_string(),
+                    listener_instance: listener_inst_id,
+                });
+            }
+        }
+    }
+
+    fn remove_event_subscriptions(
+        &mut self,
+        target_inst_id: u64,
+        listener_module: &str,
+        listener_var_name: &str,
+    ) {
+        if let Some(inst) = self.instances.get_mut(&target_inst_id) {
+            inst.event_sinks.retain(|s| {
+                !(s.listener_module.eq_ignore_ascii_case(listener_module)
+                    && s.listener_var_name.eq_ignore_ascii_case(listener_var_name))
+            });
+        }
+    }
+
+    fn drain_and_fire_events(&mut self) -> VResult<()> {
+        if !self.enable_events() {
+            if let Some(h) = self.host.as_mut() {
+                h.pending_cell_changes.clear();
+                h.pending_calculate_sheets.clear();
+            }
+            return Ok(());
+        }
+
+        self.event_depth += 1;
+        if self.event_depth > self.max_depth {
+            self.event_depth -= 1;
+            return Err(VbaError::new(28, "Out of stack space"));
+        }
+
+        while let Some(change) = self
+            .host
+            .as_mut()
+            .and_then(|h| h.pending_cell_changes.pop())
+        {
+            let sheet_id = change.sheet_id;
+            let token = self.host("event range")?.new_range(
+                change.sheet_id,
+                change.row,
+                change.col,
+                change.height,
+                change.width,
+            );
+
+            // 1. Worksheet_Change on the specific sheet document module
+            if let Some(sheet_mod_name) = self.find_document_module_name_by_sheet_id(sheet_id)
+                && let Some(m_env) = self.modules.get(&sheet_mod_name)
+                && let Some(mp) = m_env.procs.get("worksheet_change")
+                && let Some(sub) = mp.first()
+            {
+                let mut frame = Frame::new();
+                frame.module_name = sheet_mod_name.clone();
+                frame.me = Some(ObjRef::Worksheet(sheet_id));
+                let old_active = self.active_module.clone();
+                self.active_module = sheet_mod_name;
+                let res = self.call_body_with_frame(&sub, vec![Variant::Object(token)], &mut frame);
+                self.active_module = old_active;
+                res?;
+            }
+
+            // 2. Workbook_SheetChange on ThisWorkbook
+            if let Some(m_env) = self.modules.get("thisworkbook")
+                && let Some(mp) = m_env.procs.get("workbook_sheetchange")
+                && let Some(sub) = mp.first()
+            {
+                let mut frame = Frame::new();
+                frame.module_name = "thisworkbook".to_string();
+                frame.me = Some(ObjRef::Workbook);
+                let old_active = self.active_module.clone();
+                self.active_module = "thisworkbook".to_string();
+                let res = self.call_body_with_frame(
+                    &sub,
+                    vec![
+                        Variant::Object(ObjRef::Worksheet(sheet_id)),
+                        Variant::Object(token),
+                    ],
+                    &mut frame,
+                );
+                self.active_module = old_active;
+                res?;
+            }
+        }
+
+        while let Some(sheet_id) = self
+            .host
+            .as_mut()
+            .and_then(|h| h.pending_calculate_sheets.pop())
+        {
+            // 1. Worksheet_Calculate on sheet
+            if let Some(sheet_mod_name) = self.find_document_module_name_by_sheet_id(sheet_id)
+                && let Some(m_env) = self.modules.get(&sheet_mod_name)
+                && let Some(mp) = m_env.procs.get("worksheet_calculate")
+                && let Some(sub) = mp.first()
+            {
+                let mut frame = Frame::new();
+                frame.module_name = sheet_mod_name.clone();
+                frame.me = Some(ObjRef::Worksheet(sheet_id));
+                let old_active = self.active_module.clone();
+                self.active_module = sheet_mod_name;
+                let res = self.call_body_with_frame(&sub, Vec::new(), &mut frame);
+                self.active_module = old_active;
+                res?;
+            }
+
+            // 2. Workbook_SheetCalculate on ThisWorkbook
+            if let Some(m_env) = self.modules.get("thisworkbook")
+                && let Some(mp) = m_env.procs.get("workbook_sheetcalculate")
+                && let Some(sub) = mp.first()
+            {
+                let mut frame = Frame::new();
+                frame.module_name = "thisworkbook".to_string();
+                frame.me = Some(ObjRef::Workbook);
+                let old_active = self.active_module.clone();
+                self.active_module = "thisworkbook".to_string();
+                let res = self.call_body_with_frame(
+                    &sub,
+                    vec![Variant::Object(ObjRef::Worksheet(sheet_id))],
+                    &mut frame,
+                );
+                self.active_module = old_active;
+                res?;
+            }
+        }
+
+        self.event_depth -= 1;
+        Ok(())
+    }
+
+    fn find_procedure_in_scope(
+        &self,
+        name: &str,
+        frame: &Frame,
+    ) -> Option<(String, Rc<Procedure>)> {
+        let lower = name.to_ascii_lowercase();
+
+        // 1. Current frame's me (if class or document instance)
+        if let Some(me_obj) = frame.me {
+            match me_obj {
+                ObjRef::UserClass(id) => {
+                    if let Some(inst) = self.instances.get(&id) {
+                        let cls = inst.class_name.to_ascii_lowercase();
+                        if let Some(m_env) = self.modules.get(&cls)
+                            && let Some(mp) = m_env.procs.get(&lower)
+                            && let Some(p) = mp.first()
+                        {
+                            return Some((cls, p));
+                        }
+                    }
+                }
+                ObjRef::Worksheet(sheet_id) => {
+                    if let Some(doc_name) = self.find_document_module_name_by_sheet_id(sheet_id)
+                        && let Some(m_env) = self.modules.get(&doc_name)
+                        && let Some(mp) = m_env.procs.get(&lower)
+                        && let Some(p) = mp.first()
+                    {
+                        return Some((doc_name, p));
+                    }
+                }
+                ObjRef::Workbook => {
+                    if let Some(m_env) = self.modules.get("thisworkbook")
+                        && let Some(mp) = m_env.procs.get(&lower)
+                        && let Some(p) = mp.first()
+                    {
+                        return Some(("thisworkbook".to_string(), p));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Active module
+        if let Some(m_env) = self.modules.get(&self.active_module)
+            && let Some(mp) = m_env.procs.get(&lower)
+            && let Some(p) = mp.first()
+        {
+            return Some((self.active_module.clone(), p));
+        }
+
+        // 3. Other standard modules
+        for (m_name, m_env) in &self.modules {
+            if m_env.kind == VbaModuleKind::Standard
+                && *m_name != self.active_module
+                && let Some(mp) = m_env.procs.get(&lower)
+                && let Some(p) = mp.first()
+            {
+                return Some((m_name.clone(), p));
+            }
+        }
+
+        None
     }
 
     fn call_procedure(&mut self, name: &str, args: Vec<Variant>) -> VResult<Variant> {
-        let Some(proc) = self.find_procedure(name) else {
-            return Err(VbaError::new(
-                35,
-                format!("Sub or Function not defined: {name}"),
-            ));
+        let lower = name.to_ascii_lowercase();
+        let mut target_mod = None;
+        let mut target_proc = None;
+
+        if let Some(m_env) = self.modules.get(&self.active_module)
+            && let Some(mp) = m_env.procs.get(&lower)
+            && let Some(p) = mp.first()
+        {
+            target_mod = Some(self.active_module.clone());
+            target_proc = Some(p);
+        }
+
+        if target_proc.is_none() {
+            for (m_name, m_env) in &self.modules {
+                if m_env.kind == VbaModuleKind::Standard
+                    && let Some(mp) = m_env.procs.get(&lower)
+                    && let Some(p) = mp.first()
+                {
+                    target_mod = Some(m_name.clone());
+                    target_proc = Some(p);
+                    break;
+                }
+            }
+        }
+
+        if target_proc.is_none() {
+            for (m_name, m_env) in &self.modules {
+                if let Some(mp) = m_env.procs.get(&lower)
+                    && let Some(p) = mp.first()
+                {
+                    target_mod = Some(m_name.clone());
+                    target_proc = Some(p);
+                    break;
+                }
+            }
+        }
+
+        let (mod_name, proc) = match (target_mod, target_proc) {
+            (Some(m), Some(p)) => (m, p),
+            _ => {
+                return Err(VbaError::new(
+                    35,
+                    format!("Sub or Function not defined: {name}"),
+                ));
+            }
         };
+
+        let mut frame = Frame::new();
+        frame.module_name = mod_name.clone();
+        if let Some(m_env) = self.modules.get(&mod_name)
+            && m_env.kind == VbaModuleKind::Document
+        {
+            if let Some(sheet_id) = m_env.bound_sheet_id {
+                frame.me = Some(ObjRef::Worksheet(sheet_id));
+            } else {
+                frame.me = Some(ObjRef::Workbook);
+            }
+        }
+
+        let old_active = self.active_module.clone();
+        self.active_module = mod_name;
+        let result = self.call_body_with_frame(&proc, args, &mut frame);
+        self.active_module = old_active;
+        result
+    }
+
+    fn call_body_with_frame(
+        &mut self,
+        proc: &Procedure,
+        args: Vec<Variant>,
+        frame: &mut Frame,
+    ) -> VResult<Variant> {
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
             return Err(VbaError::new(28, "Out of stack space"));
         }
-        let result = self.call_body(&proc, args);
-        self.depth -= 1;
-        result
-    }
 
-    fn call_body(&mut self, proc: &Procedure, args: Vec<Variant>) -> VResult<Variant> {
-        let mut frame = Frame::new();
         for (i, param) in proc.params.iter().enumerate() {
             let value = args.get(i).cloned().unwrap_or(Variant::Empty);
-            frame.locals.insert(param.name.to_ascii_lowercase(), value);
+            let key = param.name.to_ascii_lowercase();
+            self.inc_ref(&value);
+            if param.ty.as_ref().is_some_and(|t| t.is_new) {
+                let cls = param
+                    .ty
+                    .as_ref()
+                    .unwrap()
+                    .path
+                    .last()
+                    .cloned()
+                    .unwrap_or_default();
+                frame.auto_new_locals.insert(key.clone(), cls);
+            }
+            frame.locals.insert(key, value);
         }
-        // A Function returns by assigning to its own name, so seed a slot.
+
         let ret_key = proc.name.to_ascii_lowercase();
         if proc.kind != ProcKind::Sub {
             frame
@@ -279,9 +1124,9 @@ impl<'w> Interpreter<'w> {
                 .or_insert(Variant::Empty);
         }
 
-        self.exec_procedure_body(&proc.body, &mut frame)?;
+        let body_res = self.exec_procedure_body(&proc.body, frame);
 
-        Ok(if proc.kind == ProcKind::Sub {
+        let ret = if proc.kind == ProcKind::Sub {
             Variant::Empty
         } else {
             frame
@@ -289,13 +1134,20 @@ impl<'w> Interpreter<'w> {
                 .get(&ret_key)
                 .cloned()
                 .unwrap_or(Variant::Empty)
-        })
+        };
+
+        // Dec ref local variables
+        let locals = std::mem::take(&mut frame.locals);
+        for (_, val) in locals {
+            self.dec_ref(&val);
+        }
+
+        self.depth -= 1;
+        body_res?;
+        Ok(ret)
     }
 
     /// Runs a procedure body, resolving `GoTo` against its top-level labels.
-    ///
-    /// Labels live at procedure level, so a jump out of a nested block
-    /// unwinds to here as [`Flow::Goto`] and resumes at the label's index.
     fn exec_procedure_body(&mut self, body: &[Stmt], frame: &mut Frame) -> VResult<()> {
         let mut pc = 0usize;
         while pc < body.len() {
@@ -321,8 +1173,6 @@ impl<'w> Interpreter<'w> {
             match flow {
                 Flow::Normal => pc += 1,
                 Flow::ExitProc => return Ok(()),
-                // `Exit For`/`Exit Do` outside a loop is a no-op rather than
-                // an error, matching how VBA compiles it.
                 Flow::ExitFor | Flow::ExitDo => pc += 1,
                 Flow::Goto(label) => {
                     if label == "\0resume-next" {
@@ -350,8 +1200,6 @@ impl<'w> Interpreter<'w> {
             .position(|s| matches!(s, Stmt::Label { name, .. } if name.eq_ignore_ascii_case(label)))
     }
 
-    /// The handler to apply to an error, honouring VBA's rule that a handler
-    /// is disabled while it is running.
     fn take_handler(&self, frame: &Frame) -> Handler {
         if frame.in_handler {
             Handler::None
@@ -367,15 +1215,12 @@ impl<'w> Interpreter<'w> {
         };
     }
 
-    /// Runs a block, applying `On Error Resume Next` at the point of failure.
     fn exec_block(&mut self, body: &[Stmt], frame: &mut Frame) -> VResult<Flow> {
         for stmt in body {
             match self.exec_stmt(stmt, frame, false) {
                 Ok(Flow::Normal) => {}
                 Ok(other) => return Ok(other),
                 Err(e) => match self.take_handler(frame) {
-                    // Resume where the failure happened, which for a nested
-                    // statement means the next statement in *this* block.
                     Handler::ResumeNext => {
                         self.set_err(&e);
                         continue;
@@ -408,10 +1253,33 @@ impl<'w> Interpreter<'w> {
         match stmt {
             Stmt::Label { .. } => Ok(Flow::Normal),
 
-            Stmt::Dim { vars, .. } => {
+            Stmt::Dim {
+                vars, with_events, ..
+            } => {
                 for v in vars {
-                    let initial = default_for(v.ty.as_ref());
-                    frame.locals.insert(v.name.to_ascii_lowercase(), initial);
+                    let key = v.name.to_ascii_lowercase();
+                    if *with_events {
+                        let ty_name =
+                            v.ty.as_ref()
+                                .and_then(|t| t.path.last())
+                                .cloned()
+                                .unwrap_or_default();
+                        frame.with_events_locals.insert(key.clone(), ty_name);
+                        frame.locals.insert(key, Variant::Object(ObjRef::Nothing));
+                    } else if v.ty.as_ref().is_some_and(|t| t.is_new) {
+                        let cls =
+                            v.ty.as_ref()
+                                .unwrap()
+                                .path
+                                .last()
+                                .cloned()
+                                .unwrap_or_default();
+                        frame.auto_new_locals.insert(key.clone(), cls);
+                        frame.locals.insert(key, Variant::Object(ObjRef::Nothing));
+                    } else {
+                        let initial = default_for(v.ty.as_ref());
+                        frame.locals.insert(key, initial);
+                    }
                 }
                 Ok(Flow::Normal)
             }
@@ -422,6 +1290,7 @@ impl<'w> Interpreter<'w> {
                         Some(e) => self.eval(e, frame)?,
                         None => Variant::Empty,
                     };
+                    self.inc_ref(&value);
                     frame.locals.insert(v.name.to_ascii_lowercase(), value);
                 }
                 Ok(Flow::Normal)
@@ -431,8 +1300,6 @@ impl<'w> Interpreter<'w> {
                 target, value, set, ..
             } => {
                 let v = self.eval(value, frame)?;
-                // `Set` assigns the reference; a plain `=` reads the object's
-                // default member on both sides. See the module doc comment.
                 let v = if *set { v } else { self.scalar(v)? };
                 self.assign_with(target, v, frame, module_level, *set)?;
                 Ok(Flow::Normal)
@@ -450,15 +1317,14 @@ impl<'w> Interpreter<'w> {
             } => {
                 for (cond, body) in branches {
                     let c = self.eval(cond, frame)?;
-                    // A Null condition is false, not an error.
-                    if !c.is_null() && c.to_bool()? {
+                    if self.scalar(c)?.to_bool()? {
                         return self.exec_block(body, frame);
                     }
                 }
-                match else_body {
-                    Some(body) => self.exec_block(body, frame),
-                    None => Ok(Flow::Normal),
+                if let Some(body) = else_body {
+                    return self.exec_block(body, frame);
                 }
+                Ok(Flow::Normal)
             }
 
             Stmt::SelectCase {
@@ -467,32 +1333,22 @@ impl<'w> Interpreter<'w> {
                 case_else,
                 ..
             } => {
-                // A constant String subject compares as text, even against
-                // numeric cases -- `Select Case "32768abc"` takes
-                // `Case 2 To 5` because "32768abc" sorts between "2" and "5".
-                // The same string in a *variable* does not, and the plain `=`
-                // operator does not either (`"" = 0` is error 13, while
-                // `Select Case ""` against `Case 0` is simply no match). All
-                // measured; Select Case genuinely has its own comparison.
-                let subject_is_const_text = is_constant(subject);
-                // A *statically* Boolean subject converts every case value
-                // with `CBool` before comparing; a Variant that merely holds a
-                // Boolean does not. See `is_statically_boolean`.
-                let subject_is_static_bool = is_statically_boolean(subject);
-                let subject = self.eval(subject, frame)?;
-                let text_compare = subject_is_const_text && matches!(subject, Variant::Str(_));
-                let bool_compare = subject_is_static_bool && matches!(subject, Variant::Boolean(_));
-                for case in cases {
-                    for m in &case.matches {
-                        if self.case_matches(&subject, m, frame, text_compare, bool_compare)? {
-                            return self.exec_block(&case.body, frame);
+                let s = self.eval(subject, frame)?;
+                let s = self.scalar(s)?;
+                let text_compare = matches!(s, Variant::Str(_)) && is_constant(subject);
+                let bool_compare =
+                    matches!(s, Variant::Boolean(_)) && is_statically_boolean(subject);
+                for clause in cases {
+                    for m in &clause.matches {
+                        if self.case_matches(&s, m, frame, text_compare, bool_compare)? {
+                            return self.exec_block(&clause.body, frame);
                         }
                     }
                 }
-                match case_else {
-                    Some(body) => self.exec_block(body, frame),
-                    None => Ok(Flow::Normal),
+                if let Some(body) = case_else {
+                    return self.exec_block(body, frame);
                 }
+                Ok(Flow::Normal)
             }
 
             Stmt::For {
@@ -516,9 +1372,6 @@ impl<'w> Interpreter<'w> {
             } => self.exec_do(pre.as_ref(), post.as_ref(), body, frame),
 
             Stmt::With { subject, body, .. } => {
-                // The subject is evaluated once, on entry, and *not* through
-                // `scalar`: `With ws.Range("A2")` binds the Range, which is
-                // what makes `.Value` inside the block mean the cell.
                 let subject = self.eval(subject, frame)?;
                 frame.with_stack.push(subject);
                 let flow = self.exec_block(body, frame);
@@ -540,7 +1393,6 @@ impl<'w> Interpreter<'w> {
                     OnErrorKind::ResumeNext => Handler::ResumeNext,
                     OnErrorKind::Disable => Handler::None,
                 };
-                // Re-arming the handler leaves the handler context.
                 frame.in_handler = false;
                 Ok(Flow::Normal)
             }
@@ -549,8 +1401,6 @@ impl<'w> Interpreter<'w> {
                 frame.in_handler = false;
                 Ok(match kind {
                     ResumeKind::Label(label) => Flow::Goto(label.clone()),
-                    // Sentinel the procedure loop turns into "the statement
-                    // after the one that failed".
                     ResumeKind::Next => Flow::Goto("\0resume-next".to_string()),
                     ResumeKind::Retry => Flow::Goto("\0resume-next".to_string()),
                 })
@@ -558,8 +1408,83 @@ impl<'w> Interpreter<'w> {
 
             Stmt::Stop { .. } | Stmt::End { .. } => Ok(Flow::ExitProc),
 
-            // Everything below is out of Phase 1's scope. Each reports what
-            // it was rather than being skipped.
+            Stmt::EventDef { .. } => Ok(Flow::Normal),
+
+            Stmt::RaiseEvent { name, args, .. } => {
+                let mut arg_vals = self.eval_args(args, frame)?;
+                let Some(ObjRef::UserClass(inst_id)) = frame.me else {
+                    return Err(VbaError::new(
+                        438,
+                        "RaiseEvent must be called within a class instance",
+                    ));
+                };
+
+                let sinks = self
+                    .instances
+                    .get(&inst_id)
+                    .map(|inst| inst.event_sinks.clone())
+                    .unwrap_or_default();
+                let lower_event = name.to_ascii_lowercase();
+
+                for sink in sinks {
+                    if sink.event_name == lower_event {
+                        let handler_name = format!("{}_{}", sink.listener_var_name, name);
+                        if let Some(m_env) = self.modules.get(&sink.listener_module)
+                            && let Some(mp) = m_env.procs.get(&handler_name.to_ascii_lowercase())
+                            && let Some(proc) = mp.first()
+                        {
+                            let mut handler_frame = Frame::new();
+                            handler_frame.module_name = sink.listener_module.clone();
+                            handler_frame.me = sink.listener_instance.map(ObjRef::UserClass);
+                            let old_active = self.active_module.clone();
+                            self.active_module = sink.listener_module.clone();
+
+                            for (i, p) in proc.params.iter().enumerate() {
+                                let v = arg_vals.get(i).cloned().unwrap_or(Variant::Empty);
+                                handler_frame.locals.insert(p.name.to_ascii_lowercase(), v);
+                            }
+
+                            self.exec_procedure_body(&proc.body, &mut handler_frame)?;
+
+                            for (i, p) in proc.params.iter().enumerate() {
+                                if p.by != Some(PassBy::Value)
+                                    && let Some(new_val) =
+                                        handler_frame.locals.get(&p.name.to_ascii_lowercase())
+                                    && i < arg_vals.len()
+                                {
+                                    arg_vals[i] = new_val.clone();
+                                }
+                            }
+
+                            self.active_module = old_active;
+                        }
+                    }
+                }
+
+                // Copy ByRef parameter changes back to caller's variables if args were identifiers
+                for (i, a) in args.iter().enumerate() {
+                    if let Some(Expr::Ident { name: arg_var, .. }) = &a.value
+                        && i < arg_vals.len()
+                    {
+                        let pos = a.value.as_ref().unwrap().pos();
+                        self.assign_with(
+                            &Expr::Ident {
+                                name: arg_var.clone(),
+                                pos,
+                            },
+                            arg_vals[i].clone(),
+                            frame,
+                            false,
+                            false,
+                        )?;
+                    }
+                }
+
+                Ok(Flow::Normal)
+            }
+
+            Stmt::Attribute { .. } => Ok(Flow::Normal),
+
             Stmt::ReDim { .. } => Err(out_of_scope("ReDim")),
             Stmt::Erase { .. } => Err(out_of_scope("Erase")),
             Stmt::GoSub { .. } | Stmt::Return { .. } => Err(out_of_scope("GoSub")),
@@ -567,7 +1492,6 @@ impl<'w> Interpreter<'w> {
             Stmt::TypeDef { .. } => Err(out_of_scope("Type")),
             Stmt::EnumDef { .. } => Err(out_of_scope("Enum")),
             Stmt::Declare { .. } => Err(out_of_scope("Declare")),
-            Stmt::EventDef { .. } | Stmt::RaiseEvent { .. } => Err(out_of_scope("events")),
             Stmt::Implements { .. } => Err(out_of_scope("Implements")),
             Stmt::Opaque { keyword, .. } => Err(out_of_scope(keyword)),
         }
@@ -581,8 +1505,6 @@ impl<'w> Interpreter<'w> {
         text_compare: bool,
         bool_compare: bool,
     ) -> VResult<bool> {
-        // See `Stmt::SelectCase` for why a constant String subject compares
-        // as text.
         let cmp =
             |lhs: &Variant, rhs: &Variant, kind: Operand| -> VResult<Option<std::cmp::Ordering>> {
                 if text_compare {
@@ -590,22 +1512,6 @@ impl<'w> Interpreter<'w> {
                 }
                 value::compare_ctx(lhs, rhs, Operand::Runtime, kind)
             };
-        // Against a statically Boolean subject every case value is converted
-        // with `CBool` and the comparison then runs on the Booleans, in all
-        // three case forms. That single rule produces the whole measured
-        // table, including the parts that look inconsistent:
-        //
-        //   Case 1        matches True   -- CBool(1) is True
-        //   Case 0        misses  True
-        //   Case 2 To 5   matches True   -- both ends become True
-        //   Case 0 To 1   misses  True   -- the range is False To True, i.e.
-        //                                   0 To -1, which is empty
-        //   Case Is < 0   matches True   -- True is -1
-        //   Case Null     is error 94    -- CBool(Null) raises it
-        //
-        // The `Case 0 To 1` and `Case Null` rows are what rule out "compare
-        // the case value as a Boolean": the conversion happens first, and
-        // everything after it is the ordinary comparison.
         let cast = |v: Variant| -> VResult<Variant> {
             if bool_compare {
                 return Ok(Variant::Boolean(v.to_bool()?));
@@ -615,16 +1521,9 @@ impl<'w> Interpreter<'w> {
         Ok(match m {
             CaseMatch::Value(e) => {
                 let v = cast(self.eval(e, frame)?)?;
-                // The case value carries its own constant-ness, which is what
-                // makes `Select Case "10"` match `Case 10`.
                 cmp(subject, &v, operand_kind(e))? == Some(std::cmp::Ordering::Equal)
             }
             CaseMatch::Range(lo_e, hi_e) => {
-                // A `To` range matches a Null subject, which no other case
-                // form does: `Select Case Null` skips `Case 0, 1` and
-                // `Case Is > 2` but takes `Case 2 To 5`. Measured directly,
-                // and it does not follow from the comparisons -- `Null >= 2`
-                // is Null. Excel quirk, matched deliberately.
                 if subject.is_null() {
                     return Ok(true);
                 }
@@ -661,9 +1560,6 @@ impl<'w> Interpreter<'w> {
             Some(e) => self.eval(e, frame)?.to_f64()?,
             None => 1.0,
         };
-        // A zero step would spin forever; VBA runs it as an infinite loop,
-        // which the op budget would eventually catch, but failing fast is
-        // more useful than burning five million ops first.
         if step_v == 0.0 {
             return Err(VbaError::new(
                 5,
@@ -671,10 +1567,6 @@ impl<'w> Interpreter<'w> {
             ));
         }
 
-        // The counter is assigned *before* the test, not after it, so that
-        // after the loop it holds the value that failed -- `For i = 1 To 3`
-        // leaves `i` at 4, and `Step 2` leaves it at 5. `Exit For` leaves it
-        // at the value the body was running with. All measured.
         let mut current = start;
         loop {
             self.tick()?;
@@ -707,12 +1599,13 @@ impl<'w> Interpreter<'w> {
         loop {
             self.tick()?;
             if let Some((test, cond)) = pre {
-                let c = self.eval(cond, frame)?.to_bool()?;
-                let go = match test {
-                    DoTest::While => c,
-                    DoTest::Until => !c,
+                let c = self.eval(cond, frame)?;
+                let c = self.scalar(c)?.to_bool()?;
+                let stop = match test {
+                    DoTest::While => !c,
+                    DoTest::Until => c,
                 };
-                if !go {
+                if stop {
                     break;
                 }
             }
@@ -722,12 +1615,13 @@ impl<'w> Interpreter<'w> {
                 other => return Ok(other),
             }
             if let Some((test, cond)) = post {
-                let c = self.eval(cond, frame)?.to_bool()?;
-                let go = match test {
-                    DoTest::While => c,
-                    DoTest::Until => !c,
+                let c = self.eval(cond, frame)?;
+                let c = self.scalar(c)?.to_bool()?;
+                let stop = match test {
+                    DoTest::While => !c,
+                    DoTest::Until => c,
                 };
-                if !go {
+                if stop {
                     break;
                 }
             }
@@ -735,16 +1629,14 @@ impl<'w> Interpreter<'w> {
         Ok(Flow::Normal)
     }
 
-    /// `For`'s counter assignment and every other internal write, which are
-    /// never `Set`.
     fn assign(
         &mut self,
         target: &Expr,
-        v: Variant,
+        value: Variant,
         frame: &mut Frame,
-        module_level: bool,
+        set: bool,
     ) -> VResult<()> {
-        self.assign_with(target, v, frame, module_level, false)
+        self.assign_with(target, value, frame, false, set)
     }
 
     fn assign_with(
@@ -755,67 +1647,139 @@ impl<'w> Interpreter<'w> {
         module_level: bool,
         set: bool,
     ) -> VResult<()> {
-        // A property write is the one place the target is *not* evaluated:
-        // `ws.Range("A1").Value = 5` has to reach the Range and set a member
-        // on it, not read `.Value` and throw the result away.
         match target {
             Expr::Member {
                 target: obj, name, ..
             } => {
-                let obj = self.member_owner(obj.as_deref(), frame)?;
-                let Variant::Object(obj) = obj else {
+                let owner = self.member_owner(obj.as_deref(), frame)?;
+                let Variant::Object(owner_obj) = owner else {
                     return Err(VbaError::new(
                         424,
-                        format!("Object required: .{name} on a {}", obj.type_name()),
+                        format!("Object required: .{name} on a {}", owner.type_name()),
                     ));
                 };
-                return self
-                    .host(&format!(".{name}"))?
-                    .set_member(&obj, name, &[], &v);
+                return self.set_member_on_object(&owner_obj, name, &[], &v, set);
             }
-            // `ws.Range("A1") = 5` and `ws.Cells(1, 2) = 5`: the call
-            // produces an object, and assigning to it writes its default
-            // member. `Set` on the same shape is a property *set*, which VBA
-            // needs `Set` + a `Property Set` to mean and this does not have.
             Expr::Call {
                 target: t, args, ..
-            } if !set => {
-                if let Expr::Member { .. } | Expr::Ident { .. } = t.as_ref() {
+            } => {
+                if let Expr::Member {
+                    target: inner_obj,
+                    name: prop_name,
+                    ..
+                } = t.as_ref()
+                {
+                    let owner = self.member_owner(inner_obj.as_deref(), frame)?;
+                    if let Variant::Object(owner_obj) = &owner
+                        && matches!(owner_obj, ObjRef::UserClass(_))
+                    {
+                        let arg_vals = self.eval_args(args, frame)?;
+                        return self.set_member_on_object(owner_obj, prop_name, &arg_vals, &v, set);
+                    }
+                }
+                if let Expr::Ident {
+                    name: ident_name, ..
+                } = t.as_ref()
+                    && let Some(Variant::Object(obj)) = self.lookup(ident_name, frame)
+                    && let ObjRef::UserClass(id) = obj
+                {
+                    let arg_vals = self.eval_args(args, frame)?;
+                    let cls_name = self
+                        .instances
+                        .get(&id)
+                        .map(|inst| inst.class_name.clone())
+                        .unwrap_or_default();
+                    if let Some(def_member) = self
+                        .modules
+                        .get(&cls_name.to_ascii_lowercase())
+                        .and_then(|m| m.default_member.clone())
+                    {
+                        return self.set_member_on_object(&obj, &def_member, &arg_vals, &v, set);
+                    }
+                }
+                if !set {
                     let obj = self.eval(target, frame);
                     if let Ok(Variant::Object(obj)) = obj {
-                        return self
-                            .host("assignment to an object")?
-                            .assign_default(&obj, &v);
+                        self.host("assignment to an object")?
+                            .assign_default(&obj, &v)?;
+                        self.drain_and_fire_events()?;
+                        return Ok(());
                     }
-                    // Fall through to the error below, but only after the
-                    // call has had its chance -- an *array* element write is
-                    // a different, still-unsupported thing.
-                    let _ = args;
                 }
                 return Err(out_of_scope("array or property assignment"));
             }
+            Expr::Bang {
+                target: obj_expr,
+                name,
+                ..
+            } => {
+                let owner = self.eval(obj_expr, frame)?;
+                let Variant::Object(owner_obj) = owner else {
+                    return Err(VbaError::new(
+                        424,
+                        format!("Object required: !{name} on a {}", owner.type_name()),
+                    ));
+                };
+                return self.set_member_on_object(&owner_obj, name, &[], &v, set);
+            }
             _ => {}
         }
+
         match target {
             Expr::Ident { name, .. } => {
                 let key = name.to_ascii_lowercase();
-                // A module-level statement writes a global; inside a
-                // procedure, a name already local (or not global at all)
-                // stays local, and only an existing global is written
-                // through -- which is VBA's shadowing rule.
-                let writes_global = !module_level
-                    && !frame.locals.contains_key(&key)
-                    && self.globals.contains_key(&key);
-                if writes_global {
-                    self.globals.insert(key, v);
+                self.inc_ref(&v);
+
+                // Handle WithEvents dynamic registration
+                let is_with_events = frame.with_events_locals.contains_key(&key)
+                    || self
+                        .modules
+                        .get(&self.active_module)
+                        .is_some_and(|m| m.with_events_vars.contains_key(&key));
+
+                if is_with_events {
+                    let active_mod = self.active_module.clone();
+                    if let Some(old_val) = self.lookup(&key, frame)
+                        && let Variant::Object(ObjRef::UserClass(old_id)) = old_val
+                    {
+                        self.remove_event_subscriptions(old_id, &active_mod, &key);
+                    }
+                    if let Variant::Object(ObjRef::UserClass(new_id)) = &v {
+                        self.add_event_subscriptions(*new_id, &active_mod, &key, frame.me);
+                    }
+                }
+
+                if module_level {
+                    if let Some(m) = self.modules.get_mut(&self.active_module)
+                        && let Some(old) = m.globals.insert(key, v)
+                    {
+                        self.dec_ref(&old);
+                    }
+                } else if frame.locals.contains_key(&key)
+                    || frame.auto_new_locals.contains_key(&key)
+                    || (!self.module_has_global(&self.active_module, &key)
+                        && !self.instance_has_field(frame.me, &key))
+                {
+                    if let Some(old) = frame.locals.insert(key, v) {
+                        self.dec_ref(&old);
+                    }
+                } else if self.instance_has_field(frame.me, &key) {
+                    if let Some(ObjRef::UserClass(id)) = frame.me
+                        && let Some(inst) = self.instances.get_mut(&id)
+                        && let Some(old) = inst.fields.insert(key, v)
+                    {
+                        self.dec_ref(&old);
+                    }
+                } else if self.module_has_global(&self.active_module, &key) {
+                    if let Some(m) = self.modules.get_mut(&self.active_module)
+                        && let Some(old) = m.globals.insert(key, v)
+                    {
+                        self.dec_ref(&old);
+                    }
                 } else {
                     frame.locals.insert(key, v);
                 }
                 Ok(())
-            }
-            Expr::Bang { .. } => Err(out_of_scope("property assignment")),
-            Expr::Member { .. } | Expr::Call { .. } => {
-                Err(out_of_scope("array or property assignment"))
             }
             other => Err(VbaError::new(
                 erl_assign_error(),
@@ -824,13 +1788,259 @@ impl<'w> Interpreter<'w> {
         }
     }
 
-    fn lookup(&self, name: &str, frame: &Frame) -> Option<Variant> {
+    fn module_has_global(&self, mod_name: &str, key: &str) -> bool {
+        self.modules
+            .get(mod_name)
+            .is_some_and(|m| m.globals.contains_key(key))
+    }
+
+    fn instance_has_field(&self, me: Option<ObjRef>, key: &str) -> bool {
+        if let Some(ObjRef::UserClass(id)) = me {
+            self.instances
+                .get(&id)
+                .is_some_and(|i| i.fields.contains_key(key))
+        } else {
+            false
+        }
+    }
+
+    fn set_member_on_object(
+        &mut self,
+        obj: &ObjRef,
+        name: &str,
+        args: &[Variant],
+        value: &Variant,
+        set: bool,
+    ) -> VResult<()> {
+        match obj {
+            ObjRef::Nothing => Err(VbaError::new(
+                91,
+                format!("Object variable or With block variable not set: .{name}"),
+            )),
+            ObjRef::UserClass(id) => {
+                let cls_name = self
+                    .instances
+                    .get(id)
+                    .map(|inst| inst.class_name.clone())
+                    .ok_or_else(|| VbaError::new(91, "Object variable not set"))?;
+                let lower_cls = cls_name.to_ascii_lowercase();
+                let lower_name = name.to_ascii_lowercase();
+
+                let mut prop_proc = None;
+                if let Some(m_env) = self.modules.get(&lower_cls)
+                    && let Some(mp) = m_env.procs.get(&lower_name)
+                {
+                    if set {
+                        prop_proc = mp.prop_set.clone().or_else(|| mp.prop_let.clone());
+                    } else {
+                        prop_proc = mp.prop_let.clone().or_else(|| mp.prop_set.clone());
+                    }
+                }
+
+                if let Some(proc) = prop_proc {
+                    let mut full_args = args.to_vec();
+                    full_args.push(value.clone());
+                    let mut frame = Frame::new();
+                    frame.module_name = cls_name.clone();
+                    frame.me = Some(ObjRef::UserClass(*id));
+                    let old_active = self.active_module.clone();
+                    self.active_module = cls_name;
+                    let res = self.call_body_with_frame(&proc, full_args, &mut frame);
+                    self.active_module = old_active;
+                    res?;
+                    return Ok(());
+                }
+
+                if args.is_empty() {
+                    self.inc_ref(value);
+                    let old = if let Some(inst) = self.instances.get_mut(id) {
+                        inst.fields.insert(lower_name, value.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(old) = old {
+                        self.dec_ref(&old);
+                    }
+                    return Ok(());
+                }
+
+                Err(VbaError::new(
+                    438,
+                    format!("Object doesn't support this property or method: .{name}"),
+                ))
+            }
+            ObjRef::Worksheet(sheet_id) => {
+                if let Some(mod_name) = self.find_document_module_name_by_sheet_id(*sheet_id) {
+                    let mut prop_proc = None;
+                    if let Some(m_env) = self.modules.get(&mod_name)
+                        && let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
+                    {
+                        if set {
+                            prop_proc = mp.prop_set.clone().or_else(|| mp.prop_let.clone());
+                        } else {
+                            prop_proc = mp.prop_let.clone().or_else(|| mp.prop_set.clone());
+                        }
+                    }
+                    if let Some(proc) = prop_proc {
+                        let mut full_args = args.to_vec();
+                        full_args.push(value.clone());
+                        let mut frame = Frame::new();
+                        frame.module_name = mod_name.clone();
+                        frame.me = Some(ObjRef::Worksheet(*sheet_id));
+                        let old_active = self.active_module.clone();
+                        self.active_module = mod_name;
+                        let res = self.call_body_with_frame(&proc, full_args, &mut frame);
+                        self.active_module = old_active;
+                        res?;
+                        return Ok(());
+                    }
+                }
+                self.host(&format!(".{name}"))?
+                    .set_member(obj, name, args, value)?;
+                self.drain_and_fire_events()?;
+                Ok(())
+            }
+            ObjRef::Workbook => {
+                if let Some(m_env) = self.modules.get("thisworkbook") {
+                    let mut prop_proc = None;
+                    if let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase()) {
+                        if set {
+                            prop_proc = mp.prop_set.clone().or_else(|| mp.prop_let.clone());
+                        } else {
+                            prop_proc = mp.prop_let.clone().or_else(|| mp.prop_set.clone());
+                        }
+                    }
+                    if let Some(proc) = prop_proc {
+                        let mut full_args = args.to_vec();
+                        full_args.push(value.clone());
+                        let mut frame = Frame::new();
+                        frame.module_name = "thisworkbook".to_string();
+                        frame.me = Some(ObjRef::Workbook);
+                        let old_active = self.active_module.clone();
+                        self.active_module = "thisworkbook".to_string();
+                        let res = self.call_body_with_frame(&proc, full_args, &mut frame);
+                        self.active_module = old_active;
+                        res?;
+                        return Ok(());
+                    }
+                }
+                self.host(&format!(".{name}"))?
+                    .set_member(obj, name, args, value)?;
+                self.drain_and_fire_events()?;
+                Ok(())
+            }
+            other => {
+                self.host(&format!(".{name}"))?
+                    .set_member(other, name, args, value)?;
+                self.drain_and_fire_events()?;
+                Ok(())
+            }
+        }
+    }
+
+    fn lookup(&mut self, name: &str, frame: &mut Frame) -> Option<Variant> {
         let key = name.to_ascii_lowercase();
-        frame
-            .locals
-            .get(&key)
-            .or_else(|| self.globals.get(&key))
-            .cloned()
+
+        // 1. Check local variable in frame with auto-new check
+        if frame.auto_new_locals.contains_key(&key) {
+            let val = frame.locals.get(&key).cloned();
+            if val
+                .as_ref()
+                .is_none_or(|v| matches!(v, Variant::Empty | Variant::Object(ObjRef::Nothing)))
+            {
+                let cls = frame.auto_new_locals.get(&key).unwrap().clone();
+                if let Ok(new_inst) = self.instantiate_class(&cls) {
+                    self.inc_ref(&new_inst);
+                    frame.locals.insert(key.clone(), new_inst.clone());
+                    return Some(new_inst);
+                }
+            }
+        }
+        if let Some(v) = frame.locals.get(&key) {
+            return Some(v.clone());
+        }
+
+        // 2. Check instance fields if inside a class instance
+        if let Some(ObjRef::UserClass(id)) = frame.me {
+            let auto_cls = self.instances.get(&id).and_then(|inst| {
+                if inst.auto_new_fields.contains_key(&key) {
+                    let val = inst.fields.get(&key);
+                    if val.is_none_or(|v| {
+                        matches!(v, Variant::Empty | Variant::Object(ObjRef::Nothing))
+                    }) {
+                        return inst.auto_new_fields.get(&key).cloned();
+                    }
+                }
+                None
+            });
+            if let Some(cls) = auto_cls
+                && let Ok(new_inst) = self.instantiate_class(&cls)
+            {
+                self.inc_ref(&new_inst);
+                if let Some(inst) = self.instances.get_mut(&id) {
+                    inst.fields.insert(key.clone(), new_inst.clone());
+                }
+                return Some(new_inst);
+            }
+            if let Some(inst) = self.instances.get(&id)
+                && let Some(v) = inst.fields.get(&key)
+            {
+                return Some(v.clone());
+            }
+        }
+
+        // 3. Check current module's globals
+        let auto_cls = self.modules.get(&self.active_module).and_then(|m| {
+            if m.auto_new_vars.contains_key(&key) {
+                let val = m.globals.get(&key);
+                if val
+                    .is_none_or(|v| matches!(v, Variant::Empty | Variant::Object(ObjRef::Nothing)))
+                {
+                    return m.auto_new_vars.get(&key).cloned();
+                }
+            }
+            None
+        });
+        if let Some(cls) = auto_cls
+            && let Ok(new_inst) = self.instantiate_class(&cls)
+        {
+            self.inc_ref(&new_inst);
+            if let Some(m) = self.modules.get_mut(&self.active_module) {
+                m.globals.insert(key.clone(), new_inst.clone());
+            }
+            return Some(new_inst);
+        }
+        if let Some(m) = self.modules.get(&self.active_module)
+            && let Some(v) = m.globals.get(&key)
+        {
+            return Some(v.clone());
+        }
+
+        // 4. Check document modules / singleton names
+        if key == "thisworkbook" {
+            return Some(Variant::Object(ObjRef::Workbook));
+        }
+        for m in self.modules.values() {
+            if m.kind == VbaModuleKind::Document && m.name.eq_ignore_ascii_case(name) {
+                if let Some(sheet_id) = m.bound_sheet_id {
+                    return Some(Variant::Object(ObjRef::Worksheet(sheet_id)));
+                } else {
+                    return Some(Variant::Object(ObjRef::Workbook));
+                }
+            }
+        }
+
+        // 5. Check public globals in other standard modules
+        for m in self.modules.values() {
+            if m.kind == VbaModuleKind::Standard
+                && m.name != self.active_module
+                && let Some(v) = m.globals.get(&key)
+            {
+                return Some(v.clone());
+            }
+        }
+
+        None
     }
 
     fn eval(&mut self, e: &Expr, frame: &mut Frame) -> VResult<Variant> {
@@ -855,22 +2065,27 @@ impl<'w> Interpreter<'w> {
                 if self.host.is_none() && super::host::is_host_name(name) {
                     return Err(needs_workbook(name));
                 }
-                // A zero-argument call written without parentheses.
-                if self.find_procedure(name).is_some() {
-                    return self.call_procedure(name, Vec::new());
+                if let Some((proc_mod, proc)) = self.find_procedure_in_scope(name, frame) {
+                    let mut call_frame = Frame::new();
+                    call_frame.module_name = proc_mod.clone();
+                    if proc_mod == frame.module_name {
+                        call_frame.me = frame.me;
+                    }
+                    let old_active = self.active_module.clone();
+                    self.active_module = proc_mod;
+                    let res = self.call_body_with_frame(&proc, Vec::new(), &mut call_frame);
+                    self.active_module = old_active;
+                    return res;
                 }
                 if let Some(v) = builtins::call(name, &[])? {
                     return Ok(v);
                 }
-                // An undeclared name is Empty in VBA without Option Explicit.
                 Ok(Variant::Empty)
             }
 
             Expr::Unary { op, expr, .. } => {
                 let v = self.eval(expr, frame)?;
                 let v = self.scalar(v)?;
-                // Unary sign promotes on overflow at runtime and does not
-                // between constants, exactly as the binary operators do.
                 let mode = if is_constant(expr) {
                     ArithMode::Constant
                 } else {
@@ -886,31 +2101,16 @@ impl<'w> Interpreter<'w> {
             Expr::Binary { op, lhs, rhs, .. } => {
                 let a = self.eval(lhs, frame)?;
                 let b = self.eval(rhs, frame)?;
-                // `Is` is the one operator that wants the references
-                // themselves; everything else reads through the default
-                // member first.
                 if *op == BinOp::Is {
                     return is_comparison(&a, &b);
                 }
                 let a = self.scalar(a)?;
                 let b = self.scalar(b)?;
-                // Two operands the compiler has *typed* use fixed-width
-                // arithmetic and overflow; anything Variant promotes. See
-                // `value::ArithMode`.
-                //
-                // This is `is_statically_typed`, not `is_constant`, and §28
-                // measured both halves of the difference: `CInt(32767) + 1`
-                // and `Sgn(1) + 32767` are error 6 though neither is a
-                // constant expression, while `(Empty + 32767) + 1` is 32768
-                // though it is one -- `Empty` is a `Variant`, so the
-                // expression promotes like a variable.
                 let mode = if is_statically_typed(lhs) && is_statically_typed(rhs) {
                     ArithMode::Constant
                 } else {
                     ArithMode::Promote
                 };
-                // Comparison needs each side's constant-ness separately, not
-                // just whether both are -- see `value::compare_ctx`.
                 let kinds = (operand_kind(lhs), operand_kind(rhs));
                 eval_binary(*op, &a, &b, mode, kinds)
             }
@@ -918,9 +2118,6 @@ impl<'w> Interpreter<'w> {
             Expr::Call { target, args, .. } => self.eval_call(target, args, frame),
 
             Expr::Member { target, name, .. } => {
-                // `Err.Number` / `Err.Description` come first: `Err` is an
-                // interpreter object, not a host one, because error handling
-                // works with or without a workbook.
                 if let Some(t) = target
                     && let Expr::Ident { name: obj, .. } = t.as_ref()
                     && obj.eq_ignore_ascii_case("err")
@@ -931,19 +2128,68 @@ impl<'w> Interpreter<'w> {
                         other => return Err(out_of_scope(&format!("Err.{other}"))),
                     });
                 }
+                // Check module-qualified procedure/global access
+                if let Some(t) = target
+                    && let Expr::Ident {
+                        name: mod_ident, ..
+                    } = t.as_ref()
+                {
+                    let lower_mod = mod_ident.to_ascii_lowercase();
+                    if let Some(m_env) = self.modules.get(&lower_mod)
+                        && m_env.kind == VbaModuleKind::Standard
+                    {
+                        if let Some(v) = m_env.globals.get(&name.to_ascii_lowercase()) {
+                            return Ok(v.clone());
+                        }
+                        if let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
+                            && let Some(proc) = mp.first()
+                        {
+                            let mut call_frame = Frame::new();
+                            call_frame.module_name = lower_mod.clone();
+                            let old_active = self.active_module.clone();
+                            self.active_module = lower_mod;
+                            let res = self.call_body_with_frame(&proc, Vec::new(), &mut call_frame);
+                            self.active_module = old_active;
+                            return res;
+                        }
+                    }
+                }
                 self.member(target.as_deref(), name, &[], frame)
             }
 
-            Expr::Bang { name, .. } => Err(out_of_scope(&format!("!{name}"))),
-            Expr::Me { .. } => Err(out_of_scope("Me")),
-            Expr::New { .. } => Err(out_of_scope("New")),
-            Expr::TypeOf { .. } => Err(out_of_scope("TypeOf")),
-            Expr::AddressOf { .. } => Err(out_of_scope("AddressOf")),
+            Expr::Bang { target, name, .. } => {
+                let owner = self.eval(target, frame)?;
+                let Variant::Object(obj) = owner else {
+                    return Err(VbaError::new(
+                        424,
+                        format!("Object required: !{name} on a {}", owner.type_name()),
+                    ));
+                };
+                self.get_member_on_object(&obj, name, &[])
+            }
+
+            Expr::Me { .. } => {
+                let me = frame
+                    .me
+                    .ok_or_else(|| VbaError::new(543, "Invalid use of Me keyword"))?;
+                Ok(Variant::Object(me))
+            }
+
+            Expr::New { ty, .. } => {
+                let class_name = ty.path.last().map(|s| s.as_str()).unwrap_or("");
+                self.instantiate_class(class_name)
+            }
+
+            Expr::TypeOf { expr, ty, .. } => {
+                let val = self.eval(expr, frame)?;
+                let type_name = ty.path.last().map(|s| s.as_str()).unwrap_or("");
+                Ok(Variant::Boolean(self.type_of_matches(&val, type_name)))
+            }
+
+            Expr::AddressOf { .. } => Ok(Variant::Long(0)),
         }
     }
 
-    /// The object a member reference hangs off: an explicit target, or the
-    /// innermost `With` subject for a leading dot.
     fn member_owner(&mut self, target: Option<&Expr>, frame: &mut Frame) -> VResult<Variant> {
         match target {
             Some(e) => self.eval(e, frame),
@@ -951,9 +2197,6 @@ impl<'w> Interpreter<'w> {
                 .with_stack
                 .last()
                 .cloned()
-                // A leading dot outside a `With` is a compile error in VBA,
-                // which has no error number; 91 is the closest runtime
-                // analogue and says the same thing.
                 .ok_or_else(|| {
                     VbaError::new(
                         91,
@@ -963,7 +2206,6 @@ impl<'w> Interpreter<'w> {
         }
     }
 
-    /// Reads `<target>.<name>`, with or without arguments.
     fn member(
         &mut self,
         target: Option<&Expr>,
@@ -978,20 +2220,203 @@ impl<'w> Interpreter<'w> {
                 format!("Object required: .{name} on a {}", owner.type_name()),
             ));
         };
-        self.host(&format!(".{name}"))?.get_member(&obj, name, args)
+        self.get_member_on_object(&obj, name, args)
     }
 
-    /// A value in a context that wants a scalar, reading an object's default
-    /// member if that is what it is.
-    ///
-    /// The single funnel the module doc comment describes. Everything that
-    /// computes with a value goes through here; `Set`, `Is`, `TypeName`, a
-    /// `With` subject and a user procedure's arguments deliberately do not.
+    fn get_member_on_object(
+        &mut self,
+        obj: &ObjRef,
+        name: &str,
+        args: &[Variant],
+    ) -> VResult<Variant> {
+        match obj {
+            ObjRef::Nothing => Err(VbaError::new(
+                91,
+                format!("Object variable or With block variable not set: .{name}"),
+            )),
+            ObjRef::UserClass(id) => {
+                let cls_name = self
+                    .instances
+                    .get(id)
+                    .map(|inst| inst.class_name.clone())
+                    .ok_or_else(|| VbaError::new(91, "Object variable not set"))?;
+                let lower_cls = cls_name.to_ascii_lowercase();
+                let lower_name = name.to_ascii_lowercase();
+
+                if let Some(m_env) = self.modules.get(&lower_cls)
+                    && let Some(mp) = m_env.procs.get(&lower_name)
+                    && let Some(proc) = mp.prop_get.clone().or_else(|| mp.sub_or_func.clone())
+                {
+                    let mut frame = Frame::new();
+                    frame.module_name = cls_name.clone();
+                    frame.me = Some(ObjRef::UserClass(*id));
+                    let old_active = self.active_module.clone();
+                    self.active_module = cls_name;
+                    let res = self.call_body_with_frame(&proc, args.to_vec(), &mut frame);
+                    self.active_module = old_active;
+                    return res;
+                }
+
+                let auto_cls = self.instances.get(id).and_then(|inst| {
+                    if inst.auto_new_fields.contains_key(&lower_name) {
+                        let val = inst.fields.get(&lower_name);
+                        if val.is_none_or(|v| {
+                            matches!(v, Variant::Empty | Variant::Object(ObjRef::Nothing))
+                        }) {
+                            return inst.auto_new_fields.get(&lower_name).cloned();
+                        }
+                    }
+                    None
+                });
+                if let Some(cls) = auto_cls
+                    && let Ok(new_inst) = self.instantiate_class(&cls)
+                {
+                    self.inc_ref(&new_inst);
+                    if let Some(inst) = self.instances.get_mut(id) {
+                        inst.fields.insert(lower_name.clone(), new_inst.clone());
+                    }
+                    return Ok(new_inst);
+                }
+                if let Some(inst) = self.instances.get(id)
+                    && let Some(v) = inst.fields.get(&lower_name).cloned()
+                {
+                    if args.is_empty() {
+                        return Ok(v);
+                    }
+                    if let Variant::Object(nested_obj) = &v {
+                        return self.get_member_on_object(nested_obj, "item", args);
+                    }
+                }
+
+                Err(VbaError::new(
+                    438,
+                    format!("Object doesn't support this property or method: .{name}"),
+                ))
+            }
+            ObjRef::Worksheet(sheet_id) => {
+                if let Some(mod_name) = self.find_document_module_name_by_sheet_id(*sheet_id)
+                    && let Some(m_env) = self.modules.get(&mod_name)
+                    && let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
+                    && let Some(proc) = mp.prop_get.clone().or_else(|| mp.sub_or_func.clone())
+                {
+                    let mut frame = Frame::new();
+                    frame.module_name = mod_name.clone();
+                    frame.me = Some(ObjRef::Worksheet(*sheet_id));
+                    let old_active = self.active_module.clone();
+                    self.active_module = mod_name;
+                    let res = self.call_body_with_frame(&proc, args.to_vec(), &mut frame);
+                    self.active_module = old_active;
+                    return res;
+                }
+                self.host(&format!(".{name}"))?.get_member(obj, name, args)
+            }
+            ObjRef::Workbook => {
+                if let Some(m_env) = self.modules.get("thisworkbook")
+                    && let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
+                    && let Some(proc) = mp.prop_get.clone().or_else(|| mp.sub_or_func.clone())
+                {
+                    let mut frame = Frame::new();
+                    frame.module_name = "thisworkbook".to_string();
+                    frame.me = Some(ObjRef::Workbook);
+                    let old_active = self.active_module.clone();
+                    self.active_module = "thisworkbook".to_string();
+                    let res = self.call_body_with_frame(&proc, args.to_vec(), &mut frame);
+                    self.active_module = old_active;
+                    return res;
+                }
+                self.host(&format!(".{name}"))?.get_member(obj, name, args)
+            }
+            other => self
+                .host(&format!(".{name}"))?
+                .get_member(other, name, args),
+        }
+    }
+
     fn scalar(&mut self, v: Variant) -> VResult<Variant> {
+        match v {
+            Variant::Object(ObjRef::UserClass(id)) => {
+                let cls_name = self
+                    .instances
+                    .get(&id)
+                    .map(|inst| inst.class_name.clone())
+                    .unwrap_or_default();
+                let def_member = self
+                    .modules
+                    .get(&cls_name.to_ascii_lowercase())
+                    .and_then(|m| m.default_member.clone());
+                if let Some(def_member) = def_member {
+                    let res =
+                        self.get_member_on_object(&ObjRef::UserClass(id), &def_member, &[])?;
+                    return self.scalar(res);
+                }
+                Err(VbaError::new(
+                    438,
+                    "Object doesn't support this property or method: default property not found",
+                ))
+            }
+            Variant::Object(obj) => self.host("using an object as a value")?.default_value(&obj),
+            other => Ok(other),
+        }
+    }
+
+    fn type_of_matches(&self, v: &Variant, type_name: &str) -> bool {
         let Variant::Object(obj) = v else {
-            return Ok(v);
+            return false;
         };
-        self.host("using an object as a value")?.default_value(&obj)
+        match obj {
+            ObjRef::Nothing => false,
+            ObjRef::UserClass(id) => {
+                if let Some(inst) = self.instances.get(id) {
+                    inst.class_name.eq_ignore_ascii_case(type_name)
+                        || type_name.eq_ignore_ascii_case("object")
+                } else {
+                    false
+                }
+            }
+            ObjRef::Worksheet(_) => {
+                type_name.eq_ignore_ascii_case("worksheet")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::Workbook => {
+                type_name.eq_ignore_ascii_case("workbook")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::Range(_) => {
+                type_name.eq_ignore_ascii_case("range") || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::Application => {
+                type_name.eq_ignore_ascii_case("application")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::ListObject(_) => {
+                type_name.eq_ignore_ascii_case("listobject")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::ListColumn(..) => {
+                type_name.eq_ignore_ascii_case("listcolumn")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::ListRow(..) => {
+                type_name.eq_ignore_ascii_case("listrow")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::PivotTable(_) => {
+                type_name.eq_ignore_ascii_case("pivottable")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::PivotField(..) => {
+                type_name.eq_ignore_ascii_case("pivotfield")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::Interior(_) => {
+                type_name.eq_ignore_ascii_case("interior")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::Font(_) => {
+                type_name.eq_ignore_ascii_case("font") || type_name.eq_ignore_ascii_case("object")
+            }
+            _ => type_name.eq_ignore_ascii_case("object"),
+        }
     }
 
     fn exec_for_each(
@@ -1002,11 +2427,6 @@ impl<'w> Interpreter<'w> {
         frame: &mut Frame,
     ) -> VResult<Flow> {
         let subject = self.eval(iterable, frame)?;
-        // The elements are materialised up front rather than streamed. That
-        // is a real constraint -- it is why iterating a range is capped -- but
-        // the alternative is holding a borrow of the workbook across the loop
-        // body, which is exactly what the value-not-pointer object model
-        // exists to avoid.
         let items = match subject {
             Variant::Object(obj) => self.host("For Each")?.iterate(&obj)?,
             Variant::Array(a) => a.values.clone(),
@@ -1022,9 +2442,6 @@ impl<'w> Interpreter<'w> {
         };
         for item in items {
             self.tick()?;
-            // The element variable holds a reference, so this is a `Set`-like
-            // assignment: `For Each c In ws.Range(...)` makes `c` a Range,
-            // not the cell's value.
             self.assign_with(var, item, frame, false, true)?;
             match self.exec_block(body, frame)? {
                 Flow::Normal => {}
@@ -1036,7 +2453,6 @@ impl<'w> Interpreter<'w> {
     }
 
     fn eval_call(&mut self, target: &Expr, args: &[Arg], frame: &mut Frame) -> VResult<Variant> {
-        // `Err.Raise n` -- in scope because raising is half of error handling.
         if let Expr::Member {
             target: Some(obj),
             name,
@@ -1059,11 +2475,31 @@ impl<'w> Interpreter<'w> {
             return Err(VbaError::new(number, description));
         }
 
-        // `obj.Method(args)` and `.Method(args)` inside a `With`.
         if let Expr::Member {
             target: obj, name, ..
         } = target
         {
+            if let Some(t) = obj
+                && let Expr::Ident {
+                    name: mod_ident, ..
+                } = t.as_ref()
+            {
+                let lower_mod = mod_ident.to_ascii_lowercase();
+                if let Some(m_env) = self.modules.get(&lower_mod)
+                    && m_env.kind == VbaModuleKind::Standard
+                    && let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
+                    && let Some(proc) = mp.first()
+                {
+                    let values = self.eval_args(args, frame)?;
+                    let mut call_frame = Frame::new();
+                    call_frame.module_name = lower_mod.clone();
+                    let old_active = self.active_module.clone();
+                    self.active_module = lower_mod;
+                    let res = self.call_body_with_frame(&proc, values, &mut call_frame);
+                    self.active_module = old_active;
+                    return res;
+                }
+            }
             let values = self.eval_args(args, frame)?;
             return self.member(obj.as_deref(), name, &values, frame);
         }
@@ -1072,38 +2508,63 @@ impl<'w> Interpreter<'w> {
             return Err(out_of_scope("this call target"));
         };
 
-        // A user procedure wins over everything else of the same name, as in
-        // VBA. Its arguments keep their objects: `Foo ws.Range("A1")` passes
-        // the Range, not the cell's value.
-        if self.find_procedure(name).is_some() {
+        if let Some((proc_mod, proc)) = self.find_procedure_in_scope(name, frame) {
             let values = self.eval_args(args, frame)?;
-            return self.call_procedure(name, values);
+            let mut call_frame = Frame::new();
+            call_frame.module_name = proc_mod.clone();
+            if proc_mod == frame.module_name {
+                call_frame.me = frame.me;
+            }
+            let old_active = self.active_module.clone();
+            self.active_module = proc_mod;
+            let res = self.call_body_with_frame(&proc, values, &mut call_frame);
+            self.active_module = old_active;
+            return res;
         }
 
-        // A local holding an array, indexed. The parser cannot tell this from
-        // a call -- that needs a symbol table -- so it is decided here, by
-        // what the name actually holds.
-        if let Some(Variant::Array(a)) = self.lookup(name, frame) {
-            let values = self.eval_args(args, frame)?;
-            let row = values
-                .first()
-                .map(|v| v.to_f64())
-                .transpose()?
-                .unwrap_or(0.0);
-            let col = match values.get(1) {
-                Some(v) => v.to_f64()?,
-                // A 2-D array read with one index is error 9 in VBA, which
-                // `VarArray::get` reports for column 0.
-                None => 0.0,
-            };
-            return a.get(row as usize, col as usize);
+        if let Some(val) = self.lookup(name, frame) {
+            if let Variant::Object(ObjRef::UserClass(id)) = val {
+                let values = self.eval_args(args, frame)?;
+                let cls_name = self
+                    .instances
+                    .get(&id)
+                    .map(|inst| inst.class_name.clone())
+                    .unwrap_or_default();
+                if let Some(def_member) = self
+                    .modules
+                    .get(&cls_name.to_ascii_lowercase())
+                    .and_then(|m| m.default_member.clone())
+                {
+                    return self.get_member_on_object(&ObjRef::UserClass(id), &def_member, &values);
+                }
+                return Err(VbaError::new(
+                    438,
+                    "Object doesn't support this property or method: default member not found",
+                ));
+            }
+            if let Variant::Array(a) = val {
+                let values = self.eval_args(args, frame)?;
+                let row = values
+                    .first()
+                    .map(|v| v.to_f64())
+                    .transpose()?
+                    .unwrap_or(0.0);
+                let col = match values.get(1) {
+                    Some(v) => v.to_f64()?,
+                    None => 0.0,
+                };
+                return a.get(row as usize, col as usize);
+            }
         }
 
         let values = self.eval_args(args, frame)?;
-        // A builtin sees scalars: `Len(ws.Range("A1"))` measures the cell's
-        // value. The type-inspection builtins are the exception, and are the
-        // reason this is a list rather than a blanket conversion -- deref
-        // `TypeName`'s argument and it can only ever answer about the value.
+
+        if name.eq_ignore_ascii_case("typename")
+            && let Some(arg) = values.first()
+        {
+            return Ok(Variant::Str(self.type_name_of(arg)));
+        }
+
         let values = if OBJECT_AWARE_BUILTINS.contains(&name.to_ascii_lowercase().as_str()) {
             values
         } else {
@@ -1115,9 +2576,6 @@ impl<'w> Interpreter<'w> {
         if let Some(v) = builtins::call(name, &values)? {
             return Ok(v);
         }
-        // `Range("A1")`, `Cells(2, 3)`, `Worksheets(1)` -- the host's own
-        // unqualified constructors, tried last so a user procedure or a
-        // builtin of the same name still shadows them.
         if let Some(h) = self.host.as_mut()
             && let Some(r) = h.global_call(name, &values)
         {
@@ -1137,8 +2595,6 @@ impl<'w> Interpreter<'w> {
         for a in args {
             match &a.value {
                 Some(e) => out.push(self.eval(e, frame)?),
-                // An omitted argument arrives as Empty, matching what
-                // `IsMissing` would report for an Optional Variant.
                 None => out.push(Variant::Empty),
             }
         }
@@ -1601,11 +3057,12 @@ fn default_for(ty: Option<&TypeRef>) -> Variant {
     let Some(ty) = ty else {
         return Variant::Empty;
     };
+    if ty.is_new {
+        return Variant::Object(ObjRef::Nothing);
+    }
     let Some(last) = ty.path.last() else {
         return Variant::Empty;
     };
-    // A typed variable starts at its type's zero, not Empty -- which is
-    // observable, since `Dim s As String` makes `s` `""` rather than Empty.
     match last.to_ascii_lowercase().as_str() {
         "integer" => Variant::Integer(0),
         "long" => Variant::Long(0),
@@ -1615,14 +3072,8 @@ fn default_for(ty: Option<&TypeRef>) -> Variant {
         "boolean" => Variant::Boolean(false),
         "string" => Variant::Str(String::new()),
         "date" => Variant::Date(0.0),
-        // Measured: `Dim r As Range` leaves `r` reporting `TypeName` of
-        // "Nothing" and `r Is Nothing` True, where an untyped `Dim r` is
-        // Empty. Any object type behaves the same way, so this matches the
-        // host's classes rather than `Range` alone.
-        "range" | "worksheet" | "workbook" | "object" | "application" | "sheets" => {
-            Variant::Object(ObjRef::Nothing)
-        }
-        _ => Variant::Empty,
+        "variant" => Variant::Empty,
+        _ => Variant::Object(ObjRef::Nothing),
     }
 }
 
@@ -3348,5 +4799,287 @@ mod tests {
     #[test]
     fn an_unknown_function_is_reported_not_ignored() {
         assert_eq!(expr("NoSuchFunction(1)"), "ERR|35");
+    }
+
+    #[test]
+    fn class_module_instantiation_properties_and_methods() {
+        let class_src = "Attribute VB_Name = \"Person\"\n\
+                         Private m_name As String\n\
+                         Public Property Get Name() As String\n\
+                             Name = m_name\n\
+                         End Property\n\
+                         Public Property Let Name(val As String)\n\
+                             m_name = val\n\
+                         End Property\n\
+                         Public Function Greet() As String\n\
+                             Greet = \"Hello, \" & Me.Name\n\
+                         End Function\n";
+
+        let main_src = "Attribute VB_Name = \"Main\"\n\
+                        Function Test()\n\
+                            Dim p As Person\n\
+                            Set p = New Person\n\
+                            p.Name = \"Alice\"\n\
+                            Test = p.Greet() & \"|\" & TypeName(p) & \"|\" & (TypeOf p Is Person) & \"|\" & (TypeOf p Is Object)\n\
+                        End Function\n";
+
+        let p_cls = VbaModule {
+            name: "Person".to_string(),
+            kind: VbaModuleKind::Class,
+            source: class_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+        let p_main = VbaModule {
+            name: "Main".to_string(),
+            kind: VbaModuleKind::Standard,
+            source: main_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+
+        let mut interp = Interpreter::from_modules(vec![p_cls, p_main], Some("Main"));
+        let res = interp.run("Test", Vec::new()).unwrap();
+        assert_eq!(
+            res,
+            Variant::Str("Hello, Alice|Person|True|True".to_string())
+        );
+    }
+
+    #[test]
+    fn class_module_lifecycle_and_auto_new() {
+        let class_src = "Attribute VB_Name = \"Counter\"\n\
+                         Public Value As Long\n\
+                         Private Sub Class_Initialize()\n\
+                             Value = 100\n\
+                         End Sub\n\
+                         Private Sub Class_Terminate()\n\
+                             Value = 0\n\
+                         End Sub\n";
+
+        let main_src = "Attribute VB_Name = \"Main\"\n\
+                        Function TestAutoNew()\n\
+                            Dim c As New Counter\n\
+                            Dim v1 As Long, v2 As Long\n\
+                            v1 = c.Value\n\
+                            c.Value = 200\n\
+                            Set c = Nothing\n\
+                            v2 = c.Value\n\
+                            TestAutoNew = v1 & \"|\" & v2\n\
+                        End Function\n";
+
+        let p_cls = VbaModule {
+            name: "Counter".to_string(),
+            kind: VbaModuleKind::Class,
+            source: class_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+        let p_main = VbaModule {
+            name: "Main".to_string(),
+            kind: VbaModuleKind::Standard,
+            source: main_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+
+        let mut interp = Interpreter::from_modules(vec![p_cls, p_main], Some("Main"));
+        let res = interp.run("TestAutoNew", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("100|100".to_string()));
+    }
+
+    #[test]
+    fn class_default_member_dispatch() {
+        let class_src = "Attribute VB_Name = \"Bag\"\n\
+                         Private m_val As Long\n\
+                         Public Property Get Item(idx As Long) As Long\n\
+                             Attribute Item.VB_UserMemId = 0\n\
+                             Item = m_val * idx\n\
+                         End Property\n\
+                         Public Property Let Item(idx As Long, val As Long)\n\
+                             Attribute Item.VB_UserMemId = 0\n\
+                             m_val = val + idx\n\
+                         End Property\n";
+
+        let main_src = "Attribute VB_Name = \"Main\"\n\
+                        Function TestDefault()\n\
+                            Dim b As Bag\n\
+                            Set b = New Bag\n\
+                            b(2) = 10\n\
+                            TestDefault = b(3)\n\
+                        End Function\n";
+
+        let p_cls = VbaModule {
+            name: "Bag".to_string(),
+            kind: VbaModuleKind::Class,
+            source: class_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+        let p_main = VbaModule {
+            name: "Main".to_string(),
+            kind: VbaModuleKind::Standard,
+            source: main_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+
+        let mut interp = Interpreter::from_modules(vec![p_cls, p_main], Some("Main"));
+        let res = interp.run("TestDefault", Vec::new()).unwrap();
+        // m_val = 10 + 2 = 12; b(3) = 12 * 3 = 36
+        assert_eq!(res, Variant::Integer(36));
+    }
+
+    #[test]
+    fn custom_events_and_with_events() {
+        let emitter_src = "Attribute VB_Name = \"Emitter\"\n\
+                           Public Event OnChange(ByRef num As Long)\n\
+                           Public Sub Trigger(n As Long)\n\
+                               RaiseEvent OnChange(n)\n\
+                           End Sub\n";
+
+        let listener_src = "Attribute VB_Name = \"Listener\"\n\
+                            Public Received As Long\n\
+                            Public WithEvents em As Emitter\n\
+                            Private Sub em_OnChange(ByRef num As Long)\n\
+                                Received = num * 2\n\
+                                num = num + 1\n\
+                            End Sub\n\
+                            Public Function TestEvent()\n\
+                                Set em = New Emitter\n\
+                                Dim x As Long\n\
+                                x = 21\n\
+                                em.Trigger x\n\
+                                TestEvent = Received & \"|\" & x\n\
+                            End Function\n";
+
+        let p_em = VbaModule {
+            name: "Emitter".to_string(),
+            kind: VbaModuleKind::Class,
+            source: emitter_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+        let p_lis = VbaModule {
+            name: "Listener".to_string(),
+            kind: VbaModuleKind::Standard,
+            source: listener_src.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+
+        let mut interp = Interpreter::from_modules(vec![p_em, p_lis], Some("Listener"));
+        let res = interp.run("TestEvent", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("42|21".to_string()));
+    }
+
+    #[test]
+    fn host_worksheet_change_events() {
+        let mut wb = crate::core::WorkbookManager::new_empty().unwrap();
+        wb.ensure_vba_project().unwrap();
+        let sheet_id = wb.sheets[0].id;
+
+        let sheet1_src = "Attribute VB_Name = \"Sheet1\"\n\
+                          Private Sub Worksheet_Change(ByVal Target As Range)\n\
+                              If Target.Address = \"$A$1\" Then\n\
+                                  Application.EnableEvents = False\n\
+                                  Range(\"B1\").Value = Target.Value * 10\n\
+                                  Application.EnableEvents = True\n\
+                              End If\n\
+                          End Sub\n";
+
+        let main_src = "Attribute VB_Name = \"Main\"\n\
+                        Sub TriggerChange()\n\
+                            Range(\"A1\").Value = 5\n\
+                        End Sub\n";
+
+        wb.add_vba_module(
+            "Sheet1".to_string(),
+            VbaModuleKind::Document,
+            sheet1_src.to_string(),
+            Some(sheet_id),
+        )
+        .unwrap();
+
+        wb.add_vba_module(
+            "Main".to_string(),
+            VbaModuleKind::Standard,
+            main_src.to_string(),
+            None,
+        )
+        .unwrap();
+
+        let res = wb.run_macro(Some("Main"), "TriggerChange", &[]).unwrap();
+        assert!(res.mutated);
+        assert_eq!(
+            wb.sheets[0].get_display_string(&crate::core::CellRef::new(0, 0)),
+            "5"
+        );
+        assert_eq!(
+            wb.sheets[0].get_display_string(&crate::core::CellRef::new(0, 1)),
+            "50"
+        );
+    }
+
+    #[test]
+    fn open_events_execution() {
+        let mut wb = crate::core::WorkbookManager::new_empty().unwrap();
+        wb.ensure_vba_project().unwrap();
+
+        let thisworkbook_src = "Attribute VB_Name = \"ThisWorkbook\"\n\
+                                Private Sub Workbook_Open()\n\
+                                    Range(\"A1\").Value = \"Opened\"\n\
+                                End Sub\n\
+                                Private Sub Workbook_BeforeClose(Cancel As Boolean)\n\
+                                    Cancel = True\n\
+                                End Sub\n";
+
+        let mod_src = "Attribute VB_Name = \"Module1\"\n\
+                       Public Sub Auto_Open()\n\
+                           Range(\"A2\").Value = \"Auto\"\n\
+                       End Sub\n";
+
+        wb.add_vba_module(
+            "ThisWorkbook".to_string(),
+            VbaModuleKind::Document,
+            thisworkbook_src.to_string(),
+            None,
+        )
+        .unwrap();
+
+        wb.add_vba_module(
+            "Module1".to_string(),
+            VbaModuleKind::Standard,
+            mod_src.to_string(),
+            None,
+        )
+        .unwrap();
+
+        let res = wb.run_open_events().unwrap();
+        assert!(res.mutated);
+        assert_eq!(
+            wb.sheets[0].get_display_string(&crate::core::CellRef::new(0, 0)),
+            "Opened"
+        );
+        assert_eq!(
+            wb.sheets[0].get_display_string(&crate::core::CellRef::new(1, 0)),
+            "Auto"
+        );
     }
 }
