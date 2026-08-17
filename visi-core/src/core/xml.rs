@@ -26,7 +26,7 @@ fn read_attrs(e: &quick_xml::events::BytesStart) -> Result<Vec<(String, String)>
         };
         let key = String::from_utf8_lossy(local).to_string();
         let value = attr
-            .unescape_value()
+            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, e.decoder())
             .map_err(|_| "#VALUE!".to_string())?
             .to_string();
         attrs.push((key, value));
@@ -68,7 +68,10 @@ fn parse_xml(xml: &str) -> Result<XmlNode, String> {
                 }
             }
             quick_xml::events::Event::Text(e) => {
-                let txt = e.unescape().map_err(|_| "#VALUE!".to_string())?.to_string();
+                let decoded = e.decode().map_err(|_| "#VALUE!".to_string())?;
+                let txt = quick_xml::escape::unescape(&decoded)
+                    .map_err(|_| "#VALUE!".to_string())?
+                    .to_string();
                 if let Some(node) = stack.last_mut() {
                     node.text.push_str(&txt);
                 }
