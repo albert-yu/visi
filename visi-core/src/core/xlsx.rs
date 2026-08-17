@@ -393,10 +393,9 @@ pub(crate) fn import_xlsx_data_raw(
             continue;
         };
 
-        // Guard against ranges that don't fit the imported sheet (e.g. a
-        // table whose sheet fell back to the default empty-sheet size).
+        // Ensure sheet has enough capacity to hold the table's range.
         if end_row >= imported.sheet.row_count() || end_col >= imported.sheet.col_count() {
-            continue;
+            imported.sheet.ensure_capacity(end_row, end_col);
         }
 
         imported.sheet.tables.push(crate::core::table::ExcelTable {
@@ -714,6 +713,7 @@ pub(crate) fn export_xlsx_data_raw(
     // element, rather than the original (possibly longer/colliding)
     // `sheet.name`.
     let mut sheet_id_to_worksheet_name = std::collections::HashMap::new();
+    let mut empty_table_names = std::collections::HashSet::new();
 
     for sheet in sheets {
         table_name_to_table.insert(sheet.name.clone(), sheet);
@@ -869,6 +869,18 @@ pub(crate) fn export_xlsx_data_raw(
                     .iter()
                     .map(|name| rust_xlsxwriter::TableColumn::new().set_header(name))
                     .collect();
+                let is_empty_table = table.has_insert_row
+                    || (table.has_header_row
+                        && table.start_row == table.end_row
+                        && !table.has_totals_row);
+                if is_empty_table {
+                    empty_table_names.insert(table.name.clone());
+                }
+                let end_row = if is_empty_table {
+                    table.start_row + 1
+                } else {
+                    table.end_row
+                };
                 let mut rx_table = rust_xlsxwriter::Table::new()
                     .set_name(&table.name)
                     .set_header_row(table.has_header_row)
@@ -881,7 +893,7 @@ pub(crate) fn export_xlsx_data_raw(
                     .add_table(
                         table.start_row as u32,
                         table.start_col as u16,
-                        table.end_row as u32,
+                        end_row as u32,
                         table.end_col as u16,
                         &rx_table,
                     )
@@ -1038,6 +1050,12 @@ pub(crate) fn export_xlsx_data_raw(
         .save_to_buffer()
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
+    let buffer = if empty_table_names.is_empty() {
+        buffer
+    } else {
+        inject_empty_table_flags(buffer, &empty_table_names)?
+    };
+
     let buffer = if pivots.is_empty() {
         buffer
     } else {
@@ -1045,6 +1063,56 @@ pub(crate) fn export_xlsx_data_raw(
     };
 
     crate::core::vba_xlsx::export_vba_project(buffer, vba, &sheet_id_to_worksheet_name)
+}
+
+fn inject_empty_table_flags(
+    original: Vec<u8>,
+    empty_tables: &std::collections::HashSet<String>,
+) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original))
+        .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(file);
+
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
+
+        if name.starts_with("xl/tables/table")
+            && name.ends_with(".xml")
+            && let Ok(xml) = std::str::from_utf8(&buf)
+        {
+            let is_target = empty_tables.iter().any(|t| {
+                xml.contains(&format!("displayName=\"{}\"", t))
+                    || xml.contains(&format!("name=\"{}\"", t))
+            });
+            if is_target
+                && !xml.contains("insertRow=")
+                && let Some(pos) = xml.find("<table ")
+            {
+                let mut new_xml = String::with_capacity(xml.len() + 16);
+                new_xml.push_str(&xml[..pos + 7]);
+                new_xml.push_str("insertRow=\"1\" ");
+                new_xml.push_str(&xml[pos + 7..]);
+                writer
+                    .write_all(new_xml.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                continue;
+            }
+        }
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+
+    let cursor = writer.finish().map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
 }
 
 #[allow(dead_code)]
@@ -1386,7 +1454,9 @@ fn parse_drawings_xml(xml: &str) -> Vec<ParsedAnchor> {
                 current_tag.clear();
             }
             Ok(quick_xml::events::Event::Text(e)) => {
-                if let Ok(text) = e.unescape() {
+                if let Ok(decoded) = e.decode()
+                    && let Ok(text) = quick_xml::escape::unescape(&decoded)
+                {
                     let val_str = text.trim();
                     if in_from {
                         if current_tag == b"col" {
@@ -1529,7 +1599,9 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                 current_tag.clear();
             }
             Ok(quick_xml::events::Event::Text(e)) => {
-                if let Ok(text) = e.unescape() {
+                if let Ok(decoded) = e.decode()
+                    && let Ok(text) = quick_xml::escape::unescape(&decoded)
+                {
                     let val_str = text.trim();
                     if !val_str.is_empty() {
                         if in_title {
