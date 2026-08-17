@@ -545,6 +545,15 @@ pub enum Stmt {
         /// Where it starts.
         pos: Pos,
     },
+    /// `Attribute Item.VB_UserMemId = 0` or other statement-level attribute.
+    Attribute {
+        /// The attribute name.
+        name: String,
+        /// Its values.
+        values: Vec<Expr>,
+        /// Where it starts.
+        pos: Pos,
+    },
 }
 
 /// A unary operator.

@@ -804,6 +804,16 @@ impl Parser {
                     let expr = self.parse_expr()?;
                     return Ok(Stmt::Call { expr, pos });
                 }
+                "attribute" => {
+                    self.i += 1;
+                    let (name, _) = self.parse_dotted_name()?;
+                    self.expect_punct("=")?;
+                    let mut values = vec![self.parse_expr()?];
+                    while self.eat_punct(",") {
+                        values.push(self.parse_expr()?);
+                    }
+                    return Ok(Stmt::Attribute { name, values, pos });
+                }
                 _ => {
                     if let Some(stmt) = self.try_parse_opaque(&lower, pos) {
                         return Ok(stmt);
@@ -889,6 +899,12 @@ impl Parser {
         }
         if self.peek().is_kw("enum") {
             return self.parse_enum_def(visibility, pos);
+        }
+        if self.peek().is_kw("event") {
+            self.i += 1;
+            let (name, _) = self.expect_ident()?;
+            let params = self.parse_param_list()?;
+            return Ok(Stmt::EventDef { name, params, pos });
         }
         if self.eat_kw("const") {
             let vars = self.parse_var_decls(true)?;

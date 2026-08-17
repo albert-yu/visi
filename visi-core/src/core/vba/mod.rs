@@ -121,9 +121,9 @@ fn parse_args(args: &[&str]) -> Vec<value::Variant> {
         .collect()
 }
 
-fn to_outcome(result: value::Variant, mutated: bool) -> RunOutcome {
+fn to_outcome(result: value::Variant, mutated: bool, interp: &interp::Interpreter) -> RunOutcome {
     RunOutcome {
-        type_name: result.type_name().to_string(),
+        type_name: interp.type_name_of(&result),
         value: result.to_vba_string().ok(),
         mutated,
     }
@@ -159,13 +159,7 @@ impl crate::core::WorkbookManager {
     /// `module` picks which module to take the procedure from; `None`
     /// searches every module for one that declares it, which is the common
     /// single-module case. Resolving it here rather than in each caller is
-    /// deliberate: the CLI and the Python bindings would otherwise each have
-    /// their own copy of the rule, and only `fuzz/test_backend_parity.py`
-    /// would notice them drifting apart.
-    ///
-    /// **This executes code the workbook's author wrote.** Nothing calls it
-    /// implicitly -- not loading a file, not evaluating formulas, and not a
-    /// `Workbook_Open` handler. See the security posture in the feature plan.
+    /// Runs a VBA procedure in the workbook's project.
     ///
     /// The workbook is left recalculated, so a caller that saves afterwards
     /// writes the values the macro itself would have read.
@@ -175,12 +169,29 @@ impl crate::core::WorkbookManager {
         procedure: &str,
         args: &[&str],
     ) -> Result<RunOutcome, Error> {
-        let source = self.macro_source_for(module, procedure)?;
-        let parsed = parse_or_error(&source, module)?;
         let args = parse_args(args);
 
+        let interp = if let Some(project) = &self.vba_project {
+            if let Some(name) = module
+                && project.find_module(name).is_none()
+            {
+                let available = project.modules.iter().map(|m| m.name.clone()).collect();
+                return Err(Error::not_found_among(
+                    ObjectKind::VbaModule,
+                    name,
+                    available,
+                ));
+            }
+            interp::Interpreter::from_project(project, module).map_err(to_runtime_error)?
+        } else {
+            let source = self.macro_source_for(module, procedure)?;
+            let parsed = parse_or_error(&source, module)?;
+            interp::Interpreter::new(parsed)
+        };
+
         let host = host::Host::new(self).map_err(to_runtime_error)?;
-        let mut interp = interp::Interpreter::new(parsed).with_host(host);
+        let mut interp = interp.with_host(host);
+
         let result = interp.run(procedure, args);
         // The recalculation runs whether or not the procedure succeeded: a
         // macro that wrote three cells and then raised has still written
@@ -189,7 +200,31 @@ impl crate::core::WorkbookManager {
         interp.finish();
         let mutated = interp.mutated();
         let result = result.map_err(to_runtime_error)?;
-        Ok(to_outcome(result, mutated))
+        Ok(to_outcome(result, mutated, &interp))
+    }
+
+    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
+    pub fn run_open_events(&mut self) -> Result<RunOutcome, Error> {
+        let interp = if let Some(project) = &self.vba_project {
+            interp::Interpreter::from_project(project, None).map_err(to_runtime_error)?
+        } else {
+            return Err(Error::not_found(
+                ObjectKind::VbaModule,
+                "Workbook_Open or Auto_Open",
+            ));
+        };
+
+        let host = host::Host::new(self).map_err(to_runtime_error)?;
+        let mut interp = interp.with_host(host);
+
+        interp.run_open_events().map_err(to_runtime_error)?;
+        interp.finish();
+        let mutated = interp.mutated();
+        Ok(RunOutcome {
+            type_name: "Empty".to_string(),
+            value: Some(String::new()),
+            mutated,
+        })
     }
 
     /// The source text to run, resolving `module` the way
@@ -255,11 +290,12 @@ pub fn run_macro(source: &str, procedure: &str, args: &[&str]) -> Result<RunOutc
         line: e.pos.line,
         column: e.pos.col,
     })?;
-    let result = interp::Interpreter::new(module)
+    let mut interp = interp::Interpreter::new(module);
+    let result = interp
         .run(procedure, parse_args(args))
         .map_err(to_runtime_error)?;
 
-    Ok(to_outcome(result, false))
+    Ok(to_outcome(result, false, &interp))
 }
 
 impl VbaModule {

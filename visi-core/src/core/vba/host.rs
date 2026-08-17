@@ -152,6 +152,8 @@ pub enum ObjRef {
     /// of it moves too, so the location has to live in one place that the
     /// edit can rewrite. The handle doubles as the identity token for `Is`.
     Range(u64),
+    /// A user-defined class instance, by handle into the interpreter's class instance table.
+    UserClass(u64),
 }
 
 /// Where a `Range` currently points, or that it no longer points anywhere.
@@ -235,6 +237,7 @@ impl ObjRef {
             ObjRef::PivotTable(_) => "PivotTable",
             ObjRef::PivotFields(_) => "PivotFields",
             ObjRef::PivotField(..) => "PivotField",
+            ObjRef::UserClass(_) => "Object",
         }
     }
 
@@ -250,6 +253,7 @@ impl ObjRef {
             // The handle *is* the identity, so a range that moved is still
             // the same object and two ranges over the same cells are not.
             (ObjRef::Range(a), ObjRef::Range(b)) => a == b,
+            (ObjRef::UserClass(a), ObjRef::UserClass(b)) => a == b,
             (ObjRef::Interior(a), ObjRef::Interior(b)) => a == b,
             (ObjRef::Font(a), ObjRef::Font(b)) => a == b,
             // A table is identified by its id, so it stays the same object
@@ -355,6 +359,12 @@ pub struct Host<'w> {
     next_token: u64,
     /// The sheet an unqualified `Range(...)` / `Cells(...)` resolves against.
     active_sheet: u64,
+    /// Whether application events are enabled. Defaults to true.
+    pub enable_events: bool,
+    /// Pending cell range mutations for event dispatch.
+    pub pending_cell_changes: Vec<RangeRef>,
+    /// Pending sheet recalculations for calculate event dispatch.
+    pub pending_calculate_sheets: Vec<u64>,
 }
 
 impl<'w> Host<'w> {
@@ -375,6 +385,9 @@ impl<'w> Host<'w> {
             ranges: HashMap::new(),
             next_token: 1,
             active_sheet,
+            enable_events: true,
+            pending_cell_changes: Vec::new(),
+            pending_calculate_sheets: Vec::new(),
         })
     }
 
@@ -393,6 +406,11 @@ impl<'w> Host<'w> {
         if self.stale {
             let _ = self.wb.evaluate();
             self.stale = false;
+            if self.enable_events {
+                for s in &self.wb.sheets {
+                    self.pending_calculate_sheets.push(s.id);
+                }
+            }
         }
     }
 
@@ -411,7 +429,15 @@ impl<'w> Host<'w> {
         Ok(&self.wb.sheets[self.sheet_index(id)?])
     }
 
-    fn new_range(&mut self, sheet_id: u64, row: u32, col: u32, height: u32, width: u32) -> ObjRef {
+    /// Creates a new range handle.
+    pub fn new_range(
+        &mut self,
+        sheet_id: u64,
+        row: u32,
+        col: u32,
+        height: u32,
+        width: u32,
+    ) -> ObjRef {
         self.next_token += 1;
         self.ranges.insert(
             self.next_token,
@@ -498,6 +524,7 @@ impl<'w> Host<'w> {
             ObjRef::PivotTable(id) => self.pivot_table_member(*id, name, args),
             ObjRef::PivotFields(id) => self.pivot_fields_member(*id, name, args),
             ObjRef::PivotField(id, idx) => self.pivot_field_member(*id, *idx, name),
+            ObjRef::UserClass(_) => Err(unsupported("user class member access on host")),
         }
     }
 
@@ -510,6 +537,10 @@ impl<'w> Host<'w> {
         value: &Variant,
     ) -> VResult<()> {
         match (obj, name.to_ascii_lowercase().as_str()) {
+            (ObjRef::Application, "enableevents") => {
+                self.enable_events = value.to_bool()?;
+                Ok(())
+            }
             // `ListObject.Name` is not a field write: names are unique
             // workbook-wide and a rename cascades into formula *text*
             // everywhere. Routing through `WorkbookManager` is what keeps
@@ -2087,6 +2118,9 @@ impl<'w> Host<'w> {
         }
         self.mutated = true;
         self.stale = true;
+        if self.enable_events {
+            self.pending_cell_changes.push(r);
+        }
         Ok(())
     }
 
@@ -2097,6 +2131,9 @@ impl<'w> Host<'w> {
     fn application_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
         if name.eq_ignore_ascii_case("worksheetfunction") {
             return Ok(Variant::Object(ObjRef::WorksheetFunction));
+        }
+        if name.eq_ignore_ascii_case("enableevents") {
+            return Ok(Variant::Boolean(self.enable_events));
         }
         // `Application.Sum(...)` works and returns 6, exactly as
         // `WorksheetFunction.Sum` does -- the two only part company on

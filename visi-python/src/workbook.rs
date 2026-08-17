@@ -639,6 +639,12 @@ impl Workbook {
         Ok((out.type_name, out.value, out.mutated))
     }
 
+    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
+    fn run_open_events(&mut self) -> PyResult<(String, Option<String>, bool)> {
+        let out = self.inner.run_open_events().map_err(Wrapped)?;
+        Ok((out.type_name, out.value, out.mutated))
+    }
+
     /// Replaces a module's source text. Mirrors `visi macro set-source`.
     fn set_macro_source(&mut self, name: &str, source: &str) -> PyResult<()> {
         self.inner
