@@ -39,6 +39,7 @@ pub mod interp;
 pub mod lexer;
 #[doc(hidden)]
 pub mod parser;
+pub(crate) mod resolve;
 #[doc(hidden)]
 pub mod value;
 
@@ -70,6 +71,12 @@ pub struct ModuleSyntax {
 /// ```
 pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
     let module = parser::parse_module(source).map_err(|e| Error::VbaSyntax {
+        message: e.message,
+        module: None,
+        line: e.pos.line,
+        column: e.pos.col,
+    })?;
+    resolve::check_implicit_calls(&module).map_err(|e| Error::VbaSyntax {
         message: e.message,
         module: None,
         line: e.pos.line,
