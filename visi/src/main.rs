@@ -1525,19 +1525,39 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
             eprintln!("No VBA modules found in workbook.");
         }
 
+        // Resolved against the whole project, not module by module: Excel
+        // compiles a project, so a call into a sibling module is legal and
+        // must not be reported. `check_modules` is what knows the siblings;
+        // `VbaModule::check_syntax` cannot and so is deliberately weaker.
+        let checked = wb
+            .vba_project
+            .as_ref()
+            .map(|p| p.check_modules())
+            .unwrap_or_default();
         selected
             .iter()
-            .map(|m| match m.check_syntax() {
-                Ok(syntax) => MacroCheckResult {
-                    module: m.name.clone(),
-                    procedures: syntax.procedures,
-                    error: None,
-                },
-                Err(e) => MacroCheckResult {
-                    module: m.name.clone(),
-                    procedures: Vec::new(),
-                    error: Some(e),
-                },
+            .map(|m| {
+                let result = checked
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(&m.name))
+                    .map(|(_, r)| r.clone());
+                // A module `check_modules` did not cover should not be
+                // reachable -- it enumerates the same project `selected`
+                // came from -- but falling back to the weaker per-module
+                // check beats reporting a module as clean without having
+                // looked at it.
+                match result.unwrap_or_else(|| m.check_syntax()) {
+                    Ok(syntax) => MacroCheckResult {
+                        module: m.name.clone(),
+                        procedures: syntax.procedures,
+                        error: None,
+                    },
+                    Err(e) => MacroCheckResult {
+                        module: m.name.clone(),
+                        procedures: Vec::new(),
+                        error: Some(e),
+                    },
+                }
             })
             .collect()
     };

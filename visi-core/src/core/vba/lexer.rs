@@ -293,6 +293,26 @@ impl Lexer {
                     self.consume_line_continuation();
                     self.space_before = true;
                 }
+                // A `_` starting a token that is *not* a continuation would
+                // begin an identifier, and VBA has none: a name must start
+                // with a letter (the same rule `validate_vba_module_name`
+                // enforces for modules). Measured -- real Excel refuses to
+                // compile `_ y = 2`, while a trailing `_` continuation is
+                // fine (`fuzz/vba_compile_probe.py --only continuation`).
+                // Left as an identifier, it silently became an implicit-call
+                // statement on a name spelled `_`, which is issue #78's
+                // iter_24 false negative.
+                //
+                // Note `is_ident_start` still admits `_`: it answers a
+                // different question at `suffix_would_be_operator`, where a
+                // following continuation must keep `&` an operator rather
+                // than turn it into a type suffix.
+                '_' => {
+                    return Err(LexError {
+                        message: "Invalid character: a name cannot start with '_'".to_string(),
+                        pos: self.pos(),
+                    });
+                }
                 '\'' => self.skip_line_comment(),
                 '"' => self.lex_string()?,
                 '#' => self.lex_hash()?,
@@ -310,7 +330,9 @@ impl Lexer {
 
     /// A `_` is a continuation only when whitespace precedes it and nothing
     /// but whitespace follows it on the line. Otherwise it is part of an
-    /// identifier (`my_var`) or starts one (`_leading`).
+    /// identifier (`my_var`) -- it can never *start* one, since VBA has no
+    /// name beginning with an underscore (measured; see the `'_'` arm in
+    /// [`Lexer::run`]).
     fn is_line_continuation(&self) -> bool {
         // Something like `a_` must not split: the underscore has to be its
         // own token position, i.e. preceded by whitespace or line start.
@@ -751,7 +773,18 @@ mod tests {
     #[test]
     fn underscore_inside_a_name_is_not_a_continuation() {
         assert_eq!(idents("my_var\n"), vec!["my_var"]);
-        assert_eq!(idents("_leading\n"), vec!["_leading"]);
+    }
+
+    #[test]
+    fn a_name_cannot_start_with_an_underscore() {
+        // Measured against real Excel, which refuses to compile `_ y = 2`
+        // (`fuzz/vba_compile_probe.py --only continuation`). This test used
+        // to assert the opposite -- that `_leading` lexed as an identifier --
+        // which is what let issue #78's iter_24 through as a false negative.
+        assert!(lex("_leading\n").is_err());
+        assert!(lex("_ y = 2\n").is_err());
+        // A *trailing* `_` is a real continuation and stays one.
+        assert_eq!(idents("y = 1 + _\n    2\n"), vec!["y"]);
     }
 
     #[test]
