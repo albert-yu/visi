@@ -540,12 +540,47 @@ class ExcelFuzzGenerator:
                 op = random.choice(["+", "-", "*", "/", "^"])
                 left = gen_expr(depth + 1)
                 right = gen_expr(depth + 1)
+                # A huge base (FACT grows past 1e9 by its argument 13) raised
+                # to a very negative exponent underflows the true
+                # mathematical result into subnormal territory -- Excel's `^`
+                # flattens that all the way to exactly 0 where visi's
+                # f64::powf keeps the (correct, nonzero) subnormal value, a
+                # divergence with no engine bug behind it (see
+                # "docs/excel-discrepancies.md" section 18). Not worth
+                # excluding `^` outright for this rare a combination -- just
+                # avoid pairing a magnitude-prone left operand with it.
+                if op == "^" and left.startswith(("FACT(", "GAMMA(", "EXP(", "PERMUT(", "COMBIN(")):
+                    op = random.choice(["+", "-", "*", "/"])
+                # A negative base raised to a fractional exponent close to
+                # zero is a coin flip in real Excel -- almost always
+                # #NUM! (mathematically undefined over the reals, which is
+                # what visi's `^` gives every time), but for a handful of
+                # specific exponent values it instead returns a real
+                # number with no describable pattern separating those from
+                # the rest (see "docs/excel-discrepancies.md" section 19).
+                # Both `POWER(...)` and a bare nested `^` (e.g. `(F4 ^ -4)`,
+                # seed 394540's `LEFT(F4, 3) ^ (F4 ^ -4)`) reliably land in
+                # that near-zero/fractional range, so keep either off the
+                # right side of `^` rather than chasing which exact
+                # exponents Excel's `^` happens to like.
+                if op == "^" and ("^" in right or right.startswith("POWER(")):
+                    op = random.choice(["+", "-", "*", "/"])
                 return f"({left} {op} {right})"
 
             elif fn_type == "two_num":
                 fn = random.choice(self.FUNCTIONS_TWO_NUM)
                 a = gen_expr(depth + 1)
                 b = gen_expr(depth + 1)
+                # A MOD divisor built from POWER can reach a magnitude far
+                # larger than the dividend, and Excel's MOD loses the small
+                # operand there and returns 0 instead of the true (nonzero)
+                # remainder -- visi keeps the mathematically correct value
+                # (see "docs/excel-discrepancies.md" section 15, e.g.
+                # MOD(36, POWER(-327.3, 69))). Not a new bug, just a
+                # generator gap: this combination was never actually kept
+                # out of the fuzzer.
+                if fn == "MOD" and b.startswith("POWER("):
+                    b = str(random.randint(-50, 50))
                 return f"{fn}({a}, {b})"
 
             elif fn_type == "multi_num":
@@ -2173,16 +2208,38 @@ class ExcelDriver:
             except ImportError:
                 raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
 
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            try:
-                wb = excel.Workbooks.Open(abs_output)
-                excel.Calculate()
-                wb.Save()
-                wb.Close()
-            finally:
-                excel.Quit()
+            # COM automation against a fresh Excel.Application is occasionally
+            # flaky in a way that surfaces as unrelated-looking Python errors
+            # (e.g. "'bool' object is not callable" out of win32com's dynamic
+            # dispatch) rather than a COM error -- transient, not
+            # reproducible, and not an Excel/visi disagreement. Retry with a
+            # fresh Application instance, mirroring the AppleScript driver's
+            # retry loop above.
+            last_err = None
+            for attempt in range(5):
+                if attempt > 0:
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", "EXCEL.EXE"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    time.sleep(1.0)
+                excel = win32com.client.Dispatch("Excel.Application")
+                excel.Visible = False
+                excel.DisplayAlerts = False
+                try:
+                    wb = excel.Workbooks.Open(abs_output)
+                    excel.Calculate()
+                    wb.Save()
+                    wb.Close()
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                finally:
+                    excel.Quit()
+            if last_err is not None:
+                raise last_err
 
         elif self.driver_type == "cli":
             # Custom CLI executable driver specified by user
@@ -2375,6 +2432,12 @@ class DifferentialComparator:
 
     EXCEL_ERRORS = {"#DIV/0!", "#VALUE!", "#N/A", "#REF!", "#NUM!", "#NAME?", "#NULL!", "#CALC!", "#SPILL!"}
 
+    # Matches a floating-point literal as it appears embedded in text, e.g.
+    # inside CONCATENATE's output. Used to give text results the same
+    # last-digit tolerance numeric cells already get -- see
+    # `_numeric_text_equal`.
+    _NUM_TOKEN_RE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?")
+
     def __init__(self, float_rel_tol=1e-7, float_abs_tol=1e-7, strict_error_class=False):
         self.float_rel_tol = float_rel_tol
         self.float_abs_tol = float_abs_tol
@@ -2495,6 +2558,32 @@ class DifferentialComparator:
             return None
         return real, imag, suffix
 
+    def _numeric_text_equal(self, v1, v2):
+        """True if v1 and v2 are identical text apart from embedded
+        floating-point numbers that differ only in the last of Excel's 15
+        significant digits. CONCATENATE (and `&`) can stitch two numeric
+        sub-results straight into text with no separator -- e.g. two ATAN2
+        calls glued together as "2.21429743558818-1.61511318944808" -- so a
+        sub-ULP double-rounding disagreement that numeric cells already
+        tolerate (see the numeric branch above and the IM* case below)
+        would otherwise surface as a plain string mismatch here.
+        """
+        parts1 = self._NUM_TOKEN_RE.split(v1)
+        parts2 = self._NUM_TOKEN_RE.split(v2)
+        if parts1 != parts2:
+            return False
+        nums1 = self._NUM_TOKEN_RE.findall(v1)
+        nums2 = self._NUM_TOKEN_RE.findall(v2)
+        if not nums1 or len(nums1) != len(nums2):
+            return False
+        try:
+            return all(
+                math.isclose(float(a), float(b), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
+                for a, b in zip(nums1, nums2)
+            )
+        except ValueError:
+            return False
+
     def values_equal(self, v1, v2):
         """Checks equality between two evaluated values with floating-point tolerance."""
         if v1 is None and v2 is None:
@@ -2542,7 +2631,7 @@ class DifferentialComparator:
                     math.isclose(a, b, rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
                     for a, b in ((re1, re2), (im1, im2))
                 )
-            return False
+            return self._numeric_text_equal(v1, v2)
 
         # Booleans vs strings/numbers (e.g. True vs 1, "TRUE" vs True, "FALSE" vs False)
         if isinstance(v1, bool) or isinstance(v2, bool):

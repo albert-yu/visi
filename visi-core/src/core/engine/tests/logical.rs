@@ -2679,3 +2679,38 @@ fn test_fuzz_and_over_empty_string_cell_forces_div_by_zero() {
         ResultData::Boolean(true)
     ));
 }
+
+#[test]
+fn test_fuzz_text_comparison_ignores_hyphen_except_as_tiebreak() {
+    // Harvested from fuzz/fuzz_excel.py seed 707537:
+    // IF(CONCATENATE(-44,J5) > CONCATENATE(36,J3), H1, -50) took the wrong
+    // branch because "-4463" > "36-33" came out FALSE. Measured directly
+    // against real Windows Excel (win32com): a '-' is ignored for the
+    // primary text comparison -- "-4463" > "36-33" is decided by the
+    // hyphen-stripped digits, 4463 vs 3633 -- and only breaks a tie
+    // between two otherwise-identical strings, where the hyphen-bearing
+    // one sorts greater. See `Sheet::compare_excel_strings`'s doc comment
+    // for the full set of measured cases this covers.
+    let sheet_src = [[
+        "=(\"-4463\">\"36-33\")",
+        "=(\"-1\">\"-2\")",
+        "=(\"-2\">\"-1\")",
+        "=(\"a-1\">\"a2\")",
+        "=(\"-a\">\"a\")",
+        "=(\"a\">\"-a\")",
+        "=(\"1-2\">\"12\")",
+        "=(\"12\">\"1-2\")",
+    ]];
+    let mut sheet = create_sheet(&sheet_src);
+    sheet.commit(None).unwrap();
+
+    let want = [true, false, true, false, true, false, true, false];
+    for (col, expected) in want.into_iter().enumerate() {
+        match sheet.get_result_data(&CellRef::new(0, col)) {
+            ResultData::Boolean(b) => {
+                assert_eq!(b, expected, "column {col} ({:?})", sheet_src[0][col])
+            }
+            other => panic!("column {col}: expected a boolean, got {other:?}"),
+        }
+    }
+}

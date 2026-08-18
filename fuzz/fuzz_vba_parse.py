@@ -233,6 +233,35 @@ def visi_verdict(source):
         return False, f"{type(e).__name__}: {e}"
 
 
+# The child process `ExcelVerdictDriver._win32com_verdict` launches (see
+# that method's docstring for why an in-process win32com call can't be
+# timed out directly). `argv[1]` is the .xlsm path; prints the `Harness`
+# result ("OK" or "ERR|n") to stdout on success. A compile error leaves
+# Excel hung showing the modal dialog, so nothing is printed and the
+# process itself hangs -- observable only as the parent's subprocess
+# timeout firing, the exact same signal the AppleScript path reads.
+_WIN32COM_VERDICT_RUNNER = """
+import sys
+import win32com.client
+
+xlsm_path = sys.argv[1]
+
+excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
+excel.Visible = False
+excel.DisplayAlerts = False
+excel.AutomationSecurity = 1
+try:
+    wb = excel.Workbooks.Open(xlsm_path)
+    try:
+        result = excel.Run("Harness")
+        print(result)
+    finally:
+        wb.Close(False)
+finally:
+    excel.Quit()
+"""
+
+
 class ExcelVerdictDriver:
     """Excel's verdict, read from whether `run VB macro "Harness"` returns.
 
@@ -245,7 +274,12 @@ class ExcelVerdictDriver:
         self.timeout = timeout
         self.driver_type = driver_type
         if driver_type == "auto":
-            self.driver_type = "applescript" if sys.platform == "darwin" else "mock"
+            if sys.platform == "darwin":
+                self.driver_type = "applescript"
+            elif sys.platform == "win32":
+                self.driver_type = "win32com"
+            else:
+                self.driver_type = "mock"
         self.restarts = 0
 
     def app_name(self):
@@ -283,10 +317,57 @@ class ExcelVerdictDriver:
         subprocess.run(["open", "-a", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(4.0)
 
+    def restart_windows(self):
+        """`taskkill` every EXCEL.EXE. Nothing to relaunch -- the next
+        verdict's `gencache.EnsureDispatch("Excel.Application")` starts a
+        fresh one."""
+        self.restarts += 1
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+
+    def _win32com_verdict(self, xlsm_path):
+        """Runs the win32com verdict check in a *child process*.
+
+        A compile error hangs `excel.Run("Harness")` exactly the way it
+        hangs the AppleScript `run VB macro` call -- that is the whole
+        signal this driver reads (see the class docstring and this
+        module's point 1). A bare in-process win32com call has no way to
+        be timed out from within the same process (COM calls block the
+        calling thread; there's no clean cross-thread interrupt for one),
+        so the actual COM work happens in a child `python -u -c` process,
+        and a *subprocess* timeout is what can still kill it out from
+        under a hung Excel.
+        """
+        return subprocess.run(
+            [sys.executable, "-u", "-c", _WIN32COM_VERDICT_RUNNER, os.path.abspath(xlsm_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=self.timeout,
+        )
+
     def verdict(self, xlsm_path):
         """(accepted, detail). `accepted is None` means "could not tell"."""
         if self.driver_type == "mock":
             return None, "mock driver: Excel not invoked"
+
+        if self.driver_type == "win32com":
+            for attempt in range(2):
+                try:
+                    res = self._win32com_verdict(xlsm_path)
+                except subprocess.TimeoutExpired:
+                    self.restart_windows()
+                    if attempt == 0:
+                        continue
+                    return False, "compile error (Excel went modal and had to be killed)"
+                if res.returncode == 0:
+                    return True, res.stdout.strip()
+                self.restart_windows()
+                if attempt == 0:
+                    continue
+                return None, f"win32com error: {res.stderr.strip()}"
+            return None, "indeterminate"
 
         for attempt in range(2):
             try:
@@ -370,7 +451,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--excel-path", help="Path to Microsoft Excel binary or application bundle.")
-    ap.add_argument("--driver", choices=["auto", "applescript", "mock"], default="auto")
+    ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument(

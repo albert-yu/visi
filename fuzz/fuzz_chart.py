@@ -292,37 +292,67 @@ class ExcelChartDriver:
 
         cell_range = range_str.split("!", 1)[1]
 
-        excel = win32com.client.Dispatch("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        try:
-            wb = excel.Workbooks.Open(abs_output)
-            ws = wb.Sheets("Sheet1")
-            co = ws.ChartObjects().Add(Left=200, Top=0, Width=300, Height=200)
-            chart = co.Chart
-            chart.SetSourceData(Source=ws.Range(cell_range))
-            chart.ChartType = getattr(c, self.WIN32COM_CHART_TYPE[config["chart_type"]])
-            chart.HasLegend = config["show_legend"]
-            if config["title"]:
-                chart.HasTitle = True
-                chart.ChartTitle.Text = config["title"]
-            else:
-                chart.HasTitle = False
-            # Pie charts raise an error on `chart.Axes(...)` (no axes
-            # exist), matching the AppleScript `chart wizard` gap above.
-            if config["chart_type"] != "pie":
-                if config["xlabel"]:
-                    cat_axis = chart.Axes(c.xlCategory)
-                    cat_axis.HasTitle = True
-                    cat_axis.AxisTitle.Text = config["xlabel"]
-                if config["ylabel"]:
-                    val_axis = chart.Axes(c.xlValue)
-                    val_axis.HasTitle = True
-                    val_axis.AxisTitle.Text = config["ylabel"]
-            wb.Save()
-            wb.Close()
-        finally:
-            excel.Quit()
+        # COM automation against a fresh Excel.Application is occasionally
+        # flaky in a way that surfaces as unrelated-looking errors (RPC
+        # server unavailable, "Call was rejected by callee", a raw OLE
+        # error code) rather than a clean failure -- transient, not
+        # reproducible, and not an Excel/visi disagreement. Retry with a
+        # fresh Application instance, mirroring fuzz_excel.py's win32com
+        # driver (see its own comment for the "'bool' object is not
+        # callable" variant this same pattern covers there). All 9 failures
+        # in a 400-iteration fuzz_chart.py run were this class of error,
+        # zero were real chart-content mismatches.
+        last_err = None
+        for attempt in range(5):
+            if attempt > 0:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "EXCEL.EXE"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1.0)
+            # `Dispatch` (late binding) never populates
+            # `win32com.client.constants` -- that module only fills in once
+            # the Excel type library has been generated, which only
+            # `gencache.EnsureDispatch` triggers. Plain `Dispatch` here made
+            # every `c.xl*` lookup below raise AttributeError.
+            excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            try:
+                wb = excel.Workbooks.Open(abs_output)
+                ws = wb.Sheets("Sheet1")
+                co = ws.ChartObjects().Add(Left=200, Top=0, Width=300, Height=200)
+                chart = co.Chart
+                chart.SetSourceData(Source=ws.Range(cell_range))
+                chart.ChartType = getattr(c, self.WIN32COM_CHART_TYPE[config["chart_type"]])
+                chart.HasLegend = config["show_legend"]
+                if config["title"]:
+                    chart.HasTitle = True
+                    chart.ChartTitle.Text = config["title"]
+                else:
+                    chart.HasTitle = False
+                # Pie charts raise an error on `chart.Axes(...)` (no axes
+                # exist), matching the AppleScript `chart wizard` gap above.
+                if config["chart_type"] != "pie":
+                    if config["xlabel"]:
+                        cat_axis = chart.Axes(c.xlCategory)
+                        cat_axis.HasTitle = True
+                        cat_axis.AxisTitle.Text = config["xlabel"]
+                    if config["ylabel"]:
+                        val_axis = chart.Axes(c.xlValue)
+                        val_axis.HasTitle = True
+                        val_axis.AxisTitle.Text = config["ylabel"]
+                wb.Save()
+                wb.Close()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+            finally:
+                excel.Quit()
+        if last_err is not None:
+            raise last_err
 
 
 # -----------------------------------------------------------------------------

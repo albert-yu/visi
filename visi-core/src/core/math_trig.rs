@@ -5,6 +5,26 @@
 // 1. Trigonometric and Hyperbolic Functions
 // ============================================================================
 
+/// Excel's SIN/COS/TAN (and so anything built on them: COT, CSC, SEC)
+/// refuse an argument at or beyond `2^27` radians with `#NUM!`, rather
+/// than returning whatever a library sin/cos happens to reduce it to --
+/// past that magnitude a double's ~15-16 significant digits can no
+/// longer resolve which multiple of 2*pi the value is near, so any
+/// answer would be numerically meaningless. Measured directly (win32com,
+/// real Windows Excel): `SIN(134217727)` (2^27 - 1) is a real number,
+/// `SIN(134217728)` (2^27) is `#NUM!`, and COS/TAN share the identical
+/// boundary. fuzz/fuzz_excel.py seed 676008 hit this via
+/// `CSC(F4^47)` where `F4^47` is on the order of 1e101.
+pub(crate) const TRIG_ARG_LIMIT: f64 = 134_217_728.0; // 2^27
+
+pub(crate) fn check_trig_domain(x: f64) -> Result<(), String> {
+    if x.abs() >= TRIG_ARG_LIMIT {
+        Err("#NUM!".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn acosh(x: f64) -> Result<f64, String> {
     if x < 1.0 {
         Err("#NUM!".to_string())
@@ -66,6 +86,7 @@ pub fn cosh(x: f64) -> Result<f64, String> {
 }
 
 pub fn cot(x: f64) -> Result<f64, String> {
+    check_trig_domain(x)?;
     let tan_val = x.tan();
     if tan_val == 0.0 {
         Err("#DIV/0!".to_string())
@@ -78,11 +99,20 @@ pub fn coth(x: f64) -> Result<f64, String> {
     if x == 0.0 {
         Err("#DIV/0!".to_string())
     } else {
-        Ok(x.cosh() / x.sinh())
+        // Not `x.cosh() / x.sinh()`: both overflow to `f64::INFINITY` well
+        // before `|x|` gets anywhere near where `coth` itself is
+        // ill-behaved (~710), leaving `inf / inf = NaN` -- which this
+        // engine's NaN guard then reports as `#NUM!` for an `x` where
+        // Excel returns a perfectly good answer near +-1 (measured:
+        // COTH(47692.3) is `1` in real Excel; fuzz/fuzz_excel.py seed
+        // 711993). `tanh` saturates to +-1 directly with no such overflow,
+        // so go through it the way `cot` already goes through `tan`.
+        Ok(1.0 / x.tanh())
     }
 }
 
 pub fn csc(x: f64) -> Result<f64, String> {
+    check_trig_domain(x)?;
     let sin_val = x.sin();
     if sin_val == 0.0 {
         Err("#DIV/0!".to_string())
@@ -109,6 +139,7 @@ pub fn radians(degrees: f64) -> Result<f64, String> {
 }
 
 pub fn sec(x: f64) -> Result<f64, String> {
+    check_trig_domain(x)?;
     let cos_val = x.cos();
     if cos_val == 0.0 {
         Err("#DIV/0!".to_string())

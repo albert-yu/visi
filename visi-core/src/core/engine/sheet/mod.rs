@@ -193,7 +193,7 @@ impl Default for SheetInit {
 /// How a blank cell is treated by the strict numeric flatteners.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlankPolicy {
-    /// Counts as 0 (GCD/LCM).
+    /// Counts as 0 (MULTINOMIAL).
     Zero,
     /// Dropped entirely, shifting later elements (SERIESSUM).
     Skip,
@@ -1263,25 +1263,48 @@ impl Sheet {
         true
     }
 
+    /// Excel's `>`/`<` text comparison ignores `-` entirely as long as it
+    /// isn't the only difference between the two strings, and only once
+    /// the hyphen-stripped strings are otherwise identical does the
+    /// hyphen's presence break the tie -- in which case the string that
+    /// *has* the hyphen sorts greater. Measured directly (win32com,
+    /// real Windows Excel), since none of this is documented and a
+    /// zipped per-position weighting (this function's previous
+    /// implementation, which gave `-` a low weight so it sorted before
+    /// any digit) gets it backwards:
+    ///   `"-4463" > "36-33"` is TRUE (decided by the hyphen-stripped
+    ///   digits, `4463` vs `3633`; a low weight for `-` would make
+    ///   `"-4463"` sort first instead, e.g. `visi vs Excel` on
+    ///   `IF(CONCATENATE(-44,J5) > CONCATENATE(36,J3), ...)`,
+    ///   fuzz/fuzz_excel.py seed 707537)
+    ///   `"a-1" > "a2"` is FALSE (stripped `"a1"` vs `"a2"`)
+    ///   `"-1" > "-2"` is FALSE, `"-2" > "-1"` is TRUE (both sides'
+    ///   hyphens strip away, leaving a plain digit compare)
+    ///   `"-a" > "a"` is TRUE, `"1-2" > "12"` is TRUE (stripped content
+    ///   ties, so the longer, hyphen-bearing original wins the tie-break)
+    /// `(`/`)` keep their existing low weight, unaffected by this.
     fn compare_excel_strings(a: &str, b: &str) -> std::cmp::Ordering {
         let a_low = a.to_lowercase();
         let b_low = b.to_lowercase();
+        let strip_hyphens = |s: &str| -> String { s.chars().filter(|&c| c != '-').collect() };
+        let a_stripped = strip_hyphens(&a_low);
+        let b_stripped = strip_hyphens(&b_low);
         let char_weight = |ch: char| -> u32 {
             match ch {
-                '-' => 1,
                 '(' => 2,
                 ')' => 3,
                 _ => (ch as u32) + 10,
             }
         };
-        for (ca, cb) in a_low.chars().zip(b_low.chars()) {
+        for (ca, cb) in a_stripped.chars().zip(b_stripped.chars()) {
             if ca != cb {
-                let wa = char_weight(ca);
-                let wb = char_weight(cb);
-                return wa.cmp(&wb);
+                return char_weight(ca).cmp(&char_weight(cb));
             }
         }
-        a_low.len().cmp(&b_low.len())
+        match a_stripped.len().cmp(&b_stripped.len()) {
+            std::cmp::Ordering::Equal => a_low.len().cmp(&b_low.len()),
+            other => other,
+        }
     }
 
     /// Snaps a float to its 15-significant-digit rounding when the two are
@@ -1628,36 +1651,42 @@ impl Sheet {
     /// functions don't ignore text the way SUM/AVERAGE-style aggregates
     /// do -- one bad cell makes the whole call #VALUE!.
     ///
-    /// `blanks` selects between the three behaviours real Excel actually
-    /// exhibits here, each established by probing it directly:
-    ///  - `BlankPolicy::Zero` (GCD/LCM): a blank counts as 0 and the call
-    ///    still succeeds. `GCD` over `{4, 6, <blank>, 8}` is 2 and `LCM`
-    ///    over it is 0 (i.e. the blank really did participate as a zero),
-    ///    while the same range with `TRUE` in place of the blank is
-    ///    #VALUE!.
-    ///  - `BlankPolicy::Skip` (SERIESSUM): a blank is dropped outright,
-    ///    which *shifts* every later coefficient down a power.
+    /// `blanks` selects between the three blank-handling behaviours real
+    /// Excel actually exhibits here, each established by probing it
+    /// directly:
+    ///  - `BlankPolicy::Zero` (MULTINOMIAL): a blank counts as 0 and the
+    ///    call still succeeds -- `MULTINOMIAL(3, <blank>)` is 1, the
+    ///    blank participating as a zero.
+    ///  - `BlankPolicy::Skip` (GCD/LCM/SERIESSUM): a blank is dropped
+    ///    outright rather than zero-filled. `LCM(1, <blank>)` is 1 (as if
+    ///    `LCM(1)`), not `LCM(1, 0)` = 0. For SERIESSUM this also shifts
+    ///    every later coefficient down a power:
     ///    `SERIESSUM(0.5, 0, 2, {4, 6, <blank>, 8})` is 6.0 -- exactly the
     ///    3-coefficient answer -- not the 5.625 a zero in that slot gives.
-    ///  - `BlankPolicy::Reject` (LINEST/TREND/GROWTH/LOGEST/MMULT): text,
-    ///    booleans *and* blanks are all #VALUE!. LINEST returns #VALUE!
-    ///    for each of those three separately and only computes when every
-    ///    cell is a real number.
+    ///  - `BlankPolicy::Reject` (LINEST/TREND/GROWTH/LOGEST/MMULT): blanks
+    ///    are #VALUE! too, same as text and booleans.
     ///
-    /// Note this deliberately does not go through `to_f64`, which is the
-    /// lenient coercion used for scalar arguments -- that maps a blank to
-    /// 0, a boolean to 1/0, and a numeric-looking string to its value,
-    /// none of which these functions accept.
+    /// `coerce_text` selects separately whether a numeric-looking string
+    /// is accepted (converted the same way `to_f64` would) or rejected
+    /// outright as #VALUE! -- this does *not* track the blank policy,
+    /// since GCD/LCM (`Skip`) coerce text (`GCD("12", 8)` = 4) while
+    /// SERIESSUM (also `Skip`) does not (`SERIESSUM(1.49, 1, 2,
+    /// {<blank>, "2", 27, -35})` is #VALUE! in real Excel, not the number
+    /// the coerced "2" would give -- fuzz/fuzz_excel.py seed 107768).
+    /// Booleans are always rejected regardless of either policy -- `GCD(TRUE,
+    /// 8)` is #VALUE! -- which is why this can't just fall through to
+    /// `to_f64`, the lenient coercion used for scalar arguments.
     fn flatten_strict_inner(
         &self,
         arg: &ResultData,
         blanks: BlankPolicy,
+        coerce_text: bool,
         out: &mut Vec<f64>,
     ) -> Result<(), String> {
         match arg {
             ResultData::List(items) => {
                 for item in items {
-                    self.flatten_strict_inner(item, blanks, out)?;
+                    self.flatten_strict_inner(item, blanks, coerce_text, out)?;
                 }
                 Ok(())
             }
@@ -1678,12 +1707,13 @@ impl Sheet {
                 BlankPolicy::Skip => Ok(()),
                 BlankPolicy::Reject => Err("#VALUE!".to_string()),
             },
-            // Numeric text is coerced, non-numeric text is not: real Excel
-            // gives GCD("12", 8) = 4, LCM("4", 6) = 12 and
-            // MULTINOMIAL("3", 2) = 10, while GCD("x", 8) is #VALUE!.
-            // Booleans stay rejected -- GCD(TRUE, 8) is #VALUE! -- which
-            // is why this can't just fall through to `to_f64`.
-            ResultData::String(_) => match self.to_f64(arg) {
+            // Numeric text is coerced, non-numeric text is not, when
+            // `coerce_text` is set: real Excel gives GCD("12", 8) = 4,
+            // LCM("4", 6) = 12 and MULTINOMIAL("3", 2) = 10, while
+            // GCD("x", 8) is #VALUE! either way. Booleans stay rejected
+            // regardless -- GCD(TRUE, 8) is #VALUE! -- which is why this
+            // can't just fall through to `to_f64`.
+            ResultData::String(_) if coerce_text => match self.to_f64(arg) {
                 Some(f) => {
                     out.push(f);
                     Ok(())
@@ -1696,15 +1726,33 @@ impl Sheet {
 
     fn flatten_strict_numbers(&self, arg: &ResultData) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
-        self.flatten_strict_inner(arg, BlankPolicy::Zero, &mut out)?;
+        self.flatten_strict_inner(arg, BlankPolicy::Zero, true, &mut out)?;
         Ok(out)
     }
 
-    /// flatten_strict_numbers with blanks dropped rather than zero-filled.
+    /// flatten_strict_numbers with blanks dropped rather than zero-filled,
+    /// for GCD/LCM (which also coerce numeric text, like MULTINOMIAL).
     fn flatten_skipping_blanks(&self, arg: Option<&ResultData>) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
         if let Some(a) = arg {
-            self.flatten_strict_inner(a, BlankPolicy::Skip, &mut out)?;
+            self.flatten_strict_inner(a, BlankPolicy::Skip, true, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Like `flatten_skipping_blanks`, but a numeric-looking string is
+    /// #VALUE! rather than coerced -- SERIESSUM's coefficients, unlike
+    /// GCD/LCM's operands, don't accept text at all (measured:
+    /// `SERIESSUM(1.49, 1, 2, {<blank>, "2", 27, -35})` is #VALUE! in real
+    /// Excel, not the value the coerced "2" would give -- see
+    /// `flatten_strict_inner`'s doc comment).
+    fn flatten_skipping_blanks_no_text_coercion(
+        &self,
+        arg: Option<&ResultData>,
+    ) -> Result<Vec<f64>, String> {
+        let mut out = Vec::new();
+        if let Some(a) = arg {
+            self.flatten_strict_inner(a, BlankPolicy::Skip, false, &mut out)?;
         }
         Ok(out)
     }
@@ -1713,7 +1761,7 @@ impl Sheet {
     /// rule the regression-array and matrix functions use.
     fn flatten_numbers_only(&self, arg: &ResultData) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
-        self.flatten_strict_inner(arg, BlankPolicy::Reject, &mut out)?;
+        self.flatten_strict_inner(arg, BlankPolicy::Reject, false, &mut out)?;
         Ok(out)
     }
 

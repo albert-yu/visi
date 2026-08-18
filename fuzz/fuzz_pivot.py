@@ -600,7 +600,43 @@ class ExcelPivotDriver:
         except ImportError:
             raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
 
-        excel = win32com.client.Dispatch("Excel.Application")
+        # COM automation against a fresh Excel.Application is occasionally
+        # flaky in a way that surfaces as unrelated-looking errors (RPC
+        # server unavailable, "Call was rejected by callee", a raw OLE
+        # error code) rather than a clean failure -- transient, not
+        # reproducible, and not an Excel/visi disagreement. Retry with a
+        # fresh Application instance, mirroring fuzz_excel.py's and
+        # fuzz_chart.py's win32com drivers (see fuzz_excel.py's for the
+        # "'bool' object is not callable" variant this same pattern covers
+        # there; fuzz_chart.py's for the class of RPC/OLE errors this
+        # pattern was added here for).
+        last_err = None
+        for attempt in range(5):
+            if attempt > 0:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "EXCEL.EXE"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1.0)
+            try:
+                self._run_win32com_once(abs_output, config)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+        if last_err is not None:
+            raise last_err
+
+    def _run_win32com_once(self, abs_output, config):
+        import win32com.client
+        from win32com.client import constants as c
+
+        # `Dispatch` (late binding) never populates `win32com.client.constants`
+        # -- that module only fills in once the Excel type library has been
+        # generated, which only `gencache.EnsureDispatch` triggers. Plain
+        # `Dispatch` here made every `c.xl*` lookup below raise AttributeError.
+        excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
         try:
@@ -614,22 +650,58 @@ class ExcelPivotDriver:
             pc = wb.PivotCaches().Create(SourceType=c.xlDatabase, SourceData=src_range)
             pt = pc.CreatePivotTable(TableDestination=ws.Range(DEST_CELL), TableName=PIVOT_NAME)
 
+            # Mirrors BuildFuzzPivot.bas's ApplyAxisFields/ApplyValueFields --
+            # this driver and that macro are meant to be the same object
+            # model reached two different ways (see ExcelPivotDriver's
+            # class docstring), so field-application logic here should not
+            # drift from the macro's.
+            #
+            # Per-field LayoutForm/LayoutSubtotalLocation, not
+            # PivotTable.RowAxisLayout/SubtotalLocation: the macro avoids
+            # the table-wide methods because they hang Mac Excel outright.
+            # On Windows they don't hang -- but unlike the per-field
+            # setting (a documented no-op there, see the macro's comment),
+            # they actually switch real Excel into Tabular Form, which
+            # replaces the "Row Labels"/"Column Labels"/"Grand Total"
+            # captions visi's pivot writer always emits with the field's
+            # own name. visi has no tabular-layout support to match that
+            # against, so using the table-wide methods here was producing
+            # a guaranteed mismatch on every row/col-labeled cell, not a
+            # real engine bug.
             for f in config["row_fields"]:
                 pf = pt.PivotFields(f["column"])
                 pf.Orientation = c.xlRowField
-                subtotals = [False] * 12
-                subtotals[0] = f["subtotal"]
-                pf.Subtotals = subtotals
+                pf.LayoutForm = c.xlTabular
+                pf.LayoutSubtotalLocation = c.xlAtBottom
+                pf.RepeatLabels = False
+                if not f["subtotal"]:
+                    # VBA's `pf.Subtotals(1) = False` is an indexed
+                    # property-let with no Python equivalent syntax --
+                    # win32com exposes the same property as a plain 12-bool
+                    # array (index 0 = "Automatic", matching VBA's 1-based
+                    # Subtotals(1)), so assign the whole array instead.
+                    subtotals = [False] * 12
+                    pf.Subtotals = subtotals
             for f in config["col_fields"]:
                 pf = pt.PivotFields(f["column"])
                 pf.Orientation = c.xlColumnField
-                subtotals = [False] * 12
-                subtotals[0] = f["subtotal"]
-                pf.Subtotals = subtotals
+                pf.LayoutForm = c.xlTabular
+                pf.LayoutSubtotalLocation = c.xlAtBottom
+                pf.RepeatLabels = False
+                if not f["subtotal"]:
+                    subtotals = [False] * 12
+                    pf.Subtotals = subtotals
             for f in config["value_fields"]:
                 pf = pt.PivotFields(f["column"])
-                pf.Orientation = c.xlDataField
-                pf.Function = getattr(c, AGG_TO_WIN32COM_FUNCTION[f["agg"]])
+                # AddDataField, not `.Orientation = xlDataField` in a loop:
+                # the Orientation-loop pattern is non-deterministic in real
+                # Excel when the same source column backs two value fields
+                # (GitHub issue #13, root-caused via the macro path -- see
+                # BuildFuzzPivot.bas's ApplyValueFields). Omitting Caption
+                # lets Excel derive its own default, same as the
+                # Orientation path would.
+                fn = getattr(c, AGG_TO_WIN32COM_FUNCTION[f["agg"]])
+                pt.AddDataField(pf, Function=fn)
             if config["filter_field"]:
                 col = config["filter_field"]["column"]
                 values = set(config["filter_field"]["values"])
@@ -648,24 +720,21 @@ class ExcelPivotDriver:
                     for item in pf.PivotItems():
                         item.Visible = item.Name in values
 
-            pt.RowAxisLayout(c.xlTabularRow)
-            pt.SubtotalLocation(c.xlAtBottom)
+            pt.MergeLabels = False
             pt.HasAutoFormat = False
-            # GitHub issue #14: on Mac Excel (BuildFuzzPivot.bas, the
-            # AppleScript-driven path), assigning RowGrand/ColumnGrand
-            # straight from grand_totals_row/grand_totals_col is wrong --
-            # the live properties read back correctly right up through
-            # RefreshTable, but the *saved* .xlsx's rendered grid and
+            # GitHub issue #14: assigning RowGrand/ColumnGrand straight from
+            # grand_totals_row/grand_totals_col is wrong -- the live
+            # properties read back correctly right up through RefreshTable,
+            # but the *saved* .xlsx's rendered grid and
             # rowGrandTotals/colGrandTotals XML attributes come out as if
-            # the two properties were swapped, reproducibly (see
-            # BuildFuzzPivot.bas for the straight (unswapped) assignment
-            # and the diagnostic methodology). Not yet verified whether
-            # Windows Excel has the same bug via this separate win32com/COM
-            # path -- leaving this assignment unswapped until confirmed one
-            # way or the other; if a Windows run ever shows the same
-            # opposite-of-requested grand totals, apply the same swap here.
-            pt.ColumnGrand = config["grand_totals_col"]
-            pt.RowGrand = config["grand_totals_row"]
+            # the two properties were swapped. Originally found on Mac
+            # Excel via BuildFuzzPivot.bas; now confirmed on Windows too via
+            # this win32com/COM path (fuzz/fuzz_pivot.py, seed 584357:
+            # grand_totals_row=True, grand_totals_col=False produced a saved
+            # file with no "Grand Total" row at all -- exactly the swapped
+            # result). Same swap applied on both platforms.
+            pt.ColumnGrand = config["grand_totals_row"]
+            pt.RowGrand = config["grand_totals_col"]
             pt.RefreshTable()
             wb.Save()
             wb.Close()

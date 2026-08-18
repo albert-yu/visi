@@ -688,13 +688,57 @@ def fields_match(mine, theirs):
     return True
 
 
+# The child process `ExcelDriver._run_win32com_batch` launches (see that
+# method's docstring for why this has to be a separate process rather than
+# an in-process win32com call). `argv[1]` is the .xlsm path, `argv[2:]` are
+# the `Harness{i}` indices to run. Each result prints as `i=result`,
+# matching the AppleScript driver's own `i=result` line format so both
+# paths share one parser. `Application.Run` returns a function's value
+# directly -- no AppleScript-style string accumulation across calls is
+# needed, since each call here is its own subprocess round trip anyway.
+_WIN32COM_VBA_RUNNER = """
+import sys
+import win32com.client
+
+xlsm_path = sys.argv[1]
+indices = [int(a) for a in sys.argv[2:]]
+
+excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
+excel.Visible = False
+excel.DisplayAlerts = False
+# msoAutomationSecurityForceDisable would silently skip running any macro
+# at all; msoAutomationSecurityLow (1) runs macros without the "Enable
+# Content" prompt that would otherwise hang this exactly like a compile
+# error does.
+excel.AutomationSecurity = 1
+try:
+    wb = excel.Workbooks.Open(xlsm_path)
+    try:
+        for i in indices:
+            try:
+                result = excel.Run("Harness{}".format(i))
+            except Exception as e:
+                result = "ERR|COM:{}".format(e)
+            print("{}={}".format(i, result))
+    finally:
+        wb.Close(False)
+finally:
+    excel.Quit()
+"""
+
+
 class ExcelDriver:
     def __init__(self, excel_path=None, driver_type="auto", timeout=60):
         self.excel_path = excel_path
         self.timeout = timeout
         self.driver_type = driver_type
         if driver_type == "auto":
-            self.driver_type = "applescript" if sys.platform == "darwin" else "mock"
+            if sys.platform == "darwin":
+                self.driver_type = "applescript"
+            elif sys.platform == "win32":
+                self.driver_type = "win32com"
+            else:
+                self.driver_type = "mock"
         self.restarts = 0
 
     def app_name(self):
@@ -725,8 +769,73 @@ class ExcelDriver:
         subprocess.run(["open", "-a", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(4.0)
 
+    def restart_windows(self):
+        """`taskkill` every EXCEL.EXE. Nothing to relaunch -- the next batch's
+        `gencache.EnsureDispatch("Excel.Application")` starts a fresh one, the
+        same as fuzz_excel.py's/fuzz_chart.py's/fuzz_pivot.py's win32com
+        drivers already do on their own retries.
+        """
+        self.restarts += 1
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(1.0)
+
+    def _run_win32com_batch(self, xlsm, indices):
+        """Runs one batch through win32com, in a *child process*.
+
+        A generated case with a compile error (an undefined name, a
+        duplicate `Dim`) pops a modal dialog that `DisplayAlerts = False`
+        does not suppress -- `excel.Run(...)` for that call never returns,
+        exactly the failure mode `fuzz_vba.py`'s own module docstring
+        describes for the AppleScript path. AppleScript survives this
+        because `osascript` is a separate process `subprocess.run(...,
+        timeout=...)` can kill out from under a hung Excel; a bare
+        in-process win32com call has no equivalent timeout (COM calls
+        block the calling thread with no clean way to interrupt one from
+        another Python thread in the same apartment). So the actual COM
+        work happens in a child `python -u -c` process here too, and a
+        timeout kills *that*, then `restart_windows` cleans up the Excel
+        process it leaves behind orphaned and hung.
+        """
+        indices_args = [str(i) for i in indices]
+        res = subprocess.run(
+            [sys.executable, "-u", "-c", _WIN32COM_VBA_RUNNER, xlsm, *indices_args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=self.timeout,
+        )
+        out = {}
+        for line in res.stdout.splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                if k.strip().isdigit():
+                    out[int(k.strip())] = v.rstrip("\r")
+        return res.returncode, out
+
     def run_batch(self, xlsm, indices):
         """Returns {index: result-string}, or {} if Excel could not be asked."""
+        if self.driver_type == "win32com":
+            for attempt in range(2):
+                try:
+                    returncode, out = self._run_win32com_batch(xlsm, indices)
+                except subprocess.TimeoutExpired:
+                    # A hang here is a compile error in generated source
+                    # (Excel goes modal) or a wedged COM automation session --
+                    # the same two causes the AppleScript path's timeout
+                    # handles. Either way the batch is lost; restart and
+                    # retry once.
+                    self.restart_windows()
+                    if attempt == 0:
+                        continue
+                    return {}
+                if returncode == 0:
+                    return out
+                self.restart_windows()
+                if attempt == 0:
+                    continue
+                return {}
+            return {}
         if self.driver_type == "mock":
             return {}
         # `linefeed`, not "\n": AppleScript string literals do not carry a
@@ -789,7 +898,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--excel-path")
-    ap.add_argument("--driver", choices=["auto", "applescript", "mock"], default="auto")
+    ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
     ap.add_argument("--iterations", type=int, default=20)
     ap.add_argument("--batch", type=int, default=20,
                     help="Cases per Excel round trip (default 20). The round trip dominates cost.")
@@ -827,7 +936,10 @@ def main():
                 and batch_no % args.restart_every == 0
                 and driver.driver_type != "mock"
             ):
-                driver.restart()
+                if driver.driver_type == "win32com":
+                    driver.restart_windows()
+                else:
+                    driver.restart()
             n = min(args.batch, args.iterations - batch_start)
             cases = [(batch_start + i + 1, gen.module(batch_start + i + 1)) for i in range(n)]
             source = build_module(cases)
