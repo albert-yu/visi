@@ -193,7 +193,7 @@ impl Default for SheetInit {
 /// How a blank cell is treated by the strict numeric flatteners.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlankPolicy {
-    /// Counts as 0 (GCD/LCM).
+    /// Counts as 0 (MULTINOMIAL).
     Zero,
     /// Dropped entirely, shifting later elements (SERIESSUM).
     Skip,

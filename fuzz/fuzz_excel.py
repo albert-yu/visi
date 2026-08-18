@@ -2173,16 +2173,38 @@ class ExcelDriver:
             except ImportError:
                 raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
 
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            try:
-                wb = excel.Workbooks.Open(abs_output)
-                excel.Calculate()
-                wb.Save()
-                wb.Close()
-            finally:
-                excel.Quit()
+            # COM automation against a fresh Excel.Application is occasionally
+            # flaky in a way that surfaces as unrelated-looking Python errors
+            # (e.g. "'bool' object is not callable" out of win32com's dynamic
+            # dispatch) rather than a COM error -- transient, not
+            # reproducible, and not an Excel/visi disagreement. Retry with a
+            # fresh Application instance, mirroring the AppleScript driver's
+            # retry loop above.
+            last_err = None
+            for attempt in range(5):
+                if attempt > 0:
+                    subprocess.run(
+                        ["taskkill", "/F", "/IM", "EXCEL.EXE"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    time.sleep(1.0)
+                excel = win32com.client.Dispatch("Excel.Application")
+                excel.Visible = False
+                excel.DisplayAlerts = False
+                try:
+                    wb = excel.Workbooks.Open(abs_output)
+                    excel.Calculate()
+                    wb.Save()
+                    wb.Close()
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                finally:
+                    excel.Quit()
+            if last_err is not None:
+                raise last_err
 
         elif self.driver_type == "cli":
             # Custom CLI executable driver specified by user

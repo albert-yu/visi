@@ -193,6 +193,29 @@ fn test_gcd_lcm_error_on_non_numeric_argument() {
 }
 
 #[test]
+fn test_gcd_lcm_treats_blank_cell_as_omitted_not_zero() {
+    // A blank cell passed to GCD/LCM is dropped, not coerced to 0 --
+    // real Excel gives LCM(1, <blank>) = 1 (as if LCM(1)), not
+    // LCM(1, 0) = 0. Measured with fuzz/fuzz_excel.py seed 308076,
+    // where LCM(1, I2) (I2 blank) came back visi=0, Excel=1.
+    let grid = [["1", "", "=LCM(A1, B1)", "=GCD(A1, B1)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let lcm = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(lcm, ResultData::Float(v) if (v - 1.0).abs() < 1e-9),
+        "LCM(1, <blank>) should be 1, got {lcm:?}"
+    );
+
+    let gcd = sheet.get_result_data(&CellRef::new(0, 3));
+    assert!(
+        matches!(gcd, ResultData::Float(v) if (v - 1.0).abs() < 1e-9),
+        "GCD(1, <blank>) should be 1, got {gcd:?}"
+    );
+}
+
+#[test]
 fn test_mmult_error_on_non_numeric_cell() {
     // MMULT used to coerce a non-numeric cell in either operand to 0
     // (via to_f64(..).unwrap_or(0.0)) instead of propagating #VALUE! the

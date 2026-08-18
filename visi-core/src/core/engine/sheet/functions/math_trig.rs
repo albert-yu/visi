@@ -269,9 +269,13 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::floor_math(x, sig, mode))
             }
             "GCD" | "LCM" => {
+                // Unlike MULTINOMIAL, a blank operand here is *omitted*, not
+                // zero: real Excel gives LCM(1, <blank>) = 1 (as if LCM(1)),
+                // not LCM(1, 0) = 0. Measured with fuzz/fuzz_excel.py seed
+                // 308076.
                 let mut nums = Vec::new();
                 for arg in evaluated_args {
-                    match self.flatten_strict_numbers(arg) {
+                    match self.flatten_skipping_blanks(Some(arg)) {
                         Ok(v) => nums.extend(v),
                         Err(e) => return Ok(ResultData::Error(e)),
                     }
