@@ -107,6 +107,21 @@ const OPAQUE_IO_KEYWORDS: &[&str] = &[
     "print", "write", "input", "put", "get", "seek", "lock", "unlock", "width",
 ];
 
+/// The built-in scalar type keywords, which unlike most VBA keywords
+/// (contextual and freely reusable as identifiers -- see this module's own
+/// doc comment on that) cannot themselves be used as a declared name: a
+/// `Dim`/`Const` variable or a parameter. Measured directly against real
+/// Excel (Windows), found via `fuzz/fuzz_vba_parse.py`: `Dim Long As
+/// Integer`, `Const Long = 5`, and a parameter named `Long` all fail to
+/// compile, and the same holds for every other name here. `Object` is
+/// deliberately not in this list -- `Dim Object As Long` compiles fine,
+/// even though `Object` is itself a valid type in an `As` clause; real
+/// Excel does not treat it as reserved the way it treats these.
+const RESERVED_TYPE_NAMES: &[&str] = &[
+    "boolean", "byte", "currency", "date", "double", "integer", "long", "single", "string",
+    "variant",
+];
+
 struct Parser {
     toks: Vec<Token>,
     i: usize,
@@ -202,6 +217,21 @@ impl Parser {
             }
             None => Err(self.expected("a name")),
         }
+    }
+
+    /// Like [`Self::expect_ident`], but for a name that is being *declared*
+    /// (a `Dim`/`Const` variable, a parameter) rather than merely
+    /// referenced -- those positions additionally reject
+    /// [`RESERVED_TYPE_NAMES`], which real Excel refuses to compile there.
+    fn expect_declarable_ident(&mut self) -> Result<(String, Pos), ParseError> {
+        let (name, pos) = self.expect_ident()?;
+        if RESERVED_TYPE_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+            return Err(ParseError {
+                message: format!("'{name}' is a built-in type name and cannot be declared"),
+                pos,
+            });
+        }
+        Ok((name, pos))
     }
 
     fn expected(&self, what: &str) -> ParseError {
@@ -555,7 +585,7 @@ impl Parser {
         // `Optional ByVal x` -- either order appears in real code.
         let optional = optional || self.eat_kw("optional");
 
-        let (name, _) = self.expect_ident()?;
+        let (name, _) = self.expect_declarable_ident()?;
         let is_array = if self.peek().is_punct("(") && self.at(1).is_punct(")") {
             self.i += 2;
             true
@@ -946,7 +976,7 @@ impl Parser {
     }
 
     fn parse_var_decl(&mut self, allow_value: bool) -> Result<VarDecl, ParseError> {
-        let (name, pos) = self.expect_ident()?;
+        let (name, pos) = self.expect_declarable_ident()?;
         let bounds = if self.peek().is_punct("(") {
             self.i += 1;
             if self.eat_punct(")") {
@@ -2390,6 +2420,37 @@ mod tests {
         let body = &m.procedures()[0].body;
         assert_eq!(body.len(), 5);
         assert!(!body.iter().any(|s| matches!(s, Stmt::Opaque { .. })));
+    }
+
+    #[test]
+    fn fuzz_reserved_type_names_cannot_be_declared() {
+        // Harvested from fuzz/fuzz_vba_parse.py: `Dim Long As x` compiled
+        // under check_syntax but real Excel refuses it. Measured directly
+        // (win32com, real Windows Excel) which half of that is the real,
+        // fixable gap: `Dim Long As Integer`, `Const Long = 5`, and a
+        // parameter named `Long` all fail to compile in Excel too -- `Long`
+        // (like the rest of `RESERVED_TYPE_NAMES`) can never be a declared
+        // name, unlike most VBA keywords (contextual and reusable
+        // elsewhere, see `the_opaque_keywords_stay_usable_as_ordinary_names`
+        // above). `Dim Long As x` itself is left accepting: whether `x` is a
+        // valid type needs name resolution Phase 0 doesn't do, so that half
+        // of the original case is correctly out of scope, not fixed here.
+        for src in [
+            "Sub S()\nDim Long As Integer\nEnd Sub\n",
+            "Sub S()\nConst Long = 5\nEnd Sub\n",
+            "Sub S(Long As Integer)\nEnd Sub\n",
+            "Sub S()\nDim Boolean\nEnd Sub\n",
+        ] {
+            let err = parse_module(src).unwrap_err();
+            assert!(err.message.contains("built-in type name"), "{src:?}: {err}");
+        }
+        // `Object` is not in the reserved set -- it compiles as a name even
+        // though it's also a valid type in an `As` clause (measured: `Dim
+        // Object As Long` compiles in real Excel).
+        parse_module("Sub S()\nDim Object As Long\nEnd Sub\n").unwrap();
+        // The unresolvable-type half of the original case stays accepted,
+        // deliberately -- Phase 0 does no name resolution.
+        parse_module("Sub S()\nDim y As x\nEnd Sub\n").unwrap();
     }
 
     // ---- errors ---------------------------------------------------------
