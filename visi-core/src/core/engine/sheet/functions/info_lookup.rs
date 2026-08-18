@@ -373,15 +373,15 @@ impl Sheet {
             }
             "SIN" => {
                 let val = self.to_f64_arg(evaluated_args.first(), "SIN")?;
-                Ok(ResultData::Float(val.sin()))
+                res_to_rd(crate::core::math_trig::check_trig_domain(val).map(|()| val.sin()))
             }
             "COS" => {
                 let val = self.to_f64_arg(evaluated_args.first(), "COS")?;
-                Ok(ResultData::Float(val.cos()))
+                res_to_rd(crate::core::math_trig::check_trig_domain(val).map(|()| val.cos()))
             }
             "TAN" => {
                 let val = self.to_f64_arg(evaluated_args.first(), "TAN")?;
-                Ok(ResultData::Float(val.tan()))
+                res_to_rd(crate::core::math_trig::check_trig_domain(val).map(|()| val.tan()))
             }
             "ACOS" => {
                 let val = self.to_f64_arg(evaluated_args.first(), "ACOS")?;

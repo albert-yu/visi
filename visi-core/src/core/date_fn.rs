@@ -398,10 +398,69 @@ pub fn days_30_360_coupon_end(start_date: f64, end_date: f64) -> f64 {
     ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
 }
 
-/// The NASD 30/360 day count that Excel's YEARFRAC (basis 0) and the bond
-/// functions use. This is *not* what the DAYS360 function computes, which
-/// is why it lives here separately rather than sharing `days360`'s US
-/// branch. Two rules differ, and each shows up on its own:
+/// The 30/360 day count `basis_days_between_pricemat_leg` (`finance.rs`)
+/// uses for `PRICEMAT`/`YIELDMAT`'s basis-0 issue/settlement/maturity
+/// legs -- despite both nominally being "US (NASD) 30/360", this is a
+/// *different* rule from `days_30_360_nasd` (YEARFRAC's basis 0, and
+/// every other basis-0 caller in this bond-pricing family): each end's
+/// February-month-end bump to 30 applies independently, not only when
+/// *both* ends are February month-ends -- except that a settlement date
+/// is *never* bumped this way, only issue and maturity are
+/// (`bump_start`/`bump_end` let a caller suppress it on whichever end is
+/// playing the settlement role).
+///
+/// Measured directly against real `PRICEMAT` output (win32com, real
+/// Windows Excel):
+///  - fuzz/fuzz_excel.py seed 740495 (issue 2015-02-28, settlement
+///    2015-04-28, maturity 2017-02-28): settlement-to-maturity is 662
+///    days, not the 660 `days_30_360_nasd` (and
+///    `YEARFRAC(2015-04-28, 2017-02-28, 0) * 360`, confirmed separately)
+///    gives -- settlement isn't a February month-end here, so
+///    `days_30_360_nasd`'s both-ends rule leaves maturity's day at 28,
+///    while bumping each end independently gives maturity 30.
+///  - fuzz/fuzz_excel.py seed 147209 (issue 2033-09-28, settlement
+///    2034-02-28 -- itself a February month-end, unlike the case above --
+///    maturity 2036-09-28): issue-to-settlement is 150 days and
+///    settlement-to-maturity is 930, both consistent only with
+///    settlement's day staying 28, *not* bumped to 30 -- bumping it (as
+///    the plain independent-both-ends rule above would) gives 152 and
+///    928 instead, wrong by 2 days each way.
+pub fn days_30_360_bond_ex(
+    start_date: f64,
+    end_date: f64,
+    bump_start: bool,
+    bump_end: bool,
+) -> f64 {
+    let (y1, m1, mut d1) = serial_to_ymd(start_date);
+    let (y2, m2, mut d2) = serial_to_ymd(end_date);
+
+    let d1_is_feb_eom = m1 == 2 && d1 == days_in_month(y1, m1);
+    let d2_is_feb_eom = m2 == 2 && d2 == days_in_month(y2, m2);
+
+    if bump_start && d1_is_feb_eom {
+        d1 = 30;
+    }
+    if bump_end && d2_is_feb_eom {
+        d2 = 30;
+    }
+    if d1 == 31 {
+        d1 = 30;
+    }
+    if d2 == 31 && d1 == 30 {
+        d2 = 30;
+    }
+
+    ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
+}
+
+/// The NASD 30/360 day count that Excel's YEARFRAC (basis 0) uses, and
+/// that `finance.rs`'s `basis_days_between` also uses for every basis-0
+/// bond-pricing call except `PRICEMAT`/`YIELDMAT`'s issue/settlement/
+/// maturity legs -- see `days_30_360_bond_ex` for that one exception and
+/// the measurement that separated the two. This is *not* what the
+/// DAYS360 function computes, which is why it lives here separately
+/// rather than sharing `days360`'s US branch. Two rules differ from
+/// DAYS360, and each shows up on its own:
 ///
 /// - When both ends are February month-ends, this pulls the end date to
 ///   the 30th as well. DAYS360 does not:

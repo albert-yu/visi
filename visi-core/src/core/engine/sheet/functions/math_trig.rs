@@ -497,10 +497,11 @@ impl Sheet {
                 let x = self.to_f64_arg(evaluated_args.first(), "SERIESSUM")?;
                 let n = self.to_f64_arg(evaluated_args.get(1), "SERIESSUM")?;
                 let m = self.to_f64_arg(evaluated_args.get(2), "SERIESSUM")?;
-                let coeffs = match self.flatten_skipping_blanks(evaluated_args.get(3)) {
-                    Ok(v) => v,
-                    Err(e) => return Ok(ResultData::Error(e)),
-                };
+                let coeffs =
+                    match self.flatten_skipping_blanks_no_text_coercion(evaluated_args.get(3)) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    };
                 res_to_rd(crate::core::math_trig::seriessum(x, n, m, &coeffs))
             }
             "SIGN" => {

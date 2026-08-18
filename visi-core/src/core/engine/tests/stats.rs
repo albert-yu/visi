@@ -266,6 +266,27 @@ fn test_mode_sngl_and_mode_mult() {
 }
 
 #[test]
+fn test_fuzz_mode_mult_orders_ties_by_first_appearance_not_value() {
+    // Harvested from fuzz/fuzz_excel.py, seed 101977: F1:G5 = {34, 0, 34,
+    // "b", 10, 0, 479.283, -26, -50, 10}, a three-way tie between 34, 0
+    // and 10 (each appears twice). Real Excel's INDEX(MODE.MULT(...), 1)
+    // is 34 -- the first value to reach the tied count while scanning the
+    // range -- not 0, the smallest. visi previously sorted tied modes by
+    // value ascending.
+    let grid = [
+        ["34", "0"],
+        ["0", "479.283"],
+        ["34", "-26"],
+        ["\"b\"", "-50"],
+        ["10", "10"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (first_mode, _) = sheet.eval("=INDEX(MODE.MULT(A1:B5), 1)", None).unwrap();
+    assert_float_close(&first_mode, 34.0, 1e-9);
+}
+
+#[test]
 fn test_t_test_uses_each_samples_own_length_for_its_mean() {
     // Regression for #26: t_test's test_type==2 (equal-variance two-sample)
     // branch divided array2's sum by array1's length (n1) instead of its

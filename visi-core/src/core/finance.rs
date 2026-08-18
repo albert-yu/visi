@@ -684,12 +684,39 @@ use crate::core::date_fn;
 /// it is handled separately by `coupdays`/`basis_year_days`.
 fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     match basis as i64 {
-        // Not `days360(.., Some(false))`: the DAYS360 function's US method
-        // and the NASD convention the bond functions use differ on
-        // February month-ends. See `date_fn::days_30_360_nasd`.
+        // `days_30_360_nasd`, not `days360(.., Some(false))` -- the DAYS360
+        // function's US method and this family's basis-0 convention differ
+        // on February month-ends. `PRICEMAT`/`YIELDMAT` are the one
+        // exception in this family (see `basis_days_between_pricemat_leg`,
+        // used only by them) -- every other caller here (ODDLPRICE, PRICE,
+        // YIELD, COUPDAYS, DURATION, ...) was confirmed to still want this
+        // one.
         0 => date_fn::days_30_360_nasd(start, end),
         4 => date_fn::days360(start, end, Some(true)).unwrap_or(0.0),
         _ => end - start,
+    }
+}
+
+/// `basis_days_between`, but for `PRICEMAT`/`YIELDMAT`'s issue/settlement/
+/// maturity legs, which measured out to a different basis-0 rule than
+/// every other caller of `basis_days_between` (see
+/// `date_fn::days_30_360_bond_ex`'s doc comment) -- each end's
+/// February-month-end bump applies independently rather than only when
+/// both ends qualify, except that a settlement date is never bumped this
+/// way, only issue and maturity are. `settlement_is_start`/
+/// `settlement_is_end` say which argument (if either) plays that role;
+/// every other basis behaves exactly like `basis_days_between`, which has
+/// no such asymmetry.
+fn basis_days_between_pricemat_leg(
+    start: f64,
+    end: f64,
+    basis: f64,
+    settlement_is_start: bool,
+    settlement_is_end: bool,
+) -> f64 {
+    match basis as i64 {
+        0 => date_fn::days_30_360_bond_ex(start, end, !settlement_is_start, !settlement_is_end),
+        _ => basis_days_between(start, end, basis),
     }
 }
 
@@ -1018,9 +1045,9 @@ pub fn pricemat(
     yld: f64,
     basis: f64,
 ) -> f64 {
-    let dim = basis_days_between(issue, maturity, basis);
-    let a = basis_days_between(issue, settlement, basis);
-    let dsm = basis_days_between(settlement, maturity, basis);
+    let dim = basis_days_between_pricemat_leg(issue, maturity, basis, false, false);
+    let a = basis_days_between_pricemat_leg(issue, settlement, basis, false, true);
+    let dsm = basis_days_between_pricemat_leg(settlement, maturity, basis, true, false);
     // Year length uses the (issue, settlement) span, not the full
     // (often multi-year) issue-to-maturity DIM span -- confirmed against
     // real Excel via the differential fuzzer.
@@ -1031,9 +1058,9 @@ pub fn pricemat(
 }
 
 pub fn yieldmat(settlement: f64, maturity: f64, issue: f64, rate: f64, pr: f64, basis: f64) -> f64 {
-    let dim = basis_days_between(issue, maturity, basis);
-    let a = basis_days_between(issue, settlement, basis);
-    let dsm = basis_days_between(settlement, maturity, basis);
+    let dim = basis_days_between_pricemat_leg(issue, maturity, basis, false, false);
+    let a = basis_days_between_pricemat_leg(issue, settlement, basis, false, true);
+    let dsm = basis_days_between_pricemat_leg(settlement, maturity, basis, true, false);
     // Year length uses the (issue, settlement) span, not the full
     // (often multi-year) issue-to-maturity DIM span -- confirmed against
     // real Excel via the differential fuzzer.
@@ -1585,6 +1612,48 @@ mod tests {
     // places, so allow a cent of slack rather than demanding exact matches.
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 5e-3, "{a} != {b}");
+    }
+
+    #[test]
+    fn test_fuzz_pricemat_settlement_never_gets_feb_eom_bump() {
+        // Harvested from fuzz/fuzz_excel.py, two seeds that pin down the
+        // same underlying rule from opposite sides (see
+        // `date_fn::days_30_360_bond_ex`'s doc comment):
+        //
+        // Seed 740495: issue 2015-02-28, settlement 2015-04-28 (not a
+        // February month-end), maturity 2017-02-28. Requires maturity's
+        // Feb-month-end bump to apply *independently* of issue/settlement
+        // (unlike `days_30_360_nasd`, YEARFRAC's basis-0 rule, which needs
+        // both ends to be February month-ends before bumping).
+        //
+        // Seed 147209: issue 2033-09-28, settlement 2034-02-28 (itself a
+        // February month-end this time), maturity 2036-09-28. If
+        // settlement got the same independent bump issue/maturity get,
+        // this would be off by 2 days each on the issue-to-settlement and
+        // settlement-to-maturity legs -- real Excel's PRICEMAT never
+        // bumps a settlement date this way, only issue and maturity.
+        approx(
+            pricemat(
+                date_fn::edate(date_fn::ymd_to_serial(2015, 2, 28), 2.0).unwrap(),
+                date_fn::edate(date_fn::ymd_to_serial(2015, 2, 28), 24.0).unwrap(),
+                date_fn::ymd_to_serial(2015, 2, 28),
+                0.0812,
+                0.099,
+                0.0,
+            ),
+            97.02941154961482,
+        );
+        approx(
+            pricemat(
+                date_fn::edate(date_fn::ymd_to_serial(2033, 9, 28), 5.0).unwrap(),
+                date_fn::edate(date_fn::ymd_to_serial(2033, 9, 28), 36.0).unwrap(),
+                date_fn::ymd_to_serial(2033, 9, 28),
+                0.0239,
+                0.0138,
+                0.0,
+            ),
+            102.48507237805565,
+        );
     }
 
     #[test]

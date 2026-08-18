@@ -485,9 +485,13 @@ pub(crate) fn group_key(result: &ResultData) -> String {
 /// alphabetically even when its values happen to look like numbers
 /// (verified against real Excel via fuzz/fuzz_pivot.py's `NumStr` column,
 /// whose whole purpose is generating quoted numeric-looking text to probe
-/// exactly this). Grouping already collapsed values to strings by this
-/// point (`group_key`), which can no longer tell a real `22` from a text
-/// `"22"` -- this has to be decided from the original `ResultData`s.
+/// exactly this) -- with one refinement found on Windows: a value that
+/// looks like a *negative* number sorts by its digits with the leading
+/// `-` stripped, not by the `-` character itself. See
+/// `sort_group_entries` and `text_sort_key`. Grouping already collapsed
+/// values to strings by this point (`group_key`), which can no longer
+/// tell a real `22` from a text `"22"` -- this has to be decided from the
+/// original `ResultData`s.
 pub(crate) fn field_is_numeric(records: &[Vec<ResultData>], field_idx: usize) -> bool {
     !records.is_empty()
         && records.iter().all(|r| {
@@ -496,6 +500,31 @@ pub(crate) fn field_is_numeric(records: &[Vec<ResultData>], field_idx: usize) ->
                 Some(ResultData::Integer(_)) | Some(ResultData::Float(_)) | Some(ResultData::None)
             )
         })
+}
+
+/// The key `sort_group_entries`'s text-field branch compares siblings by:
+/// the value itself, lowercased, *unless* it looks like a negative number
+/// (`"-7"`, `"-25"`), in which case the leading `-` is stripped first.
+/// Measured on Windows real Excel across three independent sibling sets
+/// (fuzz/fuzz_pivot.py's `NumStr` column):
+///   `{-7, .0152, 13, 34, 4}`        -> `.0152, 13, 34, 4, -7`
+///   `{-46, .097, 01, 02, 1, 10, 35}` -> `.097, 01, 02, 1, 10, 35, -46`
+///   `{-25, .0599, .0839, 01, 02, 08, 1, 12, 37}`
+///                                   -> `.0599, .0839, 01, 02, 08, 1, 12, -25, 37`
+/// A "sorts last" rule (visi's first attempt at this) fits the first two
+/// but not the third, where "-25" lands *before* "37" -- comparing "25"
+/// (the stripped digits) against the other keys fits all three: "25"
+/// falls between "12" and "37" alphabetically, exactly where Excel put
+/// "-25". Not tested (no evidence either way): two negative-looking
+/// siblings compared against each other -- both get stripped, so they
+/// fall back to comparing their digit strings.
+fn text_sort_key(s: &str) -> String {
+    let trimmed = s.trim();
+    let key = match trimmed.strip_prefix('-') {
+        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => rest,
+        _ => trimmed,
+    };
+    key.to_lowercase()
 }
 
 fn sort_group_entries(pairs: &mut [(String, Vec<usize>)], numeric: bool) {
@@ -511,7 +540,7 @@ fn sort_group_entries(pairs: &mut [(String, Vec<usize>)], numeric: bool) {
             let fb: f64 = b.0.trim().parse().unwrap_or(0.0);
             fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
         }
-        (false, false) => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
+        (false, false) => text_sort_key(&a.0).cmp(&text_sort_key(&b.0)),
     });
 }
 
@@ -2199,6 +2228,96 @@ mod tests {
             .map(|r| r.row_labels[0].as_str())
             .collect();
         assert_eq!(codes, vec!["10", "30", "(blank)"]);
+    }
+
+    #[test]
+    fn test_negative_looking_text_sorts_last_among_text_siblings() {
+        // Harvested from fuzz/fuzz_pivot.py's win32com (Windows) run, seed
+        // 584357: a text "NumStr" column mixing zero-padded/decimal/plain
+        // numeric-looking strings with a negative one. visi's alphabetical
+        // text sort previously placed "-7" first (its leading '-' sorts
+        // before every digit); real Windows Excel sorts it by its digits
+        // with the '-' stripped ("7"), which happens to land it last
+        // among these particular siblings -- see `text_sort_key` and the
+        // next test for a case where stripped-sign placement is *not*
+        // last.
+        let mut sheet = Sheet::new(SheetInit {
+            name: Some("Data".to_string()),
+            rows: 6,
+            cols: 2,
+            ..Default::default()
+        });
+        for (c, h) in ["Code", "Amount"].iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        let rows: [(&str, &str); 5] = [
+            ("\"-7\"", "1"),
+            ("\".0152\"", "2"),
+            ("\"13\"", "3"),
+            ("\"34\"", "4"),
+            ("\"4\"", "5"),
+        ];
+        for (r, (code, amount)) in rows.iter().enumerate() {
+            sheet.set_cell_src(r + 1, 0, code.to_string());
+            sheet.set_cell_src(r + 1, 1, amount.to_string());
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 5, 1, true, false)
+            .unwrap();
+
+        let mut pivot = base_pivot();
+        pivot.row_fields = vec![PivotField::new("Code")];
+        pivot.grand_totals_row = false;
+        let grid = compute_pivot(&[&sheet], &pivot).unwrap();
+
+        let codes: Vec<&str> = grid
+            .body_rows
+            .iter()
+            .map(|r| r.row_labels[0].as_str())
+            .collect();
+        assert_eq!(codes, vec![".0152", "13", "34", "4", "-7"]);
+    }
+
+    #[test]
+    fn test_negative_looking_text_sorts_by_stripped_digits_not_last() {
+        // Harvested from fuzz/fuzz_pivot.py's win32com (Windows) run, seed
+        // 118859: among siblings "12" and "37", real Excel placed "-25"
+        // *between* them, not after both -- comparing "-25" by its
+        // stripped digit string "25" (which alphabetically falls between
+        // "12" and "37") is what predicts this; a simpler "negative always
+        // sorts last" rule (as in the previous test) would wrongly put
+        // "-25" after "37" here.
+        let mut sheet = Sheet::new(SheetInit {
+            name: Some("Data".to_string()),
+            rows: 4,
+            cols: 2,
+            ..Default::default()
+        });
+        for (c, h) in ["Code", "Amount"].iter().enumerate() {
+            sheet.set_cell_src(0, c, h.to_string());
+        }
+        let rows: [(&str, &str); 3] = [("\"12\"", "1"), ("\"37\"", "2"), ("\"-25\"", "3")];
+        for (r, (code, amount)) in rows.iter().enumerate() {
+            sheet.set_cell_src(r + 1, 0, code.to_string());
+            sheet.set_cell_src(r + 1, 1, amount.to_string());
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 3, 1, true, false)
+            .unwrap();
+
+        let mut pivot = base_pivot();
+        pivot.row_fields = vec![PivotField::new("Code")];
+        pivot.grand_totals_row = false;
+        let grid = compute_pivot(&[&sheet], &pivot).unwrap();
+
+        let codes: Vec<&str> = grid
+            .body_rows
+            .iter()
+            .map(|r| r.row_labels[0].as_str())
+            .collect();
+        assert_eq!(codes, vec!["12", "-25", "37"]);
     }
 
     #[test]

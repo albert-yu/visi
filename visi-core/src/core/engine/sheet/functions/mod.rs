@@ -173,7 +173,21 @@ impl Sheet {
                     "IFNA requires 2 arguments".to_string(),
                 )));
             }
-            let first_val = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
+            // Not a bare `?`: a nested call can fail as a hard `Err` rather
+            // than an `Ok(ResultData::Error(_))` -- e.g. ATAN2/LOG's own
+            // `to_f64_arg(...)?`  on an argument that is itself already an
+            // error -- and IFNA still needs to see which error code that
+            // was, the same normalization the general arg-gathering loop
+            // above does for every ordinary function's arguments.
+            let first_val = match self.evaluate_ast(&args[0], context, row, col, deps, scope) {
+                Ok(v) => v,
+                Err(EngineError::EvalError(EvalError::UnknownFunction(e)))
+                    if e.starts_with('#') =>
+                {
+                    ResultData::Error(e)
+                }
+                Err(e) => return Err(e),
+            };
             if let ResultData::Error(ref e) = first_val
                 && e == "#N/A"
             {
@@ -379,9 +393,19 @@ impl Sheet {
             if args.is_empty() {
                 return Ok(ResultData::Boolean(false));
             }
+            // A nested call can fail as a hard `Err` rather than an
+            // `Ok(ResultData::Error(_))` -- e.g. ATAN2/LOG's own
+            // `to_f64_arg(...)?` on an argument that is itself already an
+            // error -- so this has to check the error *code* on that path
+            // too, not treat every `Err` alike the way `_ => false` did.
             let res = self.evaluate_ast(&args[0], context, row, col, deps, scope);
             return match res {
                 Ok(ResultData::Error(e)) => Ok(ResultData::Boolean(e.contains("#N/A"))),
+                Err(EngineError::EvalError(EvalError::UnknownFunction(e)))
+                    if e.starts_with('#') =>
+                {
+                    Ok(ResultData::Boolean(e.contains("#N/A")))
+                }
                 _ => Ok(ResultData::Boolean(false)),
             };
         }
@@ -469,6 +493,30 @@ impl Sheet {
                         | "SUMXMY2"
                         | "CHISQ.TEST"
                         | "CHITEST"
+                        // LOG and ATAN2 type-check their *first* argument
+                        // before ever looking at whether a later one is
+                        // itself an error -- when the first argument is
+                        // non-numeric and a later one holds a pre-computed
+                        // error, real Excel returns #VALUE! (from the
+                        // first-argument check), not the later argument's
+                        // error code (measured via win32com against real
+                        // Windows Excel: `LOG("C", #N/A)` and
+                        // `ATAN2("text", #N/A)` both give #VALUE!). Both
+                        // functions' own match arms already check argument
+                        // one via `to_f64_arg` before touching argument
+                        // two, so exempting them here just lets that
+                        // existing order run instead of being preempted.
+                        | "LOG"
+                        | "ATAN2"
+                        // GCD/LCM walk their arguments in order and reject
+                        // the first non-numeric one (a boolean, or text
+                        // that doesn't coerce) as #VALUE! -- same
+                        // first-argument-wins shape as LOG/ATAN2 above.
+                        // `GCD(AND(...), CORREL(mismatched ranges))`
+                        // should be #VALUE! from the boolean argument, not
+                        // CORREL's #N/A (measured via win32com).
+                        | "GCD"
+                        | "LCM"
                 )
                 && !uses_ordered_arg_error_check
                 && let Some(err) = Self::find_error_in_args(&evaluated_args)

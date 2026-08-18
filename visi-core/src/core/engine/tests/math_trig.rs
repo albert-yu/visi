@@ -35,6 +35,117 @@ fn test_trig_and_hyperbolic_functions() {
 }
 
 #[test]
+fn test_fuzz_sin_cos_tan_and_reciprocals_num_error_past_2_pow_27() {
+    // Measured directly against real Windows Excel: SIN/COS/TAN refuse an
+    // argument at or beyond 2^27 (134217728) radians with #NUM! -- past
+    // that magnitude a double can no longer resolve which multiple of
+    // 2*pi the value is near, so any answer would be numerically
+    // meaningless. 2^27 - 1 still computes; 2^27 does not. CSC/SEC/COT
+    // inherit the same boundary since they're built on SIN/COS/TAN.
+    // fuzz/fuzz_excel.py seed 676008 hit this via CSC(F4^47), where
+    // F4^47 is on the order of 1e101: visi returned a plain float, real
+    // Excel #NUM!.
+    let grid = [[
+        "=SIN(134217727)",
+        "=SIN(134217728)",
+        "=COS(134217728)",
+        "=TAN(134217728)",
+        "=CSC(134217728)",
+        "=SEC(134217728)",
+        "=COT(134217728)",
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    match sheet.get_result_data(&CellRef::new(0, 0)) {
+        ResultData::Float(_) => {}
+        other => panic!("SIN(2^27 - 1): expected a number, got {other:?}"),
+    }
+    for (col, name) in [
+        (1, "SIN"),
+        (2, "COS"),
+        (3, "TAN"),
+        (4, "CSC"),
+        (5, "SEC"),
+        (6, "COT"),
+    ] {
+        match sheet.get_result_data(&CellRef::new(0, col)) {
+            ResultData::Error(e) => assert_eq!(e, "#NUM!", "{name}(2^27)"),
+            other => panic!("{name}(2^27): expected #NUM!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_coth_does_not_overflow_to_nan_for_a_large_argument() {
+    // Harvested from fuzz/fuzz_excel.py seed 711993: COTH(47692.3), where
+    // 47692.3 is VARPA's own ordinary, finite result -- not an extreme
+    // input. COTH's old implementation, `x.cosh() / x.sinh()`, has both
+    // sides overflow to `f64::INFINITY` well before |x| gets anywhere near
+    // where coth itself misbehaves (~710), leaving `inf / inf = NaN`,
+    // which this engine's NaN guard turns into `#NUM!` -- for an `x`
+    // where real Excel returns a perfectly good answer near +-1 (COTH of
+    // any large positive number this size is `1`, confirmed against real
+    // Excel). `tanh` saturates to +-1 directly with no such overflow.
+    assert_eq!(num("=COTH(47692.3)"), 1.0);
+    // Ordinary arguments are untouched.
+    assert!((num("=COTH(1)") - 1.3130352854993312).abs() < 1e-9);
+}
+
+#[test]
+fn test_fuzz_gcd_first_arg_type_error_wins_over_later_arg_error() {
+    // Harvested from fuzz/fuzz_excel.py seed 751310:
+    // GCD(AND(J1>0, Sheet1[[#Headers],[C]]<100), CORREL(F3:J4, F2:G2)) --
+    // the AND(...) result is a boolean (GCD rejects booleans outright,
+    // `GCD(TRUE, 8)` is `#VALUE!`) and CORREL's mismatched-size ranges
+    // (1x3 vs 4x5) are `#N/A`. Same first-argument-wins shape as LOG/ATAN2
+    // above: GCD/LCM walk their arguments in order and reject the first
+    // non-numeric one, so the boolean should win with `#VALUE!`, not
+    // CORREL's `#N/A` (measured via win32com: `GCD(TRUE, NA())` is
+    // `#VALUE!` in real Excel, matching `GCD(TRUE, 8)`).
+    match eval_one("=GCD(TRUE, NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+    match eval_one("=LCM(TRUE, NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_isna_ifna_see_a_hard_err_from_a_nested_first_arg_error() {
+    // Harvested from fuzz/fuzz_excel.py, several seeds all shaped like
+    // ISNA(LOG(<errors #N/A>, 25)) / IFNA(ATAN2(<errors #N/A>, x), y):
+    // once LOG/ATAN2 are exempted from the generic "first error found in
+    // any argument" pre-check (so their own first-argument type check can
+    // run instead, see the LOG/ATAN2 exemption above), a first argument
+    // that is *itself already an error* propagates out of
+    // `to_f64_arg(...)?` as a hard `Err`, not the `Ok(ResultData::Error(_))`
+    // every ordinary function argument normally produces. ISNA's and
+    // IFNA's own hand-rolled early-return branches only checked for
+    // `Ok(ResultData::Error(_))`, so that hard `Err` fell through to their
+    // catch-alls (`_ => false` / a bare `?` that just propagated the `Err`
+    // further) instead of being recognized as the `#N/A` it actually was.
+    match eval_one("=ISNA(LOG(NA(), 25))") {
+        ResultData::Boolean(b) => assert!(b),
+        other => panic!("expected TRUE, got {other:?}"),
+    }
+    match eval_one("=ISNA(ATAN2(NA(), 5))") {
+        ResultData::Boolean(b) => assert!(b),
+        other => panic!("expected TRUE, got {other:?}"),
+    }
+    assert_eq!(num("=IFNA(LOG(NA(), 25), 999)"), 999.0);
+    assert_eq!(num("=IFNA(ATAN2(NA(), 5), 999)"), 999.0);
+    // A non-#N/A hard error from the same path still surfaces as itself,
+    // not swallowed into FALSE / silently replaced.
+    match eval_one("=ISNA(LOG(\"C\", 25))") {
+        ResultData::Boolean(b) => assert!(!b),
+        other => panic!("expected FALSE, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_rounding_and_integers() {
     let grid = [[
         "=EVEN(3)",
@@ -710,6 +821,25 @@ fn test_mod_reports_num_once_the_quotient_stops_being_meaningful() {
 }
 
 #[test]
+fn test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary() {
+    // Harvested from fuzz/fuzz_excel.py seed 550442: MOD(-47, 47 / -13).
+    // True mathematics (47 and -13 taken as exact integers, not the
+    // rounded double `47.0/-13.0` computed first) makes
+    // `-47 / (47/-13) = 13` exactly, so `INT(quotient)` should be 13 and
+    // the remainder exactly 0 -- and it stays exact even carried through
+    // an actual `f64` division of the two doubles: `-47.0 / (47.0/-13.0)`
+    // evaluates to precisely `13.0` in IEEE 754 double precision, no
+    // rounding residue at all. Real Excel returns `-3.615384615384615`
+    // (the divisor itself) instead, as if `INT(quotient)` had come out to
+    // 12 rather than the mathematically exact 13 -- a real Excel
+    // precision loss at this boundary, not a rounding convention
+    // difference (see "docs/excel-discrepancies.md" section 15, which
+    // this is another instance of). visi's 0 is correct and is left
+    // alone.
+    assert_eq!(num("=MOD(-47, (47 / -13))"), 0.0);
+}
+
+#[test]
 // `exact` is a reference value carried at more digits than f64 holds, so it
 // can be read against the oracle that produced it; see the comment on it.
 #[allow(clippy::excessive_precision)]
@@ -853,5 +983,61 @@ fn test_serial_zero_is_excels_phantom_january_zero() {
             ResultData::String(s) => assert_eq!(s, want, "for serial {serial}"),
             other => panic!("expected {want}, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn test_fuzz_log_first_arg_type_error_wins_over_later_arg_error() {
+    // Harvested from fuzz/fuzz_excel.py, seed 946837:
+    // LOG(Sheet1[[#Headers],[C]], PEARSON(G5:I5, F1:G3)) -- the header
+    // reference is non-numeric text, and PEARSON's mismatched-size ranges
+    // (1x3 vs 3x2) are #N/A. Real Excel checks LOG's first argument
+    // before ever looking at whether the second is itself an error, so
+    // the result is #VALUE! (from the first-argument check), not #N/A
+    // (measured via win32com: LOG("C", NA()) is #VALUE!). visi previously
+    // had a generic pre-dispatch scan that returned the *first* error
+    // found across all arguments regardless of position, so it surfaced
+    // the #N/A from argument 2 instead of ever reaching LOG's own
+    // first-argument check.
+    match eval_one("=LOG(\"C\", NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_atan2_first_arg_type_error_wins_over_later_arg_error() {
+    // Harvested from fuzz/fuzz_excel.py, seed 196793:
+    // ATAN2(IF(H3 > Sheet1[[#Headers],[A]], H5, I3), MODE.SNGL(Sheet1[B]))
+    // -- H3 > "A" is FALSE (a number never exceeds text), so the IF
+    // yields I3, a non-numeric text cell; MODE.SNGL has no repeated value
+    // and is #N/A. Same first-argument-wins shape as LOG above (measured
+    // via win32com: ATAN2("text", NA()) is #VALUE!).
+    match eval_one("=ATAN2(\"text\", NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_seriessum_rejects_numeric_looking_text_coefficient() {
+    // Harvested from fuzz/fuzz_excel.py, seed 107768: coefficients
+    // {<blank>, "2" (forced text), 27, -35}. Real Excel's SERIESSUM(1.49,
+    // 1, 2, A1:A4) is #VALUE! -- unlike GCD/LCM/MULTINOMIAL, a
+    // numeric-looking string in the coefficients isn't coerced (confirmed
+    // directly via win32com with no blank at all either:
+    // SERIESSUM(1.49, 1, 2, {"2", 27, -35}) is also #VALUE!). visi
+    // previously coerced the string and returned a number.
+    let grid = [
+        ["", "=SERIESSUM(1.49, 1, 2, A1:A4)"],
+        ["\"2\"", ""],
+        ["27", ""],
+        ["-35", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.get_result_data(&CellRef::new(0, 1)) {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
     }
 }

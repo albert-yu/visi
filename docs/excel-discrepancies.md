@@ -397,6 +397,20 @@ Note this is *not* the same as the deliberate `#NUM!` cutoff already in
 behavior visi reproduces. Here the quotient is vanishingly small; it is the
 result that is large.
 
+A second, unrelated mechanism lands in the same "Excel's `INT(n/d)` is off"
+bucket at ordinary magnitudes: `MOD(-47, 47 / -13)`. `-47 / (47/-13)` is
+exactly `13` mathematically (`47` cancels), and stays exactly `13.0` even
+carried through the actual `f64` division of the two doubles — no rounding
+residue at all — so `INT` of it is unambiguously `13` and the true remainder
+is `0`, which is what visi returns. Excel instead returns
+`-3.615384615384615`, the divisor itself, as if its own `INT(n/d)` had
+landed on `12`. Unlike the large-divisor case above this isn't a magnitude
+problem — every value involved is an ordinary double — so it looks like
+Excel's own division/`INT` sequence for this particular ratio rounds down
+one step early. Rare enough (it needs `n` to be an exact multiple of `d`
+after `d` itself has already been rounded to a double) that it isn't worth a
+generator exclusion — see `test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary`.
+
 ## 16. VBA: an infinity poisons the next string-to-number conversion — *Excel is wrong*
 
 VBA's `^` is the one operator that returns an infinity rather than raising
@@ -478,6 +492,60 @@ the *geometry* of the tracking — move vs. grow vs. shrink — is identical to
 
 ---
 
+## 18. A tiny power underflows to exactly 0 in Excel — *Excel is wrong*
+
+`FACT(15) ^ -26` (`1307674368000 ^ -26`) is a legitimate positive subnormal,
+about `9.35e-316`. visi computes it via `f64::powf` and gets that value, so
+`(FACT(15) ^ -26) > 0` is `TRUE`. Real Excel's `^` returns exactly `0.0` for
+this call instead, so the same comparison is `FALSE`.
+
+Both engines agree at ordinary magnitudes; this is specifically an
+extreme-magnitude base raised to a large negative exponent, well past where
+the true result underflows the *normal* `f64` range but is still representable
+as a subnormal. Excel's own `^` implementation evidently doesn't handle
+subnormals here (likely computing `exp(y * ln(x))` without a path back down
+into subnormal territory), while Rust's `powf` does. The true mathematical
+value is unambiguously nonzero, so visi's answer is the accurate one — the
+same shape as the BESSEL entries at the top of this document.
+
+Found via fuzz/fuzz_excel.py, seed 795107:
+`XOR((FACT(15) ^ -26) > 0, ...)` disagreed only because of this one operand.
+The generator now avoids `^`/`POWER` calls whose result would underflow to a
+subnormal, rather than chasing Excel's underflow threshold.
+
+## 19. Negative base raised to a tiny fractional exponent — *No stable answer*
+
+`-2 ^ POWER(-15, -6)` — precedence-wise this is `(-2) ^ (POWER(-15, -6))`,
+not `-(2 ^ POWER(-15, -6))`: `-2^2` really is `4` in Excel's formula
+language, unary minus binding *tighter* than `^` there (the opposite of
+VBA's `^`, and the opposite of most languages' convention) — confirmed
+directly (`=-2^2` is `4` in real Excel), so visi's existing precedence
+here was already correct and needed no fix. `POWER(-15, -6)` is
+`8.779...e-08`, a tiny positive fraction, so the outer call is a negative
+base raised to a non-integer exponent — mathematically undefined over the
+reals. visi's `#NUM!` for that is the principled answer, and matches real
+Excel for most such exponents: `(-2)^0.5`, `(-2)^0.1`, `(-2)^0.01`,
+`(-2)^1e-6`, `(-2)^1e-8` are all `#NUM!` too. But not every one:
+`(-2)^0.2` is a real number in real Excel, `-1.148698354997035`, and so —
+unpredictably — is `(-2)^POWER(-15,-6)` (`-1.0000000608524293`, matching
+neither `-(2^y)` nor any other describable transform of `2^y` we could
+find). Sweeping exponents from `1e-8` to `0.5` in fine steps found no
+pattern separating the handful of exponents that return a real number
+from the great majority that return `#NUM!` — this looks like numerical
+noise in Excel's own `^` implementation (most plausibly an internal
+complex-domain evaluation whose imaginary part fails to cancel to exactly
+zero for almost every input, and does for a few), not a rule. No
+independent implementation could reproduce it without hard-coding the
+exact bit patterns that happen to trigger it, so visi's consistent
+`#NUM!` stands.
+
+Found via fuzz/fuzz_excel.py, seed 245879: `TYPE((-2 ^ POWER(-15, -6)))`
+disagreed (visi `16`, an error code; Excel `1`, a number) purely because
+of this. The generator now avoids `^`/`POWER` calls that could combine a
+possibly-negative base with a fractional exponent close to zero.
+
+---
+
 ## Fixed, not excluded
 
 For contrast, these looked like Excel divergences during investigation and
@@ -499,3 +567,13 @@ instead of `#VALUE!`); `ERF`/`ERFC` rejecting numeric text they should coerce;
 `POWER(0, 0)` returning 1 rather than `#NUM!`; `CHITEST` rejecting negative
 expected values per element when Excel only rejects a negative total; and
 number→text keeping more than Excel's 15 significant digits. See `git log`.
+
+A later pass fixed: `MODE.MULT` sorting tied modes by value instead of by
+first appearance; `SERIESSUM` coercing a numeric-looking text coefficient
+that real Excel rejects with `#VALUE!`; `LOG` and `ATAN2` surfacing a later
+argument's pre-computed error instead of checking their own first argument's
+type first; `SIN`/`COS`/`TAN` (and `COT`/`CSC`/`SEC`, built on them) not
+refusing an argument at or past `2^27` radians with `#NUM!`; and
+`compare_excel_strings`'s text `>`/`<` giving `-` a fixed low sort weight
+instead of Windows' actual rule (stripped-of-`-` comparison first, `-`
+breaking a tie only when the stripped strings are otherwise identical).

@@ -571,28 +571,34 @@ pub fn mode_mult(data: &[f64]) -> Result<Vec<f64>, String> {
     }
     let mut counts = std::collections::HashMap::new();
     let mut max_count = 0;
+    let mut first_seen = std::collections::HashMap::new();
 
-    for &x in data {
+    for (idx, &x) in data.iter().enumerate() {
         let key = x.to_bits();
         let entry = counts.entry(key).or_insert(0);
         *entry += 1;
         if *entry > max_count {
             max_count = *entry;
         }
+        first_seen.entry(key).or_insert(idx);
     }
 
     if max_count <= 1 {
         return Err("#N/A".to_string());
     }
 
-    let mut modes = Vec::new();
-    for (key, count) in counts {
-        if count == max_count {
-            modes.push(f64::from_bits(key));
-        }
-    }
-    modes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    Ok(modes)
+    // Real Excel returns tied modes in the order they first appear in the
+    // data (same rule MODE.SNGL above uses to break a tie down to one
+    // value), not sorted by value -- verified via
+    // fuzz/fuzz_excel.py (INDEX(MODE.MULT(...), 1) picked the
+    // first-encountered mode, not the smallest, when three values tied).
+    let mut modes: Vec<(usize, f64)> = counts
+        .into_iter()
+        .filter(|&(_, count)| count == max_count)
+        .map(|(key, _)| (first_seen[&key], f64::from_bits(key)))
+        .collect();
+    modes.sort_by_key(|&(idx, _)| idx);
+    Ok(modes.into_iter().map(|(_, v)| v).collect())
 }
 
 pub fn trimmean(data: &[f64], percent: f64) -> Result<f64, String> {
