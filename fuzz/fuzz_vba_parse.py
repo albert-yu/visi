@@ -483,7 +483,12 @@ def main():
                     cases.append((name, f.read(), False))
         return run_corpus(cases, args.corpus)
     else:
-        gen = VbaSourceGenerator(args.seed)
+        # Resolve the seed rather than passing None straight through:
+        # `random.Random(None)` seeds from entropy, which would make a
+        # failure found here impossible to reproduce -- the one thing a
+        # saved reproduction is for.
+        seed = args.seed if args.seed is not None else random.randrange(1_000_000)
+        gen = VbaSourceGenerator(seed)
         for i in range(1, args.iterations + 1):
             mutate = gen.rng.random() < args.mutation_rate
             cases.append((f"iter_{i}", build_module(gen.body(mutate)), mutate))
@@ -492,7 +497,12 @@ def main():
     print("     visi vs. Microsoft Excel VBA Syntax Differential Fuzzer     ".center(69))
     print("=" * 69)
     print(f" Cases       : {len(cases)}")
-    print(f" Source      : {args.corpus or 'generated'}")
+    # The seed goes in every saved failure's directory name. Without it two
+    # runs both save to `vba_parse_iter_7` and the second silently destroys
+    # the first's reproduction -- which is exactly what happened to the
+    # issue #78 corpus while it was being used as a reference set.
+    run_tag = "" if args.corpus else f"_seed_{seed}"
+    print(f" Source      : {args.corpus or f'generated (seed {seed})'}")
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")
     print(f" Timeout     : {args.timeout}s (a hang is how Excel reports a compile error)")
     if driver.driver_type == "mock":
@@ -529,7 +539,7 @@ def main():
                 print(f"   {VERDICT_BLURB[result]}")
                 print(f"   visi : {visi_detail or 'accepted'}")
                 print(f"   excel: {excel_detail}")
-                out = os.path.join(failures_dir, f"vba_parse_{label}")
+                out = os.path.join(failures_dir, f"vba_parse_{label}{run_tag}")
                 os.makedirs(out, exist_ok=True)
                 with open(os.path.join(out, "source.bas"), "w") as f:
                     f.write(source)

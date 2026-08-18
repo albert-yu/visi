@@ -193,6 +193,115 @@ array index without a symbol table. So it marks the boundary of what
 parse-only checking can see rather than a parser bug, and the generator now
 declares a real callee so the omitted-argument syntax stays under test.
 
+#### The symbol table, as built (issue #78)
+
+Porting the harness to Windows (`--driver win32com`) put that boundary under
+real measurement for the first time and found **12 false negatives in 100**
+generated cases. `core/vba/resolve.rs` and `core/vba/builtin_names.rs` are the
+answer, and the headline is that the issue's own diagnosis — "essentially all
+of them trace to this one limitation" — was **wrong about half of them**.
+Minimizing each case with the new `fuzz/vba_compile_probe.py` split them four
+ways:
+
+| Cause | Cases |
+| --- | --- |
+| an undeclared name used with call syntax | iter_22, 40, 50, 64, 93 |
+| a plain local (`Dim x`, or `x = 1`) used as a call target | iter_12, 15, 46 |
+| `ReDim Preserve` on an undeclared name | iter_14, 57 |
+| a name starting with `_` | iter_24 |
+| a built-in type keyword as a declared name (fixed earlier) | iter_4 |
+
+Only the first two groups are name resolution. The last two were assumed to be
+and are not: **plain `ReDim arr(1 To 5)` declares the array and compiles with
+no `Dim` anywhere, while adding `Preserve` makes the identical line a compile
+error**, and a leading `_` is a pure lexer defect (VBA has no identifier
+starting with an underscore, so `_ y = 2` was silently becoming an
+implicit-call statement on a name spelled `_`). Two cases that looked
+implicated — `For Each c In rng` and `x = a _ + b`, both with everything
+undeclared — turned out to **compile fine** and were never the cause; with
+`Option Explicit` off a bare name is just an implicit Variant. **Only call
+syntax forces Excel to resolve anything.**
+
+The design risk the issue flagged is real and is handled structurally rather
+than by care: Excel compiles a *project*, so a checker holding one module of
+several genuinely cannot tell an undeclared name from a cross-module call.
+`resolve::Scope::complete_project` gates the whole undeclared-name rule —
+`check_syntax` sets it (a standalone `.bas` is the whole story), the new
+`VbaProject::check_modules` sets it after unioning every module's declared
+names, and `VbaModule::check_syntax` deliberately does not, having no project
+to consult. `visi macro check` on a workbook goes through `check_modules`, so
+a call into a sibling module resolves.
+
+One exposure is left, and it is a deliberate choice rather than an oversight:
+`visi macro check some_module.bas` treats that file as the whole project, so a
+call into a module the file does not contain is reported. That is right for the
+differential harness (whose generated module *is* self-contained) and for a
+genuinely standalone `.bas`, and wrong for one file cut out of a larger
+project — where the answer is to check the workbook instead, which resolves
+project-wide. If this turns out to bite in practice the fix is a flag selecting
+the scope, not a weakening of the default.
+
+The built-in registry is deliberately **over-broad**, and the asymmetry is
+worth stating because it is what makes a hand-maintained list of a few hundred
+names defensible at all: omitting a real built-in rejects working code, while
+including a non-built-in merely lets one mistake through — which is exactly
+today's behaviour and so no regression. Adding a plausible name there needs no
+justification; removing one does. The registry is locked to `builtins.rs` from
+both ends by a pair of tests, because auditing the two lists against each other
+found `Hex`, `Oct` and `Val` implemented as intrinsics but missing here — three
+names that would each have rejected working code.
+
+**Validation: two unseen seeds, 60 cases each — 0 false positives on both**
+(4242 and 91177), with false negatives down from 12-in-100. Zero is the number
+that matters: the undeclared-name rule is the first thing here that can reject a
+module for a reason other than its own syntax, and a single false positive would
+make `macro check` untrustworthy in the way the plan has warned about
+throughout.
+
+The differential harness cannot see the whole risk, though, and that is worth
+recording. The generated grammar never emits a **type-declaration suffix**, so
+it could not catch the one real false positive this work introduced: the lexer
+folds `$` into an identifier's spelling, so resolving `Trim$` looked up
+`"trim$"`, found nothing, and rejected it — along with every other `$` string
+intrinsic (`Left$`, `Mid$`, `Format$`, `UCase$`). It took hand-written
+real-world VBA to surface, and `resolve::norm` now strips a suffix on the
+declaring and referencing side alike. The lesson generalises: a fuzzer bounds
+the false-positive rate *over the shapes it generates*, which is narrower than
+the shapes real modules contain.
+
+The two survivors were both *new* shapes, neither in the original 12:
+
+- **A bare identifier alone as a statement** (`x`, no parentheses, no
+  arguments). Deliberately left unchecked in the first pass on the grounds that
+  it had never been measured — the fuzzer then measured it, and the probe
+  settled every variant: **a bare statement is a call, and resolves by exactly
+  the same rule**. `x` is rejected whether undeclared, `Dim`'d as a `Long`, or
+  created by assignment; `Helper` (a declared `Sub`) and `Beep` (a built-in)
+  are accepted. Now implemented. Note this holds in *statement* position only —
+  a bare `x` inside an expression is an ordinary implicit-Variant read, which
+  is why `x = a + b` with nothing declared still compiles.
+- **Duplicate declaration**: `x = Helper(1)` creates `x` implicitly and a later
+  `Dim x As Long` in the same procedure redeclares it. On seed 91177 **all five**
+  remaining false negatives were this one shape, not five different gaps —
+  ordinary code declares first, while the generator emits its `Dim` last, so the
+  shape dominates the residual rate. Now implemented, and it is the one
+  order-sensitive rule in the pass: measured, `Dim x` then `x = 1` compiles and
+  `x = 1` then `Dim x` does not, so counting names is not enough — the checker
+  has to know which came first. Only the two entry routes into scope that were
+  measured (an explicit declaration, and a plain assignment) count as bringing a
+  name in; a parameter almost certainly does too, but the harness splices its
+  snippet into a parameterless `Sub`, so that case could not be put to Excel and
+  is deliberately left un-flagged.
+
+A harness bug found on the way: `fuzz_vba_parse.py` saved failures to
+`fuzz_results/failures/vba_parse_iter_<N>` with no seed in the path, so a second
+run silently overwrote the first's reproductions — which is what happened to the
+issue #78 corpus while it was in use as a reference set. It also passed
+`--seed`'s `None` straight to `random.Random`, seeding from entropy and making
+any failure it found unreproducible. Both fixed: the seed is now resolved up
+front, printed, and included in every saved failure's directory name, matching
+`fuzz_excel.py`'s existing `fail_iter_<N>_seed_<SEED>` convention.
+
 ### Phase 1, as built
 
 Landed as `core/vba/{value,interp,builtins}.rs`, `visi macro run`,

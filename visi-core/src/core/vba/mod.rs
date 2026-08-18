@@ -28,6 +28,7 @@
 // commitment made a phase too early.
 #[doc(hidden)]
 pub mod ast;
+pub(crate) mod builtin_names;
 #[doc(hidden)]
 pub mod builtins;
 pub(crate) mod color;
@@ -58,11 +59,20 @@ pub struct ModuleSyntax {
 
 /// Checks a VBA module's source for syntax errors.
 ///
-/// This is Phase 0 of the plan in `docs/vba-macro-support.md`: it answers
-/// whether the source *parses*, and nothing more. It does not resolve names,
-/// check types, or evaluate anything, so it will accept a module that fails
-/// at run time -- and, being an independent implementation, it may still
-/// differ from Excel's own compiler at the edges.
+/// Phase 0 of the plan in `docs/vba-macro-support.md`, plus the narrow
+/// name-resolution pass in [`resolve`] that issue #78 called for: it answers
+/// whether the source *compiles*, as far as parsing and resolving the names
+/// it can see will show. It does not check types or evaluate anything, so it
+/// will still accept a module that fails at run time -- and, being an
+/// independent implementation, may differ from Excel's compiler at the edges.
+///
+/// **`source` is treated as a self-contained project.** A name used with
+/// call syntax that resolves nowhere -- not in this module, not a VBA or
+/// Excel built-in -- is reported, which is right for a standalone `.bas` and
+/// for the single generated module the differential harness compiles, but
+/// would be wrong for one module of a larger project, where the name may
+/// live in a sibling. Use [`VbaProject::check_modules`] for that case; it
+/// supplies each module the others' names.
 ///
 /// ```
 /// use visi_core::core::check_syntax;
@@ -70,18 +80,24 @@ pub struct ModuleSyntax {
 /// assert!(check_syntax("Sub Hello()\n").is_err());
 /// ```
 pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
-    let module = parser::parse_module(source).map_err(|e| Error::VbaSyntax {
+    let empty = std::collections::HashSet::new();
+    check_source(source, None, &resolve::Scope::self_contained(&empty))
+}
+
+/// [`check_syntax`]'s body, with the resolution scope chosen by the caller.
+fn check_source(
+    source: &str,
+    module_name: Option<&str>,
+    scope: &resolve::Scope<'_>,
+) -> Result<ModuleSyntax, Error> {
+    let to_err = |e: parser::ParseError| Error::VbaSyntax {
         message: e.message,
-        module: None,
+        module: module_name.map(str::to_string),
         line: e.pos.line,
         column: e.pos.col,
-    })?;
-    resolve::check_implicit_calls(&module).map_err(|e| Error::VbaSyntax {
-        message: e.message,
-        module: None,
-        line: e.pos.line,
-        column: e.pos.col,
-    })?;
+    };
+    let module = parser::parse_module(source).map_err(to_err)?;
+    resolve::check_module(&module, scope).map_err(to_err)?;
     Ok(ModuleSyntax {
         procedures: module.procedures().iter().map(|p| p.name.clone()).collect(),
     })
@@ -254,11 +270,18 @@ impl crate::core::WorkbookManager {
             // A module that does not parse is skipped rather than fatal: it
             // cannot be the one declaring the procedure, and reporting its
             // syntax error here would blame the wrong module entirely.
+            //
+            // Deliberately `parse_module` rather than `check_syntax`: the
+            // only question is which module *declares* this procedure, which
+            // is answered by parsing alone. Going through the name-resolution
+            // pass as well would let an unrelated unresolved name elsewhere
+            // in the module hide a procedure that is really there.
             .find(|m| {
-                m.check_syntax().is_ok_and(|s| {
-                    s.procedures
+                parser::parse_module(&m.source).is_ok_and(|module| {
+                    module
+                        .procedures()
                         .iter()
-                        .any(|p| p.eq_ignore_ascii_case(procedure))
+                        .any(|p| p.name.eq_ignore_ascii_case(procedure))
                 })
             })
             .map(|m| m.source.clone())
@@ -311,21 +334,19 @@ impl VbaModule {
     /// The name matters more than it looks: a workbook can hold many modules
     /// and `visi macro check` reports on all of them, so an error that does
     /// not say which one it came from is close to useless.
+    ///
+    /// A `VbaModule` does not know its project, so unlike the free
+    /// [`check_syntax`] this **cannot** conclude anything from a name it
+    /// fails to resolve -- a sibling module may well declare it. Reach for
+    /// [`VbaProject::check_modules`] when the project is available; it is
+    /// strictly the better check.
     pub fn check_syntax(&self) -> Result<ModuleSyntax, Error> {
-        check_syntax(&self.source).map_err(|e| match e {
-            Error::VbaSyntax {
-                message,
-                line,
-                column,
-                ..
-            } => Error::VbaSyntax {
-                message,
-                module: Some(self.name.clone()),
-                line,
-                column,
-            },
-            other => other,
-        })
+        let empty = std::collections::HashSet::new();
+        check_source(
+            &self.source,
+            Some(&self.name),
+            &resolve::Scope::partial(&empty),
+        )
     }
 }
 
@@ -487,6 +508,47 @@ impl VbaProject {
     /// case-insensitively.
     pub fn module_name_taken(&self, name: &str) -> bool {
         self.find_module(name).is_some()
+    }
+
+    /// Checks every module, resolving names against the **whole project**.
+    ///
+    /// This is the check to prefer wherever the project is in hand.
+    /// [`VbaModule::check_syntax`] sees one module and so has to accept any
+    /// name it cannot resolve, since a sibling may declare it; here the
+    /// siblings are known, so `x = arr(1)` with no `arr` anywhere is
+    /// reported the way Excel reports it -- Excel compiles a project, not a
+    /// file.
+    ///
+    /// Returns one entry per module, in `modules` order, pairing the
+    /// module's name with its result. A module whose *source* does not parse
+    /// still contributes whatever names it declares to the others, since a
+    /// parse failure in one module is not evidence about another.
+    pub fn check_modules(&self) -> Vec<(String, Result<ModuleSyntax, Error>)> {
+        let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let parsed: Vec<_> = self
+            .modules
+            .iter()
+            .map(|m| (m, parser::parse_module(&m.source).ok()))
+            .collect();
+        for (_, module) in &parsed {
+            if let Some(module) = module {
+                declared.extend(resolve::declared_names(module));
+            }
+        }
+
+        parsed
+            .iter()
+            .map(|(m, _)| {
+                let scope = resolve::Scope {
+                    external: &declared,
+                    complete_project: true,
+                };
+                (
+                    m.name.clone(),
+                    check_source(&m.source, Some(&m.name), &scope),
+                )
+            })
+            .collect()
     }
 }
 
