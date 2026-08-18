@@ -544,6 +544,89 @@ disagreed (visi `16`, an error code; Excel `1`, a number) purely because
 of this. The generator now avoids `^`/`POWER` calls that could combine a
 possibly-negative base with a fractional exponent close to zero.
 
+## 20. VBA: a never-executed statement can change which error a procedure raises — *Under investigation*
+
+`fuzz/fuzz_vba.py` first ran against real Windows Excel this session (a
+`win32com` driver alongside the existing macOS AppleScript one), and one
+case out of 200 landed here rather than being understood well enough to fix
+or fully document:
+
+```vba
+Private Function Gen1()
+    Dim va, vb, vi, vn
+    Dim wsh As Worksheet, vk As Range, vq As Range
+    Set wsh = ThisWorkbook.Worksheets("Data")
+    va = 7
+    vb = 2147483647
+    vb = ((Left(32767, 3) & Len(CStr(3))) Eqv ((Not Null) \ ("1.5" = &HFF)))
+    wsh.Cells(3, 5).Value = (("Z" & "abc") >= (Not vb))
+    va = wsh.Cells(3, 5).Value
+    va = (((Not "a") Eqv ("12" Mod vb)) Mod (Val(100000) <> (&HFF Eqv va)))
+    Gen1 = va
+End Function
+```
+
+Real Excel raises **13** (Type Mismatch) calling this; visi raises **94**
+(Invalid use of Null). Both numbers are individually explicable —
+`(Not Null) \ (...)` on line 7 is 94 on both engines when isolated, and
+`Not "a"` on the last line is a `Not` of a non-numeric string literal, which
+is a plausible source of 13 — the puzzle is *which one wins*, and why.
+
+Measured directly (win32com, real Windows Excel), holding everything else
+fixed and varying only how much of the function survives:
+
+| Body kept | Excel's error |
+| --- | --- |
+| Through line 7 only (the `Not Null` line, `Gen1`/`Harness` inlined into one function) | **94** — matches visi |
+| The full function above, called as `Gen1()` from a separate `Harness` | **13** |
+
+Line 7 executes and raises before line 10 (`Not "a"`) is ever reached — VBA
+does not roll a statement back or re-run the function once an error fires.
+So Excel's 13 cannot come from *executing* line 10; the only thing that
+changed between the two rows of that table is whether line 10 (and 8, 9)
+exist **anywhere in the compiled procedure**, executed or not. That points
+at something in Excel's own compile step for the procedure — the same
+"compiles lazily, once, per invoked procedure" step `fuzz_vba_parse.py` is
+built around — evaluating (or type-checking) a constant sub-expression like
+`Not "a"` and having that outcome override which runtime error the
+*procedure* is later reported as raising, rather than the error simply
+propagating up from whichever statement actually executed first.
+
+Not fixed and not excluded: the mechanism above is a hypothesis from a
+single case, not a rule confirmed against a systematic sweep (varying which
+kind of never-executed statement, where it sits in the procedure, and
+whether the current statement's own error survives). Chasing that sweep is
+future work; guessing at a rule from one data point risks encoding a
+coincidence into the interpreter. `visi`'s own error stays principled in
+the meantime (94 is genuinely what `(Not Null) \ (...)` raises), so this is
+left as a known open question rather than either "Excel is wrong" or a
+"visi gap" verdict.
+
+## 21. VBA: an extreme `^` exponent may raise Overflow directly rather than giving infinity — *Under investigation*
+
+Section 16 and `writing_an_infinity_stores_the_num_error_excel_stores`
+(`vba/host.rs`) establish, with real-Excel measurements, that `^` never
+raises Overflow -- `3.75 ^ 32767` and `-2.5 ^ 1000` both give a `Double`
+infinity with no trapped error, and assigning that infinity to a
+`Range.Value` leaves a `#NUM!` error *cell* rather than raising anything
+in the macro. `fuzz/fuzz_vba.py`'s new win32com driver found a case that
+looks like the same shape but isn't: `va` holding a cell-read `33`
+(`va = wsh.Cells(1, 5).Value`, itself `=SUM(A1:B2)`), then
+`wsh.Cells(2, 6).Value = (va ^ 2147483647)`. visi computes it exactly like
+the smaller-exponent cases (infinity, no trap, cell becomes `#NUM!`, the
+macro finishes and returns `va` unaffected); real Excel raises a trapped
+**Overflow (6)** partway through the same statement.
+
+Not yet isolated to a single cause -- the exponent here (`2147483647`,
+`Long.MaxValue`) is far larger than the already-measured `32767`/`1000`
+cases, so this may be an exponent-magnitude threshold specific to `^`
+itself (distinct from the infinity-assignment behavior in section 16, not
+a contradiction of it), or may depend on `va` arriving from a cell read
+rather than a literal the way `ArithMode::Constant` vs `::Promote` already
+distinguishes for plain arithmetic overflow. Left open rather than guessed
+at; a systematic sweep of exponent magnitude (and literal- vs
+variable-sourced base) is future work.
+
 ---
 
 ## Fixed, not excluded
@@ -577,3 +660,15 @@ refusing an argument at or past `2^27` radians with `#NUM!`; and
 `compare_excel_strings`'s text `>`/`<` giving `-` a fixed low sort weight
 instead of Windows' actual rule (stripped-of-`-` comparison first, `-`
 breaking a tie only when the stripped strings are otherwise identical).
+
+The first Windows run of `fuzz/fuzz_vba.py` (its own `win32com` driver, added
+alongside the AppleScript one) found two more, both about `Null` in a
+boolean-ish position sharing one Rust function that turned out to cover two
+different Excel rules: `If`/`Do While`/`Do Until` treat a `Null` condition as
+`False` rather than raising 94 (`value::to_bool_condition`, used only by
+those three statements) where `CBool(Null)` and the logical operators still
+raise 94 as before; and the unary `Not` *operator* raises 94 on `Null`
+(matching `CBool`) rather than propagating it, even though `Imp`'s own
+definition (`Not a Or b`) still needs the underlying primitive to propagate
+`Null` internally for `Null Imp True` to keep working -- see `UnOp::Not`'s
+dispatch in `interp.rs`, which is where the two are kept apart.

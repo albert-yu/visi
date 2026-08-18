@@ -382,9 +382,15 @@ impl Variant {
         })
     }
 
-    /// This value as a `Boolean`, as `If` and the logical operators read it.
+    /// This value as a `Boolean`, as `CBool` and the logical operators read
+    /// it.
     ///
-    /// Any non-zero number is true, which is why `If 5 Then` runs.
+    /// Any non-zero number is true, which is why `If 5 Then` runs. `Null`
+    /// is error 94 here -- measured against real Excel (Windows):
+    /// `CBool(Null)` and `Not Null` both raise 94. A *statement condition*
+    /// (`If`/`Do While`/`Do Until`) is a different coercion that treats
+    /// `Null` as `False` instead -- see `to_bool_condition`, which is what
+    /// those statements actually use.
     pub fn to_bool(&self) -> VResult<bool> {
         match self {
             Variant::Boolean(b) => Ok(*b),
@@ -392,6 +398,23 @@ impl Variant {
             // `CBool("True")` is True even though `CDbl("True")` is error 13.
             Variant::Str(s) if bool_word(s).is_some() => Ok(bool_word(s).unwrap_or(false)),
             other => Ok(other.to_f64()? != 0.0),
+        }
+    }
+
+    /// This value as a `Boolean`, as an `If`/`Do While`/`Do Until` statement
+    /// condition reads it -- unlike [`Self::to_bool`], a `Null` condition is
+    /// `False` rather than error 94. Measured against real Excel (Windows):
+    /// `If Null Then` takes the `Else` branch, `Do While Null` never loops,
+    /// and `Do Until Null` loops until an explicit exit (i.e. the condition
+    /// reads as `False`, never `True`) -- while `CBool(Null)` and `Not Null`
+    /// still raise 94 in the same session. Two different coercions behind
+    /// what looks like one "read as boolean" idea, confirmed separately
+    /// rather than assumed to be the same rule (fuzz/fuzz_vba.py, whose
+    /// win32com driver made this measurable on Windows for the first time).
+    pub fn to_bool_condition(&self) -> VResult<bool> {
+        match self {
+            Variant::Null => Ok(false),
+            other => other.to_bool(),
         }
     }
 
@@ -1106,6 +1129,16 @@ pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
 /// `Not`, which is bitwise on numbers and logical on `Boolean`s.
 ///
 /// Probe case 46: `Not 5` is `-6`, the bitwise complement.
+///
+/// Propagates a `Null` operand as `Null` -- this is the primitive `imp`
+/// builds on (`Imp` is defined as `Not a Or b`, so `Null Imp True` needs
+/// `Not Null` to come back `Null` here, then `three_valued`'s Or logic
+/// picks the truthy `True`). The user-facing `Not` *operator* is a
+/// different rule: measured directly against real Excel (Windows),
+/// `Not Null` typed directly by a caller raises error 94, the same 94
+/// `CBool(Null)` does -- see `UnOp::Not`'s own dispatch in `interp.rs`,
+/// which checks for `Null` before ever calling this function, rather than
+/// this shared primitive raising and breaking `imp`'s use of it.
 pub fn not(v: &Variant) -> VResult<Variant> {
     let v = &logical_operand(v);
     match v {
