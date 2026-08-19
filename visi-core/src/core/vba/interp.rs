@@ -2787,14 +2787,10 @@ fn is_statically_boolean(e: &Expr) -> bool {
         {
             false
         }
-        Expr::Binary { op, .. }
-            if matches!(
-                op,
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
-            ) =>
-        {
-            is_statically_typed(e)
-        }
+        Expr::Binary {
+            op: BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge,
+            ..
+        } => is_statically_typed(e),
         _ => is_constant(e),
     }
 }
