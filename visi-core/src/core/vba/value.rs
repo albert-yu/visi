@@ -725,7 +725,19 @@ pub fn format_number(v: f64) -> String {
         if r.contains('.') {
             r = r.trim_end_matches('0').trim_end_matches('.').to_string();
         }
-        return if r == "-0" { "-0".to_string() } else { r };
+        let sig_digits = r
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .skip_while(|c| *c == '0')
+            .count();
+        if exp == -2 && sig_digits >= 15 || exp < -2 && sig_digits > 15 {
+            // `CStr(1 / 15)` uses scientific notation rather than keeping a
+            // 16-digit fixed decimal. Short fixed decimals such as `0.09`
+            // and 15-significant-digit ones such as `0.000457247370827618`
+            // stay fixed.
+        } else {
+            return if r == "-0" { "-0".to_string() } else { r };
+        }
     }
 
     let mantissa = if mantissa.contains('.') {
@@ -1025,10 +1037,11 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
         return Err(VbaError::invalid_call());
     }
     let r = base.powf(exp);
-    // The same constant-vs-runtime split the other operators have:
-    // `3.75 ^ 32767` written with literals is error 6, while the same
-    // exponentiation with a variable base yields `INF`.
-    if mode == ArithMode::Constant && !r.is_finite() && base.is_finite() && exp.is_finite() {
+    // Excel raises overflow when exponentiation exceeds Double range even
+    // with runtime operands (`b = 3# : e = 32767 : b ^ e`). Earlier fuzzing
+    // had this backwards and let runtime exponentiation return INF.
+    let _ = mode;
+    if !r.is_finite() && base.is_finite() && exp.is_finite() {
         return Err(VbaError::overflow());
     }
     Ok(Variant::Double(r))
@@ -1130,15 +1143,9 @@ pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
 ///
 /// Probe case 46: `Not 5` is `-6`, the bitwise complement.
 ///
-/// Propagates a `Null` operand as `Null` -- this is the primitive `imp`
-/// builds on (`Imp` is defined as `Not a Or b`, so `Null Imp True` needs
-/// `Not Null` to come back `Null` here, then `three_valued`'s Or logic
-/// picks the truthy `True`). The user-facing `Not` *operator* is a
-/// different rule: measured directly against real Excel (Windows),
-/// `Not Null` typed directly by a caller raises error 94, the same 94
-/// `CBool(Null)` does -- see `UnOp::Not`'s own dispatch in `interp.rs`,
-/// which checks for `Null` before ever calling this function, rather than
-/// this shared primitive raising and breaking `imp`'s use of it.
+/// Propagates a `Null` operand as `Null`. A bare `Not Null` appears as error
+/// 94 only when a caller subsequently forces the returned `Null` through an
+/// operation such as `CStr`; assigning it and later concatenating it is fine.
 pub fn not(v: &Variant) -> VResult<Variant> {
     let v = &logical_operand(v);
     match v {
@@ -1256,17 +1263,21 @@ fn three_valued(lhs: &Variant, rhs: &Variant, deciding: bool) -> VResult<Option<
         (false, true) => lhs,
         (false, false) => return Ok(None),
     };
-    if known.to_bool()? != deciding {
-        return Ok(Some(Variant::Null));
-    }
     if matches!(known, Variant::Boolean(_)) {
+        if known.to_bool()? != deciding {
+            return Ok(Some(Variant::Null));
+        }
         return Ok(Some(known.clone()));
     }
     let class = match known.num_class().ok_or_else(VbaError::invalid_null)? {
         NumClass::Integer => NumClass::Integer,
         _ => NumClass::Long,
     };
-    Variant::pack(bankers_round(known.to_f64()?), class).map(Some)
+    let rounded = bankers_round(known.to_f64()?);
+    if (rounded != 0.0) != deciding {
+        return Ok(Some(Variant::Null));
+    }
+    Variant::pack(rounded, class).map(Some)
 }
 
 /// Whether a comparison operand was a compile-time constant.
@@ -1794,6 +1805,21 @@ mod tests {
     }
 
     #[test]
+    fn runtime_pow_overflow_raises() {
+        // Measured after fuzz/fuzz_vba.py found `b = 3# : e = 32767 : b ^ e`.
+        assert_eq!(
+            pow(
+                &Variant::Double(3.0),
+                &Variant::Long(32767),
+                ArithMode::Promote
+            )
+            .unwrap_err()
+            .number,
+            6
+        );
+    }
+
+    #[test]
     fn booleans_are_minus_one() {
         // Cases 41, 42, 47.
         assert_eq!(
@@ -1851,6 +1877,23 @@ mod tests {
         assert_eq!(
             shows(&not(&Variant::Boolean(true)).unwrap()),
             "Boolean|False"
+        );
+    }
+
+    #[test]
+    fn null_and_uses_the_bitwise_rounded_truthiness_of_the_known_operand() {
+        // Found by fuzz/fuzz_vba.py: `0.0001` is truthy as a condition, but
+        // `And` rounds it to the Long 0 before deciding whether Null matters.
+        assert_eq!(
+            shows(
+                &and(
+                    &Variant::Null,
+                    &Variant::Double(0.0001),
+                    (Operand::Runtime, Operand::Runtime)
+                )
+                .unwrap()
+            ),
+            "Long|0"
         );
     }
 
@@ -2006,6 +2049,7 @@ mod tests {
         assert_eq!(format_number(-1.25), "-1.25");
         assert_eq!(format_number(1000.0), "1000");
         assert_eq!(format_number(0.1), "0.1");
+        assert_eq!(format_number(1.0 / 15.0), "6.66666666666667E-02");
     }
 
     #[test]

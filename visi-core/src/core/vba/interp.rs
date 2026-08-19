@@ -1524,9 +1524,6 @@ impl<'w> Interpreter<'w> {
                 cmp(subject, &v, operand_kind(e))? == Some(std::cmp::Ordering::Equal)
             }
             CaseMatch::Range(lo_e, hi_e) => {
-                if subject.is_null() {
-                    return Ok(true);
-                }
                 let lo = cast(self.eval(lo_e, frame)?)?;
                 let hi = cast(self.eval(hi_e, frame)?)?;
                 let a = cmp(subject, &lo, operand_kind(lo_e))?;
@@ -2094,25 +2091,29 @@ impl<'w> Interpreter<'w> {
                 match op {
                     UnOp::Neg => value::neg(&v, mode),
                     UnOp::Pos => value::pos(&v, mode),
-                    // Not `value::not(&v)` directly: that primitive
-                    // propagates a `Null` operand (needed internally by
-                    // `imp`'s `Not a Or b` definition), but the `Not`
-                    // *operator* a caller writes raises error 94 on `Null`
-                    // instead -- measured against real Excel (Windows),
-                    // same as `CBool(Null)`. See `value::not`'s doc
-                    // comment.
-                    UnOp::Not if v.is_null() => Err(VbaError::invalid_null()),
                     UnOp::Not => value::not(&v),
                 }
             }
 
             Expr::Binary { op, lhs, rhs, .. } => {
                 let a = self.eval(lhs, frame)?;
-                let b = self.eval(rhs, frame)?;
                 if *op == BinOp::Is {
+                    let b = self.eval(rhs, frame)?;
                     return is_comparison(&a, &b);
                 }
                 let a = self.scalar(a)?;
+                if matches!(
+                    op,
+                    BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Eqv | BinOp::Imp
+                ) && matches!(a, Variant::Str(_))
+                {
+                    // Logical operators convert the left operand before the
+                    // right expression is evaluated. Fuzz found
+                    // `("a" + "Z") Eqv ("1" \ 0)`: Excel raises the left
+                    // type mismatch (13), not the right division by zero (11).
+                    a.to_bool()?;
+                }
+                let b = self.eval(rhs, frame)?;
                 let b = self.scalar(b)?;
                 let mode = if is_statically_typed(lhs) && is_statically_typed(rhs) {
                     ArithMode::Constant
@@ -2779,7 +2780,34 @@ fn is_statically_boolean(e: &Expr) -> bool {
         } => is_statically_boolean(expr),
         Expr::Call { target, .. } => matches!(target.as_ref(), Expr::Ident { name, .. }
             if STATICALLY_BOOLEAN.contains(&name.to_ascii_lowercase().as_str())),
+        Expr::Binary { op, lhs, rhs, .. }
+            if matches!(op, BinOp::IntDiv | BinOp::Mod)
+                && is_literal_bool(lhs)
+                && is_literal_string(rhs) =>
+        {
+            false
+        }
+        Expr::Binary {
+            op: BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge,
+            ..
+        } => is_statically_typed(e),
         _ => is_constant(e),
+    }
+}
+
+fn is_literal_bool(e: &Expr) -> bool {
+    match e {
+        Expr::Paren { expr, .. } => is_literal_bool(expr),
+        Expr::Literal(Literal::Bool(_)) => true,
+        _ => false,
+    }
+}
+
+fn is_literal_string(e: &Expr) -> bool {
+    match e {
+        Expr::Paren { expr, .. } => is_literal_string(expr),
+        Expr::Literal(Literal::Str(_)) => true,
+        _ => false,
     }
 }
 
@@ -2855,6 +2883,10 @@ fn is_statically_typed(e: &Expr) -> bool {
                     | BinOp::Ge
             ) && is_statically_typed(lhs)
                 && is_statically_typed(rhs)
+                || matches!(
+                    op,
+                    BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Eqv | BinOp::Imp
+                )
         }
         // Boolean- and String-returning intrinsics count for the same reason
         // the numeric ones do: the compiler knows the type without the value.
@@ -3483,14 +3515,9 @@ mod tests {
         // Xor and Eqv are not three-valued: Null always wins.
         assert_eq!(expr("IsNull(Null Xor True)"), "Boolean|True");
         assert_eq!(expr("IsNull(Null Eqv True)"), "Boolean|True");
-        // Not is not three-valued either, but not because Null wins -- the
-        // `Not` operator itself raises 94 on a Null operand (measured
-        // against real Excel, Windows; see value::not's doc comment and
-        // fuzz_statement_conditions_read_null_as_false_unlike_cbool_and_not).
-        // `imp`'s internal use of the same primitive still needs `Not Null`
-        // to propagate as `Null`, which is what makes `Null Imp True`
-        // above work -- that's a different, non-user-facing call path.
-        assert_eq!(expr("Not Null"), "ERR|94");
+        // Not propagates Null. A bare `Not Null` only errors if the caller
+        // then stringifies the returned Null (for example via CStr).
+        assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
     }
 
     #[test]
@@ -3653,9 +3680,9 @@ mod tests {
     }
 
     #[test]
-    fn a_case_range_matches_a_null_subject_but_no_other_case_form_does() {
-        // Measured, and deliberately not derived: `Null >= 2` is Null, so
-        // nothing about the comparisons predicts this.
+    fn select_case_null_subject_matches_no_case_form() {
+        // Measured with fuzz/vba_expr_probe.py after fuzz/fuzz_vba.py found
+        // `Select Case Null` incorrectly taking a `Case 2 To 5` arm.
         let sel = |cases: &str| {
             format!(
                 "    Dim r\n    Select Case Null\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
@@ -3663,7 +3690,7 @@ mod tests {
         };
         assert_eq!(
             run(&sel("    Case 2 To 5\n        r = \"range\"\n")),
-            "String|range"
+            "String|else"
         );
         assert_eq!(
             run(&sel("    Case 0, 1\n        r = \"value\"\n")),
@@ -3688,6 +3715,13 @@ mod tests {
         // `\` and `Mod` stay at 11 even for 0 op 0.
         assert_eq!(expr("0 \\ 0"), "ERR|11");
         assert_eq!(expr("0 Mod 0"), "ERR|11");
+    }
+
+    #[test]
+    fn logical_operators_convert_the_left_operand_before_evaluating_the_right() {
+        // Found by fuzz/fuzz_vba.py: the left type mismatch wins over the
+        // right division by zero.
+        assert_eq!(expr("(\"a\" + \"Z\") Eqv (\"1\" \\ 0)"), "ERR|13");
     }
 
     #[test]
@@ -3800,6 +3834,16 @@ mod tests {
     }
 
     #[test]
+    fn logical_expression_width_is_static_for_arithmetic_overflow() {
+        // Found by fuzz/fuzz_vba.py: this overflows as `2 - (Not 2147483647)`
+        // does, even though the logical expression's operand may be Variant.
+        assert_eq!(
+            run("    Dim vc\n    vc = 10\n    F = ((\"  3  \" And vc) - (Not 2147483647))"),
+            "ERR|6"
+        );
+    }
+
+    #[test]
     fn overflow_between_constants_is_really_between_statically_typed_operands() {
         // §28. The fixed-width arithmetic that makes `32767 + 1` error 6 is
         // chosen by static *typing*, not by constness, and the two come apart
@@ -3831,12 +3875,11 @@ mod tests {
         // Typed, but the width is `Long`, so there is nothing to overflow.
         assert_eq!(expr("CStr(Len(\"abcde\") + 32763)"), "String|32768");
         assert_eq!(expr("CStr(CInt(Empty) + 32768)"), "String|32768");
-        // `^` yields an infinity rather than overflowing (§4) whenever the
-        // expression is not statically typed -- which is what makes the
-        // first `^` row above a change and not a contradiction.
+        // `^` overflows at runtime too; this was found by fuzz/fuzz_vba.py
+        // after earlier tests had incorrectly expected an infinity here.
         assert_eq!(
             run("    Dim vb\n    vb = 4652\n    F = CStr(32767 ^ vb)"),
-            "String|INF"
+            "ERR|6"
         );
     }
 
@@ -4221,41 +4264,26 @@ mod tests {
     }
 
     #[test]
-    fn pow_overflows_between_constants_and_yields_infinity_at_runtime() {
-        // The same ArithMode split the other operators have. Phase 1
-        // measured the runtime half and missed this one.
+    fn pow_overflow_raises_at_runtime_too() {
+        // Measured after fuzz/fuzz_vba.py found `b = 3# : e = 32767 : b ^ e`.
         assert_eq!(expr("3.75 ^ 32767"), "ERR|6");
         assert_eq!(expr("255 ^ 255"), "ERR|6");
-        assert_eq!(
-            run("    Dim a\n    a = 3.75\n    F = (a ^ 32767)"),
-            "Double|INF"
-        );
-        assert_eq!(
-            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
-            "Double|INF"
-        );
-        // A finite constant result is unaffected.
+        assert_eq!(run("    Dim a\n    a = 3.75\n    F = (a ^ 32767)"), "ERR|6");
+        assert_eq!(run("    Dim a\n    a = 255\n    F = (a ^ 255)"), "ERR|6");
+        // A finite result is unaffected.
         assert_eq!(expr("2 ^ 10"), "Double|1024");
     }
 
     #[test]
-    fn infinity_is_a_value_for_pow_but_not_for_arithmetic() {
-        // `^` produces it, negation preserves it, CStr renders it "INF" --
-        // but +, - and * refuse to produce or consume one. The runtime form
-        // is used throughout: between constants `^` overflows instead, which
-        // `pow_overflows_between_constants_and_yields_infinity_at_runtime`
-        // covers.
-        assert_eq!(
-            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
-            "Double|INF"
-        );
-        assert_eq!(
-            run("    Dim a\n    a = 255\n    F = -(a ^ 255)"),
-            "Double|-INF"
-        );
+    fn overflowing_pow_raises_before_arithmetic_can_observe_infinity() {
+        // `^` raises overflow when the result exceeds Double range, even at
+        // runtime. A previous model let it produce INF and only made later
+        // arithmetic reject it.
+        assert_eq!(run("    Dim a\n    a = 255\n    F = (a ^ 255)"), "ERR|6");
+        assert_eq!(run("    Dim a\n    a = 255\n    F = -(a ^ 255)"), "ERR|6");
         assert_eq!(
             run("    Dim a\n    a = 255\n    F = ((a ^ 255) & \"x\")"),
-            "String|INFx"
+            "ERR|6"
         );
         assert_eq!(
             run("    Dim a, b\n    a = 255\n    b = (a ^ 255)\n    F = (b + 1)"),
@@ -4373,7 +4401,15 @@ mod tests {
 
         // Statically Boolean: a folded constant, or a Boolean-returning
         // intrinsic over a variable.
-        for subject in ["(1 = 1)", "True", "CBool(1)", "IsNumeric(0)"] {
+        for subject in [
+            "(1 = 1)",
+            "True",
+            "CBool(1)",
+            "IsNumeric(0)",
+            // Found by fuzz/fuzz_vba.py: a non-constant comparison is still
+            // statically Boolean when both operands are statically typed.
+            "(Val(&O17) >= (True > 3#))",
+        ] {
             assert_eq!(hit(subject, "1"), "String|a", "{subject} vs Case 1");
             assert_eq!(hit(subject, "0"), "String|else", "{subject} vs Case 0");
             assert_eq!(hit(subject, "0, 1"), "String|a", "{subject} vs Case 0, 1");
@@ -4407,6 +4443,20 @@ mod tests {
         assert_eq!(via_var("True", "2 To 5"), "String|else");
         assert_eq!(via_var("True", "Is < 0"), "String|a");
         assert_eq!(via_var("False", "0, 1"), "String|a");
+    }
+
+    #[test]
+    fn select_case_constant_bool_int_op_subject_is_not_statically_boolean() {
+        // Reproduces fuzz_results/failures/vba_exec_case_197. `True \\ "12"`
+        // folds to the Boolean True as an expression, but Excel does not use
+        // the statically-Boolean `Select Case` rule for that folded result, so
+        // `Case 0, 1` is not taken.
+        assert_eq!(
+            run(
+                "    Dim r\n    Select Case (True \\ \"12\")\n    Case 0, 1\n        r = \"value\"\n    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            ),
+            "String|else"
+        );
     }
 
     /// The constant-folding quirk in `constant_bool_int_op`, with the
@@ -4539,7 +4589,7 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_statement_conditions_read_null_as_false_unlike_cbool_and_not() {
+    fn fuzz_statement_conditions_read_null_as_false_unlike_cbool() {
         // Harvested from fuzz/fuzz_vba.py's win32com (Windows) run, seed 1,
         // case 2: `If (-Null) Then ... Else ... End If` ran the Else branch
         // in real Excel rather than raising 94 the way `CBool(Null)` does --
@@ -4550,9 +4600,9 @@ mod tests {
         // real, separate rule rather than a slip in the Gen2 case: `If Null
         // Then` takes the Else branch, `Do While Null` never loops, and `Do
         // Until Null` loops until an explicit exit (the condition reads as
-        // False, never True) -- while `CBool(Null)` and `Not Null` still
-        // raise 94 in that same session. Two different coercions behind
-        // what looks like one "read as boolean" idea.
+        // False, never True) -- while `CBool(Null)` still raises 94 in that
+        // same session. Two different coercions behind what looks like one
+        // "read as boolean" idea.
         assert_eq!(
             run("    If Null Then\n        F = \"T\"\n    Else\n        F = \"F\"\n    End If"),
             "String|F"
@@ -4569,9 +4619,19 @@ mod tests {
             ),
             "Integer|4"
         );
-        // The explicit conversions are untouched -- still 94.
+        // The explicit conversion is untouched -- still 94.
         assert_eq!(expr("CBool(Null)"), "ERR|94");
-        assert_eq!(expr("Not Null"), "ERR|94");
+    }
+
+    #[test]
+    fn fuzz_not_null_propagates_until_observed() {
+        // Harvested from fuzz/fuzz_vba.py win32com case 20: assigning
+        // `Not Null` does not raise, and concatenation later skips the Null.
+        assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
+        assert_eq!(
+            run("    Dim a, b\n    a = Not Null\n    b = \"x\" & a\n    F = b"),
+            "String|x"
+        );
     }
 
     #[test]
@@ -4649,15 +4709,12 @@ mod tests {
             run("    Dim a\n    a = \"1E400\"\n    F = (a + 1)"),
             "ERR|6"
         );
-        // The power itself still overflows to infinity happily.
+        // The power itself overflows too, even with runtime operands.
         assert_eq!(
             run("    Dim a\n    a = \"255\"\n    F = (a ^ 255)"),
-            "Double|INF"
+            "ERR|6"
         );
-        assert_eq!(
-            run("    Dim a\n    a = 255\n    F = (a ^ 255)"),
-            "Double|INF"
-        );
+        assert_eq!(run("    Dim a\n    a = 255\n    F = (a ^ 255)"), "ERR|6");
     }
 
     #[test]

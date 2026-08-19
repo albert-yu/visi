@@ -19,6 +19,7 @@ Thumbs.db
 .agents/scheduled_tasks.lock
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.pi/
 
 # Fuzzing test harness artifacts
 venv

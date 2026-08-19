@@ -3069,23 +3069,14 @@ mod tests {
     }
 
     #[test]
-    fn writing_an_infinity_stores_the_num_error_excel_stores() {
-        // `^` is the one VBA operator that produces an infinity rather than
-        // raising error 6, so a macro really can reach here. Excel has no
-        // infinities: measured, assigning one leaves an error cell.
-        //
-        // Found by `fuzz/fuzz_vba.py` -- and only by its *cell* comparison,
-        // since the case returned the same value on both sides while leaving
-        // `-inf` in a cell here and `#NUM!` in Excel.
+    fn overflowing_pow_raises_before_a_cell_write() {
+        // Measured after fuzz/fuzz_vba.py found that runtime `^` overflows
+        // rather than producing an infinity that can be assigned to a cell.
         assert_eq!(
             probe(
                 "v = 1000\nws.Range(\"G9\").Value = (-2.5 ^ v) :: TypeName(ws.Range(\"G9\").Value)"
             ),
-            "String|Error"
-        );
-        assert_eq!(
-            probe("v = 1000\nws.Range(\"G9\").Value = (-2.5 ^ v) :: ws.Range(\"G9\").Text"),
-            "String|#NUM!"
+            "ERR|6"
         );
         // An error value assigned as text is the error too, which is what
         // Excel does with the same assignment.
