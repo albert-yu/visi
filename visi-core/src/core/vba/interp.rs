@@ -2094,14 +2094,6 @@ impl<'w> Interpreter<'w> {
                 match op {
                     UnOp::Neg => value::neg(&v, mode),
                     UnOp::Pos => value::pos(&v, mode),
-                    // Not `value::not(&v)` directly: that primitive
-                    // propagates a `Null` operand (needed internally by
-                    // `imp`'s `Not a Or b` definition), but the `Not`
-                    // *operator* a caller writes raises error 94 on `Null`
-                    // instead -- measured against real Excel (Windows),
-                    // same as `CBool(Null)`. See `value::not`'s doc
-                    // comment.
-                    UnOp::Not if v.is_null() => Err(VbaError::invalid_null()),
                     UnOp::Not => value::not(&v),
                 }
             }
@@ -3483,14 +3475,9 @@ mod tests {
         // Xor and Eqv are not three-valued: Null always wins.
         assert_eq!(expr("IsNull(Null Xor True)"), "Boolean|True");
         assert_eq!(expr("IsNull(Null Eqv True)"), "Boolean|True");
-        // Not is not three-valued either, but not because Null wins -- the
-        // `Not` operator itself raises 94 on a Null operand (measured
-        // against real Excel, Windows; see value::not's doc comment and
-        // fuzz_statement_conditions_read_null_as_false_unlike_cbool_and_not).
-        // `imp`'s internal use of the same primitive still needs `Not Null`
-        // to propagate as `Null`, which is what makes `Null Imp True`
-        // above work -- that's a different, non-user-facing call path.
-        assert_eq!(expr("Not Null"), "ERR|94");
+        // Not propagates Null. A bare `Not Null` only errors if the caller
+        // then stringifies the returned Null (for example via CStr).
+        assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
     }
 
     #[test]
@@ -4539,7 +4526,7 @@ mod tests {
     }
 
     #[test]
-    fn fuzz_statement_conditions_read_null_as_false_unlike_cbool_and_not() {
+    fn fuzz_statement_conditions_read_null_as_false_unlike_cbool() {
         // Harvested from fuzz/fuzz_vba.py's win32com (Windows) run, seed 1,
         // case 2: `If (-Null) Then ... Else ... End If` ran the Else branch
         // in real Excel rather than raising 94 the way `CBool(Null)` does --
@@ -4550,9 +4537,9 @@ mod tests {
         // real, separate rule rather than a slip in the Gen2 case: `If Null
         // Then` takes the Else branch, `Do While Null` never loops, and `Do
         // Until Null` loops until an explicit exit (the condition reads as
-        // False, never True) -- while `CBool(Null)` and `Not Null` still
-        // raise 94 in that same session. Two different coercions behind
-        // what looks like one "read as boolean" idea.
+        // False, never True) -- while `CBool(Null)` still raises 94 in that
+        // same session. Two different coercions behind what looks like one
+        // "read as boolean" idea.
         assert_eq!(
             run("    If Null Then\n        F = \"T\"\n    Else\n        F = \"F\"\n    End If"),
             "String|F"
@@ -4569,9 +4556,19 @@ mod tests {
             ),
             "Integer|4"
         );
-        // The explicit conversions are untouched -- still 94.
+        // The explicit conversion is untouched -- still 94.
         assert_eq!(expr("CBool(Null)"), "ERR|94");
-        assert_eq!(expr("Not Null"), "ERR|94");
+    }
+
+    #[test]
+    fn fuzz_not_null_propagates_until_observed() {
+        // Harvested from fuzz/fuzz_vba.py win32com case 20: assigning
+        // `Not Null` does not raise, and concatenation later skips the Null.
+        assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
+        assert_eq!(
+            run("    Dim a, b\n    a = Not Null\n    b = \"x\" & a\n    F = b"),
+            "String|x"
+        );
     }
 
     #[test]

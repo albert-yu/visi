@@ -1130,15 +1130,9 @@ pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
 ///
 /// Probe case 46: `Not 5` is `-6`, the bitwise complement.
 ///
-/// Propagates a `Null` operand as `Null` -- this is the primitive `imp`
-/// builds on (`Imp` is defined as `Not a Or b`, so `Null Imp True` needs
-/// `Not Null` to come back `Null` here, then `three_valued`'s Or logic
-/// picks the truthy `True`). The user-facing `Not` *operator* is a
-/// different rule: measured directly against real Excel (Windows),
-/// `Not Null` typed directly by a caller raises error 94, the same 94
-/// `CBool(Null)` does -- see `UnOp::Not`'s own dispatch in `interp.rs`,
-/// which checks for `Null` before ever calling this function, rather than
-/// this shared primitive raising and breaking `imp`'s use of it.
+/// Propagates a `Null` operand as `Null`. A bare `Not Null` appears as error
+/// 94 only when a caller subsequently forces the returned `Null` through an
+/// operation such as `CStr`; assigning it and later concatenating it is fine.
 pub fn not(v: &Variant) -> VResult<Variant> {
     let v = &logical_operand(v);
     match v {
