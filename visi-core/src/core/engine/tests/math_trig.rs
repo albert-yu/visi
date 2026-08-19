@@ -304,8 +304,8 @@ fn test_gcd_lcm_error_on_non_numeric_argument() {
 }
 
 #[test]
-fn test_gcd_lcm_treats_blank_cell_as_omitted_not_zero() {
-    // A blank cell passed to GCD/LCM is dropped, not coerced to 0 --
+fn test_gcd_lcm_treats_scalar_blank_cell_as_omitted_not_zero() {
+    // A blank scalar reference passed to GCD/LCM is dropped, not coerced to 0 --
     // real Excel gives LCM(1, <blank>) = 1 (as if LCM(1)), not
     // LCM(1, 0) = 0. Measured with fuzz/fuzz_excel.py seed 308076,
     // where LCM(1, I2) (I2 blank) came back visi=0, Excel=1.
@@ -323,6 +323,29 @@ fn test_gcd_lcm_treats_blank_cell_as_omitted_not_zero() {
     assert!(
         matches!(gcd, ResultData::Float(v) if (v - 1.0).abs() < 1e-9),
         "GCD(1, <blank>) should be 1, got {gcd:?}"
+    );
+}
+
+#[test]
+fn test_fuzz_lcm_range_blank_cells_count_as_zero() {
+    // Harvested from fuzz/fuzz_excel.py seed 747962. Unlike a blank scalar
+    // reference, a blank inside a range argument participates as zero, so
+    // the LCM of the range is zero even when the non-blank cells alone
+    // would have produced 40568.
+    let grid = [["461.4064", "88", "=LCM(A1:B2)"], ["", "", "=LCM(A1:B1)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let range_with_blanks = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(range_with_blanks, ResultData::Float(v) if v.abs() < 1e-9),
+        "LCM(range containing blanks) should be 0, got {range_with_blanks:?}"
+    );
+
+    let no_blanks = sheet.get_result_data(&CellRef::new(1, 2));
+    assert!(
+        matches!(no_blanks, ResultData::Float(v) if (v - 40568.0).abs() < 1e-9),
+        "LCM(non-blank range) should be 40568, got {no_blanks:?}"
     );
 }
 
@@ -837,6 +860,17 @@ fn test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary() {
     // this is another instance of). visi's 0 is correct and is left
     // alone.
     assert_eq!(num("=MOD(-47, (47 / -13))"), 0.0);
+}
+
+#[test]
+fn test_fuzz_mod_tiny_power_against_negative_divisor_is_not_zero() {
+    // Harvested from fuzz/fuzz_excel.py seed 747962:
+    // MOD((-5 ^ -16), (-44 * 85)). The true dividend is a tiny positive
+    // number and the divisor is -3740, so Excel's documented
+    // n - d*INT(n/d) rule gives a remainder infinitesimally above -3740,
+    // not 0. This is the same Excel precision loss documented in
+    // docs/excel-discrepancies.md section 15.
+    assert!((num("=MOD((-5 ^ -16), (-44 * 85))") + 3740.0).abs() < 1e-9);
 }
 
 #[test]

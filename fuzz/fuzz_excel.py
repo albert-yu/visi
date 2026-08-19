@@ -571,16 +571,19 @@ class ExcelFuzzGenerator:
                 fn = random.choice(self.FUNCTIONS_TWO_NUM)
                 a = gen_expr(depth + 1)
                 b = gen_expr(depth + 1)
-                # A MOD divisor built from POWER can reach a magnitude far
-                # larger than the dividend, and Excel's MOD loses the small
-                # operand there and returns 0 instead of the true (nonzero)
+                # A MOD operand built from POWER (or `^`) can put the divisor
+                # far above the dividend either by making the divisor huge or
+                # by making the dividend tiny. Excel then loses the small
+                # operand and returns 0 instead of the true (nonzero)
                 # remainder -- visi keeps the mathematically correct value
                 # (see "docs/excel-discrepancies.md" section 15, e.g.
-                # MOD(36, POWER(-327.3, 69))). Not a new bug, just a
-                # generator gap: this combination was never actually kept
-                # out of the fuzzer.
-                if fn == "MOD" and b.startswith("POWER("):
-                    b = str(random.randint(-50, 50))
+                # MOD(36, POWER(-327.3, 69)) and seed 747962's
+                # MOD((-5 ^ -16), (-44 * 85))). Not a new bug, just a
+                # generator gap: this shape was never fully kept out of the
+                # fuzzer.
+                if fn == "MOD" and ("POWER(" in a or "^" in a or "POWER(" in b or "^" in b):
+                    a = str(random.randint(-50, 50))
+                    b = str(random.randint(-50, 50) or 1)
                 return f"{fn}({a}, {b})"
 
             elif fn_type == "multi_num":
