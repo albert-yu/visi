@@ -287,11 +287,23 @@ The two survivors were both *new* shapes, neither in the original 12:
   shape dominates the residual rate. Now implemented, and it is the one
   order-sensitive rule in the pass: measured, `Dim x` then `x = 1` compiles and
   `x = 1` then `Dim x` does not, so counting names is not enough — the checker
-  has to know which came first. Only the two entry routes into scope that were
-  measured (an explicit declaration, and a plain assignment) count as bringing a
-  name in; a parameter almost certainly does too, but the harness splices its
-  snippet into a parameterless `Sub`, so that case could not be put to Excel and
-  is deliberately left un-flagged.
+  has to know which came first.
+
+  The first pass counted only two routes into scope — an explicit declaration
+  and a plain assignment — because a parameter could not be put to Excel at
+  all: the probe splices its snippet into a parameterless `Sub`. Issue #80
+  closed that by giving `build_module` a signature (`sig`/`args`, threaded
+  through to `Sub Gen(...)` and its call in `Harness`, which has to keep
+  invoking it or the procedure is never compiled). With that, all five
+  remaining routes measured as **compile errors** — a parameter, a `For`
+  counter, a `For Each` element, a `Set` target, and a plain `ReDim` — each
+  confirmed against a control running the same route *without* the trailing
+  `Dim`, so the rejection is the duplicate and not the route statement itself.
+  All five are now flagged. Only a `Dim`/`Static`/`Const` reports: a `ReDim` of
+  a name already in scope is the ordinary resize and compiles, so the routes
+  add to the scope set without ever colliding themselves. One route is still
+  unmeasured — the procedure's own name, assignable inside a `Function` — since
+  the harness compiles one fixed `Sub`.
 
 A harness bug found on the way: `fuzz_vba_parse.py` saved failures to
 `fuzz_results/failures/vba_parse_iter_<N>` with no seed in the path, so a second

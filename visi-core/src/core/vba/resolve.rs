@@ -114,7 +114,9 @@
 //!
 //! [issue #78]: https://github.com/albert-yu/visi/issues/78
 
-use super::ast::{Arg, CaseMatch, Expr, Module, ModuleItem, Procedure, Stmt, TypeRef, VarDecl};
+use super::ast::{
+    Arg, CaseMatch, Expr, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
+};
 use super::builtin_names::is_builtin;
 use super::parser::ParseError;
 use std::collections::HashMap;
@@ -355,7 +357,7 @@ fn check_procedure(
     }
     collect_locals(&proc.body, &mut locals);
     collect_implicit_locals(&proc.body, &mut locals);
-    check_duplicate_declarations(&proc.body)?;
+    check_duplicate_declarations(&proc.body, &proc.params)?;
     let ctx = Ctx {
         module: module_syms,
         locals: &locals,
@@ -524,8 +526,8 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     }
 }
 
-/// VBA's "Duplicate declaration in current scope", for the two ways into it
-/// that have been measured.
+/// VBA's "Duplicate declaration in current scope", over every route into
+/// procedure scope that has been measured.
 ///
 /// Unlike everything else here this pass is **order-sensitive**, and has to
 /// be: `Dim x As Long` followed by `x = 1` is ordinary code, while the same
@@ -533,30 +535,44 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
 /// (`fuzz/vba_compile_probe.py --only dup:`):
 ///
 /// ```text
-/// Dim x As Long : Dim x As Long   ' FAILS -- declared twice
-/// x = 1         : Dim x As Long   ' FAILS -- assigning first creates it
-/// x = Helper(1) : Dim x As Long   ' FAILS -- likewise
-/// Dim x As Long : x = 1           ' compiles
+/// Dim x As Long          : Dim x As Long    ' FAILS -- declared twice
+/// x = 1                  : Dim x As Long    ' FAILS -- assigning first creates it
+/// x = Helper(1)          : Dim x As Long    ' FAILS -- likewise
+/// Set x = New Collection : Dim x As Object  ' FAILS -- so does a Set target
+/// ReDim arr(1 To 5)      : Dim arr()        ' FAILS -- a plain ReDim declares
+/// For x = 1 To 3 ... Next x   : Dim x As Long   ' FAILS -- so does a counter
+/// For Each x In rng ... Next  : Dim x As Long   ' FAILS -- and an element var
+/// Sub Gen(ByVal x As Long)    : Dim x As Long   ' FAILS -- and a parameter
+/// Dim x As Long          : x = 1            ' compiles
+/// Dim arr()              : ReDim arr(1 To 5)' compiles -- ReDim never collides
 /// ```
 ///
-/// So a name enters procedure scope either by being declared or by being
-/// assigned to, and declaring one that is already there is the error.
+/// So a name enters procedure scope by being declared, assigned to, `Set`,
+/// `ReDim`'d, used as a `For`/`For Each` loop variable, or taken as a
+/// parameter -- and declaring one that is already there is the error. Each
+/// of the last five was confirmed with a control running the same route
+/// *without* the trailing `Dim`, so the rejection is the duplicate and not
+/// the route statement being unacceptable on its own (issue #80; the
+/// parameter case needed `build_module`'s signature form, since the wrapper
+/// procedure had no parameters to give it before).
 ///
-/// Only those two entry routes are treated as bringing a name into scope,
-/// because only those two were measured. A `For` counter, a `For Each`
-/// element, a `Set` target, a plain `ReDim` and a parameter all plausibly
-/// count as well -- VBA very likely rejects `Sub F(x)` plus `Dim x` -- but
-/// the harness splices its snippet into a parameterless `Sub`, so the
-/// parameter case in particular could not be put to Excel. Leaving them out
-/// under-reports, which is the safe direction; guessing them in would risk
-/// rejecting working code.
+/// Only a `Dim`/`Static`/`Const` *reports*. A `ReDim` of a name already in
+/// scope is the ordinary resize and compiles, which is why the routes only
+/// add to the set and the check lives on the declaration.
+///
+/// One route is still unmeasured: the procedure's own name, which is
+/// assignable inside a `Function` and so plausibly collides with a `Dim` of
+/// it. The harness compiles one fixed `Sub`, so the `Function` half of that
+/// question cannot be asked yet. Leaving it out under-reports, which is the
+/// safe direction; guessing it in would risk rejecting working code.
 ///
 /// The walk is flat because VBA scoping is: a `Dim` inside an `If` is
 /// procedure-scoped, not block-scoped, so two of them in opposite branches
 /// still collide. Statements are visited in source order, nested bodies
 /// included, which is what makes the ordering rule fall out.
-fn check_duplicate_declarations(body: &[Stmt]) -> Result<(), ParseError> {
-    let mut in_scope: std::collections::HashSet<String> = std::collections::HashSet::new();
+fn check_duplicate_declarations(body: &[Stmt], params: &[Param]) -> Result<(), ParseError> {
+    let mut in_scope: std::collections::HashSet<String> =
+        params.iter().map(|p| norm(&p.name)).collect();
     walk_declarations(body, &mut in_scope)
 }
 
@@ -576,12 +592,21 @@ fn walk_declarations(
                     }
                 }
             }
+            // `Set x = ...` counts as much as `x = ...` does -- measured,
+            // both create the variable when nothing declared it.
             Stmt::Assign {
                 target: Expr::Ident { name, .. },
-                set: false,
                 ..
             } => {
                 in_scope.insert(norm(name));
+            }
+            // A plain `ReDim arr(...)` declares `arr`, but is not itself a
+            // redeclaration when `arr` is already there -- see the pair of
+            // measured `ReDim`/`Dim` orderings above.
+            Stmt::ReDim { vars, .. } => {
+                for v in vars {
+                    in_scope.insert(norm(&v.name));
+                }
             }
             Stmt::If {
                 branches,
@@ -605,10 +630,19 @@ fn walk_declarations(
                     walk_declarations(b, in_scope)?;
                 }
             }
-            Stmt::For { body, .. }
-            | Stmt::ForEach { body, .. }
-            | Stmt::DoLoop { body, .. }
-            | Stmt::With { body, .. } => walk_declarations(body, in_scope)?,
+            // A loop variable enters scope at the `For`, before its body:
+            // `For x = 1 To 3 ... Next x` then `Dim x` is the error, so the
+            // insert has to happen on the way in. `For obj.i` parses too,
+            // and names nothing local, hence the `Ident` match.
+            Stmt::For { var, body, .. } | Stmt::ForEach { var, body, .. } => {
+                if let Expr::Ident { name, .. } = var {
+                    in_scope.insert(norm(name));
+                }
+                walk_declarations(body, in_scope)?;
+            }
+            Stmt::DoLoop { body, .. } | Stmt::With { body, .. } => {
+                walk_declarations(body, in_scope)?
+            }
             _ => {}
         }
     }
@@ -968,6 +1002,43 @@ mod tests {
         ] {
             let err = check(src).unwrap_err();
             assert!(err.contains("Duplicate declaration"), "{src} gave {err}");
+        }
+    }
+
+    #[test]
+    fn every_route_into_scope_collides_with_a_later_dim() {
+        // Issue #80. All five measured against Excel, which rejects each
+        // (`fuzz/vba_compile_probe.py --only dup:`); the parameter one is
+        // what the harness could not express before, since its wrapper
+        // procedure took no parameters.
+        for src in [
+            "Sub T(ByVal x As Long)\n    Dim x As Long\nEnd Sub\n",
+            "Sub T()\n    For x = 1 To 3\n        y = x\n    Next x\n    Dim x As Long\nEnd Sub\n",
+            "Sub T()\n    For Each x In rng\n        y = 1\n    Next\n    Dim x As Long\nEnd Sub\n",
+            "Sub T()\n    Set x = New Collection\n    Dim x As Object\nEnd Sub\n",
+            "Sub T()\n    ReDim arr(1 To 5)\n    Dim arr()\nEnd Sub\n",
+        ] {
+            let err = check(src).unwrap_err();
+            assert!(err.contains("Duplicate declaration"), "{src} gave {err}");
+        }
+    }
+
+    #[test]
+    fn a_route_into_scope_is_not_itself_a_declaration_error() {
+        // The controls that make the test above readable: each route
+        // *without* the trailing `Dim` compiles in Excel, so a rejection
+        // there is the duplicate and not the route statement itself.
+        for src in [
+            "Sub T(ByVal x As Long)\n    y = x\nEnd Sub\n",
+            "Sub T()\n    For x = 1 To 3\n        y = x\n    Next x\nEnd Sub\n",
+            "Sub T()\n    For Each x In rng\n        y = 1\n    Next\nEnd Sub\n",
+            "Sub T()\n    Set x = New Collection\nEnd Sub\n",
+            // A `ReDim` of a name already in scope is the ordinary resize,
+            // not a redeclaration -- measured accept, and the reason the
+            // routes only add to the set rather than reporting.
+            "Sub T()\n    Dim arr()\n    ReDim arr(1 To 5)\nEnd Sub\n",
+        ] {
+            assert!(check(src).is_ok(), "should have been accepted: {src}");
         }
     }
 
