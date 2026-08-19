@@ -14,7 +14,9 @@ Thumbs.db
 *.swp
 *.swo
 
-# Claude Code: `.claude/skills/` is checked in, the per-machine state is not.
+# Agent skills: `.agents/skills/` is checked in, the per-machine state is not.
+.agents/settings.local.json
+.agents/scheduled_tasks.lock
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
