@@ -10,7 +10,7 @@ and carry on, so `PivotFields(...).CurrentPage` cannot be exposed on top of a
 gap that silently drops what the macro just did.
 
 Closing the gap means writing and reading real `<sharedItems>` values, and
-`CLAUDE.md` warns that visi's pivot XML was only ever validated against
+`AGENTS.md` warns that visi's pivot XML was only ever validated against
 `openpyxl` -- never real Excel, which accepts a malformed pivot part silently
 because `refreshOnLoad="1"` lets it rebuild the cache. So a mistake here does
 not announce itself.
@@ -78,7 +78,7 @@ End Sub
 """
 
 # A pivot that *visi* wrote, opened and re-saved by Excel. This is the
-# check `CLAUDE.md` asks for and never got: visi's pivot XML was validated
+# check `AGENTS.md` asks for and never got: visi's pivot XML was validated
 # against openpyxl, which does not rebuild the cache, so an `<item x="N"/>`
 # index pointing at the wrong `sharedItems` entry looks fine there and only
 # misbehaves in Excel.
@@ -196,7 +196,7 @@ def can_excel_open(driver, path, timeout=60):
 def visi_written(driver, full):
     """Can real Excel open a pivot table that visi wrote?
 
-    `CLAUDE.md` records that visi's pivot XML was validated against openpyxl
+    `AGENTS.md` records that visi's pivot XML was validated against openpyxl
     and never against Excel, because the automation grant could not be
     completed at the time. openpyxl is a strict *reader* but it does not
     resolve `<item x="N"/>` against `<sharedItems>`, so an index pointing into

@@ -13,7 +13,7 @@ visi's.
     python fuzz/grid_edit_probe.py --excel-path "/Applications/Microsoft Excel.app"
 
 Unlike the VBA harnesses in this directory there is no macro involved, so the
-compile-error hang described in `CLAUDE.md` does not apply -- but Excel is still
+compile-error hang described in `AGENTS.md` does not apply -- but Excel is still
 driven through `osascript`, so every call has a timeout and a `killall` fallback.
 
 Exit status is non-zero if any case disagrees, which makes this usable as a
