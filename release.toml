@@ -19,7 +19,7 @@
 # expected", which no amount of waiting resolves. Hence `--no-tag`: the commit
 # that lands on main is the *merge* commit, so the tag has to be written after
 # the merge, against that SHA, rather than by cargo-release against the branch.
-# .claude/skills/release/SKILL.md walks the whole sequence.
+# .agents/skills/release/SKILL.md walks the whole sequence.
 #
 # `visi-core` and `visi` version independently (see visi-core/Cargo.toml), but
 # they should generally be released together: bumping visi-core rewrites the
