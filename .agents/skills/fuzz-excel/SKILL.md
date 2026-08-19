@@ -27,22 +27,39 @@ run of N iterations passes** with no failures.
 Every one of these matters; skipping one produces a confusing failure, not an
 obvious one.
 
+First check which host platform you are on, then choose the Excel driver from
+that. On Windows, use `--driver win32com` and do **not** pass the macOS Excel
+path. On macOS, use AppleScript and pass the application path explicitly with
+`--excel-path "/Applications/Microsoft Excel.app"`.
+
 ```bash
-source fuzz/venv/bin/activate                          # never system python
-pip install -r fuzz/requirements.txt                   # first run only
-maturin develop -m visi-python/Cargo.toml --release    # rebuild after ANY visi-core change
-cargo build --release                                  # only needed for --backend subprocess
-ls "/Applications/Microsoft Excel.app"                 # confirm the oracle exists
+uname -s                                             # MINGW*/MSYS*/CYGWIN* = Windows, Darwin = macOS
+source fuzz/venv/bin/activate                       # macOS/Linux venv; never system python
+source fuzz/venv/Scripts/activate                   # Windows/Git Bash venv; never system python
+pip install -r fuzz/requirements.txt                # first run only
+maturin develop -m visi-python/Cargo.toml --release # rebuild after ANY visi-core change
+cargo build --release                               # only needed for --backend subprocess
+
+# Confirm the oracle/driver for this host:
+python - <<'PY'
+import platform
+print(platform.system())
+PY
+# Windows: use --driver win32com
+# macOS:  ls "/Applications/Microsoft Excel.app"
 ```
 
 `maturin develop` installs into the **active venv**, and the bindings backend is
 what the harness uses by default — after every fix to `visi-core`, rebuild them
 before re-running or you will be re-measuring the old engine and chasing a
-failure you already fixed.
+failure you already fixed. If the Python venv architecture and Rust default
+target differ on Windows, pass the Python architecture explicitly, e.g.
+`maturin develop -m visi-python/Cargo.toml --release --target x86_64-pc-windows-msvc`.
 
-A first-ever AppleScript run needs a one-time interactive automation-permission
-grant. If Excel never responds and no permission dialog is visible, ask the user
-to run the command themselves with a leading `!` so they can click through it.
+A first-ever AppleScript run on macOS needs a one-time interactive
+automation-permission grant. If Excel never responds and no permission dialog is
+visible, ask the user to run the command themselves with a leading `!` so they
+can click through it.
 
 ## The harnesses
 
@@ -64,8 +81,13 @@ by re-running with that run's seed, and the artifact directory is the durable
 record — the case number alone means nothing against a fresh seed.
 
 ```bash
+# Windows:
+python fuzz/fuzz_excel.py --driver win32com --iterations 20
+
+# macOS:
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
-python fuzz/fuzz_excel.py --seed 48291 --iterations 1     # reproduce one iteration exactly
+
+python fuzz/fuzz_excel.py --seed 48291 --iterations 1     # reproduce one iteration exactly; add the same driver/path as above
 python fuzz/fuzz_excel.py --driver mock --iterations 5    # pipeline smoke test, NOT an oracle
 ```
 
@@ -135,14 +157,12 @@ never the thing a test asserts.
   chart and drawing XML details, anything Mac-only in the AppleScript bridge.
   Section 17 of `docs/excel-discrepancies.md` is an existing instance —
   Excel for Mac's error number there is not even reproducible run to run.
-- On Windows, `fuzz_excel.py` / `fuzz_chart.py` / `fuzz_pivot.py` run the same
-  way with `--driver win32com`. The two VBA fuzzers are AppleScript-only, so a
-  Windows check there means running the reduced case by hand (or through
-  `vba_expr_probe.py`, likewise AppleScript-only) on a Windows box. If no
-  Windows machine is available in this session, **say so** and do not silently
-  pin the engine to the macOS answer: either leave the case documented as
-  awaiting Windows confirmation, or ask the user whether they can run the
-  reduced case on Windows.
+- On Windows, run the harnesses with `--driver win32com`. On macOS, run them
+  with `--excel-path "/Applications/Microsoft Excel.app"` (AppleScript). If no
+  Windows machine is available in this session for a platform-sensitive case,
+  **say so** and do not silently pin the engine to the macOS answer: either
+  leave the case documented as awaiting Windows confirmation, or ask the user
+  whether they can run the reduced case on Windows.
 - When a discrepancy entry records a platform split, name both results and mark
   which one visi implements.
 
