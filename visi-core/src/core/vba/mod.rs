@@ -71,8 +71,9 @@ pub struct ModuleSyntax {
 /// Excel built-in -- is reported, which is right for a standalone `.bas` and
 /// for the single generated module the differential harness compiles, but
 /// would be wrong for one module of a larger project, where the name may
-/// live in a sibling. Use [`VbaProject::check_modules`] for that case; it
-/// supplies each module the others' names.
+/// live in a sibling. Use [`VbaProject::check_modules`] for that case -- it
+/// supplies each module the others' names -- or [`check_syntax_partial`]
+/// when the siblings are not available at all.
 ///
 /// ```
 /// use visi_core::core::check_syntax;
@@ -82,6 +83,35 @@ pub struct ModuleSyntax {
 pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
     let empty = std::collections::HashSet::new();
     check_source(source, None, &resolve::Scope::self_contained(&empty))
+}
+
+/// [`check_syntax`] for source that is **one module of a larger project**
+/// whose other modules are not available.
+///
+/// Same parse and the same rules, with one exception: a name that resolves
+/// nowhere is accepted rather than reported, since a sibling module this
+/// call cannot see may well declare it. Everything the module's own text
+/// disproves -- a syntax error, a duplicate declaration, a plain local used
+/// as a call target -- is still reported.
+///
+/// This is strictly the weaker check, and is the scope
+/// [`VbaModule::check_syntax`] already uses. Prefer
+/// [`VbaProject::check_modules`] wherever the whole project is in hand;
+/// reach for this only when it genuinely is not, as for a `.bas` file cut
+/// out of a project that lives elsewhere.
+///
+/// ```
+/// use visi_core::core::{check_syntax, check_syntax_partial};
+/// // `DoWork` is declared by some other module of the project.
+/// let src = "Sub Caller()\n    DoWork 1\nEnd Sub\n";
+/// assert!(check_syntax(src).is_err());
+/// assert!(check_syntax_partial(src).is_ok());
+/// // A fragment is still held to what its own text shows.
+/// assert!(check_syntax_partial("Sub Caller()\n").is_err());
+/// ```
+pub fn check_syntax_partial(source: &str) -> Result<ModuleSyntax, Error> {
+    let empty = std::collections::HashSet::new();
+    check_source(source, None, &resolve::Scope::partial(&empty))
 }
 
 /// [`check_syntax`]'s body, with the resolution scope chosen by the caller.
@@ -524,6 +554,25 @@ impl VbaProject {
     /// still contributes whatever names it declares to the others, since a
     /// parse failure in one module is not evidence about another.
     pub fn check_modules(&self) -> Vec<(String, Result<ModuleSyntax, Error>)> {
+        self.check_modules_scoped(true)
+    }
+
+    /// [`check_modules`](Self::check_modules) for a project that is **not**
+    /// the whole story -- one whose procedures may live in a referenced
+    /// project this `VbaProject` does not model.
+    ///
+    /// Modules still resolve against each other; the only thing that
+    /// changes is that a name resolving nowhere is accepted rather than
+    /// reported, as in [`check_syntax_partial`]. Nothing in a workbook
+    /// records whether such a reference exists, so this is a caller's
+    /// assertion, not something to infer.
+    pub fn check_modules_partial(&self) -> Vec<(String, Result<ModuleSyntax, Error>)> {
+        self.check_modules_scoped(false)
+    }
+
+    /// The body both of the above share, `complete` being
+    /// [`resolve::Scope::complete_project`].
+    fn check_modules_scoped(&self, complete: bool) -> Vec<(String, Result<ModuleSyntax, Error>)> {
         let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
         let parsed: Vec<_> = self
             .modules
@@ -541,7 +590,7 @@ impl VbaProject {
             .map(|(m, _)| {
                 let scope = resolve::Scope {
                     external: &declared,
-                    complete_project: true,
+                    complete_project: complete,
                 };
                 (
                     m.name.clone(),
@@ -655,6 +704,69 @@ mod tests {
         let project = sample_project();
         assert!(project.module_name_taken("module1"));
         assert!(!project.module_name_taken("Module2"));
+    }
+
+    /// `sample_project()`'s shape with the sources the caller cares about,
+    /// one standard module per `(name, source)` pair.
+    fn project_of(sources: &[(&str, &str)]) -> VbaProject {
+        let mut project = sample_project();
+        project.modules = sources
+            .iter()
+            .map(|(name, source)| VbaModule {
+                name: (*name).to_string(),
+                kind: VbaModuleKind::Standard,
+                source: (*source).to_string(),
+                bound_sheet_id: None,
+                prefix_bytes: vec![0xBB; 16],
+                module_cookie: 0xFFFF,
+                cached_compressed_source: None,
+            })
+            .collect();
+        project
+    }
+
+    const CALLER: &str = "Public Sub Caller()\n    DoWork 1\nEnd Sub\n";
+    const CALLEE: &str = "Public Sub DoWork(n As Long)\nEnd Sub\n";
+
+    /// The two scopes differ on exactly one thing, and only on it: a name
+    /// no supplied module declares. Issue #82.
+    #[test]
+    fn partial_scope_accepts_a_call_into_source_not_supplied() {
+        // A fragment on its own: reported by default, accepted as partial.
+        assert!(check_syntax(CALLER).is_err());
+        assert!(check_syntax_partial(CALLER).is_ok());
+
+        // Nothing else moves. A duplicate declaration is disproved by the
+        // module's own text, so the partial scope still reports it.
+        let dup = "Sub Test()\n    Dim x As Long\n    Dim x As Long\nEnd Sub\n";
+        assert!(check_syntax(dup).is_err());
+        assert!(check_syntax_partial(dup).is_err());
+    }
+
+    #[test]
+    fn check_modules_resolves_across_siblings() {
+        let project = project_of(&[("Module1", CALLER), ("Module2", CALLEE)]);
+        for (name, result) in project.check_modules() {
+            assert!(result.is_ok(), "{name} should be clean: {result:?}");
+        }
+
+        // Drop the sibling and the same call is a whole-project error.
+        let alone = project_of(&[("Module1", CALLER)]);
+        let results = alone.check_modules();
+        assert_eq!(results.len(), 1);
+        match &results[0].1 {
+            Err(Error::VbaSyntax {
+                message, module, ..
+            }) => {
+                assert!(message.contains("DoWork"), "{message}");
+                assert_eq!(module.as_deref(), Some("Module1"));
+            }
+            other => panic!("expected a syntax error, got {other:?}"),
+        }
+
+        // ...and clean again under `--partial`, where the missing declaration
+        // may be in a project this one merely references.
+        assert!(alone.check_modules_partial()[0].1.is_ok());
     }
 
     #[test]
