@@ -14,7 +14,7 @@ model on top of it. Two questions matter most and neither is guessable:
   `(Multiple Items)` in the cell, but a property need not return the same
   string.
 * Does assigning `.CurrentPage` re-render the grid on its own, or does it
-  need `.RefreshTable`? `CLAUDE.md` records that nothing recomputes a pivot
+  need `.RefreshTable`? `AGENTS.md` records that nothing recomputes a pivot
   in visi without an explicit refresh; if Excel differs, a macro that filters
   and then reads cells sees different things in the two engines.
 

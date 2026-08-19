@@ -175,7 +175,7 @@ class ExcelFuzzGenerator:
     ]
     # Array/matrix-returning functions. Excel would spill these across
     # multiple cells; visi's xlsx export caches one value per cell (see
-    # CLAUDE.md), so each is wrapped in INDEX(...) to pin down the single
+    # AGENTS.md), so each is wrapped in INDEX(...) to pin down the single
     # scalar a plain cell comparison can check, matching how a spreadsheet
     # author would consume them from one cell in practice.
     ARRAY_FUNCTIONS = [
@@ -1715,7 +1715,7 @@ class ExcelFuzzGenerator:
         against a real cell/range from the plain-value rows of the formula
         block. FORMULATEXT/ISFORMULA/SHEETS/SHEET are post-2007 functions real
         Excel's own OOXML writer always stores with an `_xlfn.` prefix
-        (see CLAUDE.md/RRI's comment above in generate_financial_formula);
+        (see AGENTS.md/RRI's comment above in generate_financial_formula);
         openpyxl doesn't add that prefix automatically, so it's supplied
         here -- confirmed as the actual cause of a real #NAME? mismatch
         this generator produced without it."""
