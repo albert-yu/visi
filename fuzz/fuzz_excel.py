@@ -467,13 +467,33 @@ class ExcelFuzzGenerator:
         col_name = random.choice(self._table_cols)
         return f"{self._table_name}[[#Headers],[{col_name}]]"
 
+    def _maybe_abs_col(self, col_text):
+        """Randomly apply an absolute-column marker to an A1 reference.
+
+        Absolute markers do not change formula evaluation, but they do
+        exercise the parser/import/export path for the reference forms real
+        workbooks contain (`$A$1`, `A$1`, `$A1`). Structural-edit fuzzing is
+        where their movement semantics matter; here the goal is cheap input
+        entropy without changing dependency acyclicity.
+        """
+        return f"${col_text}" if random.random() < 0.25 else col_text
+
+    def _maybe_abs_row(self, row_idx):
+        return f"${row_idx}" if random.random() < 0.25 else str(row_idx)
+
+    def _format_cell_ref(self, row_idx, col_idx):
+        return f"{self._maybe_abs_col(self._col_name(col_idx))}{self._maybe_abs_row(row_idx)}"
+
+    def _format_col_ref(self, col_idx):
+        return self._maybe_abs_col(self._col_name(col_idx))
+
     def _random_cell_ref(self, current_row, min_col, max_col):
         """A reference to a single cell in an earlier row (or row 1 if
         current_row <= 1), used by generate_formula and the bespoke
         generators below to avoid creating dependency cycles."""
         r = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
         c = random.randint(min_col, max_col)
-        return f"{self._col_name(c)}{r}"
+        return self._format_cell_ref(r, c)
 
     def _random_range_ref(self, current_row, min_col, max_col):
         """A reference to a rectangular range confined to earlier rows (or
@@ -483,21 +503,48 @@ class ExcelFuzzGenerator:
         r2 = random.randint(r1, max(1, current_row - 1)) if current_row > 1 else 1
         c1 = random.randint(min_col, max_col)
         c2 = random.randint(c1, max_col)
-        return f"{self._col_name(c1)}{r1}:{self._col_name(c2)}{r2}"
+        return f"{self._format_cell_ref(r1, c1)}:{self._format_cell_ref(r2, c2)}"
+
+    def _random_table_whole_col_ref(self):
+        """A whole-column reference into the formula-free table block.
+
+        Whole-column refs over the formula block could include the formula's
+        own cell and create cycles. The table block is pure input values, so
+        `A:A`/`$A:$A`-style references add address entropy while staying
+        acyclic and comparable.
+        """
+        if not self._has_table():
+            return None
+        col_idx = random.randint(1, len(self._table_cols))
+        col = self._format_col_ref(col_idx)
+        return f"{col}:{col}"
 
     def generate_random_value(self):
-        """Generates a random cell input value (number, string, boolean, date, edge case)."""
+        """Generates a random cell input value (number, string, boolean, edge case)."""
         choice = random.random()
-        if choice < 0.35:
-            # Integers
+        if choice < 0.32:
+            # Integers: mostly small values, with occasional wider-but-still
+            # exactly representable magnitudes so import/export isn't only
+            # exercising toy data.
+            if random.random() < 0.12:
+                return random.randint(-1_000_000_000, 1_000_000_000)
             return random.randint(-100, 100)
-        elif choice < 0.60:
-            # Floating point numbers (including edge cases)
+        elif choice < 0.57:
+            # Floating point numbers, including zero and occasional scientific
+            # notation scale without wandering into known Excel/f64 extremes.
             if random.random() < 0.1:
                 return 0.0
+            if random.random() < 0.15:
+                scale = random.choice([1e-9, 1e-6, 1e6, 1e9])
+                return round(random.uniform(-500.0, 500.0) * scale, random.randint(0, 6))
             return round(random.uniform(-500.0, 500.0), random.randint(0, 4))
         elif choice < 0.75:
-            # Short strings
+            # Short strings, usually ASCII but sometimes Unicode/punctuation
+            # to exercise shared-string and text-function paths beyond plain
+            # `[A-Za-z 123]`.
+            if random.random() < 0.25:
+                samples = ["café", "naïve", "東京", "emoji 😀", "a,b", "quote ' test", "ümlaut"]
+                return random.choice(samples)
             chars = string.ascii_letters + " 123"
             return "".join(random.choice(chars) for _ in range(random.randint(1, 8)))
         elif choice < 0.85:
@@ -667,12 +714,20 @@ class ExcelFuzzGenerator:
                     # silently fails to open in real Excel (no error, no
                     # window, workbook count stays 0) rather than showing a
                     # clean parse error. Confirmed by isolating
-                    # `=COUNTBLANK(1,2,3)` in its own workbook.
+                    # `=COUNTBLANK(1,2,3)` in its own workbook. Whole-column
+                    # references are avoided here too: Excel counts blanks
+                    # across all 1,048,576 rows, while visi evaluates only
+                    # the imported sheet extent.
                     arg = self._random_structured_col_ref() if (self._has_table() and roll < 0.3) else random_range_ref()
-                elif self._has_table() and roll < 0.3:
+                elif self._has_table() and roll < 0.22:
                     # Single-column structured reference, e.g. SUM(Sheet1[A]).
                     arg = self._random_structured_col_ref()
-                elif roll < 0.70:
+                elif self._has_table() and roll < 0.34:
+                    # Whole-column A:A / $A:$A style reference into the
+                    # formula-free table block. This covers an address form
+                    # ordinary rectangular range generation never produced.
+                    arg = self._random_table_whole_col_ref()
+                elif roll < 0.72:
                     arg = random_range_ref()
                 else:
                     arg = f"{gen_expr(depth + 1)}, {gen_expr(depth + 1)}"
@@ -2144,10 +2199,11 @@ class ExcelFuzzGenerator:
             formula = self.generate_database_formula(fn, ws, db_crit_col, i)
             ws.cell(row=i + 1, column=db_formula_col, value=formula)
 
-        # --- Cross-sheet block: a real second sheet, so Sheet2!A1-style
-        # references and WorkbookManager::evaluate()'s 3-pass cross-sheet
-        # propagation are actually exercised end-to-end -- previously this
-        # generator only ever produced single-sheet workbooks (#26).
+        # --- Cross-sheet block: a real second sheet, so quoted sheet names
+        # with spaces (`'Data Sheet'!A1`) and WorkbookManager::evaluate()'s
+        # 3-pass cross-sheet propagation are actually exercised end-to-end --
+        # previously this generator only ever produced single-sheet
+        # workbooks (#26).
         #
         # A strict one-directional chain (never a cycle, which neither
         # engine is guaranteed to resolve the same way):
@@ -2158,7 +2214,7 @@ class ExcelFuzzGenerator:
         # so resolving the final cell genuinely requires Sheet1's own
         # formula pass to complete, then Sheet2 to see it, then Sheet1
         # again -- exactly the kind of chain the 3 fixed passes exist for.
-        ws2 = wb.create_sheet("Sheet2")
+        ws2 = wb.create_sheet("Data Sheet")
         for r in range(1, value_rows + 1):
             for c in range(1, num_cols + 1):
                 val = self.generate_random_value()
@@ -2170,7 +2226,20 @@ class ExcelFuzzGenerator:
         ws2.cell(row=1, column=num_cols + 1, value=f"=SUM({table_body})+Sheet1!{x1_cell}")
 
         cross_sheet_col = db_crit_col + 1
-        ws.cell(row=1, column=cross_sheet_col, value=f"=Sheet2!{self._col_name(num_cols + 1)}1*2")
+        ws.cell(row=1, column=cross_sheet_col, value=f"='Data Sheet'!{self._col_name(num_cols + 1)}1*2")
+
+        # --- Reference-entropy block: deterministic formulas whose purpose is
+        # to make sure every iteration contains address forms that pure random
+        # generation may only hit rarely. The operands are chosen from
+        # formula-free numeric helper columns so the cells compare the address
+        # handling itself, not random type/error propagation.
+        ref_entropy_col = cross_sheet_col + 1
+        fcash = self._col_name(fin_cash_col)
+        fdate = self._col_name(fin_date_col)
+        fsched = self._col_name(fin_schedule_col)
+        ws.cell(row=1, column=ref_entropy_col, value="=SUM($A:$A)")
+        ws.cell(row=2, column=ref_entropy_col, value=f"=${fcash}$1+{fdate}$1+${fsched}1")
+        ws.cell(row=3, column=ref_entropy_col, value="=COUNTA('Data Sheet'!$A:$A)")
 
         # Final pass: add the `_xlfn.` prefix every post-2007 function in
         # NEEDS_XLFN_PREFIX needs to be recognized when the file is opened
