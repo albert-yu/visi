@@ -30,6 +30,7 @@ Usage:
     python fuzz/vba_compile_probe.py --only undeclared   # cases whose label contains this
     python fuzz/vba_compile_probe.py -e 'x = arr(1, 2)'  # one ad-hoc snippet
     python fuzz/vba_compile_probe.py --list              # print cases, run nothing
+    python fuzz/vba_compile_probe.py -e 'Dim x As Long' --sig 'ByVal x As Long' --call-args ' 1'
 
 Cost: an *accepted* snippet is one fast round trip; a *rejected* one costs
 the driver's full timeout twice over plus an Excel restart (~35s), since a
@@ -51,11 +52,16 @@ import visi_core
 from fuzz_vba_parse import ExcelVerdictDriver, build_module, visi_verdict
 
 
-# Each entry is (label, snippet). The snippet is spliced into a dead
-# `If False Then` branch inside `Gen`, so it is compiled and never run --
-# see `fuzz_vba_parse.MODULE_TEMPLATE`. A `Helper(Optional a, b, c)` is in
-# scope; nothing else is declared, so every other bare name is genuinely
-# undeclared unless the snippet declares it.
+# Each entry is (label, snippet) or (label, snippet, sig, args). The
+# snippet is spliced into a dead `If False Then` branch inside `Gen`, so it
+# is compiled and never run -- see `fuzz_vba_parse.MODULE_TEMPLATE`. A
+# `Helper(Optional a, b, c)` is in scope; nothing else is declared, so every
+# other bare name is genuinely undeclared unless the snippet declares it.
+#
+# The four-element form gives `Gen` a parameter list, which is the only way
+# to ask Excel about anything a *parameter* does -- `sig` is spliced into
+# `Sub Gen(...)` and `args` into the `Gen` call in `Harness`, which has to
+# keep invoking it or the procedure is never compiled at all.
 CASES = [
     # -- Minimizations of the issue #78 false negatives that survived the
     #    first resolve.rs pass. The hypothesis under test is that each is a
@@ -103,6 +109,29 @@ CASES = [
     ("dup:dim-then-assign", "Dim x As Long\nx = 1"),
     ("dup:call-then-dim", "x = Helper(1)\nDim x As Long"),
 
+    # -- The other routes a name might take into procedure scope, left
+    #    unmeasured by the round above (issue #80). The parameter is the one
+    #    that needed the four-element case form; the rest are here because
+    #    they are the same question and cost one round trip each.
+    #    `dup:param-control` is the harness check: if a signature alone
+    #    breaks the wrapper, every other verdict in this group is worthless.
+    ("dup:param-control", "y = x", "ByVal x As Long", " 1"),
+    ("dup:param-then-dim", "Dim x As Long", "ByVal x As Long", " 1"),
+    ("dup:for-counter-then-dim", "For x = 1 To 3\n    y = x\nNext x\nDim x As Long"),
+    ("dup:foreach-elem-then-dim", "For Each x In rng\n    y = 1\nNext\nDim x As Long"),
+    # `As Object`, not `As Long`: a `Set` onto a non-object *declared* type
+    # is its own compile error, which would make a rejection unreadable.
+    ("dup:set-then-dim", "Set x = New Collection\nDim x As Object"),
+    ("dup:redim-then-dim", "ReDim arr(1 To 5)\nDim arr()"),
+    # The last four routes above without their trailing `Dim`, so a
+    # rejection can be pinned on the duplicate rather than on the route
+    # statement being unacceptable on its own -- `dup:param-control` is the
+    # parameter's, and `redim:plain-after-dim` is `ReDim`'s, being
+    # `dup:redim-then-dim`'s two lines the other way round.
+    ("dup:for-counter-only", "For x = 1 To 3\n    y = x\nNext x"),
+    ("dup:foreach-elem-only", "For Each x In rng\n    y = 1\nNext"),
+    ("dup:set-only", "Set x = New Collection"),
+
     # -- Controls. If one of these disagrees the probe itself is suspect,
     #    not the engine.
     ("control:declared-array-index", "Dim arr(5)\nx = arr(1)"),
@@ -133,9 +162,10 @@ CASES = [
 ]
 
 
-def probe(driver, label, snippet, workdir):
-    """(excel_ok, excel_detail, visi_ok, visi_detail) for one snippet."""
-    source = build_module(snippet)
+def probe(driver, case, workdir):
+    """(excel_ok, excel_detail, visi_ok, visi_detail) for one case."""
+    label, snippet, sig, call_args = case
+    source = build_module(snippet, sig, call_args)
     visi_ok, visi_detail = visi_verdict(source)
 
     if driver.driver_type == "mock":
@@ -160,6 +190,11 @@ def main():
     ap.add_argument("-e", "--expr", action="append", default=[],
                     help="an ad-hoc snippet to probe (repeatable); replaces the built-in list")
     ap.add_argument("--only", help="run only cases whose label contains this substring")
+    ap.add_argument("--sig", default="",
+                    help="parameter list for the Gen wrapper, e.g. 'ByVal x As Long'; "
+                         "applies to every case that runs")
+    ap.add_argument("--call-args", default="", dest="call_args",
+                    help="arguments Harness passes to Gen, leading space included, e.g. ' 1'")
     ap.add_argument("--list", action="store_true", help="print the cases and exit")
     ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
     ap.add_argument("--excel-path")
@@ -170,6 +205,10 @@ def main():
         cases = [(f"expr:{i + 1}", e) for i, e in enumerate(args.expr)]
     else:
         cases = CASES
+    # (label, snippet) and (label, snippet, sig, args) both normalize to four.
+    cases = [c if len(c) == 4 else (c[0], c[1], "", "") for c in cases]
+    if args.sig or args.call_args:
+        cases = [(c[0], c[1], args.sig, args.call_args) for c in cases]
     if args.only:
         cases = [c for c in cases if args.only in c[0]]
     if not cases:
@@ -177,8 +216,11 @@ def main():
         return 2
 
     if args.list:
-        for label, snippet in cases:
-            print(f"{label}\n    " + snippet.replace("\n", "\n    "))
+        for label, snippet, sig, call_args in cases:
+            print(label)
+            if sig:
+                print(f"    Sub Gen({sig})   called as: Gen{call_args}")
+            print("    " + snippet.replace("\n", "\n    "))
         return 0
 
     driver = ExcelVerdictDriver(args.excel_path, args.driver, args.timeout)
@@ -195,14 +237,17 @@ def main():
     workdir = tempfile.mkdtemp(prefix="vba_compile_probe_")
     disagreed = 0
     try:
-        for label, snippet in cases:
-            excel_ok, excel_detail, visi_ok, visi_detail = probe(driver, label, snippet, workdir)
+        for case in cases:
+            label, snippet, sig, call_args = case
+            excel_ok, excel_detail, visi_ok, visi_detail = probe(driver, case, workdir)
             excel_s = "accept" if excel_ok else "REJECT" if excel_ok is False else "n/a"
             visi_s = "accept" if visi_ok else "REJECT"
             agree = "" if excel_ok is None or excel_ok == visi_ok else "   <-- DISAGREE"
             if agree:
                 disagreed += 1
             print(f" {label:<34} excel={excel_s:<6} visi={visi_s}{agree}")
+            if sig:
+                print(f"     Sub Gen({sig})   called as: Gen{call_args}")
             print(f"     {snippet.replace(chr(10), chr(10) + '     ')}")
             if not visi_ok:
                 print(f"     visi : {visi_detail}")

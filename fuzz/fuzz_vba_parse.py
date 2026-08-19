@@ -195,7 +195,7 @@ MODULE_TEMPLATE = """Attribute VB_Name = "M"
 Private Function Helper(Optional a, Optional b, Optional c)
 End Function
 
-Public Sub Gen()
+Public Sub Gen({sig})
     If False Then
 {body}
     End If
@@ -203,7 +203,7 @@ End Sub
 
 Public Function Harness() As String
     On Error GoTo Failed
-    Gen
+    Gen{args}
     Harness = "OK"
     Exit Function
 Failed:
@@ -212,9 +212,24 @@ End Function
 """
 
 
-def build_module(body):
+def build_module(body, sig="", args=""):
+    """The module source wrapping one statement body.
+
+    `sig`/`args` give `Gen` a parameter list: `build_module(src, "ByVal x
+    As Long", " 1")` declares `Public Sub Gen(ByVal x As Long)` and calls
+    it as `Gen 1`. Both default to empty, the parameterless wrapper
+    everything else uses. `args` is spliced straight after `Gen`, so it
+    carries its own leading space.
+
+    They come as a pair because the dead branch is not optional: Excel
+    compiles a procedure only when something invokes it (point 2 above),
+    so `Gen` has to stay reachable from `Harness` however it is declared.
+    A caller supplying a whole procedure of its own would have to
+    re-establish that, which is why the signature is threaded through here
+    instead.
+    """
     indented = "\n".join("        " + line for line in body.split("\n"))
-    return MODULE_TEMPLATE.format(body=indented)
+    return MODULE_TEMPLATE.format(body=indented, sig=sig, args=args)
 
 
 # -----------------------------------------------------------------------------
