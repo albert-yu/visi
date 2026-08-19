@@ -305,6 +305,30 @@ The two survivors were both *new* shapes, neither in the original 12:
   unmeasured — the procedure's own name, assignable inside a `Function` — since
   the harness compiles one fixed `Sub`.
 
+#### `Print` has its own grammar (issue #81)
+
+A separate false positive, found by hand rather than by the fuzzer: `Debug.Print
+"a"; 1` was rejected. `;` is a `Print` output separator and appears nowhere else
+in VBA's expression grammar, so the bare-argument list — which takes `,` and
+nothing else — could not parse it.
+
+`fuzz/vba_compile_probe.py`'s `print:*` cases measured the whole shape, and it
+is looser than an argument list in every direction. Per MS-VBAL an output item
+is `[output-clause] [output-item-separator]` with **both halves optional**, and
+Excel bears that out: a trailing separator is legal and meaningful (it
+suppresses the newline), a leading or doubled one prints an empty item, and two
+items may sit adjacent with no separator at all (`Debug.Print "a" "b"`
+compiles). The boundary is just as sharp, and is what keeps the fix from
+over-accepting: `;` does **not** generalize to other bare-argument statements
+(`MsgBox "a"; 1` is a compile error, and so is `Debug.Assert "a"; 1`), so the
+gate is the member name `Print` — on any object, since `x.Print "a"; 1`
+compiles too. Unqualified `Print` stays a statement only before a `#`, which
+`try_parse_opaque` already takes.
+
+Which separator was written is not recorded. It only decides output spacing,
+and `Print` is outside the interpreter's scope, so the only question this path
+answers is `macro check`'s.
+
 A harness bug found on the way: `fuzz_vba_parse.py` saved failures to
 `fuzz_results/failures/vba_parse_iter_<N>` with no seed in the path, so a second
 run silently overwrote the first's reproductions — which is what happened to the

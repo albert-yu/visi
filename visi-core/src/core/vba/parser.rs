@@ -1486,14 +1486,21 @@ impl Parser {
             return Ok(Stmt::Call { expr: target, pos });
         }
 
-        // `Debug.Print a, b` -- arguments without parentheses.
-        let mut args = Vec::new();
-        loop {
-            args.push(self.parse_arg()?);
-            if !self.eat_punct(",") {
-                break;
+        // A `Print` method's output list is its own grammar, not an
+        // argument list -- see `parse_print_output_list`.
+        let args = if is_print_member(&target) {
+            self.parse_print_output_list()?
+        } else {
+            // `Debug.Print a, b` -- arguments without parentheses.
+            let mut args = Vec::new();
+            loop {
+                args.push(self.parse_arg()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
             }
-        }
+            args
+        };
         Ok(Stmt::Call {
             expr: Expr::Call {
                 target: Box::new(target),
@@ -1502,6 +1509,55 @@ impl Parser {
             },
             pos,
         })
+    }
+
+    /// A `Print` method's output list: `Debug.Print "a"; 1`.
+    ///
+    /// This is deliberately **not** the bare-argument list above. VBA gives
+    /// `Print` its own grammar (MS-VBAL's `output-item = [output-clause]
+    /// [output-item-separator]`, with both halves optional), and every way
+    /// it differs was measured with `fuzz/vba_compile_probe.py` against
+    /// real Excel rather than read off the spec:
+    ///
+    /// - `;` separates items as `,` does (`Debug.Print "a"; 1`). Issue #81
+    ///   is that rejecting it called working code broken.
+    /// - A **trailing** separator is legal, and meaningful -- it suppresses
+    ///   the newline: `Debug.Print "a";`, `Debug.Print "a",`.
+    /// - So is a leading or a repeated one, which prints an empty item:
+    ///   `Debug.Print , "a"`, `Debug.Print ; "a"`, `Debug.Print "a";; "b"`.
+    /// - A separator may be omitted between two items entirely:
+    ///   `Debug.Print "a" "b"` compiles.
+    ///
+    /// Which separator was written is not recorded. It only decides output
+    /// spacing, and `Print` is outside the interpreter's scope by the
+    /// security posture in `docs/vba-macro-support.md`, so the only
+    /// question this path answers is `macro check`'s: does it compile.
+    fn parse_print_output_list(&mut self) -> Result<Vec<Arg>, ParseError> {
+        let mut args = Vec::new();
+        while !self.at_stmt_end() && !self.peek().is_kw("else") {
+            let arg = if self.peek().is_punct(";") || self.peek().is_punct(",") {
+                // An empty item, when a separator comes first.
+                Arg {
+                    name: None,
+                    value: None,
+                }
+            } else if self.peek().ident().is_some() && self.at(1).is_punct(":=") {
+                // Nothing says the `Print` here is VBA's: a class module may
+                // define one, and a named argument to it parsed before this
+                // path existed. Keeping it is the same no-false-positives
+                // rule that motivated the rest of this function.
+                self.parse_arg()?
+            } else {
+                Arg {
+                    name: None,
+                    value: Some(self.parse_expr()?),
+                }
+            };
+            args.push(arg);
+            // At most one separator, and it may be absent altogether.
+            let _ = self.eat_punct(";") || self.eat_punct(",");
+        }
+        Ok(args)
     }
 
     // ---- expressions ----------------------------------------------------
@@ -1915,6 +1971,17 @@ impl Parser {
             _ => Err(self.expected("an expression")),
         }
     }
+}
+
+/// Whether a bare-argument statement's target is a `Print` method, and so
+/// takes an output list rather than an argument list.
+///
+/// The gate is the *member name*, measured both ways: `x.Print "a"; 1`
+/// compiles for an object that is not `Debug`, while `Debug.Assert "a"; 1`
+/// does not, and neither does a bare `Print "a"; 1` -- unqualified `Print`
+/// is a statement only before a `#`, which `try_parse_opaque` already takes.
+fn is_print_member(target: &Expr) -> bool {
+    matches!(target, Expr::Member { name, .. } if name.eq_ignore_ascii_case("print"))
 }
 
 fn binary(op: BinOp, lhs: Expr, rhs: Expr, pos: Pos) -> Expr {
@@ -2420,6 +2487,100 @@ mod tests {
         let body = &m.procedures()[0].body;
         assert_eq!(body.len(), 5);
         assert!(!body.iter().any(|s| matches!(s, Stmt::Opaque { .. })));
+    }
+
+    // ---- Print output lists ---------------------------------------------
+
+    /// Shapes the single statement of a one-line `Sub`.
+    fn stmt_shape(src: &str) -> String {
+        let m = parse(&format!(
+            "Sub S()
+    {src}
+End Sub
+"
+        ));
+        match &m.procedures()[0].body[0] {
+            Stmt::Call { expr, .. } => shape(expr),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn print_output_lists_accept_every_separator_excel_does() {
+        // Issue #81: `;` is a `Print` output separator, and rejecting it
+        // called working code broken. Every case here is one
+        // `fuzz/vba_compile_probe.py` measurement that real Excel compiled;
+        // `_` is an empty output item.
+        for (src, want) in [
+            (r#"Debug.Print "a"; 1"#, r#"Debug.Print("a", 1)"#),
+            (r#"Debug.Print "a"; "b"; 1"#, r#"Debug.Print("a", "b", 1)"#),
+            (r#"Debug.Print "a", 1"#, r#"Debug.Print("a", 1)"#),
+            // A trailing separator suppresses the newline, so it is legal
+            // and load-bearing -- in either spelling.
+            (r#"Debug.Print "a";"#, r#"Debug.Print("a")"#),
+            (r#"Debug.Print "a","#, r#"Debug.Print("a")"#),
+            // A leading or repeated separator prints an empty item.
+            (r#"Debug.Print , "a""#, r#"Debug.Print(_, "a")"#),
+            (r#"Debug.Print ; "a""#, r#"Debug.Print(_, "a")"#),
+            (r#"Debug.Print "a";; "b""#, r#"Debug.Print("a", _, "b")"#),
+            // No separator at all between two items also compiles.
+            (r#"Debug.Print "a" "b""#, r#"Debug.Print("a", "b")"#),
+            (
+                r#"Debug.Print Spc(3); "a"; Tab(10); "b""#,
+                r#"Debug.Print(Spc(3), "a", Tab(10), "b")"#,
+            ),
+            // The gate is the member name, not the `Debug` object.
+            (r#"x.Print "a"; 1"#, r#"x.Print("a", 1)"#),
+        ] {
+            assert_eq!(stmt_shape(src), want, "{src}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_print_separator_can_be_followed_by_else() {
+        // `If True Then Debug.Print "a"; Else Debug.Print "b"` compiles in
+        // Excel, so the output list has to stop at `Else` the way the
+        // bare-argument list it replaced did.
+        let m = parse(
+            "Sub S()
+If True Then Debug.Print \"a\"; Else Debug.Print \"b\"
+End Sub
+",
+        );
+        assert!(matches!(m.procedures()[0].body[0], Stmt::If { .. }));
+    }
+
+    #[test]
+    fn a_semicolon_separator_is_only_a_print_thing() {
+        // Measured: Excel rejects all three. `;` is not a general
+        // bare-argument separator, and unqualified `Print` is a statement
+        // only before a `#` -- which `try_parse_opaque` takes first.
+        for src in [
+            "Sub S()
+MsgBox \"a\"; 1
+End Sub
+",
+            "Sub S()
+Debug.Assert \"a\"; 1
+End Sub
+",
+            "Sub S()
+Print \"a\"; 1
+End Sub
+",
+        ] {
+            assert!(parse_module(src).is_err(), "{src:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn a_user_defined_print_keeps_its_named_arguments() {
+        // A class module may define its own `Print`, and a named argument to
+        // it parsed before the output-list path existed.
+        assert_eq!(
+            stmt_shape("obj.Print value:=1, style:=2"),
+            "obj.Print(value:=1, style:=2)"
+        );
     }
 
     #[test]
