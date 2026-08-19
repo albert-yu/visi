@@ -2780,6 +2780,13 @@ fn is_statically_boolean(e: &Expr) -> bool {
         } => is_statically_boolean(expr),
         Expr::Call { target, .. } => matches!(target.as_ref(), Expr::Ident { name, .. }
             if STATICALLY_BOOLEAN.contains(&name.to_ascii_lowercase().as_str())),
+        Expr::Binary { op, lhs, rhs, .. }
+            if matches!(op, BinOp::IntDiv | BinOp::Mod)
+                && is_literal_bool(lhs)
+                && is_literal_string(rhs) =>
+        {
+            false
+        }
         Expr::Binary { op, .. }
             if matches!(
                 op,
@@ -2789,6 +2796,22 @@ fn is_statically_boolean(e: &Expr) -> bool {
             is_statically_typed(e)
         }
         _ => is_constant(e),
+    }
+}
+
+fn is_literal_bool(e: &Expr) -> bool {
+    match e {
+        Expr::Paren { expr, .. } => is_literal_bool(expr),
+        Expr::Literal(Literal::Bool(_)) => true,
+        _ => false,
+    }
+}
+
+fn is_literal_string(e: &Expr) -> bool {
+    match e {
+        Expr::Paren { expr, .. } => is_literal_string(expr),
+        Expr::Literal(Literal::Str(_)) => true,
+        _ => false,
     }
 }
 
@@ -4424,6 +4447,20 @@ mod tests {
         assert_eq!(via_var("True", "2 To 5"), "String|else");
         assert_eq!(via_var("True", "Is < 0"), "String|a");
         assert_eq!(via_var("False", "0, 1"), "String|a");
+    }
+
+    #[test]
+    fn select_case_constant_bool_int_op_subject_is_not_statically_boolean() {
+        // Reproduces fuzz_results/failures/vba_exec_case_197. `True \\ "12"`
+        // folds to the Boolean True as an expression, but Excel does not use
+        // the statically-Boolean `Select Case` rule for that folded result, so
+        // `Case 0, 1` is not taken.
+        assert_eq!(
+            run(
+                "    Dim r\n    Select Case (True \\ \"12\")\n    Case 0, 1\n        r = \"value\"\n    Case Else\n        r = \"else\"\n    End Select\n    F = r"
+            ),
+            "String|else"
+        );
     }
 
     /// The constant-folding quirk in `constant_bool_int_op`, with the
