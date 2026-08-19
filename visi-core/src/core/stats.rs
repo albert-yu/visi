@@ -811,13 +811,17 @@ pub fn percentile_exc(data: &[f64], k: f64) -> Result<f64, String> {
 
     let n = sorted.len();
     let idx = k * (n + 1) as f64 - 1.0;
-    if idx < 0.0 || idx >= (n - 1) as f64 {
+    if idx < 0.0 || idx > (n - 1) as f64 {
         return Err("#NUM!".to_string());
     }
 
     let j = idx.floor() as usize;
     let d = idx - j as f64;
-    Ok(sorted[j] + d * (sorted[j + 1] - sorted[j]))
+    if j >= n - 1 {
+        Ok(sorted[n - 1])
+    } else {
+        Ok(sorted[j] + d * (sorted[j + 1] - sorted[j]))
+    }
 }
 
 pub fn quartile_inc(data: &[f64], quart: usize) -> Result<f64, String> {
