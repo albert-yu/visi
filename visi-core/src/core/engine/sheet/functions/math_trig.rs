@@ -269,13 +269,20 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::floor_math(x, sig, mode))
             }
             "GCD" | "LCM" => {
-                // Unlike MULTINOMIAL, a blank operand here is *omitted*, not
-                // zero: real Excel gives LCM(1, <blank>) = 1 (as if LCM(1)),
-                // not LCM(1, 0) = 0. Measured with fuzz/fuzz_excel.py seed
-                // 308076.
+                // A scalar blank reference is omitted (LCM(1, B1) with B1
+                // blank is 1), but blanks inside a range count as zero
+                // (LCM(A1:B2) with two numbers and two blanks is 0). Both
+                // shapes were measured against real Excel; fuzz seed 747962
+                // caught the range case after seed 308076 had pinned the
+                // scalar-reference case.
                 let mut nums = Vec::new();
                 for arg in evaluated_args {
-                    match self.flatten_skipping_blanks(Some(arg)) {
+                    let flattened = if matches!(arg, ResultData::List(_)) {
+                        self.flatten_strict_numbers(arg)
+                    } else {
+                        self.flatten_skipping_blanks(Some(arg))
+                    };
+                    match flattened {
                         Ok(v) => nums.extend(v),
                         Err(e) => return Ok(ResultData::Error(e)),
                     }
