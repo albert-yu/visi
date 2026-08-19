@@ -238,8 +238,20 @@ call into a module the file does not contain is reported. That is right for the
 differential harness (whose generated module *is* self-contained) and for a
 genuinely standalone `.bas`, and wrong for one file cut out of a larger
 project — where the answer is to check the workbook instead, which resolves
-project-wide. If this turns out to bite in practice the fix is a flag selecting
-the scope, not a weakening of the default.
+project-wide.
+
+That default now has an override rather than only a workaround ([issue #82]):
+`visi macro check --partial` runs the same check with
+`complete_project` off, so a name resolving nowhere is accepted while
+everything the source's own text disproves is still reported. `check_syntax_partial`
+and `VbaProject::check_modules_partial` are the library entry points. It is a
+flag and not a guess because nothing in the input distinguishes the two cases —
+a fragment and a whole project are the same bytes — and it is not the default
+because that would cost the rule its reach over exactly the self-contained
+module the harness measures. The flag applies to a workbook too, where it means
+"this project calls into a referenced one", which no workbook records either.
+
+[issue #82]: https://github.com/albert-yu/visi/issues/82
 
 The built-in registry is deliberately **over-broad**, and the asymmetry is
 worth stating because it is what makes a hand-maintained list of a few hundred

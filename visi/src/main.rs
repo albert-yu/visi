@@ -1471,6 +1471,14 @@ struct MacroCheckResult {
 ///
 /// Reports *every* module's verdict rather than stopping at the first
 /// failure, so one run tells you the whole story.
+///
+/// Excel compiles a *project*, so whether a name that resolves nowhere is an
+/// error depends on something the input does not carry: whether what was
+/// handed over is the whole project. The default reading is that it is --
+/// right for a workbook and for a genuinely standalone `.bas`, wrong for a
+/// `.bas` cut out of a project that calls into its siblings, which is what
+/// `--partial` is for (issue #82). Nothing here tries to guess which; the
+/// flag is the only thing that says.
 fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     let results = if is_vba_source_path(&args.file) {
         let source = read_source_argument(&args.file);
@@ -1478,7 +1486,12 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
             .name
             .clone()
             .unwrap_or_else(|| default_module_label(&args.file));
-        let (procedures, error) = match visi_core::core::check_syntax(&source) {
+        let checked = if args.partial {
+            visi_core::core::check_syntax_partial(&source)
+        } else {
+            visi_core::core::check_syntax(&source)
+        };
+        let (procedures, error) = match checked {
             Ok(syntax) => (syntax.procedures, None),
             Err(e) => (Vec::new(), Some(name_syntax_error(e, &module))),
         };
@@ -1529,10 +1542,19 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
         // compiles a project, so a call into a sibling module is legal and
         // must not be reported. `check_modules` is what knows the siblings;
         // `VbaModule::check_syntax` cannot and so is deliberately weaker.
+        // `--partial` keeps that cross-module resolution and only stops an
+        // unresolvable name being reported -- a workbook can call into a
+        // referenced project, which nothing in the file records.
         let checked = wb
             .vba_project
             .as_ref()
-            .map(|p| p.check_modules())
+            .map(|p| {
+                if args.partial {
+                    p.check_modules_partial()
+                } else {
+                    p.check_modules()
+                }
+            })
             .unwrap_or_default();
         selected
             .iter()

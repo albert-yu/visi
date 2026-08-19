@@ -922,6 +922,14 @@ pub struct MacroCheckArgs {
     /// Check only this module (defaults to every module in the workbook)
     #[arg(short, long)]
     pub name: Option<String>,
+    /// Treat the input as part of a larger project
+    ///
+    /// A name used with call syntax that resolves nowhere is accepted
+    /// rather than reported, since a module not supplied here -- a sibling
+    /// of a loose .bas file, or a referenced project -- may declare it.
+    /// Everything the source's own text disproves is still reported.
+    #[arg(long)]
+    pub partial: bool,
     /// Output results as JSON
     #[arg(long)]
     pub json: bool,

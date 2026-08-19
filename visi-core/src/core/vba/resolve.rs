@@ -63,6 +63,15 @@
 //! it after unioning every module's names, and `VbaModule::check_syntax`
 //! does not, having no project to consult.
 //!
+//! Which is a *default*, not a deduction: source handed over on its own
+//! carries no evidence either way, and a `.bas` cut out of a bigger project
+//! legitimately calls into its siblings ([issue #82]). So the assumption is
+//! overridable -- `check_syntax_partial`, `VbaProject::check_modules_partial`
+//! and `visi macro check --partial` are the same checks with this `false` --
+//! but it stays the default, since weakening it for everyone would cost the
+//! rule its reach over the standalone module the differential harness
+//! compiles, which genuinely is self-contained.
+//!
 //! ## Rules here that are not about resolving a name
 //!
 //! The first two were assumed to be name-resolution failures and turned out
@@ -113,6 +122,7 @@
 //! generates*, which is narrower than what real modules contain.
 //!
 //! [issue #78]: https://github.com/albert-yu/visi/issues/78
+//! [issue #82]: https://github.com/albert-yu/visi/issues/82
 
 use super::ast::{
     Arg, CaseMatch, Expr, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
