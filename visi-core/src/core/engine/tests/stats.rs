@@ -949,6 +949,18 @@ fn test_mode_family_rejects_a_lone_blank_operand() {
 }
 
 #[test]
+fn test_fuzz_ifna_sees_left_hand_shape_error_before_right_hand_value_error() {
+    // Harvested from fuzz/fuzz_excel.py seed 984916. The arithmetic operator
+    // surfaces the left #N/A from SUMXMY2's shape mismatch before evaluating a
+    // later POWER argument that would be #VALUE!, so IFNA catches it.
+    assert_float_close(
+        &eval1("=IFNA((SUMXMY2(A1:B3,C1:C2)+POWER(\"x\",-97)),0)"),
+        0.0,
+        1e-12,
+    );
+}
+
+#[test]
 fn test_shape_mismatch_outranks_the_no_numbers_rule() {
     // A shape mismatch is #N/A and wins over everything else, including a
     // range that also holds no numeric value at all. Getting the order
@@ -1004,6 +1016,10 @@ fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
     assert_float_close(&eval1("=LCM(\"4\", 6)"), 12.0, 1e-12);
     assert_float_close(&eval1("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
     assert_float_close(&eval1("=MULTINOMIAL(RIGHT(\"a5\", 1), 2)"), 21.0, 1e-9);
+    // Excel computes these slightly below the exact integer, so
+    // INT(MULTINOMIAL(0.1,40)) becomes 0 there. The combinatorial result is
+    // exactly 1, and visi keeps it.
+    assert_float_close(&eval1("=INT(MULTINOMIAL(0.1, 40))"), 1.0, 1e-12);
     for src in [
         "=GCD(\"x\", 8)",
         "=GCD(TRUE, 8)",

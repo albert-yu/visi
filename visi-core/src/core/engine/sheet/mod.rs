@@ -1071,13 +1071,13 @@ impl Sheet {
             }
             Expr::BinaryOp { op, left, right } => {
                 let l_val = self.evaluate_ast(left, context, row, col, deps, scope)?;
-                let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
 
                 match op {
                     Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => {
                         if let ResultData::Error(_) = &l_val {
                             return Ok(l_val);
                         }
+                        let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
                         if let ResultData::Error(_) = &r_val {
                             return Ok(r_val);
                         }
@@ -1101,6 +1101,7 @@ impl Sheet {
                             Some(f) => f,
                             None => return Ok(ResultData::Error("#VALUE!".to_string())),
                         };
+                        let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
                         if let ResultData::Error(_) = &r_val {
                             return Ok(r_val);
                         }
@@ -3931,7 +3932,18 @@ impl Sheet {
                 };
                 let mut seen: Vec<(String, ResultData, usize)> = Vec::new();
                 for v in &flat {
-                    let key = v.to_string();
+                    // UNIQUE compares values without the cross-type coercion
+                    // used by worksheet comparison operators: text "3" and
+                    // numeric 3 are distinct values.
+                    let key = match v {
+                        ResultData::None => "blank:".to_string(),
+                        ResultData::Boolean(b) => format!("bool:{b}"),
+                        ResultData::Integer(i) => format!("num:{}", *i as f64),
+                        ResultData::Float(f) => format!("num:{f}"),
+                        ResultData::String(s) => format!("str:{s}"),
+                        ResultData::Error(e) => format!("err:{e}"),
+                        ResultData::List(_) | ResultData::Dict(_) => format!("other:{v}"),
+                    };
                     match seen.iter_mut().find(|(k, ..)| k == &key) {
                         Some(entry) => entry.2 += 1,
                         None => seen.push((key, v.clone(), 1)),

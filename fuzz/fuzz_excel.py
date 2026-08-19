@@ -54,7 +54,10 @@ class ExcelFuzzGenerator:
         "AVEDEV", "AVERAGEA", "DEVSQ", "GEOMEAN", "HARMEAN",
         "MEDIAN", "VAR.S", "VAR.P", "VARA", "VARPA",
         "STDEV.S", "STDEV.P", "STDEVA", "STDEVPA", "SKEW", "SKEW.P",
-        "KURT", "MAXA", "MINA", "GCD", "LCM", "MULTINOMIAL", "SUMSQ",
+        # MULTINOMIAL is accurate in visi but Excel rounds some integer-valued
+        # answers just below the integer (docs/excel-discrepancies.md #25),
+        # which leaks through wrappers like INT(MULTINOMIAL(...)).
+        "KURT", "MAXA", "MINA", "GCD", "LCM", "SUMSQ",
         "COUNT", "COUNTA", "COUNTBLANK", "SUMPRODUCT",
         "VAR", "VARP", "STDEV", "STDEVP",
     ]
@@ -548,7 +551,11 @@ class ExcelFuzzGenerator:
             if random.random() < 0.25:
                 samples = ["a,b", "quote ' test", "paren(test)", "dash-test"]
                 return random.choice(samples)
-            chars = string.ascii_letters + " 123"
+            # Avoid whitespace-only strings: OOXML/openpyxl can strip them to
+            # empty shared strings unless xml:space="preserve", which makes
+            # Excel and visi disagree about blank-vs-empty-string observability
+            # in functions such as ARRAYTOTEXT (docs/excel-discrepancies.md #14).
+            chars = string.ascii_letters + "123"
             return "".join(random.choice(chars) for _ in range(random.randint(1, 8)))
         elif choice < 0.88:
             # Booleans

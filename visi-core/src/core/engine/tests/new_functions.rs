@@ -1268,6 +1268,22 @@ fn test_unique_sort_sortby_filter_trimrange() {
 }
 
 #[test]
+fn test_fuzz_unique_distinguishes_numeric_text_from_numbers() {
+    // Harvested from fuzz/fuzz_excel.py seed 993170: UNIQUE keeps text "3"
+    // distinct from numeric 3. SUM then ignores the text and sums 3 + 10.
+    let grid = [
+        ["\"3\"", "=SUM(UNIQUE(A1:A5))"],
+        ["OUiVTqS", ""],
+        ["", ""],
+        ["3", ""],
+        ["10", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 13.0, 1e-9);
+}
+
+#[test]
 fn test_sort_and_sortby_always_place_blanks_last() {
     // Regression test: SORT/SORTBY used the same blank-coerces-to-0/""/
     // false comparator as ordinary `<`/`>` operators, so descending order

@@ -277,7 +277,8 @@ impl Sheet {
                 // scalar-reference case.
                 let mut nums = Vec::new();
                 for arg in evaluated_args {
-                    let flattened = if matches!(arg, ResultData::List(items) if items.len() == 1 && matches!(items[0], ResultData::None)) {
+                    let flattened = if matches!(arg, ResultData::List(items) if items.len() == 1 && matches!(items[0], ResultData::None))
+                    {
                         // Real Excel treats a one-cell blank range as a missing
                         // operand (`GCD(A1:A1)` is #VALUE!), while a larger
                         // range of blanks contributes zeroes (`GCD(A1:A2)` is 0).

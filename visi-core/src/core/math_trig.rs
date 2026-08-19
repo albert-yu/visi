@@ -254,7 +254,8 @@ pub fn quotient(numerator: f64, denominator: f64) -> Result<f64, String> {
     if denominator == 0.0 {
         Err("#DIV/0!".to_string())
     } else {
-        Ok((numerator / denominator).trunc())
+        let q = (numerator / denominator).trunc();
+        Ok(if q == 0.0 { 0.0 } else { q })
     }
 }
 
@@ -593,7 +594,7 @@ pub fn power(number: f64, p: f64) -> Result<f64, String> {
         Err("#NUM!".to_string())
     } else if number == 0.0 && p < 0.0 {
         Err("#DIV/0!".to_string())
-    } else if number < 0.0 && p.floor() != p {
+    } else if number < 0.0 && (p.floor() != p || p.abs() > 1e6) {
         Err("#NUM!".to_string())
     } else {
         Ok(number.powf(p))

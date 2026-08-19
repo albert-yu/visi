@@ -369,6 +369,13 @@ Note this is narrow: it only excuses a value that is blank-equivalent. A cell
 genuinely missing from either side still fails, so real data loss on import
 or export is still caught.
 
+A later fuzz pass found one more place where the same OOXML whitespace stripping
+is observable: `ARRAYTOTEXT` over a one-cell whitespace string. Excel still has
+an empty-string cell and returns an empty string; visi imports it as blank and
+applies the real blank-cell rule (`#VALUE!`). The random generator now avoids
+whitespace-only source strings rather than treating an xlsx encoding artifact as
+a formula semantics failure.
+
 ---
 
 ## 15. MOD with a divisor far larger than the dividend — *Excel is wrong*
@@ -677,6 +684,22 @@ The existing `PRICEMAT`/`YIELDMAT` special day-count code covers the known
 February month-end cases, but this shows another NASD-30/360 leg rule that is
 not yet reverse-engineered. The harness avoids basis 0 for `PRICEMAT` and
 `YIELDMAT` pending that work; the other bases remain fuzzed.
+
+## 25. MULTINOMIAL returns just below exact integers — *Excel is wrong*
+
+Excel's `MULTINOMIAL` can return a value just below an exact integer even when
+all inputs truncate to ordinary non-negative integers:
+
+```
+MULTINOMIAL(0.1, 40)      exact 1    Excel 0.9999999999999769
+MULTINOMIAL(1.2, 40)      exact 41   Excel 40.9999999999989
+```
+
+The worksheet displays these as `1` and `41`, but wrappers that observe the raw
+number expose the drift: `INT(MULTINOMIAL(0.1,40))` is `0` in Excel and `1` in
+visi. The exact combinatorial definition is unambiguous, so visi keeps the
+integer result. The random formula fuzzer no longer generates `MULTINOMIAL`,
+while direct coercion/domain behavior remains covered by Rust tests.
 
 ---
 

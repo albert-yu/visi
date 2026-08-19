@@ -232,11 +232,11 @@ impl Sheet {
                     // operand is missing and reports #VALUE! even when the
                     // other range has a different shape. One-cell text/boolean
                     // operands are still shape mismatches (#N/A).
-                    if Self::is_empty_scalar_operand(evaluated_args.first().unwrap_or(&ResultData::None))
-                        || Self::is_empty_scalar_operand(
-                            evaluated_args.get(1).unwrap_or(&ResultData::None),
-                        )
-                    {
+                    if Self::is_empty_scalar_operand(
+                        evaluated_args.first().unwrap_or(&ResultData::None),
+                    ) || Self::is_empty_scalar_operand(
+                        evaluated_args.get(1).unwrap_or(&ResultData::None),
+                    ) {
                         return Ok(ResultData::Error("#VALUE!".to_string()));
                     }
                     return Ok(ResultData::Error("#N/A".to_string()));
