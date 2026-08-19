@@ -159,6 +159,28 @@ CASES = [
     ("builtin:expr-CreateObject", 'x = CreateObject("Scripting.Dictionary")'),
     ("builtin:expr-Range", 'x = Range("A1")'),
     ("builtin:expr-Worksheets", "x = Worksheets(1)"),
+
+    # -- Issue #81: a `Print` output list. Not an argument list -- `;` is a
+    #    separator here and nowhere else in the grammar, and the item and
+    #    the separator are each independently optional. The last three are
+    #    the boundary: `;` does not generalize to other bare-argument
+    #    statements, and unqualified `Print` is a statement only before a
+    #    `#`. Every one measured; `core/vba/parser.rs`'s
+    #    `parse_print_output_list` is built from these answers.
+    ("print:semicolon", 'Debug.Print "a"; 1'),
+    ("print:semicolon-chain", 'Debug.Print "a"; "b"; 1'),
+    ("print:trailing-semicolon", 'Debug.Print "a";'),
+    ("print:trailing-comma", 'Debug.Print "a",'),
+    ("print:leading-comma", 'Debug.Print , "a"'),
+    ("print:leading-semicolon", 'Debug.Print ; "a"'),
+    ("print:doubled-semicolon", 'Debug.Print "a";; "b"'),
+    ("print:no-separator", 'Debug.Print "a" "b"'),
+    ("print:spc-and-tab", 'Debug.Print Spc(3); "a"; Tab(10); "b"'),
+    ("print:not-only-debug", 'x.Print "a"; 1'),
+    ("print:trailing-then-else", 'If True Then Debug.Print "a"; Else Debug.Print "b"'),
+    ("print:semicolon-is-not-general", 'MsgBox "a"; 1'),
+    ("print:semicolon-is-not-debugs", 'Debug.Assert "a"; 1'),
+    ("print:unqualified-needs-a-hash", 'Print "a"; 1'),
 ]
 
 
