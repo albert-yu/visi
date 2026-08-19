@@ -67,6 +67,13 @@ def saved_failure_sources():
     )
 
 
+# --------------------------------------------------------------------- generator coverage
+
+
+def test_formula_text_function_dispatch_covers_listed_names():
+    ExcelFuzzGenerator._check_text_function_generators()
+
+
 # --------------------------------------------------------------------- eval
 
 

@@ -69,7 +69,10 @@ class ExcelFuzzGenerator:
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
     FUNCTIONS_TEXT = [
         "CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER",
-        "ASC", "CLEAN", "CODE", "DBCS", "EXACT", "FIND", "FINDB",
+        # DBCS is locale-dependent in real Excel: on this Windows oracle it is
+        # a no-op for ASCII, while visi intentionally maps ASCII to full-width.
+        # Keep it out of the differential generator.
+        "ASC", "CLEAN", "CODE", "EXACT", "FIND", "FINDB",
         "LEFTB", "LENB", "MIDB", "REPT", "RIGHTB", "SEARCH", "SEARCHB",
         "SUBSTITUTE", "T", "TEXTAFTER", "TEXTBEFORE", "UNICHAR", "UNICODE"
     ]
@@ -507,6 +510,70 @@ class ExcelFuzzGenerator:
             # Small integers for range indexes
             return random.randint(1, 10)
 
+    def _generate_text_expr(self, fn, gen_expr, depth):
+        """Generate one FUNCTIONS_TEXT call for generate_formula's recursive text arm."""
+        text = lambda: gen_expr(depth + 1)
+        literal = lambda s: '"' + s.replace('"', '""') + '"'
+        count = lambda: str(random.randint(1, 5))
+
+        if fn == "CONCATENATE":
+            return f"CONCATENATE({text()}, {text()})"
+        if fn in ("LEFT", "RIGHT", "LEFTB", "RIGHTB"):
+            return f"{fn}({text()}, {count()})"
+        if fn in ("ASC", "CLEAN"):
+            return f"{fn}({literal('abc')})"
+        if fn in ("LEN", "LENB", "UPPER", "LOWER", "CODE", "T", "UNICODE"):
+            return f"{fn}({text()})"
+        if fn == "MIDB":
+            return f"MIDB({text()}, {random.randint(1, 3)}, {count()})"
+        if fn == "EXACT":
+            probe = random.choice(["abc", "ABC", "text"])
+            return f"EXACT({text()}, {literal(probe)})"
+        if fn in ("FIND", "FINDB"):
+            haystack = random.choice(["alphabet", "abracadabra", "text value"])
+            needle = random.choice(["a", "b", "t"])
+            return f"{fn}({literal(needle)}, {literal(haystack)}, {random.randint(1, 2)})"
+        if fn in ("SEARCH", "SEARCHB"):
+            haystack = random.choice(["Alphabet", "abracadabra", "text value"])
+            needle = random.choice(["a", "?", "t"])
+            return f"{fn}({literal(needle)}, {literal(haystack)}, {random.randint(1, 2)})"
+        if fn == "REPT":
+            return f"REPT({text()}, {random.randint(0, 3)})"
+        if fn == "SUBSTITUTE":
+            source = random.choice(["abracadabra", "foo bar foo", "111-222"])
+            old = random.choice(["a", "foo", "1"])
+            new = random.choice(["X", "z", ""])
+            if random.random() < 0.5:
+                return f"SUBSTITUTE({literal(source)}, {literal(old)}, {literal(new)})"
+            return f"SUBSTITUTE({literal(source)}, {literal(old)}, {literal(new)}, {random.randint(1, 2)})"
+        if fn in ("TEXTAFTER", "TEXTBEFORE"):
+            source = random.choice(["left|right", "a,b,c", "prefix--suffix"])
+            delim = "|" if "|" in source else ("," if "," in source else "--")
+            return f"{fn}({literal(source)}, {literal(delim)})"
+        if fn == "UNICHAR":
+            # Keep generated output in the console/codepage-safe ASCII range;
+            # Unicode storage paths are covered elsewhere, and the Windows
+            # harness prints mismatches through a legacy console encoding.
+            return f"UNICHAR({random.randint(65, 90)})"
+
+        raise AssertionError(f"FUNCTIONS_TEXT has no generator for {fn}")
+
+    @classmethod
+    def _check_text_function_generators(cls):
+        """Small coverage self-check: every listed text function has a real emitter."""
+        state = random.getstate()
+        try:
+            gen = cls()
+            missing = []
+            for fn in cls.FUNCTIONS_TEXT:
+                formula = gen._generate_text_expr(fn, lambda _depth=0: '"abc"', 0)
+                if fn not in formula.upper():
+                    missing.append((fn, formula))
+            if missing:
+                raise AssertionError(f"FUNCTIONS_TEXT generators missing/renamed: {missing}")
+        finally:
+            random.setstate(state)
+
     def generate_formula(self, current_row, current_col, max_row, max_col, min_col=1):
         """Generates a random formula string referencing existing cells or constants."""
         def random_cell_ref():
@@ -639,14 +706,7 @@ class ExcelFuzzGenerator:
 
             elif fn_type == "text":
                 fn = random.choice(self.FUNCTIONS_TEXT)
-                if fn in ["LEFT", "RIGHT"]:
-                    return f'{fn}({gen_expr(depth+1)}, {random.randint(1, 5)})'
-                elif fn == "LEN":
-                    return f'LEN({gen_expr(depth+1)})'
-                elif fn in ["UPPER", "LOWER"]:
-                    return f'{fn}({gen_expr(depth+1)})'
-                else:
-                    return f'CONCATENATE({gen_expr(depth+1)}, {gen_expr(depth+1)})'
+                return self._generate_text_expr(fn, gen_expr, depth)
 
         return "=" + gen_expr(0)
 
@@ -2676,6 +2736,8 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    ExcelFuzzGenerator._check_text_function_generators()
 
     os.makedirs(args.output_dir, exist_ok=True)
     failures_dir = os.path.join(args.output_dir, "failures")
