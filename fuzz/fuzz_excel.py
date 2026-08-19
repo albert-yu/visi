@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import io
 import math
 import os
@@ -522,23 +523,15 @@ class ExcelFuzzGenerator:
     def generate_random_value(self):
         """Generates a random cell input value (number, string, boolean, edge case)."""
         choice = random.random()
-        if choice < 0.32:
-            # Integers: mostly small values, with occasional wider-but-still
-            # exactly representable magnitudes so import/export isn't only
-            # exercising toy data.
-            if random.random() < 0.12:
-                return random.randint(-1_000_000_000, 1_000_000_000)
+        if choice < 0.35:
+            # Integers
             return random.randint(-100, 100)
-        elif choice < 0.57:
-            # Floating point numbers, including zero and occasional scientific
-            # notation scale without wandering into known Excel/f64 extremes.
+        elif choice < 0.60:
+            # Floating point numbers (including zero)
             if random.random() < 0.1:
                 return 0.0
-            if random.random() < 0.15:
-                scale = random.choice([1e-9, 1e-6, 1e6, 1e9])
-                return round(random.uniform(-500.0, 500.0) * scale, random.randint(0, 6))
             return round(random.uniform(-500.0, 500.0), random.randint(0, 4))
-        elif choice < 0.75:
+        elif choice < 0.78:
             # Short strings, usually ASCII but sometimes Unicode/punctuation
             # to exercise shared-string and text-function paths beyond plain
             # `[A-Za-z 123]`.
@@ -547,10 +540,10 @@ class ExcelFuzzGenerator:
                 return random.choice(samples)
             chars = string.ascii_letters + " 123"
             return "".join(random.choice(chars) for _ in range(random.randint(1, 8)))
-        elif choice < 0.85:
+        elif choice < 0.88:
             # Booleans
             return random.choice([True, False])
-        elif choice < 0.95:
+        elif choice < 0.98:
             # Empty / None
             return None
         else:
@@ -2228,11 +2221,12 @@ class ExcelFuzzGenerator:
         cross_sheet_col = db_crit_col + 1
         ws.cell(row=1, column=cross_sheet_col, value=f"='Data Sheet'!{self._col_name(num_cols + 1)}1*2")
 
-        # --- Reference-entropy block: deterministic formulas whose purpose is
-        # to make sure every iteration contains address forms that pure random
-        # generation may only hit rarely. The operands are chosen from
-        # formula-free numeric helper columns so the cells compare the address
-        # handling itself, not random type/error propagation.
+        # --- Reference/value-entropy block: deterministic formulas whose
+        # purpose is to make sure every iteration contains address and source
+        # value forms that pure random generation may only hit rarely. The
+        # operands are chosen from formula-free helper columns so the cells
+        # compare the targeted feature itself, not random type/error
+        # propagation.
         ref_entropy_col = cross_sheet_col + 1
         fcash = self._col_name(fin_cash_col)
         fdate = self._col_name(fin_date_col)
@@ -2240,6 +2234,34 @@ class ExcelFuzzGenerator:
         ws.cell(row=1, column=ref_entropy_col, value="=SUM($A:$A)")
         ws.cell(row=2, column=ref_entropy_col, value=f"=${fcash}$1+{fdate}$1+${fsched}1")
         ws.cell(row=3, column=ref_entropy_col, value="=COUNTA('Data Sheet'!$A:$A)")
+
+        numeric_entropy_col = ref_entropy_col + 1
+        numeric_formula_col = numeric_entropy_col + 1
+        wide_int = random.randint(10_000_000, 1_000_000_000)
+        tiny_float = round(random.uniform(1.0, 500.0) * 1e-9, 12)
+        ws.cell(row=1, column=numeric_entropy_col, value=wide_int)
+        ws.cell(row=2, column=numeric_entropy_col, value=tiny_float)
+        ws.cell(row=1, column=numeric_formula_col, value=f"={self._col_name(numeric_entropy_col)}1+1")
+        ws.cell(row=2, column=numeric_formula_col, value=f"={self._col_name(numeric_entropy_col)}2*1000000")
+
+        date_entropy_col = numeric_formula_col + 1
+        date_formula_col = date_entropy_col + 1
+        d1 = datetime.date(random.randint(1995, 2035), random.randint(1, 12), random.randint(1, 28))
+        d2 = d1 + datetime.timedelta(days=random.randint(1, 60))
+        ws.cell(row=1, column=date_entropy_col, value=d1)
+        ws.cell(row=2, column=date_entropy_col, value=d2)
+        ws.cell(row=1, column=date_formula_col, value=f"=YEAR({self._col_name(date_entropy_col)}1)")
+        ws.cell(row=2, column=date_formula_col, value=f"={self._col_name(date_entropy_col)}2-{self._col_name(date_entropy_col)}1")
+
+        criteria_data_col = date_formula_col + 1
+        criteria_formula_col = criteria_data_col + 1
+        criteria_values = ["Alpha", "alphabet", "Beta", "", "A?pha"]
+        for i, value in enumerate(criteria_values, start=1):
+            ws.cell(row=i, column=criteria_data_col, value=value)
+        crit_col = self._col_name(criteria_data_col)
+        ws.cell(row=1, column=criteria_formula_col, value=f'=COUNTIF({crit_col}1:{crit_col}5,"Al*")')
+        ws.cell(row=2, column=criteria_formula_col, value=f'=COUNTIF({crit_col}1:{crit_col}5,"<>")')
+        ws.cell(row=3, column=criteria_formula_col, value=f'=COUNTIF({crit_col}1:{crit_col}5,"A~?pha")')
 
         # Final pass: add the `_xlfn.` prefix every post-2007 function in
         # NEEDS_XLFN_PREFIX needs to be recognized when the file is opened

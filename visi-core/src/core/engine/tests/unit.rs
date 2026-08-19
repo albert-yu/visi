@@ -256,6 +256,7 @@ fn test_new_excel_formulas() {
     );
 
     sheet.set_cell_src(4, 3, "=XLOOKUP(30, B1:B3, C1:C3)".to_string());
+    sheet.set_cell_src(4, 4, "=COUNTIF(C1:C3, \"app*\")".to_string());
     sheet.commit(None).unwrap();
 
     assert_eq!(
@@ -283,6 +284,10 @@ fn test_new_excel_formulas() {
         Some(2.0)
     );
     assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(4, 4))),
+        Some(2.0)
+    );
+    assert_eq!(
         get_float_val(&sheet.get_result_data(&CellRef::new(4, 2))),
         Some(1.0)
     );
@@ -301,6 +306,27 @@ fn test_new_excel_formulas() {
     } else {
         panic!("Expected MMULT to return a list");
     }
+}
+
+#[test]
+fn test_countif_wildcard_criteria_match_excel() {
+    let mut sheet = Sheet::new(SheetInit::default());
+    sheet.set_cell_src(0, 0, "Alpha".to_string());
+    sheet.set_cell_src(1, 0, "alphabet".to_string());
+    sheet.set_cell_src(2, 0, "Beta".to_string());
+    sheet.set_cell_src(3, 0, "A?pha".to_string());
+    sheet.set_cell_src(0, 1, "=COUNTIF(A1:A4, \"Al*\")".to_string());
+    sheet.set_cell_src(1, 1, "=COUNTIF(A1:A4, \"A~?pha\")".to_string());
+    sheet.commit(None).unwrap();
+
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(0, 1))),
+        Some(2.0)
+    );
+    assert_eq!(
+        get_float_val(&sheet.get_result_data(&CellRef::new(1, 1))),
+        Some(1.0)
+    );
 }
 
 fn approx_float(source: &str, expected: f64) {

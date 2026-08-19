@@ -2274,6 +2274,37 @@ impl Sheet {
         candidate.to_string() == lookup_key
     }
 
+    fn wildcard_criteria_matches(pattern: &str, text: &str) -> bool {
+        fn rec(pat: &[char], txt: &[char]) -> bool {
+            if pat.is_empty() {
+                return txt.is_empty();
+            }
+            match pat[0] {
+                '*' => rec(&pat[1..], txt) || (!txt.is_empty() && rec(pat, &txt[1..])),
+                '?' => !txt.is_empty() && rec(&pat[1..], &txt[1..]),
+                '~' if pat.len() > 1 && matches!(pat[1], '*' | '?' | '~') => {
+                    !txt.is_empty() && pat[1] == txt[0] && rec(&pat[2..], &txt[1..])
+                }
+                ch => !txt.is_empty() && ch == txt[0] && rec(&pat[1..], &txt[1..]),
+            }
+        }
+
+        let pat = pattern.to_lowercase().chars().collect::<Vec<_>>();
+        let txt = text.to_lowercase().chars().collect::<Vec<_>>();
+        rec(&pat, &txt)
+    }
+
+    fn criteria_text_eq(val: &ResultData, pattern: &str) -> bool {
+        let text = val.to_string();
+        if pattern.contains('*') || pattern.contains('?') {
+            // Excel wildcard criteria are text-pattern matches; numeric and
+            // boolean cells are not counted by criteria like "*".
+            matches!(val, ResultData::String(_)) && Self::wildcard_criteria_matches(pattern, &text)
+        } else {
+            text.to_lowercase() == pattern.to_lowercase()
+        }
+    }
+
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
         let crit_str = criteria.to_string();
         if let Some(rest) = crit_str.strip_prefix(">=") {
@@ -2296,8 +2327,8 @@ impl Sheet {
             let crit_f = rest.trim().parse::<f64>().unwrap_or(0.0);
             val_f > crit_f
         } else if let Some(rest) = crit_str.strip_prefix("<>") {
-            let remainder = rest.trim().to_string();
-            val.to_string() != remainder
+            let remainder = rest.trim();
+            !Self::criteria_text_eq(val, remainder)
         } else if let Some(rest) = crit_str.strip_prefix("<=") {
             let val_f = match Self::range_numeric(val) {
                 Some(f) => f,
@@ -2313,10 +2344,10 @@ impl Sheet {
             let crit_f = rest.trim().parse::<f64>().unwrap_or(0.0);
             val_f < crit_f
         } else if let Some(rest) = crit_str.strip_prefix('=') {
-            let remainder = rest.trim().to_string();
-            val.to_string() == remainder
+            let remainder = rest.trim();
+            Self::criteria_text_eq(val, remainder)
         } else {
-            val.to_string() == crit_str
+            Self::criteria_text_eq(val, &crit_str)
         }
     }
 
