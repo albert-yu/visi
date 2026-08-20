@@ -88,9 +88,10 @@ class ChartFuzzGenerator:
     TITLES = ["Sales", "Revenue by Region", "Q3 Results", None]
     AXIS_LABELS = ["Category", "Amount", "Units", None]
 
-    def __init__(self, seed=None):
+    def __init__(self, seed=None, shape="basic"):
         if seed is not None:
             random.seed(seed)
+        self.shape = shape
 
     def _random_config(self, chart_type=None):
         chart_type = chart_type or random.choice(self.CHART_TYPES)
@@ -108,14 +109,41 @@ class ChartFuzzGenerator:
         column) to `source_path` via openpyxl, and returns
         `(range_str, add_config, edit_config)`.
         """
+        import datetime
         import openpyxl
 
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Sheet1"
+        saw_date = False
+        saw_blank = False
         for i in range(1, num_rows + 1):
-            ws.cell(row=i, column=1, value=f"Cat{i}")
-            ws.cell(row=i, column=2, value=random.randint(1, 1000))
+            use_date = self.shape == "rich" and random.random() < 0.45
+            if use_date:
+                saw_date = True
+                ws.cell(row=i, column=1, value=datetime.date(2026, 1, 1) + datetime.timedelta(days=i * 7))
+                ws.cell(row=i, column=1).number_format = "m/d/yy"
+            else:
+                ws.cell(row=i, column=1, value=f"Cat{i}")
+            use_blank = self.shape == "rich" and i > 1 and random.random() < 0.20
+            if use_blank:
+                saw_blank = True
+                ws.cell(row=i, column=2).value = None
+            else:
+                ws.cell(row=i, column=2, value=random.randint(1, 1000))
+            if self.shape == "rich":
+                # Extra series-shaped data is deliberately present even though
+                # the current chart model consumes one value column. It keeps
+                # the input workbook closer to real chart sources without
+                # changing the pass/fail comparison scope.
+                ws.cell(row=i, column=3, value=random.randint(-250, 250) if random.random() > 0.15 else None)
+                ws.cell(row=i, column=4, value=random.choice(["North", "South", "East", "West", None]))
+        if self.shape == "rich":
+            if not saw_date:
+                ws.cell(row=1, column=1, value=datetime.date(2026, 1, 1))
+                ws.cell(row=1, column=1).number_format = "m/d/yy"
+            if not saw_blank and num_rows >= 2:
+                ws.cell(row=2, column=2).value = None
         wb.save(source_path)
 
         range_str = f"Sheet1!A1:B{num_rows}"
@@ -434,6 +462,10 @@ def main():
     add_backend_arg(parser)
     parser.add_argument("--iterations", type=int, default=10, help="Number of fuzz iterations to run.")
     parser.add_argument("--rows", type=int, default=8, help="Max source data rows per iteration.")
+    parser.add_argument(
+        "--shape", choices=["basic", "rich"], default="basic",
+        help="Input shape profile. 'rich' adds blank/missing values, date categories and extra source columns.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible fuzzing.")
     parser.add_argument("--output-dir", default="./fuzz_results", help="Directory to store test outputs and failure artifacts.")
     args = parser.parse_args()
@@ -454,6 +486,7 @@ def main():
     print("=====================================================================")
     print(f" Iterations  : {args.iterations}")
     print(f" Max rows    : {args.rows}")
+    print(f" Shape       : {args.shape}")
     print(f" Visi        : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
     if smoke_mode:
@@ -466,7 +499,7 @@ def main():
 
     for i in range(1, args.iterations + 1):
         iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
-        generator = ChartFuzzGenerator(seed=iter_seed)
+        generator = ChartFuzzGenerator(seed=iter_seed, shape=args.shape)
 
         temp_dir = tempfile.mkdtemp(prefix=f"fuzz_chart_iter_{i}_")
         source_xlsx = os.path.join(temp_dir, "source.xlsx")
