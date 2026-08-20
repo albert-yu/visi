@@ -228,6 +228,17 @@ impl Sheet {
                 let a_raw = self.positional_numbers(evaluated_args.first(), &mut first_err);
                 let e_raw = self.positional_numbers(evaluated_args.get(1), &mut first_err);
                 if a_raw.len() != e_raw.len() {
+                    // A pure shape mismatch is #N/A, but a one-cell blank
+                    // operand is missing and reports #VALUE! even when the
+                    // other range has a different shape. One-cell text/boolean
+                    // operands are still shape mismatches (#N/A).
+                    if Self::is_empty_scalar_operand(
+                        evaluated_args.first().unwrap_or(&ResultData::None),
+                    ) || Self::is_empty_scalar_operand(
+                        evaluated_args.get(1).unwrap_or(&ResultData::None),
+                    ) {
+                        return Ok(ResultData::Error("#VALUE!".to_string()));
+                    }
                     return Ok(ResultData::Error("#N/A".to_string()));
                 }
                 // A single category leaves zero degrees of freedom, so

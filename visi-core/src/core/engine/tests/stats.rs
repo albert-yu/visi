@@ -202,6 +202,8 @@ fn test_rank_percentile_and_bivariate_functions_match_hand_computed_values() {
     assert_float_close(&rank_avg, 3.5, 1e-9);
     let (pct_exc, _) = sheet.eval("=PERCENTILE.EXC(A1:E1,0.5)", None).unwrap();
     assert_float_close(&pct_exc, 20.0, 1e-6);
+    let (pct_exc_max, _) = sheet.eval("=PERCENTILE.EXC(A1:E1,5/6)", None).unwrap();
+    assert_float_close(&pct_exc_max, 40.0, 1e-6);
     let (quart_exc, _) = sheet.eval("=QUARTILE.EXC(A1:E1,1)", None).unwrap();
     assert_float_close(&quart_exc, 15.0, 1e-6);
     let (prank_inc, _) = sheet.eval("=PERCENTRANK.INC(A1:E1,25)", None).unwrap();
@@ -947,6 +949,18 @@ fn test_mode_family_rejects_a_lone_blank_operand() {
 }
 
 #[test]
+fn test_fuzz_ifna_sees_left_hand_shape_error_before_right_hand_value_error() {
+    // Harvested from fuzz/fuzz_excel.py seed 984916. The arithmetic operator
+    // surfaces the left #N/A from SUMXMY2's shape mismatch before evaluating a
+    // later POWER argument that would be #VALUE!, so IFNA catches it.
+    assert_float_close(
+        &eval1("=IFNA((SUMXMY2(A1:B3,C1:C2)+POWER(\"x\",-97)),0)"),
+        0.0,
+        1e-12,
+    );
+}
+
+#[test]
 fn test_shape_mismatch_outranks_the_no_numbers_rule() {
     // A shape mismatch is #N/A and wins over everything else, including a
     // range that also holds no numeric value at all. Getting the order
@@ -967,6 +981,33 @@ fn test_shape_mismatch_outranks_the_no_numbers_rule() {
 }
 
 #[test]
+fn test_fuzz_chitest_mismatched_range_with_no_numbers_is_value() {
+    // Harvested from fuzz/fuzz_excel.py seeds 409614 and 800412. A pure
+    // numeric shape mismatch remains #N/A, but if one of CHITEST's mismatched
+    // ranges has no numeric value at all, real Excel reports #VALUE! instead.
+    let mut sheet = create_sheet(&[
+        ["", "", "0", "=CHITEST(A1:A1, B1:C1)"],
+        ["90", "90.1", "", "=CHITEST(A2:B2, C2:C2)"],
+        ["90", "90.1", "-52", "=CHITEST(A3:B3, C3:C3)"],
+        ["90", "90.1", "=TRUE", "=CHITEST(A4:B4, C4:C4)"],
+    ]);
+    sheet.commit(None).unwrap();
+
+    for row in 0..2 {
+        match sheet.get_result_data(&CellRef::new(row, 3)) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "row {row}"),
+            other => panic!("expected #VALUE! in row {row}, got {other:?}"),
+        }
+    }
+    for row in 2..=3 {
+        match sheet.get_result_data(&CellRef::new(row, 3)) {
+            ResultData::Error(e) => assert_eq!(e, "#N/A", "row {row}"),
+            other => panic!("expected #N/A in row {row}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
     // GCD, LCM and MULTINOMIAL coerce text that looks numeric and reject
     // everything else -- so this is narrower than "text is #VALUE!", which
@@ -975,6 +1016,10 @@ fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
     assert_float_close(&eval1("=LCM(\"4\", 6)"), 12.0, 1e-12);
     assert_float_close(&eval1("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
     assert_float_close(&eval1("=MULTINOMIAL(RIGHT(\"a5\", 1), 2)"), 21.0, 1e-9);
+    // Excel computes these slightly below the exact integer, so
+    // INT(MULTINOMIAL(0.1,40)) becomes 0 there. The combinatorial result is
+    // exactly 1, and visi keeps it.
+    assert_float_close(&eval1("=INT(MULTINOMIAL(0.1, 40))"), 1.0, 1e-12);
     for src in [
         "=GCD(\"x\", 8)",
         "=GCD(TRUE, 8)",

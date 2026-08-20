@@ -35,6 +35,38 @@ fn test_trig_and_hyperbolic_functions() {
 }
 
 #[test]
+fn test_fuzz_quotient_zero_does_not_keep_negative_sign_in_atan2() {
+    // Harvested from fuzz/fuzz_excel.py seed 567480: QUOTIENT(PI(), -37)
+    // displays as zero and behaves as +0 in ATAN2's quadrant choice.
+    match eval_one("=ATAN2(RADIANS(-45), QUOTIENT(PI(), -37))") {
+        ResultData::Float(v) => assert!((v - std::f64::consts::PI).abs() < 1e-12, "got {v}"),
+        other => panic!("expected pi, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_power_type_checks_base_before_exponent_error() {
+    // Harvested from fuzz/fuzz_excel.py seeds 61472 and 148208: POWER checks
+    // its base's type before propagating a later exponent error, so this is
+    // #VALUE!, not #N/A.
+    match eval_one("=POWER(\"C\", NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_power_negative_base_rejects_huge_exponent() {
+    // Harvested from fuzz/fuzz_excel.py seed 151238: SINH(-424.13) is an
+    // enormous negative integer-valued double, but Excel still rejects a
+    // negative POWER base once the exponent is outside its supported range.
+    match eval_one("=POWER(-95, SINH(-424.13))") {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_sin_cos_tan_and_reciprocals_num_error_past_2_pow_27() {
     // Measured directly against real Windows Excel: SIN/COS/TAN refuse an
     // argument at or beyond 2^27 (134217728) radians with #NUM! -- past
@@ -347,6 +379,30 @@ fn test_fuzz_lcm_range_blank_cells_count_as_zero() {
         matches!(no_blanks, ResultData::Float(v) if (v - 40568.0).abs() < 1e-9),
         "LCM(non-blank range) should be 40568, got {no_blanks:?}"
     );
+}
+
+#[test]
+fn test_fuzz_gcd_lcm_one_cell_blank_range_is_missing_operand() {
+    // Harvested from fuzz/fuzz_excel.py seed 579827: a one-cell blank range is
+    // a missing operand (#VALUE!), while the existing multi-cell range rule
+    // above still counts blanks as zero.
+    let grid = [
+        ["", "=GCD(A1:A1)", "=LCM(A1:A1)", "=GCD(A1:A2)"],
+        ["", "", "", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    for col in 1..=2 {
+        match sheet.get_result_data(&CellRef::new(0, col)) {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!", "column {col}"),
+            other => panic!("expected #VALUE! in column {col}, got {other:?}"),
+        }
+    }
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 3)),
+        ResultData::Float(v) if v.abs() < 1e-9
+    ));
 }
 
 #[test]
