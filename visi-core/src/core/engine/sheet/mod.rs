@@ -2024,6 +2024,9 @@ impl Sheet {
             // base is 0, while LOG(1) uses base 10 and returns 0. Same for
             // LEFT("abcd", <blank>) = "" and MROUND(10, <blank>) = 0.
             Some(ResultData::None) => Ok(0.0),
+            Some(ResultData::Error(e)) => Err(EngineError::EvalError(EvalError::UnknownFunction(
+                e.clone(),
+            ))),
             Some(v) => self.to_f64(v).ok_or_else(|| {
                 EngineError::EvalError(EvalError::UnknownFunction("#VALUE!".to_string()))
             }),

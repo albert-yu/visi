@@ -958,6 +958,31 @@ fn test_fuzz_ifna_sees_left_hand_shape_error_before_right_hand_value_error() {
         0.0,
         1e-12,
     );
+
+    // Harvested from fuzz/fuzz_excel.py seed 965229. SLOPE's shape mismatch
+    // supplies LOG's optional base argument as #N/A; LOG must propagate that
+    // optional-argument error instead of turning it into #VALUE!, so IFNA
+    // catches it and returns the fallback.
+    let mut sheet = create_sheet(&[
+        [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "-121.667",
+            "=IFNA(LOG(ATAN2(PI(), J2), SLOPE(J1:J$4, $H2:J2)), F3)",
+        ],
+        ["", "", "", "", "", "", "", "FALSE", "c", "24", ""],
+        ["", "", "", "", "", "pi", "", "", "", "18", ""],
+        ["", "", "", "", "", "", "", "", "", "", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 10)), "pi");
 }
 
 #[test]
