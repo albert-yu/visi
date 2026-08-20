@@ -74,6 +74,12 @@ def test_formula_text_function_dispatch_covers_listed_names():
     ExcelFuzzGenerator._check_text_function_generators()
 
 
+def test_issue_94_high_value_generators_are_wired():
+    gen = ExcelFuzzGenerator(seed=94)
+    assert "CELL(" in gen.generate_range_info_formula("CELL", 5, 1, 3)
+    assert "INFO(" in gen.generate_range_info_formula("INFO", 5, 1, 3)
+
+
 # --------------------------------------------------------------------- eval
 
 

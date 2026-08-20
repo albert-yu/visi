@@ -519,7 +519,16 @@ pub fn gcd(nums: &[f64]) -> Result<f64, String> {
     if nums.iter().any(|n| *n < 0.0) {
         return Err("#NUM!".to_string());
     }
-    let mut result = nums[0].floor().abs() as u64;
+    const MAX_EXCEL_GCD_LCM_INT: f64 = 9_007_199_254_740_992.0; // 2^53.
+    fn to_excel_int(n: f64) -> Result<u64, String> {
+        let floored = n.floor().abs();
+        if !floored.is_finite() || floored > MAX_EXCEL_GCD_LCM_INT {
+            Err("#NUM!".to_string())
+        } else {
+            Ok(floored as u64)
+        }
+    }
+    let mut result = to_excel_int(nums[0])?;
     fn gcd_two(mut a: u64, mut b: u64) -> u64 {
         while b != 0 {
             let t = b;
@@ -529,7 +538,7 @@ pub fn gcd(nums: &[f64]) -> Result<f64, String> {
         a
     }
     for &num in &nums[1..] {
-        let n = num.floor().abs() as u64;
+        let n = to_excel_int(num)?;
         result = gcd_two(result, n);
     }
     Ok(result as f64)
@@ -542,6 +551,15 @@ pub fn lcm(nums: &[f64]) -> Result<f64, String> {
     if nums.iter().any(|n| *n < 0.0) {
         return Err("#NUM!".to_string());
     }
+    const MAX_EXCEL_GCD_LCM_INT: u64 = 9_007_199_254_740_992; // 2^53.
+    fn to_excel_int(n: f64) -> Result<u64, String> {
+        let floored = n.floor().abs();
+        if !floored.is_finite() || floored > MAX_EXCEL_GCD_LCM_INT as f64 {
+            Err("#NUM!".to_string())
+        } else {
+            Ok(floored as u64)
+        }
+    }
     fn gcd_two(mut a: u64, mut b: u64) -> u64 {
         while b != 0 {
             let t = b;
@@ -550,17 +568,20 @@ pub fn lcm(nums: &[f64]) -> Result<f64, String> {
         }
         a
     }
-    let mut result = nums[0].floor().abs() as u64;
+    let mut result = to_excel_int(nums[0])?;
     if result == 0 {
         return Ok(0.0);
     }
     for &num in &nums[1..] {
-        let n = num.floor().abs() as u64;
+        let n = to_excel_int(num)?;
         if n == 0 {
             return Ok(0.0);
         }
         let g = gcd_two(result, n);
-        result = (result / g) * n;
+        result = (result / g)
+            .checked_mul(n)
+            .filter(|v| *v <= MAX_EXCEL_GCD_LCM_INT)
+            .ok_or_else(|| "#NUM!".to_string())?;
     }
     Ok(result as f64)
 }

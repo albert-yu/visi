@@ -108,6 +108,9 @@ class ExcelFuzzGenerator:
         "IMCOT", "IMCSC", "IMCSCH", "IMDIV", "IMEXP", "IMLN", "IMLOG10",
         "IMLOG2", "IMPOWER", "IMPRODUCT", "IMREAL", "IMSEC", "IMSECH",
         "IMSIN", "IMSINH", "IMSQRT", "IMSUB", "IMSUM", "IMTAN",
+        # IS.CEILING is not an Excel function name in the Windows oracle
+        # (it returns #NAME?); the implemented/comparable spelling is
+        # ISO.CEILING, and it stays fuzzed here.
         "ISO.CEILING", "CEILING", "CEILING.MATH", "CEILING.PRECISE",
         "FLOOR", "FLOOR.MATH", "FLOOR.PRECISE",
         "COMBIN", "COMBINA", "PERMUT", "PERMUTATIONA", "MROUND",
@@ -174,6 +177,17 @@ class ExcelFuzzGenerator:
         "RANK", "RANK.EQ", "RANK.AVG", "TRIMMEAN", "MODE.MULT",
     ]
     LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
+    # JIS is deliberately excluded for the same practical reason as DBCS in
+    # FUNCTIONS_TEXT: the installed Windows Excel oracle does not recognize
+    # either bare or `_xlfn.`-prefixed JIS (it returns #NAME?), while visi
+    # implements the documented text conversion locally.
+    #
+    # FILTERXML is implemented and works through Excel's interactive Evaluate
+    # path, but this harness writes formulas through openpyxl-authored OOXML;
+    # that route stores FILTERXML as `_xlfn.FILTERXML(...)`, which the same
+    # Windows Excel oracle opens as #NAME?. Keep FILTERXML pinned in Rust unit
+    # tests rather than making every fuzz iteration fail on an authoring quirk.
+    #
     # ENCODEURL is deliberately excluded: even correctly written as
     # `_xlfn.ENCODEURL(...)`, the installed real-Excel build (16.111.3)
     # returns `#NAME?` for it -- confirmed by isolating both the bare and
@@ -279,14 +293,15 @@ class ExcelFuzzGenerator:
     # arithmetic / Microsoft's documented SCAN example in visi-core's own
     # Rust unit tests (see engine/tests/new_functions.rs).
     LAMBDA_FUNCTIONS = []
-    # CELL/INFO (narrow info_type subset implemented) and SHEET (a known,
-    # documented approximation -- always returns 1, since this engine has
-    # no access to a sheet's true ordinal position) are deliberately left
-    # out of fuzzing; every other range/metadata introspection function is
-    # covered.
+    # CELL/INFO are fuzzed only over the narrow info_type subsets visi
+    # implements. GETPIVOTDATA is deliberately absent: fuzz_excel.py creates
+    # ordinary formula workbooks, not native pivot tables, so there is no
+    # stable pivot destination for Excel to resolve. Pivot definitions and
+    # grids are covered by fuzz_pivot.py instead.
     RANGE_INFO_FUNCTIONS = [
         "ROW", "ROWS", "COLUMN", "COLUMNS", "AREAS", "ISREF",
         "FORMULATEXT", "ISFORMULA", "HYPERLINK", "SHEETS", "SHEET", "INDIRECT", "OFFSET",
+        "CELL", "INFO",
     ]
     # Dynamic-array reshaping/lookup functions. TRANSPOSE is deliberately
     # excluded: every authoring variant tried (bare, `_xlfn.`,
@@ -324,6 +339,10 @@ class ExcelFuzzGenerator:
         # about correctness. See "docs/excel-discrepancies.md" section 11.
         "PV", "FV", "PMT", "NPER", "IPMT", "PPMT", "CUMIPMT",
         "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
+        # EUROCONVERT is implemented, but Excel exposes it through the Euro
+        # Currency Tools add-in; the installed oracle returns #NAME? without
+        # that add-in, so visi pins it against Microsoft's published rates in
+        # Rust tests instead of fuzz_excel.py.
         "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "DOLLARDE", "DOLLARFR",
         "FVSCHEDULE", "RRI", "PDURATION", "ISPMT",
         # Day-count / bond-pricing functions (see finance.rs).
@@ -1485,8 +1504,8 @@ class ExcelFuzzGenerator:
                 u1, u2 = u2, u1
             return f'=CONVERT({round(random.uniform(-100, 500), 2)}, "{u1}", "{u2}")'
         # BESSELI/BESSELJ/BESSELK/BESSELY are deliberately absent from
-        # ENGINEERING_FUNCTIONS: real Excel cannot serve as an oracle for
-        # them because Excel is the inaccurate side. Arbitrated against
+        # ENGINEERING_FUNCTIONS (see issue #94): real Excel cannot serve as
+        # an oracle for them because Excel is the inaccurate side. Arbitrated against
         # 60-significant-digit reference values (Decimal evaluation of the
         # ascending series), visi's BESSELJ is accurate to ~1e-16 relative
         # while Excel's error is 3.8e-7 at BESSELJ(2.95, 3), 1.3e-6 at
@@ -1682,6 +1701,11 @@ class ExcelFuzzGenerator:
             idx = random.randint(1, n)
             choices = ", ".join(expr() for _ in range(n))
             return f"=CHOOSE({idx}, {choices})"
+        # ISOMITTED is intentionally not listed in LOGIC_EXTRA_FUNCTIONS:
+        # Excel only accepts it inside LAMBDA, and this harness cannot author
+        # LAMBDA formulas into workbooks Excel reliably opens (see the
+        # LAMBDA_FUNCTIONS comment). Direct ISOMITTED(A1) is #VALUE! in Excel,
+        # while visi's supported subset is scoped to lambda parameter lookup.
 
         raise AssertionError(f"no generator wired up for logic function {fn}")
 
@@ -1900,6 +1924,15 @@ class ExcelFuzzGenerator:
             return f'=SUM(INDIRECT("{rng}"))'
         if fn == "OFFSET":
             return f"=SUM(OFFSET({cell}, 0, 0, {value_rows}, 1))"
+        if fn == "CELL":
+            # Avoid "contents" here: the referenced input cell may be blank,
+            # and OOXML/openpyxl blank-vs-empty-string observability is already
+            # documented as unsuitable for random differential fuzzing.
+            info_type = random.choice(["row", "col", "address"])
+            return f'=CELL("{info_type}", {cell})'
+        if fn == "INFO":
+            info_type = random.choice(["numfile", "release", "system"])
+            return f'=INFO("{info_type}")'
 
         raise AssertionError(f"no generator wired up for range-info function {fn}")
 

@@ -268,6 +268,18 @@ fn test_combinatorics_and_factors() {
 }
 
 #[test]
+fn test_gcd_lcm_reject_values_and_results_above_excel_integer_limit() {
+    // Harvested from fuzz/fuzz_excel.py seed 513767. Excel accepts GCD/LCM
+    // inputs and outputs up through 2^53, but reports #NUM! above that rather
+    // than wrapping/saturating to a huge integer.
+    assert!(matches!(eval_one("=GCD(2^54, 2)"), ResultData::Error(ref e) if e == "#NUM!"));
+    assert!(matches!(eval_one("=LCM(2^53, 3)"), ResultData::Error(ref e) if e == "#NUM!"));
+    assert!(
+        matches!(eval_one("=LCM(2^53, 1)"), ResultData::Float(v) if (v - 9_007_199_254_740_992.0).abs() < 1.0)
+    );
+}
+
+#[test]
 fn test_array_and_matrix_functions() {
     let grid = [
         ["1", "2", "0", "0"],
