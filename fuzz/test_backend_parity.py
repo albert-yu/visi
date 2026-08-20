@@ -34,6 +34,7 @@ from chart_xlsx_reader import read_charts
 from fuzz_chart import ChartFuzzGenerator
 from fuzz_excel import ExcelFuzzGenerator, XLSXEvaluatedReader
 from fuzz_pivot import DEST_CELL, DEST_RC, PIVOT_NAME, PivotFuzzGenerator
+from fuzz_structural_edit import StructuralFuzzGenerator
 from visi_driver import (
     VisiChartDriver,
     VisiDriver,
@@ -78,6 +79,16 @@ def test_issue_94_high_value_generators_are_wired():
     gen = ExcelFuzzGenerator(seed=94)
     assert "CELL(" in gen.generate_range_info_formula("CELL", 5, 1, 3)
     assert "INFO(" in gen.generate_range_info_formula("INFO", 5, 1, 3)
+
+
+def test_structural_edit_generator_tracks_dimensions():
+    for seed in range(95, 115):
+        dims = {sheet: [8, 8] for sheet in ["Sheet1", "Data"]}
+        for edit in StructuralFuzzGenerator(seed).edits():
+            axis = 0 if "row" in edit.kind else 1
+            assert 1 <= edit.index <= dims[edit.sheet][axis]
+            dims[edit.sheet][axis] += 1 if edit.kind.startswith("insert") else -1
+            assert dims[edit.sheet][axis] >= 1
 
 
 # --------------------------------------------------------------------- eval
