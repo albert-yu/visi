@@ -35,6 +35,7 @@ from fuzz_chart import ChartFuzzGenerator
 from fuzz_excel import ExcelFuzzGenerator, XLSXEvaluatedReader
 from fuzz_pivot import DEST_CELL, DEST_RC, PIVOT_NAME, PivotFuzzGenerator
 from fuzz_structural_edit import StructuralFuzzGenerator
+from fuzz_vba_parse_grammar import VbaGrammarGenerator
 from visi_driver import (
     VisiChartDriver,
     VisiDriver,
@@ -89,6 +90,17 @@ def test_structural_edit_generator_tracks_dimensions():
             assert 1 <= edit.index <= dims[edit.sheet][axis]
             dims[edit.sheet][axis] += 1 if edit.kind.startswith("insert") else -1
             assert dims[edit.sheet][axis] >= 1
+
+
+def test_vba_grammar_generator_covers_wide_syntax():
+    modules = VbaGrammarGenerator(seed=97).project()
+    sources = "\n".join(m.source for m in modules)
+    assert "Private Type Point" in sources
+    assert "Public Enum GeneratedColor" in sources
+    assert "Public Property Get Answer" in sources
+    assert "GoSub" in sources
+    assert " _\n" in sources
+    assert "first:=1" in sources
 
 
 # --------------------------------------------------------------------- eval

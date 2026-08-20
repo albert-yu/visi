@@ -393,7 +393,20 @@ Phase 0 of the VBA plan ([`docs/vba-macro-support.md`](../docs/vba-macro-support
 python3 fuzz/fuzz_vba_parse.py --driver mock --iterations 20        # parser only, no Excel
 python3 fuzz/fuzz_vba_parse.py --iterations 10 --seed 1
 python3 fuzz/fuzz_vba_parse.py --corpus visi-core/fuzz/seeds/vba_parse
+
+# Whole-module grammar generator, complementary to the fragment/mutation fuzzer.
+python3 fuzz/fuzz_vba_parse_grammar.py --driver mock --iterations 20
+python3 fuzz/fuzz_vba_parse_grammar.py --driver win32com --iterations 20
 ```
+
+`fuzz_vba_parse_grammar.py` generates valid-by-construction projects from a
+small VBA grammar rather than from known-good fragments: declarations,
+procedure signatures, properties, labels/`GoTo`/`GoSub`, comments, line
+continuations, contextual identifiers, and named/omitted arguments. It writes a
+macro-enabled workbook and uses `visi macro check` for the project-level verdict
+so calls across sibling modules resolve the same way they do in a real workbook.
+It defaults to valid projects; pass `--mutation-rate` to splice in negative
+cases when you want invalid-source coverage too.
 
 Getting Excel's verdict is the entire difficulty, and three findings shape the design:
 
@@ -407,7 +420,7 @@ Cost: a valid case is one fast round trip (~1s); an invalid one costs the full `
 
 **One known divergence, and it is a boundary rather than a bug.** `x = f(1, , 3)` (an omitted middle argument) parses fine and is valid VBA, but Excel rejects it at compile time when it cannot resolve `f` to a procedure with an `Optional` parameter there. That is a semantic check needing name resolution, which Phase 0 does not do — the parser cannot tell a procedure call from an array index without a symbol table. The generator declares a real callee so the syntax stays under test.
 
-Failure artifacts land under `fuzz_results/failures/vba_parse_<label>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers.
+Failure artifacts land under `fuzz_results/failures/vba_parse_<label>/` as `source.bas` plus a `verdicts.txt` giving both engines' answers. The grammar fuzzer writes one `.bas` per generated module under `vba_parse_grammar_<label>_seed_<SEED>/`.
 
 ---
 
