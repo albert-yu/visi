@@ -431,7 +431,18 @@ Phases 1 and 2 of the VBA plan. Generates a VBA procedure, runs it in `visi`'s i
 ```bash
 python3 fuzz/fuzz_vba.py --driver mock --iterations 50    # visi only, no Excel
 python3 fuzz/fuzz_vba.py --iterations 60 --batch 20 --seed 1
+
+# Broader, stateful host-object surface. Defaults to batch 1 so a row insert,
+# style write or ListRows.Add cannot set up the next random case.
+PYTHONIOENCODING=utf-8 python fuzz/fuzz_vba.py --driver win32com --host-surface extended --iterations 20
 ```
+
+`--host-surface extended` adds entropy over object-model families that are too
+stateful for the default fast mix: `Interior`/`Font` colours and `ColorIndex`,
+row/column inserts with held-range tracking, and Excel Table operations through
+`ListObjects`, `ListRows`, `ListColumns`, `DataBodyRange`, and table renames.
+The source workbook carries a small `Sales` table outside the serialized data
+grid for those cases.
 
 The subtype is not decoration: `1 + 1` is an `Integer` and `1 / 1` is a `Double`, and an interpreter that computes the right number with the wrong subtype has a bug that only surfaces later, when something overflows that should not have.
 
