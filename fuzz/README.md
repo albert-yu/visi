@@ -142,6 +142,33 @@ python fuzz/fuzz_excel.py --driver cli --excel-path "/usr/local/bin/excel_runner
 python fuzz/fuzz_excel.py --driver mock --iterations 5
 ```
 
+### Structural edit fuzzing
+
+`fuzz_structural_edit.py` is the entropy-based companion to the deterministic
+`grid_edit_probe.py` / `band_insert_probe.py` probes. It creates a small
+multi-sheet workbook, applies a random sequence of row/column insert/delete
+operations in both engines, then compares rewritten formula text and cached
+values where Excel wrote them back to the file. Formula cells are generated on
+`Sheet1`, with explicit references into `Data`, so local refs, absolute refs,
+whole-column refs, formula-cell movement, and cross-sheet edit effects all get
+entropy coverage. Whole-row structural rewrites are still a known engine gap and
+stay out of this pass/fail harness for now.
+
+```bash
+# Windows
+PYTHONIOENCODING=utf-8 python fuzz/fuzz_structural_edit.py --driver win32com --iterations 20
+
+# macOS
+python fuzz/fuzz_structural_edit.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
+
+# Pipeline smoke test only; does not invoke Excel
+python fuzz/fuzz_structural_edit.py --driver mock --iterations 5
+```
+
+Failures are saved under
+`fuzz_results/failures/structural_fail_iter_<N>_seed_<SEED>/` with the original
+workbook, both edited outputs, and the edit sequence (`edits.txt`).
+
 ### `--driver mock` is a smoke test, not a weak oracle
 
 There is no Excel in mock mode, so **nothing is compared**. Each iteration
