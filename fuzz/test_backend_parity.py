@@ -35,6 +35,7 @@ from fuzz_chart import ChartFuzzGenerator
 from fuzz_excel import ExcelFuzzGenerator, XLSXEvaluatedReader
 from fuzz_pivot import DEST_CELL, DEST_RC, PIVOT_NAME, PivotFuzzGenerator
 from fuzz_structural_edit import StructuralFuzzGenerator
+from fuzz_vba import VbaGenerator
 from fuzz_vba_parse_grammar import VbaGrammarGenerator
 from visi_driver import (
     VisiChartDriver,
@@ -101,6 +102,14 @@ def test_vba_grammar_generator_covers_wide_syntax():
     assert "GoSub" in sources
     assert " _\n" in sources
     assert "first:=1" in sources
+
+
+def test_vba_extended_host_surface_generates_stateful_object_model_cases():
+    gen = VbaGenerator(seed=96, host_surface="extended")
+    sources = "\n".join(gen.module(i) for i in range(1, 40))
+    assert ".Interior." in sources or ".Font." in sources
+    assert ".Rows(" in sources or ".Columns(" in sources
+    assert ".ListObjects(" in sources
 
 
 # --------------------------------------------------------------------- eval

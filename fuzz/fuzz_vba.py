@@ -50,10 +50,8 @@ terminates, and no expression can recurse without bound.
 **What is deliberately not generated.** Anything non-deterministic (`Now`,
 `Rnd`, `Timer`) -- the two engines would differ by construction and every
 iteration would be noise. Anything outside the Phase 2 allow-list, since both
-sides would agree only that it is unsupported, and a generated `.Interior`
-would additionally be a *compile* error in Excel, which hangs the bridge.
-Division by an expression that could be zero is *allowed*: error 11 is a
-result worth comparing.
+sides would agree only that it is unsupported. Division by an expression that
+could be zero is *allowed*: error 11 is a result worth comparing.
 
 **Cell coordinates are always literal**, never generated expressions. A
 computed row index can land outside the grid, and `Cells(0, 1)` is error 1004
@@ -182,8 +180,9 @@ class VbaGenerator:
     thing rather than one of them giving up.
     """
 
-    def __init__(self, seed=None):
+    def __init__(self, seed=None, host_surface="basic"):
         self.rng = random.Random(seed)
+        self.host_surface = host_surface
 
     # ---- expressions ----------------------------------------------------
 
@@ -334,6 +333,9 @@ class VbaGenerator:
         would be an agreed-on error in both engines at best, and a compile
         error that hangs the AppleScript bridge at worst.
         """
+        if self.host_surface == "extended" and self.rng.random() < 0.45:
+            return self.extended_host_statement(target, vars_in_scope, depth)
+
         kind = self.rng.random()
         row, col = self.cell()
         srow, scol = self.cell(scratch=True)
@@ -408,6 +410,59 @@ class VbaGenerator:
         return [
             f"Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range(\"{self.a1(row, col)}\")",
             f"{target} = CStr({HOST_RANGE_VAR} Is {HOST_SHEET_VAR}.Range(\"{self.a1(row, col)}\")) & \"/\" & TypeName({HOST_RANGE_VAR})",
+        ]
+
+    def extended_host_statement(self, target, vars_in_scope, depth):
+        """Host-object cases that mutate workbook structure, tables or styles.
+
+        These are kept behind ``--host-surface extended`` because they are
+        intentionally broader and more stateful than the original fast mix.
+        Run them with small batches (the CLI defaults to batch 1 in extended
+        mode) so a row insert, table resize or style write cannot set up the
+        next random case.
+        """
+        kind = self.rng.random()
+        row, col = self.cell()
+        srow, scol = self.cell(scratch=True)
+        r0, r1 = sorted((row, srow))
+        c0, c1 = sorted((col, scol))
+        if kind < 0.25:
+            color = self.rng.choice(["RGB(255, 0, 0)", "RGB(0, 255, 0)", "RGB(0, 0, 255)", "RGB(250, 10, 10)"])
+            target_obj = self.rng.choice(["Interior", "Font"])
+            prop = self.rng.choice(["Color", "ColorIndex"])
+            if prop == "ColorIndex":
+                value = self.rng.choice(["3", "4", "5", "xlNone"])
+            else:
+                value = color
+            return [
+                f'{HOST_SHEET_VAR}.Range("{self.a1(r0, c0)}:{self.a1(r1, c1)}").{target_obj}.{prop} = {value}',
+                f'{target} = {HOST_SHEET_VAR}.Cells({row}, {col}).{target_obj}.{prop}',
+            ]
+
+        if kind < 0.50:
+            at = self.rng.randint(1, GRID_ROWS)
+            axis = self.rng.choice(["Rows", "Columns"])
+            addr = self.a1(row, col)
+            return [
+                f'Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range("{addr}")',
+                f'{HOST_SHEET_VAR}.{axis}({at}).Insert',
+                f'{target} = {HOST_RANGE_VAR}.Address(False, False) & "/" & TypeName({HOST_RANGE_VAR})',
+            ]
+
+        if kind < 0.76:
+            member = self.rng.choice(["Name", "ListRows.Count", "ListColumns.Count", "DataBodyRange.Address(False, False)"])
+            return [f'{target} = {HOST_SHEET_VAR}.ListObjects("Sales").{member}']
+
+        if kind < 0.90:
+            return [
+                f'{HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Add',
+                f'{target} = {HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Count',
+            ]
+
+        new_name = f"Sales_{self.rng.randint(1, 999)}"
+        return [
+            f'{HOST_SHEET_VAR}.ListObjects("Sales").Name = "{new_name}"',
+            f'{target} = {HOST_SHEET_VAR}.ListObjects("{new_name}").Name',
         ]
 
     def module(self, index):
@@ -580,12 +635,26 @@ def build_module(cases):
 def build_workbook(path):
     """The workbook both engines run against: one sheet named `Data`.
 
-    `ResetGrid` fills it, so the cells here only have to exist -- but the
-    sheet has to be named, since an unqualified `Worksheets("Data")` is how
-    every generated case reaches it.
+    `ResetGrid` fills the A:F value grid. A small Excel Table lives to the
+    right of it so extended host cases can fuzz ListObjects/ListRows without
+    disturbing the grid cells that every harness serialises.
     """
     wb = openpyxl.Workbook()
-    wb.active.title = "Data"
+    ws = wb.active
+    ws.title = "Data"
+    headers = ["Region", "Amount", "Flag"]
+    rows = [["East", 10, True], ["West", 20, False], ["East", 30, True]]
+    for c, value in enumerate(headers, start=8):
+        ws.cell(1, c, value)
+    for r, row in enumerate(rows, start=2):
+        for c, value in enumerate(row, start=8):
+            ws.cell(r, c, value)
+    table = openpyxl.worksheet.table.Table(displayName="Sales", ref="H1:J4")
+    table.tableStyleInfo = openpyxl.worksheet.table.TableStyleInfo(
+        name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
+        showRowStripes=True, showColumnStripes=False,
+    )
+    ws.add_table(table)
     wb.save(path)
 
 
@@ -900,17 +969,25 @@ def main():
     ap.add_argument("--excel-path")
     ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
     ap.add_argument("--iterations", type=int, default=20)
-    ap.add_argument("--batch", type=int, default=20,
-                    help="Cases per Excel round trip (default 20). The round trip dominates cost.")
+    ap.add_argument("--batch", type=int, default=None,
+                    help="Cases per Excel round trip (default: 20 for basic, 1 for extended). The round trip dominates cost.")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--restart-every", type=int, default=4,
                     help="Restart Excel every N batches, before its automation "
                          "bridge degrades (0 to only restart on failure).")
     ap.add_argument("--output-dir", default="./fuzz_results")
+    ap.add_argument(
+        "--host-surface",
+        choices=["basic", "extended"],
+        default="basic",
+        help="Host object model surface to generate. 'extended' adds styles, structural edits and Excel Table operations.",
+    )
     args = ap.parse_args()
+    if args.batch is None:
+        args.batch = 1 if args.host_surface == "extended" else 20
 
-    gen = VbaGenerator(args.seed)
+    gen = VbaGenerator(args.seed, host_surface=args.host_surface)
     driver = ExcelDriver(args.excel_path, args.driver, args.timeout)
     failures_dir = os.path.join(args.output_dir, "failures")
     os.makedirs(failures_dir, exist_ok=True)
@@ -919,6 +996,7 @@ def main():
     print("    visi vs. Microsoft Excel VBA Execution Differential Fuzzer    ".center(69))
     print("=" * 69)
     print(f" Cases       : {args.iterations} in batches of {args.batch}")
+    print(f" Host surface: {args.host_surface}")
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")
     if driver.driver_type == "mock":
         print(" MOCK DRIVER -- visi runs, Excel is not consulted, nothing is compared.")
