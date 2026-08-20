@@ -91,7 +91,9 @@ class PivotFuzzGenerator:
     logic at all.
     """
 
-    COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
+    BASIC_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
+    RICH_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag", "DateBucket", "Segment", "Amount2"]
+    COL_NAMES = BASIC_COL_NAMES
     CATEGORICAL_COLS = [0, 1, 2]  # Cat, Mixed, NumStr -- candidates for row/col fields
     NUMERIC_COLS = [3, 4]  # Amount, Rate -- candidates for value fields
     FILTERABLE_COLS = [0, 1, 2, 5]  # any column can be a filter field
@@ -102,9 +104,23 @@ class PivotFuzzGenerator:
     CASE_VARIANTS = ["East", "east", "WEST", "west", "North"]
     AGGREGATIONS = ["sum", "count", "count-numbers", "average", "max", "min"]
 
-    def __init__(self, seed=None):
+    def __init__(self, seed=None, shape="basic"):
         if seed is not None:
             random.seed(seed)
+        self.shape = shape
+        if shape == "rich":
+            self.COL_NAMES = self.RICH_COL_NAMES
+            # Keep the pass/fail pivot configuration on the same stable field
+            # families as the basic fuzzer, while the richer source columns sit
+            # beside them for import/export and cache-shape coverage.
+            self.CATEGORICAL_COLS = [0, 1, 2]
+            self.NUMERIC_COLS = [3, 4]
+            self.FILTERABLE_COLS = [0, 1, 2, 5]
+        else:
+            self.COL_NAMES = self.BASIC_COL_NAMES
+            self.CATEGORICAL_COLS = [0, 1, 2]
+            self.NUMERIC_COLS = [3, 4]
+            self.FILTERABLE_COLS = [0, 1, 2, 5]
 
     def _random_numstr(self):
         """A quoted (forced-text), possibly numeric-looking string, or a
@@ -187,7 +203,15 @@ class PivotFuzzGenerator:
             ws.cell(row=r, column=6, value=flag)
             distinct[5].add("TRUE" if flag else "FALSE")
 
-        source_range = f"A1:F{num_rows + 1}"
+            if self.shape == "rich":
+                date_bucket = random.choice(["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4", "(blank)"])
+                segment = random.choice(["Retail", "Enterprise", "Online", "Partner"])
+                ws.cell(row=r, column=7, value=None if date_bucket == "(blank)" else date_bucket)
+                ws.cell(row=r, column=8, value=segment)
+                ws.cell(row=r, column=9, value=random.randint(0, 500) if random.random() > 0.15 else None)
+
+        last_col = len(self.COL_NAMES)
+        source_range = f"A1:{chr(ord('A') + last_col - 1)}{num_rows + 1}"
         table_name = None
         if use_table:
             table_name = "FuzzTable"
@@ -247,7 +271,7 @@ class PivotFuzzGenerator:
             # rather than A1. Derived here beside `source_range` so the two
             # cannot disagree, and so neither the driver nor visi-python needs
             # an A1 parser of its own.
-            "source_bounds": (0, 0, num_rows, 5),
+            "source_bounds": (0, 0, num_rows, last_col - 1),
             "table_name": table_name,
             "row_fields": row_fields,
             "col_fields": col_fields,
@@ -347,7 +371,7 @@ class ExcelPivotDriver:
             else:
                 self.driver_type = "mock"
 
-    def run(self, source_file, config, output_file):
+    def run(self, source_file, config, output_file, dest_cell=DEST_CELL):
         if self.driver_type == "mock":
             shutil.copyfile(source_file, output_file)
             print("[ExcelPivotDriver Warning] Running in mock mode (Excel not invoked).")
@@ -359,11 +383,11 @@ class ExcelPivotDriver:
             # extension difference.
             macro_file = os.path.splitext(output_file)[0] + ".xlsm"
             self._prepare_macro_workbook(source_file, config, macro_file)
-            self._run_applescript_macro(os.path.abspath(macro_file), config)
+            self._run_applescript_macro(os.path.abspath(macro_file), config, dest_cell)
             shutil.copyfile(macro_file, output_file)
         elif self.driver_type == "win32com":
             shutil.copyfile(source_file, output_file)
-            self._run_win32com(os.path.abspath(output_file), config)
+            self._run_win32com(os.path.abspath(output_file), config, dest_cell)
         else:
             raise RuntimeError(f"Unsupported pivot driver type: {self.driver_type}")
 
@@ -484,7 +508,7 @@ class ExcelPivotDriver:
         if macro_wb.vba_archive is not None:
             macro_wb.vba_archive.close()
 
-    def _build_applescript_macro_call(self, output_file, config):
+    def _build_applescript_macro_call(self, output_file, config, dest_cell=DEST_CELL):
         app_name = self.excel_path if self.excel_path else "Microsoft Excel"
         if app_name.endswith(".app"):
             app_name = os.path.splitext(os.path.basename(app_name))[0]
@@ -514,7 +538,7 @@ class ExcelPivotDriver:
             f'arg2 {self._applescript_str(col_fields_csv)} '
             f'arg3 {self._applescript_str(value_fields_csv)} '
             f'arg4 {self._applescript_str(filter_spec)} '
-            f'arg5 {self._applescript_str(DEST_CELL)} '
+            f'arg5 {self._applescript_str(dest_cell)} '
             f'arg6 {self._applescript_str("1" if config["grand_totals_row"] else "0")} '
             f'arg7 {self._applescript_str("1" if config["grand_totals_col"] else "0")} '
             f'arg8 {self._applescript_str(source_is_table)} '
@@ -569,8 +593,8 @@ class ExcelPivotDriver:
         subprocess.run(["open", "-a", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(4.0)  # give the app time to finish launching before the next AppleScript call
 
-    def _run_applescript_macro(self, abs_output, config):
-        script = self._build_applescript_macro_call(abs_output, config)
+    def _run_applescript_macro(self, abs_output, config, dest_cell=DEST_CELL):
+        script = self._build_applescript_macro_call(abs_output, config, dest_cell)
         res = None
         for attempt in range(5):
             time.sleep(0.5)
@@ -593,7 +617,7 @@ class ExcelPivotDriver:
 
     # -- win32com (Windows) -----------------------------------------------
 
-    def _run_win32com(self, abs_output, config):
+    def _run_win32com(self, abs_output, config, dest_cell=DEST_CELL):
         try:
             import win32com.client
             from win32com.client import constants as c
@@ -620,7 +644,7 @@ class ExcelPivotDriver:
                 )
                 time.sleep(1.0)
             try:
-                self._run_win32com_once(abs_output, config)
+                self._run_win32com_once(abs_output, config, dest_cell)
                 last_err = None
                 break
             except Exception as e:
@@ -628,7 +652,7 @@ class ExcelPivotDriver:
         if last_err is not None:
             raise last_err
 
-    def _run_win32com_once(self, abs_output, config):
+    def _run_win32com_once(self, abs_output, config, dest_cell=DEST_CELL):
         import win32com.client
         from win32com.client import constants as c
 
@@ -648,7 +672,7 @@ class ExcelPivotDriver:
                 src_range = ws.Range(config["source_range"])
 
             pc = wb.PivotCaches().Create(SourceType=c.xlDatabase, SourceData=src_range)
-            pt = pc.CreatePivotTable(TableDestination=ws.Range(DEST_CELL), TableName=PIVOT_NAME)
+            pt = pc.CreatePivotTable(TableDestination=ws.Range(dest_cell), TableName=PIVOT_NAME)
 
             # Mirrors BuildFuzzPivot.bas's ApplyAxisFields/ApplyValueFields --
             # this driver and that macro are meant to be the same object
@@ -764,6 +788,10 @@ def main():
         "--source-mode", choices=["table", "range", "both"], default="both",
         help="Whether the pivot source is an Excel Table, a raw range, or alternate between both.",
     )
+    parser.add_argument(
+        "--shape", choices=["basic", "rich"], default="basic",
+        help="Input shape profile. 'rich' adds more categorical/filter/value fields and blanks.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible fuzzing.")
     parser.add_argument("--output-dir", default="./fuzz_results", help="Directory to store test outputs and failure artifacts.")
     args = parser.parse_args()
@@ -786,6 +814,7 @@ def main():
     print(f" Iterations  : {args.iterations}")
     print(f" Max rows    : {args.rows}")
     print(f" Source mode : {args.source_mode}")
+    print(f" Shape       : {args.shape}")
     print(f" Visi        : {visi_driver.describe()}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
     if smoke_mode:
@@ -798,7 +827,7 @@ def main():
 
     for i in range(1, args.iterations + 1):
         iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
-        generator = PivotFuzzGenerator(seed=iter_seed)
+        generator = PivotFuzzGenerator(seed=iter_seed, shape=args.shape)
 
         temp_dir = tempfile.mkdtemp(prefix=f"fuzz_pivot_iter_{i}_")
         source_xlsx = os.path.join(temp_dir, "source.xlsx")
@@ -816,9 +845,11 @@ def main():
 
             config = generator.generate(source_xlsx, num_rows=num_rows, use_table=use_table)
 
-            visi_driver.run(source_xlsx, config, visi_out_xlsx, PIVOT_NAME, DEST_CELL, DEST_RC)
+            dest_cell = "L1" if args.shape == "rich" else DEST_CELL
+            dest_rc = (0, 11) if args.shape == "rich" else DEST_RC
+            visi_driver.run(source_xlsx, config, visi_out_xlsx, PIVOT_NAME, dest_cell, dest_rc)
             if not smoke_mode:
-                excel_driver.run(source_xlsx, config, excel_out_xlsx)
+                excel_driver.run(source_xlsx, config, excel_out_xlsx, dest_cell=dest_cell)
 
             visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_out_xlsx)
 

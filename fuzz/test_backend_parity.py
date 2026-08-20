@@ -112,6 +112,26 @@ def test_vba_extended_host_surface_generates_stateful_object_model_cases():
     assert ".ListObjects(" in sources
 
 
+def test_chart_rich_shape_writes_dates_blanks_and_extra_columns(tmp_path):
+    src = str(tmp_path / "chart.xlsx")
+    ChartFuzzGenerator(seed=98, shape="rich").generate(src, num_rows=12)
+    import openpyxl
+    wb = openpyxl.load_workbook(src)
+    ws = wb["Sheet1"]
+    assert ws.max_column >= 4
+    assert any(ws.cell(r, 2).value is None for r in range(2, 13))
+    assert any(getattr(ws.cell(r, 1).value, "year", None) == 2026 for r in range(1, 13))
+
+
+def test_pivot_rich_shape_expands_source_schema(tmp_path):
+    src = str(tmp_path / "pivot.xlsx")
+    config = PivotFuzzGenerator(seed=98, shape="rich").generate(src, num_rows=10, use_table=True)
+    assert config["source_range"].startswith("A1:I")
+    assert config["source_bounds"] == (0, 0, 10, 8)
+    fields = {f["column"] for f in config["row_fields"] + config["col_fields"] + config["value_fields"]}
+    assert fields <= set(PivotFuzzGenerator.RICH_COL_NAMES)
+
+
 # --------------------------------------------------------------------- eval
 
 

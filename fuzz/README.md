@@ -294,7 +294,14 @@ Pivot tables get their own script rather than a mode inside `fuzz_excel.py`, bec
 ```bash
 python fuzz/fuzz_pivot.py --driver mock --iterations 5                       # smoke test, no Excel and no comparison
 python3 fuzz/fuzz_pivot.py --excel-path "/Applications/Microsoft Excel.app" --iterations 1 --seed 1
+python fuzz/fuzz_pivot.py --driver win32com --shape rich --iterations 20      # wider source schema
 ```
+
+`--shape rich` keeps the same pivot object-model operations but generates a
+wider source schema: extra categorical fields (`DateBucket`, `Segment`), an
+extra numeric value field, blanks in value/filter columns, and therefore more
+row/column/value/filter field combinations. The default `basic` shape remains
+the fast smoke profile.
 
 ### AppleScript can't create pivot caches -- confirmed, worked around
 
@@ -327,7 +334,13 @@ Charts get their own script for the same reason pivot tables do: Excel must *act
 ```bash
 python fuzz/fuzz_chart.py --driver mock --iterations 5                       # smoke test, no Excel and no comparison
 python3 fuzz/fuzz_chart.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20 --seed 1
+python fuzz/fuzz_chart.py --driver win32com --shape rich --iterations 20      # richer source data
 ```
+
+`--shape rich` keeps the current one-chart comparison scope but feeds it more
+varied source workbooks: date category labels, blank/missing values in the data
+series, and extra series-shaped columns beside the charted range. The default
+`basic` shape stays intentionally small for fast smoke runs.
 
 ### Unlike pivot caches, AppleScript chart creation works natively
 
