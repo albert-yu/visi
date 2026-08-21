@@ -162,10 +162,6 @@ fn test_datevalue_text_cell_refs_report_days_between() {
 
 #[test]
 fn test_datevalue_and_timevalue_reject_typed_date_time_cells() {
-    // Entering an unquoted date/time-looking value into Excel stores a numeric
-    // serial, not text. DATEVALUE/TIMEVALUE accept text only, so references to
-    // those typed cells return #VALUE! even though VALUE(A1) and arithmetic can
-    // still use the serial. Measured via Excel for Mac AppleScript automation.
     let grid = [[
         "2026-08-12",     // A1
         "=DATEVALUE(A1)", // B1
