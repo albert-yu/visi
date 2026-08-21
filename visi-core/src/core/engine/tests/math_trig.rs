@@ -312,6 +312,31 @@ fn test_array_and_matrix_functions() {
 }
 
 #[test]
+fn test_sumsq_result_is_snapped_before_rounddown_observes_it() {
+    // Harvested from fuzz/fuzz_excel.py. Raw f64 summation gives
+    // 39882.689999999995 for this column, which ROUNDDOWN(..., 2) would turn
+    // into 39882.68. Excel snaps SUMSQ's final result to 15 significant digits
+    // first, so ROUNDDOWN sees 39882.69.
+    let mut sheet = create_sheet(&[
+        ["D", "=ROUNDDOWN(SUMSQ(A:A), 2)"],
+        ["-5", ""],
+        ["9", ""],
+        ["26", ""],
+        ["10", ""],
+        ["10", ""],
+        ["43", ""],
+        ["-188.7", ""],
+        ["FALSE", ""],
+        ["38", ""],
+    ]);
+    sheet.commit(None).unwrap();
+    match sheet.get_result_data(&CellRef::new(0, 1)) {
+        ResultData::Float(f) => assert_eq!(f, 39882.69),
+        other => panic!("expected 39882.69, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_ceiling_floor_honor_significance_argument() {
     // Legacy 2-arg CEILING/FLOOR were completely ignoring their second
     // (significance) argument and just calling f64::ceil()/floor() --
