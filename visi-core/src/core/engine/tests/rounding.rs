@@ -2018,6 +2018,10 @@ fn test_number_to_text_keeps_only_excels_fifteen_significant_digits() {
 
     // Unchanged neighbours.
     assert_eq!(format_excel_number(1e19), "10000000000000000000");
+    assert_eq!(
+        format_excel_number(6.3740984978004096e-99),
+        "6.3740984978004E-99"
+    );
     assert_eq!(format_excel_number(1e20), "1E+20");
     assert_eq!(format_excel_number(976121418126.432), "976121418126.432");
     assert_eq!(format_excel_number(-1.0 / 3.0), "-0.333333333333333");

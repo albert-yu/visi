@@ -2822,17 +2822,14 @@ class DifferentialComparator:
         if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
             return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
 
-        # If one is a number and the other is a numeric string (e.g. 0.0394 vs ".0394", 8 vs "08")
-        if isinstance(v1, (int, float)) and isinstance(v2, str):
-            try:
-                return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
-            except ValueError:
-                pass
-        if isinstance(v2, (int, float)) and isinstance(v1, str):
-            try:
-                return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
-            except ValueError:
-                pass
+        # Numeric-looking text is still text. Do not coerce across the
+        # string/number boundary: Excel's value type is observable by
+        # arithmetic, type predicates, concatenation, and formatting.
+        # Check this before the final string fallback below, which exists for
+        # miscellaneous non-Excel scalar types rather than type coercion.
+        if (isinstance(v1, str) and isinstance(v2, (int, float)) and not isinstance(v2, bool)) or \
+           (isinstance(v2, str) and isinstance(v1, (int, float)) and not isinstance(v1, bool)):
+            return False
 
         # If both are error strings or text strings
         if isinstance(v1, str) and isinstance(v2, str):

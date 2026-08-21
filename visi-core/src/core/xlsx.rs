@@ -1050,6 +1050,9 @@ pub(crate) fn export_xlsx_data_raw(
         .save_to_buffer()
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
+    let formula_string_result_cells = formula_string_result_cells_by_sheet(sheets);
+    let buffer = inject_formula_string_result_types(buffer, &formula_string_result_cells)?;
+
     let buffer = if empty_table_names.is_empty() {
         buffer
     } else {
@@ -1063,6 +1066,181 @@ pub(crate) fn export_xlsx_data_raw(
     };
 
     crate::core::vba_xlsx::export_vba_project(buffer, vba, &sheet_id_to_worksheet_name)
+}
+
+fn formula_string_result_cells_by_sheet(
+    sheets: &[Sheet],
+) -> Vec<std::collections::HashMap<String, String>> {
+    sheets
+        .iter()
+        .map(|sheet| {
+            let mut cells = std::collections::HashMap::new();
+            for (col_idx, col) in sheet.columns.iter().enumerate() {
+                for row_idx in 0..sheet.row_count() {
+                    let is_formula = col.src.get(row_idx).is_some_and(|src| src.starts_with('='));
+                    if is_formula
+                        && let Some(result_text) = col
+                            .data
+                            .get(row_idx)
+                            .and_then(|res_data| formula_string_result_text(&res_data))
+                    {
+                        let col_name = crate::core::parser::col_idx_to_letters(col_idx);
+                        cells.insert(format!("{}{}", col_name, row_idx + 1), result_text);
+                    }
+                }
+            }
+            cells
+        })
+        .collect()
+}
+
+fn formula_string_result_text(res_data: &crate::core::engine::ResultData) -> Option<String> {
+    match res_data {
+        crate::core::engine::ResultData::String(s) => Some(s.clone()),
+        crate::core::engine::ResultData::List(items) => {
+            items.first().and_then(formula_string_result_text)
+        }
+        _ => None,
+    }
+}
+
+fn inject_formula_string_result_types(
+    original: Vec<u8>,
+    formula_string_result_cells: &[std::collections::HashMap<String, String>],
+) -> Result<Vec<u8>, String> {
+    if formula_string_result_cells
+        .iter()
+        .all(|cells| cells.is_empty())
+    {
+        return Ok(original);
+    }
+
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original))
+        .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(file);
+
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(sheet_idx) = worksheet_part_index(&name)
+            && let Some(cells) = formula_string_result_cells.get(sheet_idx)
+            && !cells.is_empty()
+            && let Ok(xml) = std::str::from_utf8(&buf)
+        {
+            let patched = force_formula_cached_strings(xml, cells);
+            writer
+                .write_all(patched.as_bytes())
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+
+    let cursor = writer.finish().map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
+}
+
+fn worksheet_part_index(name: &str) -> Option<usize> {
+    let stem = name
+        .strip_prefix("xl/worksheets/sheet")?
+        .strip_suffix(".xml")?;
+    stem.parse::<usize>().ok()?.checked_sub(1)
+}
+
+fn force_formula_cached_strings(
+    xml: &str,
+    formula_string_result_cells: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut out = String::with_capacity(xml.len() + formula_string_result_cells.len() * 8);
+    let mut pos = 0;
+
+    while let Some(rel_start) = xml[pos..].find("<c ") {
+        let start = pos + rel_start;
+        out.push_str(&xml[pos..start]);
+
+        let Some(rel_end) = xml[start..].find('>') else {
+            out.push_str(&xml[start..]);
+            return out;
+        };
+        let end = start + rel_end;
+        let open_tag = &xml[start..end];
+
+        if let Some(result_text) = cell_ref_from_open_tag(open_tag)
+            .and_then(|cell_ref| formula_string_result_cells.get(cell_ref))
+        {
+            let Some(rel_close) = xml[end + 1..].find("</c>") else {
+                out.push_str(&force_open_tag_type_str(open_tag));
+                out.push('>');
+                pos = end + 1;
+                continue;
+            };
+            let close = end + 1 + rel_close;
+            out.push_str(&force_open_tag_type_str(open_tag));
+            out.push('>');
+            out.push_str(&force_formula_cached_string_value(
+                &xml[end + 1..close],
+                result_text,
+            ));
+            out.push_str("</c>");
+            pos = close + 4;
+        } else {
+            out.push_str(open_tag);
+            out.push('>');
+            pos = end + 1;
+        }
+    }
+
+    out.push_str(&xml[pos..]);
+    out
+}
+
+fn force_formula_cached_string_value(cell_body: &str, result_text: &str) -> String {
+    let Some(v_start) = cell_body.find("<v>") else {
+        return cell_body.to_string();
+    };
+    let value_start = v_start + 3;
+    let Some(rel_v_end) = cell_body[value_start..].find("</v>") else {
+        return cell_body.to_string();
+    };
+    let value_end = value_start + rel_v_end;
+    format!(
+        "{}{}{}",
+        &cell_body[..value_start],
+        escape_xml(result_text),
+        &cell_body[value_end..]
+    )
+}
+
+fn cell_ref_from_open_tag(open_tag: &str) -> Option<&str> {
+    let value_start = open_tag
+        .find(" r=\"")
+        .map(|idx| idx + 4)
+        .or_else(|| open_tag.strip_prefix("<c r=\"").map(|_| 6))?;
+    let value_end = value_start + open_tag[value_start..].find('"')?;
+    Some(&open_tag[value_start..value_end])
+}
+
+fn force_open_tag_type_str(open_tag: &str) -> String {
+    if let Some(type_attr_start) = open_tag.find(" t=\"") {
+        let value_start = type_attr_start + 4;
+        if let Some(rel_value_end) = open_tag[value_start..].find('"') {
+            let value_end = value_start + rel_value_end;
+            return format!("{}str{}", &open_tag[..value_start], &open_tag[value_end..]);
+        }
+    }
+
+    format!("{} t=\"str\"", open_tag)
 }
 
 fn inject_empty_table_flags(
@@ -2744,6 +2922,71 @@ mod tests {
         std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
 
         assert!(xml_content.contains("<v>30</v>"));
+    }
+
+    #[test]
+    fn test_xlsx_formula_numeric_looking_string_cache_preserves_type() {
+        // rust_xlsxwriter infers the cached formula result type from the
+        // cached text and would write <v>1</v> as a number unless we force the
+        // cell type. Excel functions such as BIN2HEX return text even when the
+        // text looks numeric, and openpyxl observes that type in data_only
+        // reads used by the differential fuzzer.
+        let mut columns = Vec::new();
+        let mut col1 = DataColumn::from_src("A", vec!["=BIN2HEX(\"0001\")".to_string()]);
+        col1.data
+            .set(0, crate::core::engine::ResultData::String("1".to_string()));
+        columns.push(col1);
+
+        let sheet = Sheet {
+            id: 1,
+            name: "Sheet1".to_string(),
+            columns,
+            tables: Vec::new(),
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+
+        let cursor = std::io::Cursor::new(xlsx_data);
+        let mut zip = zip::ZipArchive::new(cursor).unwrap();
+        let mut sheet_file = zip.by_name("xl/worksheets/sheet1.xml").unwrap();
+        let mut xml_content = String::new();
+        std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
+
+        assert!(xml_content.contains(r#"<c r="A1" t="str"><f>BIN2HEX("0001")</f><v>1</v></c>"#));
+    }
+
+    #[test]
+    fn test_xlsx_formula_boolean_looking_string_cache_preserves_type() {
+        let mut columns = Vec::new();
+        let mut col1 = DataColumn::from_src("A", vec!["=T(TRUE)".to_string()]);
+        col1.data.set(
+            0,
+            crate::core::engine::ResultData::String("TRUE".to_string()),
+        );
+        columns.push(col1);
+
+        let sheet = Sheet {
+            id: 1,
+            name: "Sheet1".to_string(),
+            columns,
+            tables: Vec::new(),
+            dependencies: std::collections::HashMap::new(),
+            dependencies_rev: std::collections::HashMap::new(),
+            uncommitted_actions: Vec::new(),
+        };
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+
+        let cursor = std::io::Cursor::new(xlsx_data);
+        let mut zip = zip::ZipArchive::new(cursor).unwrap();
+        let mut sheet_file = zip.by_name("xl/worksheets/sheet1.xml").unwrap();
+        let mut xml_content = String::new();
+        std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
+
+        assert!(xml_content.contains(r#"<c r="A1" t="str"><f>T(TRUE)</f><v>TRUE</v></c>"#));
     }
 
     #[test]
