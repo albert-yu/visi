@@ -139,9 +139,6 @@ fn test_datevalue_and_timevalue_parse_common_formats() {
 
 #[test]
 fn test_datevalue_text_cell_refs_report_days_between() {
-    // The NVDA put implied-volatility workbook stores its date inputs as text
-    // cells (imported source is quoted to keep them from becoming typed date
-    // serials), then computes C9 as `DATEVALUE(B9)-DATEVALUE(B5)`.
     let grid = [
         ["", "", ""],
         ["", "", ""],
