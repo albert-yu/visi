@@ -1935,7 +1935,10 @@ class ExcelFuzzGenerator:
             info_type = random.choice(["row", "col", "address"])
             return f'=CELL("{info_type}", {cell})'
         if fn == "INFO":
-            info_type = random.choice(["numfile", "release", "system"])
+            # `release` is intentionally excluded: it is the installed Excel
+            # version, so it is environment-dependent (for example, this Mac
+            # oracle reports 16.112 while visi returns its stable 16.0 stub).
+            info_type = random.choice(["numfile", "system"])
             return f'=INFO("{info_type}")'
 
         raise AssertionError(f"no generator wired up for range-info function {fn}")
@@ -2752,11 +2755,10 @@ class DifferentialComparator:
     def _parse_complex(text):
         """(real, imag, suffix) for an Excel complex literal like "3+4i",
         "-2.5e-3-1.5j", "7i" or "-j"; None if `text` isn't one."""
-        s = text.strip()
-        if not s or s[-1] not in "ij":
+        if not text or text != text.strip() or text[-1] not in "ij":
             return None
-        suffix = s[-1]
-        body = s[:-1]
+        suffix = text[-1]
+        body = text[:-1]
         # Split on the last +/- that isn't an exponent sign.
         split_at = None
         for i in range(len(body) - 1, 0, -1):
@@ -2836,7 +2838,7 @@ class DifferentialComparator:
         if isinstance(v1, str) and isinstance(v2, str):
             if v1.upper() in self.EXCEL_ERRORS or v2.upper() in self.EXCEL_ERRORS:
                 return v1.upper() == v2.upper()
-            if v1.strip() == v2.strip():
+            if v1 == v2:
                 return True
             # The IM* family returns its result as *text* ("3+4i"), so a
             # plain string comparison would flag a disagreement in the last

@@ -387,6 +387,11 @@ impl Sheet {
                         // is a number that happens to display as a date.
                         detected_num_format = Some(format.to_format_code());
                         ResultData::Float(crate::core::date::date_to_excel_serial(date))
+                    } else if let Some(f) = crate::core::date_fn::parse_time_fraction(src) {
+                        // Same for a typed time: it is a numeric day fraction,
+                        // not text. The time number format is not represented
+                        // yet, so for now only the value semantics are matched.
+                        ResultData::Float(f)
                     } else {
                         ResultData::String(src.to_string())
                     };

@@ -138,36 +138,67 @@ fn test_datevalue_and_timevalue_parse_common_formats() {
 }
 
 #[test]
-fn test_datevalue_and_timevalue_accept_numeric_serials() {
+fn test_datevalue_text_cell_refs_report_days_between() {
+    let grid = [
+        ["", "", ""],
+        ["", "", ""],
+        ["", "", ""],
+        ["", "", ""],
+        ["", "\"2026-08-12\"", ""],
+        ["", "", ""],
+        ["", "", ""],
+        ["", "Expiration Date", "DTE (Days)"],
+        ["", "\"2026-08-21\"", "=DATEVALUE(B9)-DATEVALUE(B5)"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let got = sheet.get_result_data(&CellRef::new(8, 2));
+    assert!(
+        matches!(got, ResultData::Float(v) if (v - 9.0).abs() < 1e-9),
+        "C9 = {got:?}, want 9"
+    );
+}
+
+#[test]
+fn test_datevalue_and_timevalue_reject_typed_date_time_cells() {
     let grid = [[
-        "2026-08-12",                     // A1
-        "2026-08-21",                     // B1
-        "=DATEVALUE(B1) - DATEVALUE(A1)", // C1
-        "0.5",                            // D1
-        "46195.25",                       // E1
-        "=TIMEVALUE(D1)",                 // F1
-        "=TIMEVALUE(E1)",                 // G1
+        "2026-08-12",     // A1
+        "=DATEVALUE(A1)", // B1
+        "12:00:00",       // C1
+        "=TIMEVALUE(C1)", // D1
     ]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
 
-    let date_diff = sheet.get_result_data(&CellRef::new(0, 2));
-    assert!(
-        matches!(date_diff, ResultData::Float(v) if (v - 9.0).abs() < 1e-9),
-        "{date_diff:?}"
-    );
+    for col in [1, 3] {
+        let got = sheet.get_result_data(&CellRef::new(0, col));
+        assert!(
+            matches!(got, ResultData::Error(ref e) if e == "#VALUE!"),
+            "col {col}: {got:?}"
+        );
+    }
+}
 
-    let time_only = sheet.get_result_data(&CellRef::new(0, 5));
-    assert!(
-        matches!(time_only, ResultData::Float(v) if (v - 0.5).abs() < 1e-9),
-        "{time_only:?}"
-    );
+#[test]
+fn test_fuzz_datevalue_and_timevalue_reject_numeric_serials() {
+    let grid = [[
+        "46195",                // A1
+        "=DATEVALUE(46195)",    // B1
+        "=DATEVALUE(A1)",       // C1
+        "=TIMEVALUE(46195.25)", // D1
+        "=TIMEVALUE(A1)",       // E1
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
 
-    let datetime = sheet.get_result_data(&CellRef::new(0, 6));
-    assert!(
-        matches!(datetime, ResultData::Float(v) if (v - 0.25).abs() < 1e-9),
-        "{datetime:?}"
-    );
+    for col in 1..=4 {
+        let got = sheet.get_result_data(&CellRef::new(0, col));
+        assert!(
+            matches!(got, ResultData::Error(ref e) if e == "#VALUE!"),
+            "col {col}: {got:?}"
+        );
+    }
 }
 
 #[test]
