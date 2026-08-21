@@ -1935,7 +1935,10 @@ class ExcelFuzzGenerator:
             info_type = random.choice(["row", "col", "address"])
             return f'=CELL("{info_type}", {cell})'
         if fn == "INFO":
-            info_type = random.choice(["numfile", "release", "system"])
+            # `release` is intentionally excluded: it is the installed Excel
+            # version, so it is environment-dependent (for example, this Mac
+            # oracle reports 16.112 while visi returns its stable 16.0 stub).
+            info_type = random.choice(["numfile", "system"])
             return f'=INFO("{info_type}")'
 
         raise AssertionError(f"no generator wired up for range-info function {fn}")

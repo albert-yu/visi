@@ -1237,6 +1237,26 @@ fn take_number_exponent(chars: &[char], i: &mut usize, num_str: &mut String) {
     }
 }
 
+fn digit_prefixed_text_literal(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut end = start;
+    while end < chars.len()
+        && (chars[end].is_ascii_alphanumeric() || matches!(chars[end], '-' | '/' | ':' | '.'))
+    {
+        end += 1;
+    }
+    let candidate: String = chars[start..end].iter().collect();
+    if candidate.is_empty() || candidate.parse::<f64>().is_ok() {
+        return None;
+    }
+    if crate::core::date_fn::parse_date_parts(&candidate).is_some()
+        || crate::core::date_fn::parse_time_fraction(&candidate).is_some()
+    {
+        Some((candidate, end))
+    } else {
+        None
+    }
+}
+
 /// The Excel error value spelled at `start`, in its canonical casing, or
 /// `None` if the `#` starts something else.
 ///
@@ -1457,6 +1477,12 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
         }
 
         if c.is_ascii_digit() {
+            if let Some((text, next_i)) = digit_prefixed_text_literal(&chars, i) {
+                tokens.push(EvalToken::String(text));
+                i = next_i;
+                continue;
+            }
+
             let mut num_str = String::new();
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                 num_str.push(chars[i]);
@@ -2010,6 +2036,28 @@ mod tests {
                 other => panic!("{src} did not lex as a single number: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn test_digit_prefixed_date_and_time_literals_lex_as_text() {
+        assert_eq!(
+            lex_eval("DATEVALUE(2026-08-12)").unwrap(),
+            vec![
+                EvalToken::Identifier("DATEVALUE".to_string()),
+                EvalToken::OpenParen,
+                EvalToken::String("2026-08-12".to_string()),
+                EvalToken::CloseParen,
+            ]
+        );
+        assert_eq!(
+            lex_eval("TIMEVALUE(12:00:00)").unwrap(),
+            vec![
+                EvalToken::Identifier("TIMEVALUE".to_string()),
+                EvalToken::OpenParen,
+                EvalToken::String("12:00:00".to_string()),
+                EvalToken::CloseParen,
+            ]
+        );
     }
 
     /// The exponent is only consumed when a digit really follows, so an `E`

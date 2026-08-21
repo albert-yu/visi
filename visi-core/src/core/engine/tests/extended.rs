@@ -138,13 +138,13 @@ fn test_datevalue_and_timevalue_parse_common_formats() {
 }
 
 #[test]
-fn test_datevalue_and_timevalue_accept_numeric_serials() {
+fn test_datevalue_and_timevalue_accept_cell_refs_to_text() {
     let grid = [[
-        "2026-08-12",                     // A1
-        "2026-08-21",                     // B1
+        "=2026-08-12",                    // A1
+        "=2026-08-21",                    // B1
         "=DATEVALUE(B1) - DATEVALUE(A1)", // C1
-        "0.5",                            // D1
-        "46195.25",                       // E1
+        "=12:00:00",                      // D1
+        "=6:00",                          // E1
         "=TIMEVALUE(D1)",                 // F1
         "=TIMEVALUE(E1)",                 // G1
     ]];
@@ -157,17 +157,41 @@ fn test_datevalue_and_timevalue_accept_numeric_serials() {
         "{date_diff:?}"
     );
 
-    let time_only = sheet.get_result_data(&CellRef::new(0, 5));
+    let noon = sheet.get_result_data(&CellRef::new(0, 5));
     assert!(
-        matches!(time_only, ResultData::Float(v) if (v - 0.5).abs() < 1e-9),
-        "{time_only:?}"
+        matches!(noon, ResultData::Float(v) if (v - 0.5).abs() < 1e-9),
+        "{noon:?}"
     );
 
-    let datetime = sheet.get_result_data(&CellRef::new(0, 6));
+    let morning = sheet.get_result_data(&CellRef::new(0, 6));
     assert!(
-        matches!(datetime, ResultData::Float(v) if (v - 0.25).abs() < 1e-9),
-        "{datetime:?}"
+        matches!(morning, ResultData::Float(v) if (v - 0.25).abs() < 1e-9),
+        "{morning:?}"
     );
+}
+
+#[test]
+fn test_fuzz_datevalue_and_timevalue_reject_numeric_serials() {
+    // DATEVALUE/TIMEVALUE parse text only. Excel returns #VALUE! for both
+    // literal numbers and numeric cell references; accepting serials here was
+    // found by differential fuzzing against real Excel on seed 354657.
+    let grid = [[
+        "46195",                // A1
+        "=DATEVALUE(46195)",    // B1
+        "=DATEVALUE(A1)",       // C1
+        "=TIMEVALUE(46195.25)", // D1
+        "=TIMEVALUE(A1)",       // E1
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    for col in 1..=4 {
+        let got = sheet.get_result_data(&CellRef::new(0, col));
+        assert!(
+            matches!(got, ResultData::Error(ref e) if e == "#VALUE!"),
+            "col {col}: {got:?}"
+        );
+    }
 }
 
 #[test]
