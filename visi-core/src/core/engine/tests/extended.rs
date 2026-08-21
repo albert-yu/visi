@@ -140,8 +140,8 @@ fn test_datevalue_and_timevalue_parse_common_formats() {
 #[test]
 fn test_datevalue_ops() {
     let grid = [[
-        "\"2026-08-12\"",                 // A1
-        "\"2026-08-21\"",                 // B1
+        "2026-08-12",                     // A1
+        "2026-08-21",                     // B1
         "=DATEVALUE(B1) - DATEVALUE(A1)", // C1
     ]];
     let mut sheet = create_sheet(&grid);
