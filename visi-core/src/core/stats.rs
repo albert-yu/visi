@@ -501,7 +501,7 @@ pub fn geomean(data: &[f64]) -> Result<f64, String> {
 
 pub fn harmean(data: &[f64]) -> Result<f64, String> {
     if data.is_empty() {
-        return Err("#NUM!".to_string());
+        return Err("#N/A".to_string());
     }
     let mut inv_sum = 0.0;
     for &x in data {

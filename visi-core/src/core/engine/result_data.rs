@@ -182,8 +182,17 @@ pub(crate) fn format_excel_number(f: f64) -> String {
         // writes PHI(28) as "2.2775774787367E-171" (13 fractional digits)
         // and CSCH(-23) as "-2.05237592634038E-10" (14), both 20 characters
         // once the sign is set aside.
-        let suffix_len = format!("E{:+03}", exp).len();
-        let frac_digits = 18usize.saturating_sub(suffix_len).min(14);
+        // Excel starts reserving the three-exponent-digit budget at |99|,
+        // even though the textual exponent still has only two digits there:
+        // 6.37409849780041E-98 keeps 14 fractional digits, while
+        // 6.3740984978004E-99 keeps 13. The actual `E+99`/`E-99` suffix is
+        // still rendered with two digits; only the mantissa budget shrinks.
+        let suffix_budget_len = if exp.abs() >= 99 {
+            5
+        } else {
+            format!("E{:+03}", exp).len()
+        };
+        let frac_digits = 18usize.saturating_sub(suffix_budget_len).min(14);
 
         // Rounded from the *15-significant-digit* value, not from the raw
         // f64. Excel snaps a result to 15 significant digits and only then
