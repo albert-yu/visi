@@ -1584,9 +1584,13 @@ class ExcelFuzzGenerator:
             unit = random.choice(["Y", "M", "D", "MD", "YM"])
             return f'=DATEDIF({s1}, {s2}, "{unit}")'
         if fn == "DATEVALUE":
+            if random.choice([True, False]):
+                return f"=DATEVALUE({serial()})"
             y, m, d = random.randint(2000, 2035), random.randint(1, 12), random.randint(1, 28)
             return f'=DATEVALUE("{y:04d}-{m:02d}-{d:02d}")'
         if fn == "TIMEVALUE":
+            if random.choice([True, False]):
+                return f"=TIMEVALUE({serial() + random.random():.12f})"
             h, mi, s = random.randint(0, 23), random.randint(0, 59), random.randint(0, 59)
             return f'=TIMEVALUE("{h:02d}:{mi:02d}:{s:02d}")'
         if fn in ("NETWORKDAYS", "NETWORKDAYS.INTL"):

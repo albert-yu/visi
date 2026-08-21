@@ -138,6 +138,39 @@ fn test_datevalue_and_timevalue_parse_common_formats() {
 }
 
 #[test]
+fn test_datevalue_and_timevalue_accept_numeric_serials() {
+    let grid = [[
+        "2026-08-12",                     // A1
+        "2026-08-21",                     // B1
+        "=DATEVALUE(B1) - DATEVALUE(A1)", // C1
+        "0.5",                            // D1
+        "46195.25",                       // E1
+        "=TIMEVALUE(D1)",                 // F1
+        "=TIMEVALUE(E1)",                 // G1
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let date_diff = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(date_diff, ResultData::Float(v) if (v - 9.0).abs() < 1e-9),
+        "{date_diff:?}"
+    );
+
+    let time_only = sheet.get_result_data(&CellRef::new(0, 5));
+    assert!(
+        matches!(time_only, ResultData::Float(v) if (v - 0.5).abs() < 1e-9),
+        "{time_only:?}"
+    );
+
+    let datetime = sheet.get_result_data(&CellRef::new(0, 6));
+    assert!(
+        matches!(datetime, ResultData::Float(v) if (v - 0.25).abs() < 1e-9),
+        "{datetime:?}"
+    );
+}
+
+#[test]
 fn test_address_mixed_reference_types_not_swapped() {
     // abs_num 2 ("absolute row; relative column", e.g. "A$1") and 3
     // ("relative row; absolute column", e.g. "$A1") were swapped in

@@ -46,13 +46,14 @@ impl Sheet {
                     .unwrap_or_default();
                 res_to_rd(crate::core::date_fn::datedif(start, end, &unit))
             }
-            "DATEVALUE" => {
-                let text = evaluated_args
-                    .first()
-                    .map(|v| v.to_string())
-                    .unwrap_or_default();
-                res_to_rd(crate::core::date_fn::datevalue(&text))
-            }
+            "DATEVALUE" => match evaluated_args.first() {
+                Some(ResultData::Integer(i)) => Ok(ResultData::Float(*i as f64)),
+                Some(ResultData::Float(f)) => Ok(ResultData::Float(f.floor())),
+                arg => {
+                    let text = arg.map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::date_fn::datevalue(&text))
+                }
+            },
             "DAY" => {
                 let s = self.to_f64_arg(evaluated_args.first(), "DAY")?;
                 res_to_rd(crate::core::date_fn::day_fn(s))
@@ -113,13 +114,14 @@ impl Sheet {
                 let s = self.to_f64_arg(evaluated_args.get(2), "TIME")?;
                 res_to_rd(crate::core::date_fn::time_fn(h, m, s))
             }
-            "TIMEVALUE" => {
-                let text = evaluated_args
-                    .first()
-                    .map(|v| v.to_string())
-                    .unwrap_or_default();
-                res_to_rd(crate::core::date_fn::timevalue(&text))
-            }
+            "TIMEVALUE" => match evaluated_args.first() {
+                Some(ResultData::Integer(_)) => Ok(ResultData::Float(0.0)),
+                Some(ResultData::Float(f)) => Ok(ResultData::Float(f.fract().abs())),
+                arg => {
+                    let text = arg.map(|v| v.to_string()).unwrap_or_default();
+                    res_to_rd(crate::core::date_fn::timevalue(&text))
+                }
+            },
             "WEEKDAY" => {
                 let s = self.to_f64_arg(evaluated_args.first(), "WEEKDAY")?;
                 let r_type = evaluated_args.get(1).and_then(|v| self.to_f64(v));
