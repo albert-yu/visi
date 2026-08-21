@@ -47,12 +47,9 @@ impl Sheet {
                 res_to_rd(crate::core::date_fn::datedif(start, end, &unit))
             }
             "DATEVALUE" => match evaluated_args.first() {
-                Some(ResultData::Integer(i)) => Ok(ResultData::Float(*i as f64)),
-                Some(ResultData::Float(f)) => Ok(ResultData::Float(f.floor())),
-                arg => {
-                    let text = arg.map(|v| v.to_string()).unwrap_or_default();
-                    res_to_rd(crate::core::date_fn::datevalue(&text))
-                }
+                Some(ResultData::String(text)) => res_to_rd(crate::core::date_fn::datevalue(text)),
+                None => res_to_rd(crate::core::date_fn::datevalue("")),
+                _ => Ok(ResultData::Error("#VALUE!".to_string())),
             },
             "DAY" => {
                 let s = self.to_f64_arg(evaluated_args.first(), "DAY")?;
@@ -115,12 +112,9 @@ impl Sheet {
                 res_to_rd(crate::core::date_fn::time_fn(h, m, s))
             }
             "TIMEVALUE" => match evaluated_args.first() {
-                Some(ResultData::Integer(_)) => Ok(ResultData::Float(0.0)),
-                Some(ResultData::Float(f)) => Ok(ResultData::Float(f.fract().abs())),
-                arg => {
-                    let text = arg.map(|v| v.to_string()).unwrap_or_default();
-                    res_to_rd(crate::core::date_fn::timevalue(&text))
-                }
+                Some(ResultData::String(text)) => res_to_rd(crate::core::date_fn::timevalue(text)),
+                None => res_to_rd(crate::core::date_fn::timevalue("")),
+                _ => Ok(ResultData::Error("#VALUE!".to_string())),
             },
             "WEEKDAY" => {
                 let s = self.to_f64_arg(evaluated_args.first(), "WEEKDAY")?;
