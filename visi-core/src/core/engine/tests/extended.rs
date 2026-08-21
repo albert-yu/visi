@@ -182,9 +182,6 @@ fn test_datevalue_and_timevalue_reject_typed_date_time_cells() {
 
 #[test]
 fn test_fuzz_datevalue_and_timevalue_reject_numeric_serials() {
-    // DATEVALUE/TIMEVALUE parse text only. Excel returns #VALUE! for both
-    // literal numbers and numeric cell references; accepting serials here was
-    // found by differential fuzzing against real Excel on seed 354657.
     let grid = [[
         "46195",                // A1
         "=DATEVALUE(46195)",    // B1
