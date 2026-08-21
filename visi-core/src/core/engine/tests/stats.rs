@@ -605,9 +605,6 @@ fn test_direct_numeric_text_is_coerced_by_stat_family() {
 
 #[test]
 fn test_harmean_no_numeric_values_is_not_available() {
-    // Real Excel reports #N/A, not #NUM!, when HARMEAN's referenced inputs
-    // contain no numbers after blanks/text are skipped. IFNA therefore catches
-    // it; this surfaced in fuzz/fuzz_excel.py seed 879563.
     let mut sheet = create_sheet(&[
         ["", "=HARMEAN(A1:A2)", "=IFNA(HARMEAN(A1:A2), 5)"],
         ["\"paren(test)\"", "", ""],
