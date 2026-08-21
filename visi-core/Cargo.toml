@@ -3,7 +3,7 @@ name = "visi-core"
 # Deliberately independent of the workspace version: `visi` is already
 # released at 0.1.x, but `visi-core` is a new name on crates.io with no
 # prior releases, so it starts its own line at 0.1.0.
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
