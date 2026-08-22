@@ -565,7 +565,10 @@ impl Sheet {
                         Ok(v) => v,
                         Err(e) => return Ok(ResultData::Error(e)),
                     };
-                res_to_rd(crate::core::math_trig::sumsq(&nums))
+                match crate::core::math_trig::sumsq(&nums) {
+                    Ok(v) => Ok(ResultData::Float(Self::clean_float(v))),
+                    Err(e) => Ok(ResultData::Error(e)),
+                }
             }
             "SUMX2MY2" => {
                 // paired_args first: a shape mismatch is #N/A and takes

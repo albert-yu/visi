@@ -15,6 +15,7 @@ import datetime
 import io
 import math
 import os
+import posixpath
 import random
 import re
 import shutil
@@ -2525,10 +2526,18 @@ class XLSXEvaluatedReader:
                             text = "".join(t.text or "" for t in t_elems)
                             shared_strings.append(text)
 
-                # 2. Iterate sheet XML files
+                # 2. Iterate sheet XML files, keyed by the workbook's real
+                # worksheet names rather than by part filenames. The fuzzer
+                # deliberately exercises names like "Data Sheet"; comparing
+                # `sheet2.xml` to `sheet2.xml` would miss an exporter that
+                # renamed or mis-escaped a sheet while preserving part order.
+                sheet_names_by_part = XLSXEvaluatedReader._worksheet_names_by_part(z)
                 sheet_files = [name for name in z.namelist() if name.startswith('xl/worksheets/sheet') and name.endswith('.xml')]
                 for sheet_file in sorted(sheet_files):
-                    sheet_name = os.path.basename(sheet_file).replace('.xml', '')
+                    sheet_name = sheet_names_by_part.get(
+                        sheet_file,
+                        os.path.basename(sheet_file).replace('.xml', ''),
+                    )
                     with z.open(sheet_file) as f:
                         tree = ET.parse(f)
                         root = tree.getroot()
@@ -2570,6 +2579,49 @@ class XLSXEvaluatedReader:
             print(f"Warning: Failed to read OpenXML from {source}: {e}")
 
         return results
+
+    @staticmethod
+    def _worksheet_names_by_part(z):
+        """Map worksheet part paths (``xl/worksheets/sheetN.xml``) to the
+        user-visible sheet names recorded in ``xl/workbook.xml``.
+        """
+        if 'xl/workbook.xml' not in z.namelist() or 'xl/_rels/workbook.xml.rels' not in z.namelist():
+            return {}
+
+        rel_targets = {}
+        with z.open('xl/_rels/workbook.xml.rels') as f:
+            rels_root = ET.parse(f).getroot()
+            for rel in rels_root.iter():
+                if not rel.tag.endswith('Relationship'):
+                    continue
+                rel_id = rel.attrib.get('Id')
+                target = rel.attrib.get('Target')
+                rel_type = rel.attrib.get('Type', '')
+                if not rel_id or not target or not rel_type.endswith('/worksheet'):
+                    continue
+                rel_targets[rel_id] = XLSXEvaluatedReader._normalize_workbook_rel_target(target)
+
+        names_by_part = {}
+        with z.open('xl/workbook.xml') as f:
+            workbook_root = ET.parse(f).getroot()
+            for sheet in workbook_root.findall('.//main:sheet', NS):
+                sheet_name = sheet.attrib.get('name')
+                rel_id = sheet.attrib.get(f"{{{NS['r']}}}id")
+                part = rel_targets.get(rel_id)
+                if sheet_name and part:
+                    names_by_part[part] = sheet_name
+        return names_by_part
+
+    @staticmethod
+    def _normalize_workbook_rel_target(target):
+        # Relationship targets in workbook.xml.rels are relative to
+        # xl/workbook.xml unless they are package-absolute (/xl/...). Use
+        # posix paths because these are zip member names, not host paths.
+        if target.startswith('/'):
+            normalized = posixpath.normpath(target.lstrip('/'))
+        else:
+            normalized = posixpath.normpath(posixpath.join('xl', target))
+        return normalized
 
     @staticmethod
     def _normalize_cell(cell_type, raw_val, shared_strings):
