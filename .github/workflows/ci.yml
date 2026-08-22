@@ -143,4 +143,4 @@ jobs:
           test -x target/release/visi
 
       - name: pytest
-        run: pytest fuzz/test_backend_parity.py visi-python/tests/
+        run: pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/
