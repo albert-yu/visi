@@ -2001,7 +2001,7 @@ fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)
 /// no time-of-day support, so claiming them would render `h:mm` cells as bare
 /// dates rather than leaving them as plain serials.
 const BUILTIN_DATE_NUM_FMTS: &[(u32, &str)] = &[
-    (14, "m/d/yyyy"),
+    (14, "m/d/yy"),
     (15, "d-mmm-yy"),
     (16, "d-mmm"),
     (17, "mmm-yy"),
@@ -2302,6 +2302,19 @@ mod tests {
         assert_eq!(imported_table.columns[0].src[1], "20");
         assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_table.columns[1].src[1], "abc");
+    }
+
+    #[test]
+    fn test_builtin_date_num_fmt_14_uses_two_digit_year() {
+        let styles = r#"
+            <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <cellXfs count="1">
+                <xf numFmtId="14" applyNumberFormat="1"/>
+              </cellXfs>
+            </styleSheet>
+        "#;
+        let formats = parse_styles_num_formats(styles);
+        assert_eq!(formats.get(&0).map(String::as_str), Some("m/d/yy"));
     }
 
     /// A date cell has to survive as a *date*: the value goes out as a
