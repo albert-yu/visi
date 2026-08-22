@@ -103,14 +103,14 @@ class StructuralFuzzGenerator:
 
     def range_ref(self, whole=False, sheet=None):
         if whole:
-            # Whole-column references are represented in compiled formulas and
-            # have measured rewrite coverage. Whole-row references currently
-            # evaluate in formulas but are not represented in the structural
-            # rewrite layer, so keep them out of this pass/fail harness rather
-            # than making every run rediscover that known gap.
-            c1 = self.rng.randint(1, COLS)
-            c2 = self.rng.randint(c1, COLS)
-            ref = f"{col_name(c1)}:{col_name(c2)}"
+            if self.rng.random() < 0.5:
+                c1 = self.rng.randint(1, COLS)
+                c2 = self.rng.randint(c1, COLS)
+                ref = f"{col_name(c1)}:{col_name(c2)}"
+            else:
+                r1 = self.rng.randint(1, ROWS)
+                r2 = self.rng.randint(r1, ROWS)
+                ref = f"{r1}:{r2}"
         else:
             r1 = self.rng.randint(1, ROWS)
             r2 = self.rng.randint(r1, ROWS)
@@ -131,6 +131,7 @@ class StructuralFuzzGenerator:
             "binary",
             "cross_ref",
             "cross_range",
+            "cross_whole",
         ])
         if style == "ref":
             return f"={self.cell_ref(abs_ok=False)}"
@@ -145,6 +146,8 @@ class StructuralFuzzGenerator:
             return f"={self.cell_ref()} {op} {self.cell_ref()}"
         if style == "cross_ref":
             return f"={self.cell_ref(sheet=other)}"
+        if style == "cross_whole":
+            return f"=SUM({self.range_ref(whole=True, sheet=other)})"
         return f"=SUM({self.range_ref(sheet=other)})"
 
     def workbook(self, path):
