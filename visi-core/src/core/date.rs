@@ -334,6 +334,15 @@ pub fn render_date_code(date: SimpleDate, code: &str, month_case: StringCase) ->
 
     while i < chars.len() {
         let c = chars[i];
+        if c == '\\' {
+            if let Some(next) = chars.get(i + 1) {
+                out.push(*next);
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
         let lower = c.to_ascii_lowercase();
         if !matches!(lower, 'y' | 'm' | 'd') {
             out.push(c);
@@ -1142,6 +1151,23 @@ mod tests {
         assert_eq!(
             render_date_code(d, "[yyyy] week of d", StringCase::Title),
             "[2026] week of 7"
+        );
+    }
+
+    #[test]
+    fn test_render_date_code_honors_excel_escape_prefix() {
+        let d = SimpleDate {
+            year: 2026,
+            month: 6,
+            day: 7,
+        };
+        assert_eq!(
+            render_date_code(d, "yyyy\\-mm\\-dd", StringCase::Title),
+            "2026-06-07"
+        );
+        assert_eq!(
+            render_date_code(d, "d\\-mmm\\-yyyy", StringCase::Title),
+            "7-Jun-2026"
         );
     }
 
