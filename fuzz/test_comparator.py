@@ -2,6 +2,7 @@ import io
 import zipfile
 
 from fuzz_excel import DifferentialComparator, XLSXEvaluatedReader
+from fuzz_structural_edit import normalize_formula_text
 
 
 def test_text_whitespace_is_significant():
@@ -77,3 +78,32 @@ def test_evaluated_reader_keys_cells_by_actual_sheet_name():
     assert cells[("Data & \"Sheet\"", "B2")]["val"] == 42
     assert ("sheet1", "A1") not in cells
     assert ("sheet2", "B2") not in cells
+
+
+def test_structural_formula_normalization_preserves_string_literal_whitespace():
+    assert normalize_formula_text('=" a "&A1') == '=" a "&A1'
+    assert normalize_formula_text('=" a " & A1') == '=" a "&A1'
+    assert normalize_formula_text('=" a " & a1') == '=" a "&A1'
+
+    assert normalize_formula_text('=" a "&A1') != normalize_formula_text('="a"&A1')
+    assert normalize_formula_text('=" a "&A1') != normalize_formula_text('="a "&A1')
+    assert normalize_formula_text('=" a "&A1') != normalize_formula_text('=" a"&A1')
+    assert normalize_formula_text('=" a "&A1') != normalize_formula_text('="  a  "&A1')
+
+
+def test_structural_formula_normalization_preserves_string_literal_casing():
+    assert normalize_formula_text('="abc" & A1') != normalize_formula_text('="ABC" & A1')
+    assert normalize_formula_text('=SUM(a1:a2) & "abc"') == '=SUM(A1:A2)&"abc"'
+
+
+def test_structural_formula_normalization_handles_escaped_quotes_and_ref_errors():
+    assert normalize_formula_text('="He said ""hello world""!" & B2') == '="He said ""hello world""!"&B2'
+    assert normalize_formula_text('="He said ""hello world""!" & B2') == normalize_formula_text('="He said ""hello world""!"   &  b2')
+    assert normalize_formula_text('=""') == '=""'
+    assert normalize_formula_text('=""""') == '=""""'
+    assert normalize_formula_text(None) is None
+
+    # Cross-sheet #REF! in non-string parts is normalized, but string literals are untouched
+    assert normalize_formula_text('=Data!#REF! + 1') == '=#REF!+1'
+    assert normalize_formula_text('=\'Data\'!#REF! + 1') == '=#REF!+1'
+    assert normalize_formula_text('="Data!#REF!"') == '="Data!#REF!"'

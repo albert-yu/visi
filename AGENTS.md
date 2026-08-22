@@ -20,7 +20,7 @@ cargo test -p visi --test cli_tests
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace
 --all-targets -- -D warnings`, `cargo test --workspace --exclude visi-python` on
 Linux and macOS, and the pytest suites (`fuzz/test_backend_parity.py`,
-`visi-python/tests/`) on every PR. Everything requiring a real Excel — the `fuzz/`
+`fuzz/test_comparator.py`, `visi-python/tests/`) on every PR. Everything requiring a real Excel — the `fuzz/`
 differential harness — and the nightly-only cargo-fuzz targets stay local.
 
 Differential fuzzing against real Microsoft Excel (Python, `fuzz/`). Use the venv,
@@ -47,7 +47,7 @@ python fuzz/pivot_filter_probe.py --variant visi         # can Excel open a pivo
 python fuzz/vba_pivot_probe.py                           # the VBA PivotTables object model
 python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
 
-pytest fuzz/test_backend_parity.py visi-python/tests/    # bindings must match the CLI
+pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/    # bindings must match the CLI
 ```
 
 Anything in `fuzz/` that becomes VBA *source* has a trap worth knowing: an

@@ -132,6 +132,7 @@ class StructuralFuzzGenerator:
             "cross_ref",
             "cross_range",
             "cross_whole",
+            "concat_literal",
         ])
         if style == "ref":
             return f"={self.cell_ref(abs_ok=False)}"
@@ -148,6 +149,9 @@ class StructuralFuzzGenerator:
             return f"={self.cell_ref(sheet=other)}"
         if style == "cross_whole":
             return f"=SUM({self.range_ref(whole=True, sheet=other)})"
+        if style == "concat_literal":
+            lit = self.rng.choice([" a ", "hello ", " x", ""])
+            return f'=CONCATENATE("{lit}", {self.cell_ref()})'
         return f"=SUM({self.range_ref(sheet=other)})"
 
     def workbook(self, path):
@@ -336,17 +340,50 @@ def read_formulas(path):
     return out
 
 
-def normalize_formula_text(formula):
+def normalize_formula_text(formula, sheets=None):
     if formula is None:
         return None
-    text = "".join(str(formula).split()).upper()
-    # Excel preserves the sheet prefix when a cross-sheet reference is deleted
-    # (`Data!#REF!`); visi serializes the same invalid reference as plain
-    # `#REF!`. They evaluate the same, and this harness is aimed at movement
-    # bugs rather than that cosmetic spelling difference.
-    for sheet in SHEETS:
-        text = text.replace(f"{sheet.upper()}!#REF!", "#REF!")
-    return text
+    if sheets is None:
+        sheets = SHEETS
+
+    s = str(formula)
+    parts = []
+    i = 0
+    n = len(s)
+
+    while i < n:
+        if s[i] == '"':
+            # Double-quoted string literal: preserve exact characters and quotes
+            start = i
+            i += 1
+            while i < n:
+                if s[i] == '"':
+                    if i + 1 < n and s[i + 1] == '"':
+                        # Escaped quote `""` inside string literal
+                        i += 2
+                    else:
+                        i += 1
+                        break
+                else:
+                    i += 1
+            parts.append(s[start:i])
+        else:
+            # Non-string formula text: strip cosmetic whitespace, uppercase tokens,
+            # and normalize cross-sheet #REF! spellings.
+            start = i
+            while i < n and s[i] != '"':
+                i += 1
+            chunk = "".join(s[start:i].split()).upper()
+            # Excel preserves the sheet prefix when a cross-sheet reference is deleted
+            # (`Data!#REF!`); visi serializes the same invalid reference as plain
+            # `#REF!`. They evaluate the same, and this harness is aimed at movement
+            # bugs rather than that cosmetic spelling difference.
+            for sheet in sheets:
+                chunk = chunk.replace(f"'{sheet.upper()}'!#REF!", "#REF!")
+                chunk = chunk.replace(f"{sheet.upper()}!#REF!", "#REF!")
+            parts.append(chunk)
+
+    return "".join(parts)
 
 
 def formula_mismatches(visi_path, excel_path):
