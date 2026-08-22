@@ -945,19 +945,25 @@ impl Sheet {
                     None => true,
                 };
 
+                let target_sheet = if is_self {
+                    Some(self)
+                } else {
+                    context.and_then(|ctx| ctx.sheets.get(sheet.as_ref().unwrap()).copied())
+                };
+
                 let actual_end_row = if *end_row == usize::MAX {
-                    if is_self {
-                        self.row_count().saturating_sub(1)
-                    } else if let Some(ctx) = context {
-                        ctx.sheets
-                            .get(sheet.as_ref().unwrap())
-                            .map(|t| t.row_count().saturating_sub(1))
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    }
+                    target_sheet
+                        .map(|t| t.row_count().saturating_sub(1))
+                        .unwrap_or(0)
                 } else {
                     *end_row
+                };
+                let actual_end_col = if *end_col == usize::MAX {
+                    target_sheet
+                        .map(|t| t.col_count().saturating_sub(1))
+                        .unwrap_or(0)
+                } else {
+                    *end_col
                 };
 
                 let is_col_range = *end_row == usize::MAX;
@@ -981,7 +987,7 @@ impl Sheet {
 
                 let mut results = Vec::new();
                 for r in *start_row..=actual_end_row {
-                    for c in *start_col..=*end_col {
+                    for c in *start_col..=actual_end_col {
                         let cell_ref = CellRef::new(r, c);
                         if is_self {
                             if is_col_range {
@@ -2414,13 +2420,18 @@ impl Sheet {
         } else {
             end_row
         };
-        if actual_end_row < start_row || end_col < start_col {
+        let actual_end_col = if end_col == usize::MAX {
+            source.col_count().saturating_sub(1)
+        } else {
+            end_col
+        };
+        if actual_end_row < start_row || actual_end_col < start_col {
             return Some(Vec::new());
         }
         let mut grid = Vec::with_capacity(actual_end_row - start_row + 1);
         for r in start_row..=actual_end_row {
-            let mut row = Vec::with_capacity(end_col - start_col + 1);
-            for c in start_col..=end_col {
+            let mut row = Vec::with_capacity(actual_end_col - start_col + 1);
+            for c in start_col..=actual_end_col {
                 row.push(source.get_result_data(&CellRef::new(r, c)));
             }
             grid.push(row);

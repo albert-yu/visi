@@ -132,6 +132,39 @@ CASES = [
         "edit": ("insert_row", 1, "Data"),
         "probe": ["C1", "C2"],
     },
+    {
+        "name": "a whole-row reference under a row insert",
+        "cells": {"A1": "1", "A2": "2", "A3": "3",
+                  "E1": "=SUM(2:2)", "E2": "=SUM(1:3)"},
+        "edit": ("insert_row", 1),
+        "probe": ["E2", "E3"],
+    },
+    {
+        "name": "a whole-row reference under a column insert",
+        "cells": {"A1": "1", "A2": "2",
+                  "E1": "=SUM(2:2)", "E2": "=SUM(1:3)"},
+        "edit": ("insert_col", "A"),
+        "probe": ["F1", "F2"],
+    },
+    {
+        "name": "deleting the row a whole-row reference names",
+        "cells": {"A1": "1", "A2": "2", "A3": "3", "E1": "=SUM(2:2)"},
+        "edit": ("delete_row", 2),
+        "probe": ["E1"],
+    },
+    {
+        "name": "deleting one row of a whole-row range shrinks it",
+        "cells": {"A1": "1", "A2": "2", "A3": "3", "E1": "=SUM(1:3)"},
+        "edit": ("delete_row", 2),
+        "probe": ["E1"],
+    },
+    {
+        "name": "a cross-sheet whole-row reference follows an edit on the other sheet",
+        "cells": {"C1": "=SUM(Data!2:2)", "C2": "=SUM(Data!1:3)"},
+        "other_sheet": ("Data", {"A1": "10", "A2": "20", "A3": "30"}),
+        "edit": ("insert_row", 1, "Data"),
+        "probe": ["C1", "C2"],
+    },
 ]
 
 

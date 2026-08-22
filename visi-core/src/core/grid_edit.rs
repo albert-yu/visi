@@ -370,6 +370,12 @@ fn shift_part(part: &FormulaPart, edit: &GridEdit, deleted_col_ids: &[u64]) -> (
             if *end_row == usize::MAX && edit.axis == Axis::Row {
                 return unchanged();
             }
+            // `1:3` is the mirrored whole-row form: every column is already
+            // covered, so a column edit leaves it alone and a row edit moves
+            // or shrinks its row bounds.
+            if *end_col == usize::MAX && edit.axis == Axis::Col {
+                return unchanged();
+            }
             let rect = match shift_rect(edit, *start_row, *start_col, *end_row, *end_col) {
                 Some(rect) => rect,
                 None => return broken(),
@@ -561,6 +567,37 @@ mod tests {
 
         let shifted = shift_formula(&unbounded(0, 2), &GridEdit::insert_col(1, 0), &[]).unwrap();
         assert_eq!(shifted.parts, unbounded(1, 3).parts);
+    }
+
+    #[test]
+    fn an_unbounded_col_range_survives_a_col_edit_and_still_tracks_rows() {
+        // `1:3` compiles to a range with `end_col: usize::MAX`. A column edit
+        // must leave it alone -- it already covers every column. A row edit
+        // still has to move or resize it.
+        let unbounded = |start_row, end_row| CompiledFormula {
+            parts: vec![FormulaPart::RangeReference {
+                sheet_id: 1,
+                start_row,
+                start_col: 0,
+                end_row,
+                end_col: usize::MAX,
+                start_row_ref_type: RefType::Relative,
+                start_col_ref_type: RefType::Absolute,
+                end_row_ref_type: RefType::Relative,
+                end_col_ref_type: RefType::Absolute,
+            }],
+        };
+        assert!(shift_formula(&unbounded(0, 2), &GridEdit::delete_col(1, 0), &[]).is_none());
+        assert!(shift_formula(&unbounded(0, 2), &GridEdit::insert_col(1, 0), &[]).is_none());
+
+        let shifted = shift_formula(&unbounded(0, 2), &GridEdit::insert_row(1, 0), &[]).unwrap();
+        assert_eq!(shifted.parts, unbounded(1, 3).parts);
+
+        let shrunk = shift_formula(&unbounded(0, 2), &GridEdit::delete_row(1, 1), &[]).unwrap();
+        assert_eq!(shrunk.parts, unbounded(0, 1).parts);
+
+        let deleted = shift_formula(&unbounded(1, 1), &GridEdit::delete_row(1, 1), &[]).unwrap();
+        assert_eq!(deleted.parts, vec![FormulaPart::Text("#REF!".to_string())]);
     }
 
     #[test]

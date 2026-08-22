@@ -201,6 +201,26 @@ fn parse_column_ref(s: &str) -> Option<(usize, bool)> {
     Some((col_idx, col_abs))
 }
 
+fn parse_row_ref(s: &str) -> Option<(usize, bool)> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut idx = 0;
+    let mut row_abs = false;
+    if idx < chars.len() && chars[idx] == '$' {
+        row_abs = true;
+        idx += 1;
+    }
+    let mut row_str = String::new();
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        row_str.push(chars[idx]);
+        idx += 1;
+    }
+    if row_str.is_empty() || idx < chars.len() {
+        return None;
+    }
+    let row_val: usize = row_str.parse().ok()?;
+    Some((row_val.saturating_sub(1), row_abs))
+}
+
 fn parse_cell_pattern(chars: &[char], mut idx: usize) -> Option<(usize, usize, bool, bool, usize)> {
     let mut col_abs = false;
     if idx < chars.len() && chars[idx] == '$' {
@@ -266,6 +286,27 @@ fn parse_col_pattern(chars: &[char], mut idx: usize) -> Option<(usize, bool, usi
     }
     let col_idx = if col > 0 { col - 1 } else { 0 };
     Some((col_idx, col_abs, idx))
+}
+
+fn parse_row_pattern(chars: &[char], mut idx: usize) -> Option<(usize, bool, usize)> {
+    let mut row_abs = false;
+    if idx < chars.len() && chars[idx] == '$' {
+        row_abs = true;
+        idx += 1;
+    }
+    let mut row_str = String::new();
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        row_str.push(chars[idx]);
+        idx += 1;
+    }
+    if row_str.is_empty() {
+        return None;
+    }
+    if idx < chars.len() && (chars[idx].is_ascii_alphabetic() || chars[idx] == '_') {
+        return None;
+    }
+    let row_val: usize = row_str.parse().ok()?;
+    Some((row_val.saturating_sub(1), row_abs, idx))
 }
 
 #[derive(Debug, Clone)]
@@ -607,6 +648,28 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
         ));
     }
 
+    // Try to parse whole-row refs like 1:3 or $1:$3.
+    if let Some((start_row, start_row_abs, next_idx)) = parse_row_pattern(chars, idx)
+        && next_idx < chars.len()
+        && chars[next_idx] == ':'
+        && let Some((end_row, end_row_abs, end_idx)) = parse_row_pattern(chars, next_idx + 1)
+    {
+        return Some((
+            FoundRef::Range {
+                sheet,
+                start_row,
+                start_col: 0,
+                end_row,
+                end_col: usize::MAX,
+                start_row_abs,
+                start_col_abs: true,
+                end_row_abs,
+                end_col_abs: true,
+            },
+            end_idx,
+        ));
+    }
+
     if let Some((start_row, start_col, start_row_abs, start_col_abs, next_idx)) =
         parse_cell_pattern(chars, idx)
     {
@@ -925,18 +988,6 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 end_row_ref_type,
                 end_col_ref_type,
             } => {
-                let start_col_letter = col_idx_to_letters(*start_col);
-                let end_col_letter = col_idx_to_letters(*end_col);
-
-                let sc_prefix = match start_col_ref_type {
-                    RefType::Absolute => "$",
-                    RefType::Relative => "",
-                };
-                let ec_prefix = match end_col_ref_type {
-                    RefType::Absolute => "$",
-                    RefType::Relative => "",
-                };
-
                 let has_prefix = if sheets.is_empty() {
                     false
                 } else {
@@ -944,6 +995,16 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 };
 
                 if *end_row == usize::MAX {
+                    let start_col_letter = col_idx_to_letters(*start_col);
+                    let end_col_letter = col_idx_to_letters(*end_col);
+                    let sc_prefix = match start_col_ref_type {
+                        RefType::Absolute => "$",
+                        RefType::Relative => "",
+                    };
+                    let ec_prefix = match end_col_ref_type {
+                        RefType::Absolute => "$",
+                        RefType::Relative => "",
+                    };
                     if has_prefix {
                         let sheet_name = get_table_name(*sheet_id, sheets);
                         result.push_str(&format!(
@@ -956,7 +1017,45 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                             sc_prefix, start_col_letter, ec_prefix, end_col_letter,
                         ));
                     }
+                } else if *end_col == usize::MAX {
+                    let sr_prefix = match start_row_ref_type {
+                        RefType::Absolute => "$",
+                        RefType::Relative => "",
+                    };
+                    let er_prefix = match end_row_ref_type {
+                        RefType::Absolute => "$",
+                        RefType::Relative => "",
+                    };
+                    if has_prefix {
+                        let sheet_name = get_table_name(*sheet_id, sheets);
+                        result.push_str(&format!(
+                            "{}!{}{}:{}{}",
+                            sheet_name,
+                            sr_prefix,
+                            start_row + 1,
+                            er_prefix,
+                            end_row + 1,
+                        ));
+                    } else {
+                        result.push_str(&format!(
+                            "{}{}:{}{}",
+                            sr_prefix,
+                            start_row + 1,
+                            er_prefix,
+                            end_row + 1,
+                        ));
+                    }
                 } else {
+                    let start_col_letter = col_idx_to_letters(*start_col);
+                    let end_col_letter = col_idx_to_letters(*end_col);
+                    let sc_prefix = match start_col_ref_type {
+                        RefType::Absolute => "$",
+                        RefType::Relative => "",
+                    };
+                    let ec_prefix = match end_col_ref_type {
+                        RefType::Absolute => "$",
+                        RefType::Relative => "",
+                    };
                     let sr_prefix = match start_row_ref_type {
                         RefType::Absolute => "$",
                         RefType::Relative => "",
@@ -1505,6 +1604,66 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
     Ok(tokens)
 }
 
+fn ref_token_text(tok: &EvalToken) -> Option<String> {
+    match tok {
+        EvalToken::Identifier(s) => Some(s.clone()),
+        EvalToken::Number(n) if n.is_finite() && n.fract() == 0.0 && *n >= 1.0 => {
+            Some(format!("{n:.0}"))
+        }
+        _ => None,
+    }
+}
+
+fn range_ref_from_texts(sheet: Option<String>, start: &str, end: &str) -> Result<Expr, String> {
+    if let (
+        Some((s_row, s_col, s_row_abs, s_col_abs)),
+        Some((e_row, e_col, e_row_abs, e_col_abs)),
+    ) = (parse_cell_ref(start), parse_cell_ref(end))
+    {
+        Ok(Expr::RangeRef {
+            sheet,
+            start_row: s_row,
+            start_col: s_col,
+            end_row: e_row,
+            end_col: e_col,
+            start_row_abs: s_row_abs,
+            start_col_abs: s_col_abs,
+            end_row_abs: e_row_abs,
+            end_col_abs: e_col_abs,
+        })
+    } else if let (Some((s_col, s_col_abs)), Some((e_col, e_col_abs))) =
+        (parse_column_ref(start), parse_column_ref(end))
+    {
+        Ok(Expr::RangeRef {
+            sheet,
+            start_row: 0,
+            start_col: s_col,
+            end_row: usize::MAX,
+            end_col: e_col,
+            start_row_abs: true,
+            start_col_abs: s_col_abs,
+            end_row_abs: true,
+            end_col_abs: e_col_abs,
+        })
+    } else if let (Some((s_row, s_row_abs)), Some((e_row, e_row_abs))) =
+        (parse_row_ref(start), parse_row_ref(end))
+    {
+        Ok(Expr::RangeRef {
+            sheet,
+            start_row: s_row,
+            start_col: 0,
+            end_row: e_row,
+            end_col: usize::MAX,
+            start_row_abs: s_row_abs,
+            start_col_abs: true,
+            end_row_abs: e_row_abs,
+            end_col_abs: true,
+        })
+    } else {
+        Err(format!("Invalid range reference: {start}:{end}"))
+    }
+}
+
 struct Parser<'a> {
     tokens: &'a [EvalToken],
     pos: usize,
@@ -1659,7 +1818,24 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| "Unexpected EOF".to_string())?
             .clone();
         match tok {
-            EvalToken::Number(val) => Ok(Expr::Number(val)),
+            EvalToken::Number(val) => {
+                if self.peek() == Some(&EvalToken::Colon)
+                    && val.is_finite()
+                    && val.fract() == 0.0
+                    && val >= 1.0
+                {
+                    self.next();
+                    let end_tok = self
+                        .next()
+                        .ok_or_else(|| "Expected row reference after `:`".to_string())?;
+                    let start_str = format!("{val:.0}");
+                    let end_str = ref_token_text(end_tok).ok_or_else(|| {
+                        format!("Expected row reference after `:`, got {:?}", end_tok)
+                    })?;
+                    return range_ref_from_texts(None, &start_str, &end_str);
+                }
+                Ok(Expr::Number(val))
+            }
             EvalToken::String(val) => {
                 if self.peek() == Some(&EvalToken::Exclamation) {
                     self.next();
@@ -1667,70 +1843,29 @@ impl<'a> Parser<'a> {
                         .next()
                         .ok_or_else(|| "Expected cell or column reference after `!`".to_string())?
                         .clone();
-                    let target_str = match target_tok {
-                        EvalToken::Identifier(s) => s,
-                        _ => {
-                            return Err(format!(
-                                "Expected cell or column reference after `!`, got {:?}",
-                                target_tok
-                            ));
-                        }
-                    };
+                    let target_str = ref_token_text(&target_tok).ok_or_else(|| {
+                        format!(
+                            "Expected cell, row, or column reference after `!`, got {:?}",
+                            target_tok
+                        )
+                    })?;
 
                     if self.peek() == Some(&EvalToken::Colon) {
                         self.next();
                         let end_tok = self
                             .next()
                             .ok_or_else(|| {
-                                "Expected cell or column reference after `:`".to_string()
+                                "Expected cell, row, or column reference after `:`".to_string()
                             })?
                             .clone();
-                        let end_str = match end_tok {
-                            EvalToken::Identifier(s) => s,
-                            _ => {
-                                return Err(format!(
-                                    "Expected cell or column reference after `:`, got {:?}",
-                                    end_tok
-                                ));
-                            }
-                        };
+                        let end_str = ref_token_text(&end_tok).ok_or_else(|| {
+                            format!(
+                                "Expected cell, row, or column reference after `:`, got {:?}",
+                                end_tok
+                            )
+                        })?;
 
-                        if let (
-                            Some((s_row, s_col, s_row_abs, s_col_abs)),
-                            Some((e_row, e_col, e_row_abs, e_col_abs)),
-                        ) = (parse_cell_ref(&target_str), parse_cell_ref(&end_str))
-                        {
-                            return Ok(Expr::RangeRef {
-                                sheet: Some(val),
-                                start_row: s_row,
-                                start_col: s_col,
-                                end_row: e_row,
-                                end_col: e_col,
-                                start_row_abs: s_row_abs,
-                                start_col_abs: s_col_abs,
-                                end_row_abs: e_row_abs,
-                                end_col_abs: e_col_abs,
-                            });
-                        } else if let (Some((s_col, s_col_abs)), Some((e_col, e_col_abs))) =
-                            (parse_column_ref(&target_str), parse_column_ref(&end_str))
-                        {
-                            return Ok(Expr::RangeRef {
-                                sheet: Some(val),
-                                start_row: 0,
-                                start_col: s_col,
-                                end_row: usize::MAX,
-                                end_col: e_col,
-                                start_row_abs: true,
-                                start_col_abs: s_col_abs,
-                                end_row_abs: true,
-                                end_col_abs: e_col_abs,
-                            });
-                        } else {
-                            return Err(format!(
-                                "Invalid range reference: {}:{}",
-                                target_str, end_str
-                            ));
-                        }
+                        return range_ref_from_texts(Some(val), &target_str, &end_str);
                     } else {
                         let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
@@ -1804,67 +1939,26 @@ impl<'a> Parser<'a> {
                     let target_tok = self
                         .next()
                         .ok_or_else(|| "Expected cell or column reference after `!`".to_string())?;
-                    let target_str = match target_tok {
-                        EvalToken::Identifier(s) => s.clone(),
-                        _ => {
-                            return Err(format!(
-                                "Expected cell or column reference after `!`, got {:?}",
-                                target_tok
-                            ));
-                        }
-                    };
+                    let target_str = ref_token_text(target_tok).ok_or_else(|| {
+                        format!(
+                            "Expected cell, row, or column reference after `!`, got {:?}",
+                            target_tok
+                        )
+                    })?;
 
                     if self.peek() == Some(&EvalToken::Colon) {
                         self.next();
                         let end_tok = self.next().ok_or_else(|| {
-                            "Expected cell or column reference after `:`".to_string()
+                            "Expected cell, row, or column reference after `:`".to_string()
                         })?;
-                        let end_str = match end_tok {
-                            EvalToken::Identifier(s) => s.clone(),
-                            _ => {
-                                return Err(format!(
-                                    "Expected cell or column reference after `:`, got {:?}",
-                                    end_tok
-                                ));
-                            }
-                        };
+                        let end_str = ref_token_text(end_tok).ok_or_else(|| {
+                            format!(
+                                "Expected cell, row, or column reference after `:`, got {:?}",
+                                end_tok
+                            )
+                        })?;
 
-                        if let (
-                            Some((s_row, s_col, s_row_abs, s_col_abs)),
-                            Some((e_row, e_col, e_row_abs, e_col_abs)),
-                        ) = (parse_cell_ref(&target_str), parse_cell_ref(&end_str))
-                        {
-                            return Ok(Expr::RangeRef {
-                                sheet: Some(id_name.clone()),
-                                start_row: s_row,
-                                start_col: s_col,
-                                end_row: e_row,
-                                end_col: e_col,
-                                start_row_abs: s_row_abs,
-                                start_col_abs: s_col_abs,
-                                end_row_abs: e_row_abs,
-                                end_col_abs: e_col_abs,
-                            });
-                        } else if let (Some((s_col, s_col_abs)), Some((e_col, e_col_abs))) =
-                            (parse_column_ref(&target_str), parse_column_ref(&end_str))
-                        {
-                            return Ok(Expr::RangeRef {
-                                sheet: Some(id_name.clone()),
-                                start_row: 0,
-                                start_col: s_col,
-                                end_row: usize::MAX,
-                                end_col: e_col,
-                                start_row_abs: true,
-                                start_col_abs: s_col_abs,
-                                end_row_abs: true,
-                                end_col_abs: e_col_abs,
-                            });
-                        } else {
-                            return Err(format!(
-                                "Invalid range reference: {}:{}",
-                                target_str, end_str
-                            ));
-                        }
+                        return range_ref_from_texts(Some(id_name.clone()), &target_str, &end_str);
                     } else {
                         let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
@@ -1945,6 +2039,31 @@ impl<'a> Parser<'a> {
                         start_col_abs: col_abs,
                         end_row_abs: true,
                         end_col_abs: e_col_abs,
+                    });
+                }
+
+                if let Some((row, row_abs)) = parse_row_ref(&id_name)
+                    && self.peek() == Some(&EvalToken::Colon)
+                {
+                    self.next();
+                    let end_tok = self
+                        .next()
+                        .ok_or_else(|| "Expected row reference after `:`".to_string())?;
+                    let end_str = ref_token_text(end_tok).ok_or_else(|| {
+                        format!("Expected row reference after `:`, got {:?}", end_tok)
+                    })?;
+                    let (e_row, e_row_abs) = parse_row_ref(&end_str)
+                        .ok_or_else(|| format!("Invalid end row: {}", end_str))?;
+                    return Ok(Expr::RangeRef {
+                        sheet: None,
+                        start_row: row,
+                        start_col: 0,
+                        end_row: e_row,
+                        end_col: usize::MAX,
+                        start_row_abs: row_abs,
+                        start_col_abs: true,
+                        end_row_abs: e_row_abs,
+                        end_col_abs: true,
                     });
                 }
 
@@ -2115,6 +2234,64 @@ mod tests {
                 _ => panic!("Expected CellRef"),
             },
             _ => panic!("Expected BinaryOp"),
+        }
+    }
+
+    #[test]
+    fn test_row_ranges_compile_serialize_and_parse() {
+        let sheet1 = Sheet::new(crate::core::SheetInit {
+            id: Some(123),
+            name: Some("Sheet1".to_string()),
+            rows: 5,
+            cols: 5,
+        });
+        let sheet2 = Sheet::new(crate::core::SheetInit {
+            id: Some(456),
+            name: Some("Sheet2".to_string()),
+            rows: 5,
+            cols: 5,
+        });
+        let sheets = vec![sheet1, sheet2];
+
+        let formula = compile_formula("=SUM(1:3)", &sheets);
+        match &formula.parts[1] {
+            FormulaPart::RangeReference {
+                sheet_id,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                ..
+            } => {
+                assert_eq!(*sheet_id, 123);
+                assert_eq!((*start_row, *start_col), (0, 0));
+                assert_eq!((*end_row, *end_col), (2, usize::MAX));
+            }
+            _ => panic!("Expected whole-row RangeReference"),
+        }
+        assert_eq!(serialize_formula(&formula, &sheets), "=SUM(1:3)");
+
+        let cross = compile_formula("=SUM(Sheet2!$2:$4)", &sheets);
+        assert_eq!(serialize_formula(&cross, &sheets), "=SUM(Sheet2!$2:$4)");
+
+        let ast = parse_excel_formula("SUM(Sheet2!1:3)").unwrap();
+        match ast {
+            Expr::FunctionCall { args, .. } => match &args[0] {
+                Expr::RangeRef {
+                    sheet,
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    ..
+                } => {
+                    assert_eq!(sheet.as_deref(), Some("Sheet2"));
+                    assert_eq!((*start_row, *start_col), (0, 0));
+                    assert_eq!((*end_row, *end_col), (2, usize::MAX));
+                }
+                _ => panic!("Expected whole-row RangeRef"),
+            },
+            _ => panic!("Expected FunctionCall"),
         }
     }
 
