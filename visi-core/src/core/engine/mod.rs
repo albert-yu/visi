@@ -7,7 +7,7 @@ pub mod result_data;
 pub mod sheet;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use bitmask::Bitmask;
 pub use cell::{

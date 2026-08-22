@@ -2406,6 +2406,75 @@ mod tests {
     }
 
     #[test]
+    fn test_xlsx_exports_date_format_metadata_for_display_dates_only() {
+        let mut sheet = crate::core::engine::tests::create_sheet(&[[
+            "6/22/26",
+            "=A1+1",
+            "=YEAR(A1)",
+            "\"6/22/26\"",
+        ]]);
+        sheet.commit(None).unwrap();
+
+        assert_eq!(
+            sheet.get_display_string(&crate::core::CellRef::new(0, 0)),
+            "6/22/26"
+        );
+        assert_eq!(
+            sheet.get_display_string(&crate::core::CellRef::new(0, 1)),
+            "6/23/26"
+        );
+        assert_eq!(
+            sheet.get_display_string(&crate::core::CellRef::new(0, 2)),
+            "2026"
+        );
+        assert_eq!(
+            sheet.get_display_string(&crate::core::CellRef::new(0, 3)),
+            "6/22/26"
+        );
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let formats = import_cell_number_formats(&bytes).unwrap();
+        let sheet_formats = formats
+            .get("sheet1")
+            .expect("date formats should be exported");
+        assert_eq!(
+            sheet_formats.get(&(0, 0)).map(String::as_str),
+            Some("m/d/yy")
+        );
+        assert_eq!(
+            sheet_formats.get(&(0, 1)).map(String::as_str),
+            Some("m/d/yy")
+        );
+        assert!(
+            !sheet_formats.contains_key(&(0, 2)),
+            "date component formulas should export as ordinary numbers"
+        );
+        assert!(
+            !sheet_formats.contains_key(&(0, 3)),
+            "date-looking text should export without a date number format"
+        );
+
+        let (imported, _, _, _) = import_xlsx_data(&bytes, &[], |_, _, _| {}).unwrap();
+        let imported = &imported[0].sheet;
+        assert_eq!(
+            imported.get_display_string(&crate::core::CellRef::new(0, 0)),
+            "6/22/26"
+        );
+        assert_eq!(
+            imported.get_display_string(&crate::core::CellRef::new(0, 1)),
+            "6/23/26"
+        );
+        assert_eq!(
+            imported.get_display_string(&crate::core::CellRef::new(0, 2)),
+            "2026"
+        );
+        assert!(matches!(
+            imported.get_result_data(&crate::core::CellRef::new(0, 3)),
+            crate::core::ResultData::String(ref s) if s == "6/22/26"
+        ));
+    }
+
+    #[test]
     fn test_xlsx_import_data_offset_from_column_a_is_not_lost() {
         // Column A is entirely blank; real data starts at column B, with a
         // formula in column C referencing it. Regression test for a bug

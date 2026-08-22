@@ -1,6 +1,8 @@
 use super::*;
 
-fn create_sheet<const ROWS: usize, const COLS: usize>(grid: &[[&str; COLS]; ROWS]) -> Sheet {
+pub(crate) fn create_sheet<const ROWS: usize, const COLS: usize>(
+    grid: &[[&str; COLS]; ROWS],
+) -> Sheet {
     let rows = grid.len();
     let cols = grid[0].len();
     let mut sheet = Sheet::new(SheetInit {
