@@ -1564,7 +1564,7 @@ fn test_date_component_functions_do_not_inherit_the_date_format() {
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 3)), "92390");
 }
 
-/// `src`, `data`, `compiled_src` and `styles` must all stay the same length.
+/// `src`, `data`, `cell_types`, `compiled_src` and `styles` must all stay the same length.
 /// Asserts it across every column of a sheet.
 fn assert_columns_aligned(sheet: &Sheet, context: &str) {
     for (idx, col) in sheet.columns.iter().enumerate() {
@@ -1573,6 +1573,11 @@ fn assert_columns_aligned(sheet: &Sheet, context: &str) {
             col.data.len(),
             len,
             "{context}: column {idx} data desynced from src"
+        );
+        assert_eq!(
+            col.cell_types.len(),
+            len,
+            "{context}: column {idx} cell_types desynced from src"
         );
         assert_eq!(
             col.compiled_src.len(),
@@ -1712,7 +1717,89 @@ fn test_setup_after_deserialization_restores_styles_length() {
     // Simulate a payload that carried no styles at all.
     for col in &mut sheet.columns {
         col.styles = Vec::new().into();
+        col.cell_types = Vec::new().into();
     }
     sheet.setup_after_deserialization();
     assert_columns_aligned(&sheet, "after setup_after_deserialization");
+}
+
+#[test]
+fn test_cell_type_string_preserves_date_and_number_as_text() {
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 6,
+        cols: 2,
+        ..Default::default()
+    });
+
+    // Row 0: Explicit String date text
+    sheet.set_cell_with_type(0, 0, "6/22/26".to_string(), CellType::String);
+    // Row 1: Explicit String number text
+    sheet.set_cell_with_type(1, 0, "12345".to_string(), CellType::String);
+    // Row 2: Explicit String boolean text
+    sheet.set_cell_with_type(2, 0, "TRUE".to_string(), CellType::String);
+    // Row 3: Leading apostrophe forces String
+    sheet.set_cell_src(3, 0, "'6/22/26".to_string());
+    // Row 4: Untyped date literal (infers Number with date format)
+    sheet.set_cell_src(4, 0, "6/22/26".to_string());
+    // Row 5: Formulas checking TYPE
+    sheet.set_cell_src(0, 1, "=TYPE(A1)".to_string());
+    sheet.set_cell_src(1, 1, "=TYPE(A2)".to_string());
+    sheet.set_cell_src(2, 1, "=TYPE(A3)".to_string());
+    sheet.set_cell_src(3, 1, "=TYPE(A4)".to_string());
+    sheet.set_cell_src(4, 1, "=TYPE(A5)".to_string());
+
+    sheet.commit(None).unwrap();
+
+    // Verify Row 0 (String date text)
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 0)),
+        ResultData::String(ref s) if s == "6/22/26"
+    ));
+    assert_eq!(sheet.get_cell_type(&CellRef::new(0, 0)), CellType::String);
+    assert_eq!(
+        sheet
+            .get_cell_style(0, 0)
+            .and_then(|s| s.num_format.clone()),
+        None
+    );
+    assert!(matches!(sheet.get_result_data(&CellRef::new(0, 1)), ResultData::Float(f) if f == 2.0)); // TYPE 2 = text
+
+    // Verify Row 1 (String number text)
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(1, 0)),
+        ResultData::String(ref s) if s == "12345"
+    ));
+    assert_eq!(sheet.get_cell_type(&CellRef::new(1, 0)), CellType::String);
+    assert!(matches!(sheet.get_result_data(&CellRef::new(1, 1)), ResultData::Float(f) if f == 2.0));
+
+    // Verify Row 2 (String boolean text)
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(2, 0)),
+        ResultData::String(ref s) if s == "TRUE"
+    ));
+    assert_eq!(sheet.get_cell_type(&CellRef::new(2, 0)), CellType::String);
+    assert!(matches!(sheet.get_result_data(&CellRef::new(2, 1)), ResultData::Float(f) if f == 2.0));
+
+    // Verify Row 3 (Apostrophe forced string)
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(3, 0)),
+        ResultData::String(ref s) if s == "6/22/26"
+    ));
+    assert_eq!(sheet.get_cell_type(&CellRef::new(3, 0)), CellType::String);
+    assert_eq!(sheet.columns[0].src[3], "6/22/26"); // stripped apostrophe
+    assert!(matches!(sheet.get_result_data(&CellRef::new(3, 1)), ResultData::Float(f) if f == 2.0));
+
+    // Verify Row 4 (Inferred date number)
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(4, 0)),
+        ResultData::Float(f) if (f - 46195.0).abs() < f64::EPSILON
+    ));
+    assert_eq!(sheet.get_cell_type(&CellRef::new(4, 0)), CellType::Number);
+    assert!(
+        sheet
+            .get_cell_style(4, 0)
+            .and_then(|s| s.num_format.clone())
+            .is_some()
+    );
+    assert!(matches!(sheet.get_result_data(&CellRef::new(4, 1)), ResultData::Float(f) if f == 1.0)); // TYPE 1 = number
 }

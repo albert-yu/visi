@@ -2455,12 +2455,8 @@ fn cell_formula(sheet: &Sheet, row: u32, col: u32) -> String {
     if src.starts_with('=') {
         return src;
     }
-    if let (Some(inner), ResultData::String(value)) = (
-        src.strip_prefix('"').and_then(|s| s.strip_suffix('"')),
-        sheet.get_result_data(&cell),
-    ) && inner == value
-    {
-        return value;
+    if let Some(inner) = src.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return inner.to_string();
     }
     src
 }
