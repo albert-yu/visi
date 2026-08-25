@@ -1,6 +1,4 @@
-//! `&str` -> enum parsers.
-//!
-//! The spellings are clap's, so the fuzz harness's existing config strings
+//! The spellings match the CLI's, so the fuzz harness's existing config strings
 //! (`fuzz_chart.py`'s `CHART_TYPES`, `fuzz_pivot.py`'s `AGGREGATIONS`) work
 //! unchanged whether they are passed to the CLI or to these bindings. That
 //! 1:1 correspondence is what `fuzz/test_backend_parity.py` relies on, so
@@ -110,7 +108,7 @@ mod tests {
         assert!(parse_pivot_area("page").is_err());
         // Excel's own name for it, but not the spelling the CLI takes.
         assert!(parse_pivot_agg("counta").is_err());
-        // Underscores are not an accepted alias -- clap renders kebab-case.
+        // Underscores are not an accepted alias -- the CLI renders kebab-case.
         assert!(parse_pivot_agg("count_numbers").is_err());
         // The file extensions, not the kinds -- the CLI takes neither.
         assert!(parse_vba_module_kind("bas").is_err());

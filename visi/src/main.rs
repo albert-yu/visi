@@ -1,7 +1,6 @@
 //! `visi`: Command line interface for the visi spreadsheet application.
 //! Consumes `visi-core` to read, evaluate, update, and export Excel (.xlsx) files.
 
-use clap::Parser;
 use serde_json::json;
 use visi::cli::{
     ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
@@ -1420,8 +1419,8 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
     }
 }
 
-/// Reads `--source`/`--source-file` (mutually exclusive, enforced by clap's
-/// `conflicts_with`), erroring if neither was given.
+/// Reads `--source`/`--source-file` (mutually exclusive, enforced by usage's
+/// `conflicts`), erroring if neither was given.
 fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> String {
     match (source, source_file) {
         (Some(s), None) => s,
@@ -1433,7 +1432,7 @@ fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> 
             EXIT_USAGE_ERROR,
         ),
         (Some(_), Some(_)) => {
-            unreachable!("clap enforces --source/--source-file are mutually exclusive")
+            unreachable!("usage enforces --source/--source-file are mutually exclusive")
         }
     }
 }
