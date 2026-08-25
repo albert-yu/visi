@@ -45,6 +45,16 @@ fn test_fuzz_quotient_zero_does_not_keep_negative_sign_in_atan2() {
 }
 
 #[test]
+fn test_fuzz_atan2_negative_zero_y_returns_positive_pi() {
+    // Harvested from fuzz/fuzz_excel.py seed 363955: ATAN2(-84, -0.0) yields +PI,
+    // not -PI, matching Excel's unsigned zero behavior in quadrant choice.
+    match eval_one("=ATAN2(-84, PERCENTOF(0, -10))") {
+        ResultData::Float(v) => assert!((v - std::f64::consts::PI).abs() < 1e-12, "got {v}"),
+        other => panic!("expected pi, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_power_type_checks_base_before_exponent_error() {
     // Harvested from fuzz/fuzz_excel.py seeds 61472 and 148208: POWER checks
     // its base's type before propagating a later exponent error, so this is

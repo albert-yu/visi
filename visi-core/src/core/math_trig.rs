@@ -69,6 +69,8 @@ pub fn atan2(x: f64, y: f64) -> Result<f64, String> {
     if x == 0.0 && y == 0.0 {
         Err("#DIV/0!".to_string())
     } else {
+        let y = if y == 0.0 { 0.0 } else { y };
+        let x = if x == 0.0 { 0.0 } else { x };
         Ok(y.atan2(x))
     }
 }

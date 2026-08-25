@@ -1310,48 +1310,61 @@ impl Sheet {
         true
     }
 
-    /// Excel's `>`/`<` text comparison ignores `-` entirely as long as it
-    /// isn't the only difference between the two strings, and only once
-    /// the hyphen-stripped strings are otherwise identical does the
-    /// hyphen's presence break the tie -- in which case the string that
-    /// *has* the hyphen sorts greater. Measured directly (win32com,
-    /// real Windows Excel), since none of this is documented and a
-    /// zipped per-position weighting (this function's previous
-    /// implementation, which gave `-` a low weight so it sorted before
-    /// any digit) gets it backwards:
-    ///   `"-4463" > "36-33"` is TRUE (decided by the hyphen-stripped
-    ///   digits, `4463` vs `3633`; a low weight for `-` would make
-    ///   `"-4463"` sort first instead, e.g. `visi vs Excel` on
-    ///   `IF(CONCATENATE(-44,J5) > CONCATENATE(36,J3), ...)`,
-    ///   fuzz/fuzz_excel.py seed 707537)
-    ///   `"a-1" > "a2"` is FALSE (stripped `"a1"` vs `"a2"`)
-    ///   `"-1" > "-2"` is FALSE, `"-2" > "-1"` is TRUE (both sides'
-    ///   hyphens strip away, leaving a plain digit compare)
-    ///   `"-a" > "a"` is TRUE, `"1-2" > "12"` is TRUE (stripped content
-    ///   ties, so the longer, hyphen-bearing original wins the tie-break)
-    /// `(`/`)` keep their existing low weight, unaffected by this.
     fn compare_excel_strings(a: &str, b: &str) -> std::cmp::Ordering {
-        let a_low = a.to_lowercase();
-        let b_low = b.to_lowercase();
-        let strip_hyphens = |s: &str| -> String { s.chars().filter(|&c| c != '-').collect() };
-        let a_stripped = strip_hyphens(&a_low);
-        let b_stripped = strip_hyphens(&b_low);
         let char_weight = |ch: char| -> u32 {
             match ch {
-                '(' => 2,
-                ')' => 3,
-                _ => (ch as u32) + 10,
+                ' ' => 0,
+                '_' => 1,
+                '-' => 2,
+                ',' => 3,
+                ';' => 4,
+                ':' => 5,
+                '!' => 6,
+                '?' => 7,
+                '.' => 8,
+                '\'' => 9,
+                '"' => 10,
+                '(' => 11,
+                ')' => 12,
+                '[' => 13,
+                ']' => 14,
+                '{' => 15,
+                '}' => 16,
+                '@' => 17,
+                '*' => 18,
+                '/' => 19,
+                '\\' => 20,
+                '&' => 21,
+                '#' => 22,
+                '%' => 23,
+                '`' => 24,
+                '^' => 25,
+                '+' => 26,
+                '<' => 27,
+                '=' => 28,
+                '>' => 29,
+                '|' => 30,
+                '~' => 31,
+                '$' => 32,
+                '0'..='9' => 33 + (ch as u32 - '0' as u32),
+                'A'..='Z' => 43 + (ch as u32 - 'A' as u32),
+                'a'..='z' => 43 + (ch as u32 - 'a' as u32),
+                _ => ch
+                    .to_lowercase()
+                    .next()
+                    .map(|c| c as u32 + 200)
+                    .unwrap_or(ch as u32 + 200),
             }
         };
-        for (ca, cb) in a_stripped.chars().zip(b_stripped.chars()) {
-            if ca != cb {
-                return char_weight(ca).cmp(&char_weight(cb));
+
+        for (ca, cb) in a.chars().zip(b.chars()) {
+            let wa = char_weight(ca);
+            let wb = char_weight(cb);
+            if wa != wb {
+                return wa.cmp(&wb);
             }
         }
-        match a_stripped.len().cmp(&b_stripped.len()) {
-            std::cmp::Ordering::Equal => a_low.len().cmp(&b_low.len()),
-            other => other,
-        }
+        a.len().cmp(&b.len())
     }
 
     /// Snaps a float to its 15-significant-digit rounding when the two are

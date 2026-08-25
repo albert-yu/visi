@@ -489,11 +489,16 @@ pub fn geomean(data: &[f64]) -> Result<f64, String> {
     if data.is_empty() {
         return Err("#NUM!".to_string());
     }
-    let mut log_sum = 0.0;
     for &x in data {
         if x <= 0.0 {
             return Err("#NUM!".to_string());
         }
+    }
+    if data.iter().all(|&x| x == data[0]) {
+        return Ok(data[0]);
+    }
+    let mut log_sum = 0.0;
+    for &x in data {
         log_sum += x.ln();
     }
     Ok((log_sum / data.len() as f64).exp())
@@ -503,11 +508,16 @@ pub fn harmean(data: &[f64]) -> Result<f64, String> {
     if data.is_empty() {
         return Err("#N/A".to_string());
     }
-    let mut inv_sum = 0.0;
     for &x in data {
         if x <= 0.0 {
             return Err("#NUM!".to_string());
         }
+    }
+    if data.iter().all(|&x| x == data[0]) {
+        return Ok(data[0]);
+    }
+    let mut inv_sum = 0.0;
+    for &x in data {
         inv_sum += 1.0 / x;
     }
     Ok(data.len() as f64 / inv_sum)
