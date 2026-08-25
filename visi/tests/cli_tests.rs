@@ -1,12 +1,17 @@
-use clap::Parser;
+use std::ffi::OsStr;
 use std::fs;
 use visi::cli::{ChartSubcommands, Cli, Commands, MacroSubcommands, PivotSubcommands};
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::utils::{parse_cell_ref, parse_range_ref};
 
+fn try_parse<'a>(args: &'a [&'a str]) -> Result<Cli, usage::Error<'static, 'a>> {
+    let os_strs: Vec<&OsStr> = args.iter().copied().map(OsStr::new).collect();
+    Cli::try_parse_from(&os_strs)
+}
+
 #[test]
 fn test_chart_edit_parses_setters_and_clear_flags() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse(&[
         "visi",
         "chart",
         "edit",
@@ -28,7 +33,7 @@ fn test_chart_edit_parses_setters_and_clear_flags() {
         "D5",
         "-i",
     ])
-    .expect("clap should parse a full chart edit invocation");
+    .expect("should parse a full chart edit invocation");
 
     let Commands::Chart(chart_args) = cli.command else {
         panic!("expected Commands::Chart");
@@ -48,7 +53,7 @@ fn test_chart_edit_parses_setters_and_clear_flags() {
 
 #[test]
 fn test_chart_edit_title_and_clear_title_are_mutually_exclusive() {
-    let result = Cli::try_parse_from([
+    let result = try_parse(&[
         "visi",
         "chart",
         "edit",
@@ -64,7 +69,7 @@ fn test_chart_edit_title_and_clear_title_are_mutually_exclusive() {
 
 #[test]
 fn test_chart_edit_show_legend_and_hide_legend_are_mutually_exclusive() {
-    let result = Cli::try_parse_from([
+    let result = try_parse(&[
         "visi",
         "chart",
         "edit",
@@ -80,13 +85,13 @@ fn test_chart_edit_show_legend_and_hide_legend_are_mutually_exclusive() {
 #[test]
 fn test_pivot_filter_values_accepts_leading_hyphen_values() {
     // Regression test: `visi pivot filter --values -7,3,12` used to fail
-    // clap parsing entirely -- a numeric-looking column's filter values can
+    // parsing entirely -- a numeric-looking column's filter values can
     // legitimately start with "-" (e.g. a negative Amount), but without
-    // `allow_hyphen_values` clap mistook the leading "-7" for an unknown
+    // `allow_hyphen_values` it mistook the leading "-7" for an unknown
     // flag ("error: unexpected argument '-7' found") instead of treating it
     // as the value for `--values`. Found via fuzz/fuzz_pivot.py, whose
     // NumStr source column includes negative-number-looking text.
-    let cli = Cli::try_parse_from([
+    let cli = try_parse(&[
         "visi",
         "pivot",
         "filter",
@@ -98,7 +103,7 @@ fn test_pivot_filter_values_accepts_leading_hyphen_values() {
         "--values",
         "-7,3,12",
     ])
-    .expect("clap should accept hyphen-leading filter values");
+    .expect("should accept hyphen-leading filter values");
 
     let Commands::Pivot(pivot_args) = cli.command else {
         panic!("expected Commands::Pivot");
@@ -1307,7 +1312,7 @@ fn test_vba_macro_run_reads_and_writes_a_real_workbook() {
 /// `visi macro run` takes the same write flags as every other write command.
 #[test]
 fn test_macro_run_parses_output_and_in_place() {
-    let cli = Cli::try_parse_from([
+    let cli = try_parse(&[
         "visi",
         "macro",
         "run",
@@ -1324,7 +1329,7 @@ fn test_macro_run_parses_output_and_in_place() {
         "done.xlsm",
         "--json",
     ])
-    .expect("clap should parse a macro run with a write target");
+    .expect("should parse a macro run with a write target");
 
     let Commands::Macro(macro_args) = cli.command else {
         panic!("expected Commands::Macro");
@@ -1342,7 +1347,7 @@ fn test_macro_run_parses_output_and_in_place() {
     // --output and --in-place are mutually exclusive, as they are everywhere
     // else in the CLI.
     assert!(
-        Cli::try_parse_from([
+        try_parse(&[
             "visi",
             "macro",
             "run",
