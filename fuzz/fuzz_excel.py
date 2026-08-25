@@ -2734,9 +2734,36 @@ class DifferentialComparator:
         self.strict_error_class = strict_error_class
         self.error_class_only = 0
 
+    @classmethod
+    def canonical_type(cls, raw_type, val):
+        """Map OpenXML cell type attribute and Python value to a canonical cell type:
+        'number', 'string', 'boolean', 'error', or 'empty'.
+        """
+        if val is None:
+            return 'empty'
+        if isinstance(val, bool) or raw_type == 'b':
+            return 'boolean'
+        if raw_type == 'e' or (isinstance(val, str) and val.upper() in cls.EXCEL_ERRORS):
+            return 'error'
+        if raw_type in ('s', 'str', 'inlineStr') or isinstance(val, str):
+            return 'string'
+        if raw_type == 'n' or isinstance(val, (int, float)):
+            return 'number'
+        return raw_type or 'empty'
+
+    def types_equal(self, t1, t2, v1, v2):
+        """Checks equality between two canonical cell types, honoring blank equivalence."""
+        if t1 == t2:
+            return True
+        # Blank / whitespace equivalence (e.g. None vs empty string)
+        if (t1 == 'empty' and t2 == 'string' and isinstance(v2, str) and not v2.strip()) or \
+           (t2 == 'empty' and t1 == 'string' and isinstance(v1, str) and not v1.strip()):
+            return True
+        return False
+
     def compare(self, visi_cells, excel_cells):
         """
-        Compares two cell dictionaries.
+        Compares two cell dictionaries, checking both cell types and evaluated values.
         Returns (is_match, mismatches)
         """
         all_keys = set(visi_cells.keys()).union(set(excel_cells.keys()))
@@ -2755,22 +2782,26 @@ class DifferentialComparator:
             # blank and empty string as the same value throughout, down to
             # ISBLANK("") being TRUE. A genuinely missing *value* still fails.
             if v_cell is None and e_cell is not None:
-                if not self.values_equal(None, e_cell['val']):
+                e_val = e_cell['val']
+                e_type = self.canonical_type(e_cell.get('type'), e_val)
+                if not self.values_equal(None, e_val) or not self.types_equal('empty', e_type, None, e_val):
                     mismatches.append({
                         'key': key,
                         'reason': 'Missing in visi output',
                         'visi': None,
-                        'excel': e_cell['val'],
+                        'excel': f"{e_val!r} (type={e_type})" if e_val is not None else None,
                         'formula': e_cell.get('formula')
                     })
                 continue
 
             if e_cell is None and v_cell is not None:
-                if not self.values_equal(v_cell['val'], None):
+                v_val = v_cell['val']
+                v_type = self.canonical_type(v_cell.get('type'), v_val)
+                if not self.values_equal(v_val, None) or not self.types_equal(v_type, 'empty', v_val, None):
                     mismatches.append({
                         'key': key,
                         'reason': 'Missing in Excel output',
-                        'visi': v_cell['val'],
+                        'visi': f"{v_val!r} (type={v_type})" if v_val is not None else None,
                         'excel': None,
                         'formula': v_cell.get('formula')
                     })
@@ -2778,7 +2809,19 @@ class DifferentialComparator:
 
             v_val = v_cell['val']
             e_val = e_cell['val']
+            v_type = self.canonical_type(v_cell.get('type'), v_val)
+            e_type = self.canonical_type(e_cell.get('type'), e_val)
             formula = v_cell.get('formula') or e_cell.get('formula')
+
+            if not self.types_equal(v_type, e_type, v_val, e_val):
+                mismatches.append({
+                    'key': key,
+                    'reason': f"Cell type mismatch ({v_type} vs {e_type})",
+                    'visi': f"{v_val!r} (type={v_type})",
+                    'excel': f"{e_val!r} (type={e_type})",
+                    'formula': formula
+                })
+                continue
 
             if not self.values_equal(v_val, e_val):
                 if not self.strict_error_class and self._both_errors(v_val, e_val):

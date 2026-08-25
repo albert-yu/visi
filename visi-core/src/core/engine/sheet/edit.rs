@@ -5,7 +5,7 @@
 //! sheet's *shape* or a cell's raw content, as opposed to evaluating it.
 
 use super::super::column::{ColumnPosition, DataColumn};
-use super::{CellRef, Direction, ResultData, Sheet, TextCellRef};
+use super::{CellRef, CellType, Direction, ResultData, Sheet, TextCellRef};
 
 /// The word surrounding `char_offset` in `text`, as a half-open range of
 /// character indices.
@@ -167,6 +167,51 @@ impl Sheet {
         )
     }
 
+    /// Returns the intrinsic data type of a cell.
+    pub fn get_cell_type(&self, cell: &CellRef) -> CellType {
+        let col = self.columns.get(cell.col);
+        if let Some(col) = col {
+            col.cell_types
+                .get(cell.row)
+                .copied()
+                .unwrap_or(CellType::Empty)
+        } else {
+            CellType::Empty
+        }
+    }
+
+    /// Sets the intrinsic data type of a cell at (row, col).
+    pub fn set_cell_type(&mut self, row: usize, col: usize, cell_type: CellType) {
+        if let Some(column) = self.columns.get_mut(col)
+            && row < column.cell_types.len()
+        {
+            column.cell_types[row] = cell_type;
+            column.mark_dirty(row);
+        }
+    }
+
+    /// Sets the source text and explicit cell type of a particular cell.
+    pub fn set_cell_with_type(&mut self, row: usize, col: usize, src: String, cell_type: CellType) {
+        let table_clone = self.clone();
+        if let Some(column) = self.columns.get_mut(col)
+            && row < column.src.len()
+        {
+            column.src[row] = src.clone();
+            column.cell_types[row] = cell_type;
+            let compiled = crate::core::parser::compile_formula(&src, &[table_clone]);
+            column.compiled_src[row] = compiled;
+            column.mark_dirty(row);
+
+            self.uncommitted_actions
+                .push(crate::core::SheetAction::SetCellSrc {
+                    sheet_name: self.name.clone(),
+                    col,
+                    row,
+                    src,
+                });
+        }
+    }
+
     /// Updates the src text of a particular cell but does
     /// not automatically evaluate. Call [`Sheet::commit`] to evaluate
     /// updated cells.
@@ -177,6 +222,7 @@ impl Sheet {
             && row < column.src.len()
         {
             column.src[row] = src.clone();
+            column.cell_types[row] = CellType::Auto;
             let compiled = crate::core::parser::compile_formula(&src, &[table_clone]);
             column.compiled_src[row] = compiled;
             column.mark_dirty(row);

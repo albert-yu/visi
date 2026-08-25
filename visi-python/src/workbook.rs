@@ -178,6 +178,23 @@ impl Workbook {
         Ok(self.inner.sheets[idx].get_display_string(&CellRef::new(row, col)))
     }
 
+    /// The cell's intrinsic type ("auto", "empty", "number", "string", "boolean", "error", "formula").
+    #[pyo3(signature = (row, col, sheet=None))]
+    fn get_cell_type(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
+        let idx = self.sheet_idx(sheet)?;
+        let t = self.inner.get_cell_type(idx, row, col);
+        let s = match t {
+            visi_engine::core::CellType::Auto => "auto",
+            visi_engine::core::CellType::Empty => "empty",
+            visi_engine::core::CellType::Number => "number",
+            visi_engine::core::CellType::String => "string",
+            visi_engine::core::CellType::Boolean => "boolean",
+            visi_engine::core::CellType::Error => "error",
+            visi_engine::core::CellType::Formula => "formula",
+        };
+        Ok(s.to_string())
+    }
+
     /// A cell's source text, as typed.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_src(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {

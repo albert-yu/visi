@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use web_time::Instant;
 
-use super::cell::{CellRef, Dependency, EngineError, EvalError, TextCellRef, generate_unique_id};
+use super::cell::{
+    CellRef, CellType, Dependency, EngineError, EvalError, TextCellRef, generate_unique_id,
+};
 use super::column::DataColumn;
 use super::result_data::ResultData;
 /// Context for evaluating expressions, containing references to other sheets
@@ -341,25 +343,41 @@ impl Sheet {
                 last_log_time = Instant::now();
             }
 
+            let cell_type_hint = self
+                .columns
+                .get(cell_ref.col)
+                .and_then(|c| c.cell_types.get(cell_ref.row).copied())
+                .unwrap_or(CellType::Auto);
+
             // `Some(code)` when this cell's literal was recognized as a date;
             // applied below, since detecting it only has `&self`.
             let mut detected_num_format: Option<String> = None;
-            let (result, new_deps, compiled_to_cache) = {
+            let (result, new_deps, compiled_to_cache, final_cell_type) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
-                if !src.starts_with('=') {
+                if cell_type_hint == CellType::String {
+                    let val = if src.starts_with('"') && src.ends_with('"') && src.len() >= 2 {
+                        src[1..src.len() - 1].to_string()
+                    } else {
+                        src.to_string()
+                    };
+                    (ResultData::String(val), vec![], None, CellType::String)
+                } else if !src.starts_with('=') && cell_type_hint != CellType::Formula {
                     // Numeric text is trimmed before it is parsed, because
                     // that is what entering it does: a cell given `"  3  "`
                     // holds the *number* 3, in Excel and (measured through
                     // `fuzz/fuzz_vba.py`, where a macro assigned exactly that
                     // string) through VBA's `Range.Value` as well.
-                    // `xlsx::text_cell_src` trims to match when deciding
-                    // whether an imported *text* cell needs quoting.
-                    let res = if src.is_empty() {
-                        ResultData::None
+                    let (res, c_type) = if let Some(stripped) = src.strip_prefix('\'') {
+                        (ResultData::String(stripped.to_string()), CellType::String)
+                    } else if src.is_empty() {
+                        (ResultData::None, CellType::Empty)
                     } else if src.starts_with('"') && src.ends_with('"') && src.len() >= 2 {
-                        ResultData::String(src[1..src.len() - 1].to_string())
+                        (
+                            ResultData::String(src[1..src.len() - 1].to_string()),
+                            CellType::String,
+                        )
                     } else if let Ok(i) = src.trim().parse::<i64>() {
-                        ResultData::Integer(i)
+                        (ResultData::Integer(i), CellType::Number)
                     } else if let Ok(f) = src.trim().parse::<f64>()
                         // Rust's `f64::from_str` accepts "inf" and "NaN";
                         // Excel has neither, and reports #NUM! for both. A
@@ -370,15 +388,15 @@ impl Sheet {
                         // where Excel stored `#NUM!`.
                         && f.is_finite()
                     {
-                        ResultData::Float(f)
+                        (ResultData::Float(f), CellType::Number)
                     } else if crate::core::engine::result_data::is_excel_error_code(src) {
                         // Typing an error value into a cell produces the
                         // error, not the text. See `is_excel_error_code`.
-                        ResultData::Error(src.to_uppercase())
+                        (ResultData::Error(src.to_uppercase()), CellType::Error)
                     } else if src.eq_ignore_ascii_case("true") {
-                        ResultData::Boolean(true)
+                        (ResultData::Boolean(true), CellType::Boolean)
                     } else if src.eq_ignore_ascii_case("false") {
-                        ResultData::Boolean(false)
+                        (ResultData::Boolean(false), CellType::Boolean)
                     } else if let Some((date, format)) =
                         crate::core::date::parse_date(src.trim_matches(' '))
                     {
@@ -386,16 +404,19 @@ impl Sheet {
                         // the notation as the cell's number format, so `6/22/26`
                         // is a number that happens to display as a date.
                         detected_num_format = Some(format.to_format_code());
-                        ResultData::Float(crate::core::date::date_to_excel_serial(date))
+                        (
+                            ResultData::Float(crate::core::date::date_to_excel_serial(date)),
+                            CellType::Number,
+                        )
                     } else if let Some(f) = crate::core::date_fn::parse_time_fraction(src) {
                         // Same for a typed time: it is a numeric day fraction,
                         // not text. The time number format is not represented
                         // yet, so for now only the value semantics are matched.
-                        ResultData::Float(f)
+                        (ResultData::Float(f), CellType::Number)
                     } else {
-                        ResultData::String(src.to_string())
+                        (ResultData::String(src.to_string()), CellType::String)
                     };
-                    (res, vec![], None)
+                    (res, vec![], None, c_type)
                 } else {
                     let compiled =
                         crate::core::parser::compile_formula(src, &tables_for_compilation);
@@ -415,9 +436,21 @@ impl Sheet {
                     } else {
                         res
                     };
-                    (final_res, deps, Some(compiled))
+                    (final_res, deps, Some(compiled), CellType::Formula)
                 }
             };
+
+            // If a leading apostrophe was used to force string type, strip it from src
+            if let Some(src_str) = self.get_src_str_ref(&cell_ref)
+                && let Some(stripped) = src_str.strip_prefix('\'')
+            {
+                let stripped_str = stripped.to_string();
+                if let Some(col) = self.columns.get_mut(cell_ref.col)
+                    && cell_ref.row < col.src.len()
+                {
+                    col.src[cell_ref.row] = stripped_str;
+                }
+            }
 
             // Write compiled cache
             if let Some(col) = self.columns.get_mut(cell_ref.col)
@@ -476,10 +509,11 @@ impl Sheet {
                 }
             }
 
-            // Update data
+            // Update data and cell type
             if let Some(col) = self.columns.get_mut(cell_ref.col)
                 && cell_ref.row < col.data.len()
             {
+                col.cell_types[cell_ref.row] = final_cell_type;
                 col.data.set(cell_ref.row, result.clone());
                 updated_cells.insert(cell_ref);
             }
@@ -489,6 +523,7 @@ impl Sheet {
                 && let Some(col) = comp_sheet.columns.get_mut(cell_ref.col)
                 && cell_ref.row < col.data.len()
             {
+                col.cell_types[cell_ref.row] = final_cell_type;
                 col.data.set(cell_ref.row, result);
             }
 
@@ -1275,48 +1310,61 @@ impl Sheet {
         true
     }
 
-    /// Excel's `>`/`<` text comparison ignores `-` entirely as long as it
-    /// isn't the only difference between the two strings, and only once
-    /// the hyphen-stripped strings are otherwise identical does the
-    /// hyphen's presence break the tie -- in which case the string that
-    /// *has* the hyphen sorts greater. Measured directly (win32com,
-    /// real Windows Excel), since none of this is documented and a
-    /// zipped per-position weighting (this function's previous
-    /// implementation, which gave `-` a low weight so it sorted before
-    /// any digit) gets it backwards:
-    ///   `"-4463" > "36-33"` is TRUE (decided by the hyphen-stripped
-    ///   digits, `4463` vs `3633`; a low weight for `-` would make
-    ///   `"-4463"` sort first instead, e.g. `visi vs Excel` on
-    ///   `IF(CONCATENATE(-44,J5) > CONCATENATE(36,J3), ...)`,
-    ///   fuzz/fuzz_excel.py seed 707537)
-    ///   `"a-1" > "a2"` is FALSE (stripped `"a1"` vs `"a2"`)
-    ///   `"-1" > "-2"` is FALSE, `"-2" > "-1"` is TRUE (both sides'
-    ///   hyphens strip away, leaving a plain digit compare)
-    ///   `"-a" > "a"` is TRUE, `"1-2" > "12"` is TRUE (stripped content
-    ///   ties, so the longer, hyphen-bearing original wins the tie-break)
-    /// `(`/`)` keep their existing low weight, unaffected by this.
     fn compare_excel_strings(a: &str, b: &str) -> std::cmp::Ordering {
-        let a_low = a.to_lowercase();
-        let b_low = b.to_lowercase();
-        let strip_hyphens = |s: &str| -> String { s.chars().filter(|&c| c != '-').collect() };
-        let a_stripped = strip_hyphens(&a_low);
-        let b_stripped = strip_hyphens(&b_low);
         let char_weight = |ch: char| -> u32 {
             match ch {
-                '(' => 2,
-                ')' => 3,
-                _ => (ch as u32) + 10,
+                ' ' => 0,
+                '_' => 1,
+                '-' => 2,
+                ',' => 3,
+                ';' => 4,
+                ':' => 5,
+                '!' => 6,
+                '?' => 7,
+                '.' => 8,
+                '\'' => 9,
+                '"' => 10,
+                '(' => 11,
+                ')' => 12,
+                '[' => 13,
+                ']' => 14,
+                '{' => 15,
+                '}' => 16,
+                '@' => 17,
+                '*' => 18,
+                '/' => 19,
+                '\\' => 20,
+                '&' => 21,
+                '#' => 22,
+                '%' => 23,
+                '`' => 24,
+                '^' => 25,
+                '+' => 26,
+                '<' => 27,
+                '=' => 28,
+                '>' => 29,
+                '|' => 30,
+                '~' => 31,
+                '$' => 32,
+                '0'..='9' => 33 + (ch as u32 - '0' as u32),
+                'A'..='Z' => 43 + (ch as u32 - 'A' as u32),
+                'a'..='z' => 43 + (ch as u32 - 'a' as u32),
+                _ => ch
+                    .to_lowercase()
+                    .next()
+                    .map(|c| c as u32 + 200)
+                    .unwrap_or(ch as u32 + 200),
             }
         };
-        for (ca, cb) in a_stripped.chars().zip(b_stripped.chars()) {
-            if ca != cb {
-                return char_weight(ca).cmp(&char_weight(cb));
+
+        for (ca, cb) in a.chars().zip(b.chars()) {
+            let wa = char_weight(ca);
+            let wb = char_weight(cb);
+            if wa != wb {
+                return wa.cmp(&wb);
             }
         }
-        match a_stripped.len().cmp(&b_stripped.len()) {
-            std::cmp::Ordering::Equal => a_low.len().cmp(&b_low.len()),
-            other => other,
-        }
+        a.len().cmp(&b.len())
     }
 
     /// Snaps a float to its 15-significant-digit rounding when the two are

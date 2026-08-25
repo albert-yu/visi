@@ -433,6 +433,29 @@ impl WorkbookManager {
         sheet.set_cell_src(row, col, value);
     }
 
+    /// Update cell source and explicit cell type at (row, col)
+    pub fn set_cell_with_type(
+        &mut self,
+        sheet_idx: usize,
+        row: usize,
+        col: usize,
+        value: String,
+        cell_type: crate::core::CellType,
+    ) {
+        self.ensure_capacity(sheet_idx, row, col);
+        let sheet = &mut self.sheets[sheet_idx];
+        sheet.set_cell_with_type(row, col, value, cell_type);
+    }
+
+    /// Returns the cell type at (row, col)
+    pub fn get_cell_type(&self, sheet_idx: usize, row: usize, col: usize) -> crate::core::CellType {
+        if let Some(sheet) = self.sheets.get(sheet_idx) {
+            sheet.get_cell_type(&crate::core::CellRef::new(row, col))
+        } else {
+            crate::core::CellType::Empty
+        }
+    }
+
     /// Insert row at 0-based index.
     ///
     /// Formulas throughout the workbook are rewritten to follow the cells

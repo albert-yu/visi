@@ -6,7 +6,7 @@ use crate::core::SharedVec;
 use serde::{Deserialize, Serialize};
 
 use super::bitmask::Bitmask;
-use super::cell::generate_unique_id;
+use super::cell::{CellType, generate_unique_id};
 use super::result_data::ResultData;
 
 /// A column of computed values, stored in whichever representation fits what
@@ -273,17 +273,17 @@ impl Default for ColumnData {
     }
 }
 
-/// One column of a sheet: the raw text, the computed values, the compiled
-/// formulas and the styles, as parallel per-row vectors.
+/// One column of a sheet: the raw text, the computed values, the cell types,
+/// the compiled formulas and the styles, as parallel per-row vectors.
 ///
 /// # Invariant
 ///
-/// `src`, `data`, `compiled_src` and `styles` must all stay the same length --
-/// row `r` of the column is entry `r` of each. Nothing enforces this; the
-/// row and column insert/delete paths in `Sheet` maintain it by hand, and
-/// `Sheet::setup_after_deserialization` restores it after a load, since only
-/// `src` and `styles` are persisted. Mutating one of these vectors directly
-/// will break it.
+/// `src`, `data`, `cell_types`, `compiled_src` and `styles` must all stay the
+/// same length -- row `r` of the column is entry `r` of each. Nothing
+/// enforces this; the row and column insert/delete paths in `Sheet` maintain it
+/// by hand, and `Sheet::setup_after_deserialization` restores it after a load,
+/// since only `src` and `styles` are persisted. Mutating one of these vectors
+/// directly will break it.
 ///
 /// `dirty_indices` is not part of that invariant -- it is a queue of rows
 /// awaiting recomputation, and is emptied by `Sheet::commit`.
@@ -302,6 +302,9 @@ pub struct DataColumn {
     /// The raw text of each cell, exactly as typed. The only representation
     /// that is persisted, and the one everything else is rebuilt from.
     pub(crate) src: SharedVec<String>,
+    /// Intrinsic cell data types, matching Excel / OpenXML representations.
+    #[serde(default)]
+    pub(crate) cell_types: SharedVec<CellType>,
     /// Cached compile output for each cell. Rebuilt on load.
     #[serde(skip, default)]
     pub(crate) compiled_src: SharedVec<CompiledFormula>,
@@ -328,6 +331,7 @@ impl DataColumn {
             name: String::new(),
             data: ColumnData::new(size),
             src: vec![String::new(); size].into(),
+            cell_types: vec![CellType::Auto; size].into(),
             compiled_src: vec![CompiledFormula::default(); size].into(),
             dirty_indices: SharedVec::new(),
             styles: vec![None; size].into(),
@@ -363,6 +367,18 @@ impl DataColumn {
         &self.data
     }
 
+    /// The intrinsic data type of a cell, or `None` past the end.
+    pub fn cell_type(&self, row: usize) -> Option<CellType> {
+        self.cell_types.get(row).copied()
+    }
+
+    /// Sets the intrinsic data type of a cell at `row`.
+    pub fn set_cell_type(&mut self, row: usize, cell_type: CellType) {
+        if row < self.cell_types.len() {
+            self.cell_types[row] = cell_type;
+        }
+    }
+
     /// A cell's compiled formula, or `None` past the end. A cell holding a
     /// literal has an empty one rather than no entry.
     pub fn compiled(&self, row: usize) -> Option<&CompiledFormula> {
@@ -396,12 +412,13 @@ impl DataColumn {
 
     /// Rebuilds what serialization drops, restoring the length invariant.
     ///
-    /// Only `src` and `styles` are persisted, and `styles` is optional, so a
-    /// workbook saved without it loads with a `styles` of length 0. Everything
+    /// Only `src`, `cell_types` and `styles` are persisted, and `styles`/`cell_types`
+    /// are optional, so a workbook saved without them loads with a length of 0. Everything
     /// is sized back to `src`, which is the authoritative length.
     pub(crate) fn rebuild_after_load(&mut self) {
         let size = self.src.len();
         self.data.resize(size);
+        self.cell_types.resize(size, CellType::Auto);
         self.compiled_src = vec![CompiledFormula::default(); size].into();
         self.styles.resize(size, None);
     }
@@ -409,6 +426,7 @@ impl DataColumn {
     /// Appends an empty row to every parallel vector.
     pub(crate) fn push_row(&mut self) {
         self.src.push(String::new());
+        self.cell_types.push(CellType::Auto);
         self.compiled_src.push(CompiledFormula::default());
         self.data.push(ResultData::None);
         self.styles.push(None);
@@ -422,6 +440,7 @@ impl DataColumn {
             return;
         }
         self.src.insert(index, String::new());
+        self.cell_types.insert(index, CellType::Auto);
         self.compiled_src.insert(index, CompiledFormula::default());
         self.data.insert(index, ResultData::None);
         self.styles.insert(index, None);
@@ -435,6 +454,7 @@ impl DataColumn {
             return;
         }
         self.src.remove(index);
+        self.cell_types.remove(index);
         self.compiled_src.remove(index);
         self.data.remove(index);
         self.styles.remove(index);
@@ -462,6 +482,7 @@ impl DataColumn {
             return;
         }
         self.src.drain(start..end);
+        self.cell_types.drain(start..end);
         self.compiled_src.drain(start..end);
         self.data.drain(start..end);
         self.styles.drain(start..end);

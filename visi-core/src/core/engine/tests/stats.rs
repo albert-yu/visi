@@ -48,6 +48,20 @@ fn test_statistical_summary_functions() {
 }
 
 #[test]
+fn test_fuzz_geomean_single_element_exact_integer() {
+    let grid = [["16"], ["=ISEVEN(INT(GEOMEAN(A1)))"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let res = sheet.get_result_data(&CellRef::new(1, 0));
+    assert!(
+        matches!(res, ResultData::Boolean(true)),
+        "GEOMEAN(16) must be exactly 16 so INT/ISEVEN evaluates to TRUE, got {:?}",
+        res
+    );
+}
+
+#[test]
 fn test_variance_and_stdev() {
     let grid = [
         ["10", "20", "30", "40", "50"],

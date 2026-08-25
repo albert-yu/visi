@@ -11,7 +11,7 @@ pub(crate) mod tests;
 
 pub use bitmask::Bitmask;
 pub use cell::{
-    CellRef, Dependency, EngineError, EvalError, RefType, TextCellRef, generate_unique_id,
+    CellRef, CellType, Dependency, EngineError, EvalError, RefType, TextCellRef, generate_unique_id,
 };
 pub use column::{ColumnData, DataColumn};
 pub use result_data::ResultData;

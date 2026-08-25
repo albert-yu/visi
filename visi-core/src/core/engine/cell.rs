@@ -22,6 +22,33 @@ pub fn generate_unique_id() -> u64 {
     val & 0x001F_FFFF_FFFF_FFFF
 }
 
+/// The intrinsic data type of a cell, matching Excel / OpenXML `<c t="...">` representations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum CellType {
+    /// Inferred on commit (default for newly created / untyped cells).
+    #[default]
+    Auto,
+    /// Blank / empty cell.
+    Empty,
+    /// Numeric cell (OOXML `t="n"` or omitted `t`). Includes date/time serials.
+    Number,
+    /// String / text cell (OOXML `t="s"`, `t="inlineStr"`, `t="str"`, or input with leading `'`).
+    String,
+    /// Boolean cell (OOXML `t="b"`).
+    Boolean,
+    /// Error cell (OOXML `t="e"`).
+    Error,
+    /// Formula cell.
+    Formula,
+}
+
+impl CellType {
+    /// Whether this cell type is explicitly a string/text cell.
+    pub fn is_string(&self) -> bool {
+        matches!(self, CellType::String)
+    }
+}
+
 /// For either a column or row
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RefType {

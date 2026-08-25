@@ -107,3 +107,45 @@ def test_structural_formula_normalization_handles_escaped_quotes_and_ref_errors(
     assert normalize_formula_text('=Data!#REF! + 1') == '=#REF!+1'
     assert normalize_formula_text('=\'Data\'!#REF! + 1') == '=#REF!+1'
     assert normalize_formula_text('="Data!#REF!"') == '="Data!#REF!"'
+
+
+def test_cell_types_equal_for_string_variants():
+    comparator = DifferentialComparator()
+
+    for t in ('s', 'str', 'inlineStr'):
+        assert comparator.canonical_type(t, "hello") == 'string'
+
+    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 's', 'val': 'hello'}}
+    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'inlineStr', 'val': 'hello'}}
+    ok, mismatches = comparator.compare(v_cells, e_cells)
+    assert ok
+    assert not mismatches
+
+
+def test_cell_type_mismatches_are_caught():
+    comparator = DifferentialComparator()
+
+    # Number vs String
+    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'n', 'val': 123}}
+    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 's', 'val': '123'}}
+    ok, mismatches = comparator.compare(v_cells, e_cells)
+    assert not ok
+    assert len(mismatches) == 1
+    assert "Cell type mismatch (number vs string)" in mismatches[0]['reason']
+
+    # Boolean vs String
+    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'b', 'val': True}}
+    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 's', 'val': 'TRUE'}}
+    ok, mismatches = comparator.compare(v_cells, e_cells)
+    assert not ok
+    assert len(mismatches) == 1
+    assert "Cell type mismatch (boolean vs string)" in mismatches[0]['reason']
+
+    # Number vs Error
+    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'n', 'val': 1}}
+    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'e', 'val': '#N/A'}}
+    ok, mismatches = comparator.compare(v_cells, e_cells)
+    assert not ok
+    assert len(mismatches) == 1
+    assert "Cell type mismatch (number vs error)" in mismatches[0]['reason']
+

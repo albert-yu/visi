@@ -34,8 +34,8 @@ pub use date::{
     is_date_code, parse_date, render_date_code,
 };
 pub use engine::{
-    Bitmask, CellRef, ColumnData, Context, DataColumn, Dependency, Direction, EngineError,
-    EvalError, RefType, ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id,
+    Bitmask, CellRef, CellType, ColumnData, Context, DataColumn, Dependency, Direction,
+    EngineError, EvalError, RefType, ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id,
     get_word_boundaries_from_str,
 };
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};

@@ -5,7 +5,7 @@
 //! worth checking after changes. Export writes each formula together with its
 //! cached result, so a reader that does not recalculate still sees values.
 
-use crate::core::{DataColumn, Sheet};
+use crate::core::{CellType, DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;
 
@@ -15,47 +15,6 @@ pub struct ImportedSheet {
     /// The sheet, with its cells, styles and any Excel Tables on it. Its
     /// values are already committed, so it can be read without evaluating.
     pub sheet: Sheet,
-}
-
-/// Quote a text cell's raw string when it would otherwise be re-parsed as a
-/// number, boolean, or formula (see `Sheet::commit`'s literal-cell parsing),
-/// so a text cell like "1" stays text instead of becoming the number 1.
-fn text_cell_src(s: &str) -> String {
-    if s.is_empty() {
-        // A *string* cell holding the empty string. Excel keeps that distinct
-        // from a blank cell -- TYPE is 2 (text) not 1, ISBLANK is FALSE,
-        // COUNTA counts it, and it compares as text -- so it takes the
-        // quoted-empty spelling that `commit` reads back as `String("")`.
-        // Leaving the src empty would rebuild it as a blank cell and lose all
-        // of that.
-        //
-        // Reaching here usually means the cell held only whitespace: OOXML
-        // strips whitespace-only `<t>` content unless the element carries
-        // `xml:space="preserve"`, and calamine reports the remainder as an
-        // empty string rather than as `Data::Empty`. Excel strips it the same
-        // way, and likewise keeps a text cell.
-        return "\"\"".to_string();
-    }
-    // Excel handed us a *string* cell, so anything the engine's literal
-    // parser would otherwise claim -- numbers, booleans, and dates such as
-    // "22-Jun" -- has to be quoted to survive the round trip as text.
-    let looks_ambiguous = s.starts_with('=')
-        // Trimmed, matching `Sheet::commit`: it reads `"  3  "` as the number
-        // 3, so a text cell spelling that has to be quoted to stay text.
-        || s.trim().parse::<i64>().is_ok()
-        || s.trim().parse::<f64>().is_ok()
-        || s.eq_ignore_ascii_case("true")
-        || s.eq_ignore_ascii_case("false")
-        // An error value typed into a cell *is* the error, so a text cell
-        // that happens to spell one has to be quoted like any other
-        // ambiguous literal.
-        || crate::core::engine::result_data::is_excel_error_code(s)
-        || crate::core::date::parse_date(s).is_some();
-    if looks_ambiguous {
-        format!("\"{}\"", s)
-    } else {
-        s.to_string()
-    }
 }
 
 /// `(imported sheets, charts, pivot tables, VBA project)`.
@@ -234,22 +193,24 @@ pub(crate) fn import_xlsx_data_raw(
                                 let cell_src = format!("={}", formula);
                                 max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                                 columns[col_idx].src[row_idx] = cell_src;
+                                columns[col_idx].cell_types[row_idx] = CellType::Formula;
                                 continue;
                             }
                         }
 
-                        let cell_src = match cell_value {
-                            calamine::Data::Empty => String::new(),
-                            calamine::Data::String(s) => text_cell_src(s),
-                            calamine::Data::Float(f) => f.to_string(),
-                            calamine::Data::Int(i) => i.to_string(),
-                            calamine::Data::Bool(b) => b.to_string(),
-                            calamine::Data::Error(e) => format!("#ERR: {:?}", e),
-                            calamine::Data::DateTime(d) => d.to_string(),
-                            _ => String::new(),
+                        let (cell_type, cell_src) = match cell_value {
+                            calamine::Data::Empty => (CellType::Empty, String::new()),
+                            calamine::Data::String(s) => (CellType::String, s.clone()),
+                            calamine::Data::Float(f) => (CellType::Number, f.to_string()),
+                            calamine::Data::Int(i) => (CellType::Number, i.to_string()),
+                            calamine::Data::Bool(b) => (CellType::Boolean, b.to_string()),
+                            calamine::Data::Error(e) => (CellType::Error, format!("#ERR: {:?}", e)),
+                            calamine::Data::DateTime(d) => (CellType::Number, d.to_string()),
+                            _ => (CellType::Empty, String::new()),
                         };
                         max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                         columns[col_idx].src[row_idx] = cell_src;
+                        columns[col_idx].cell_types[row_idx] = cell_type;
                     }
                 }
             } else {
@@ -299,22 +260,24 @@ pub(crate) fn import_xlsx_data_raw(
                             };
                             max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                             columns[col_idx].src[row_idx] = cell_src;
+                            columns[col_idx].cell_types[row_idx] = CellType::Formula;
                             columns[col_idx].dirty_indices.push(row_idx);
                             continue;
                         }
 
-                        let cell_src = match cell_value {
-                            calamine::Data::Empty => String::new(),
-                            calamine::Data::String(s) => text_cell_src(s),
-                            calamine::Data::Float(f) => f.to_string(),
-                            calamine::Data::Int(i) => i.to_string(),
-                            calamine::Data::Bool(b) => b.to_string(),
-                            calamine::Data::Error(e) => format!("#ERR: {:?}", e),
-                            calamine::Data::DateTime(d) => d.to_string(),
-                            _ => String::new(),
+                        let (cell_type, cell_src) = match cell_value {
+                            calamine::Data::Empty => (CellType::Empty, String::new()),
+                            calamine::Data::String(s) => (CellType::String, s.clone()),
+                            calamine::Data::Float(f) => (CellType::Number, f.to_string()),
+                            calamine::Data::Int(i) => (CellType::Number, i.to_string()),
+                            calamine::Data::Bool(b) => (CellType::Boolean, b.to_string()),
+                            calamine::Data::Error(e) => (CellType::Error, format!("#ERR: {:?}", e)),
+                            calamine::Data::DateTime(d) => (CellType::Number, d.to_string()),
+                            _ => (CellType::Empty, String::new()),
                         };
                         max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                         columns[col_idx].src[row_idx] = cell_src;
+                        columns[col_idx].cell_types[row_idx] = cell_type;
                     }
                 }
             }
@@ -755,6 +718,11 @@ pub(crate) fn export_xlsx_data_raw(
                 let col = &sheet.columns[col_idx];
                 for row_idx in 0..sheet.row_count() {
                     let cell_src = col.src.get(row_idx).cloned().unwrap_or_default();
+                    let cell_type = col
+                        .cell_types
+                        .get(row_idx)
+                        .copied()
+                        .unwrap_or(CellType::Auto);
                     let style_opt = col.styles.get(row_idx).and_then(|s| s.as_ref());
                     let format_opt = style_opt.map(build_xlsx_format);
 
@@ -782,6 +750,29 @@ pub(crate) fn export_xlsx_data_raw(
                             worksheet
                                 .write_formula(row_idx as u32, col_idx as u16, formula)
                                 .map_err(|e| format!("Failed to write Excel formula: {}", e))?;
+                        }
+                    } else if cell_type == CellType::String {
+                        let text = if cell_src.starts_with('"')
+                            && cell_src.ends_with('"')
+                            && cell_src.len() >= 2
+                        {
+                            &cell_src[1..cell_src.len() - 1]
+                        } else {
+                            cell_src.as_str()
+                        };
+                        if let Some(ref rx_format) = format_opt {
+                            worksheet
+                                .write_string_with_format(
+                                    row_idx as u32,
+                                    col_idx as u16,
+                                    text,
+                                    rx_format,
+                                )
+                                .map_err(|e| format!("Failed to write Excel string: {}", e))?;
+                        } else {
+                            worksheet
+                                .write_string(row_idx as u32, col_idx as u16, text)
+                                .map_err(|e| format!("Failed to write Excel string: {}", e))?;
                         }
                     } else if let Some(serial) = date_serial_for_export(style_opt, col, row_idx) {
                         // A date cell's src is the text that was typed
@@ -2335,18 +2326,13 @@ mod tests {
     /// space survives a visi-to-visi round trip; this covers the other case.)
     #[test]
     fn test_empty_string_cell_stays_text_not_blank() {
-        // The src spelling an empty string cell has to take, so `commit`
-        // rebuilds it as text. A bare empty src would mean a blank cell.
-        assert_eq!(text_cell_src(""), "\"\"");
-        assert_eq!(text_cell_src(" "), " ");
-
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 2,
             cols: 1,
             ..Default::default()
         });
-        sheet.set_cell_src(0, 0, text_cell_src(""));
+        sheet.set_cell_with_type(0, 0, String::new(), CellType::String);
         sheet.commit(None).unwrap();
 
         assert!(
@@ -2355,6 +2341,10 @@ mod tests {
                 crate::core::ResultData::String(ref s) if s.is_empty()
             ),
             "an empty string cell must stay an empty *string*, not become blank"
+        );
+        assert_eq!(
+            sheet.get_cell_type(&crate::core::CellRef::new(0, 0)),
+            CellType::String
         );
         // The control: a genuinely empty src really is blank.
         assert!(matches!(
@@ -2415,6 +2405,50 @@ mod tests {
         assert!(matches!(
             imported.get_result_data(&crate::core::CellRef::new(0, 0)),
             crate::core::ResultData::String(ref s) if s == "22-Jun"
+        ));
+    }
+
+    #[test]
+    fn test_xlsx_explicit_cell_type_string_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 3,
+            cols: 1,
+            ..Default::default()
+        });
+        sheet.set_cell_with_type(0, 0, "6/22/26".to_string(), CellType::String);
+        sheet.set_cell_with_type(1, 0, "123".to_string(), CellType::String);
+        sheet.set_cell_with_type(2, 0, "TRUE".to_string(), CellType::String);
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported, _, _, _) = import_xlsx_data(&bytes, &[], |_, _, _| {}).unwrap();
+        let mut imported = imported.into_iter().next().unwrap().sheet;
+        imported.commit(None).unwrap();
+
+        assert_eq!(
+            imported.get_cell_type(&crate::core::CellRef::new(0, 0)),
+            CellType::String
+        );
+        assert!(matches!(
+            imported.get_result_data(&crate::core::CellRef::new(0, 0)),
+            crate::core::ResultData::String(ref s) if s == "6/22/26"
+        ));
+        assert_eq!(
+            imported.get_cell_type(&crate::core::CellRef::new(1, 0)),
+            CellType::String
+        );
+        assert!(matches!(
+            imported.get_result_data(&crate::core::CellRef::new(1, 0)),
+            crate::core::ResultData::String(ref s) if s == "123"
+        ));
+        assert_eq!(
+            imported.get_cell_type(&crate::core::CellRef::new(2, 0)),
+            CellType::String
+        );
+        assert!(matches!(
+            imported.get_result_data(&crate::core::CellRef::new(2, 0)),
+            crate::core::ResultData::String(ref s) if s == "TRUE"
         ));
     }
 
