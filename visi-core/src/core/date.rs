@@ -1427,4 +1427,89 @@ mod tests {
             46195.0
         );
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn fuzz_parse_date_never_panics(
+            s in "\\PC*",
+            loc_idx in 0..11usize
+        ) {
+            let locales = [
+                Locale::en_us(),
+                Locale::en_gb(),
+                Locale::de_de(),
+                Locale::fr_fr(),
+                Locale::es_es(),
+                Locale::it_it(),
+                Locale::pt_br(),
+                Locale::nl_nl(),
+                Locale::ru_ru(),
+                Locale::zh_cn(),
+                Locale::ja_jp(),
+            ];
+            let loc = &locales[loc_idx];
+            let _ = parse_date_with_locale(&s, loc);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_roundtrip_us(
+            y in 1900..=2099i32,
+            m in 1..=12u32,
+            d in 1..=28u32,
+            sep in "[/\\-]"
+        ) {
+            let loc = Locale::en_us();
+            let src = format!("{}{}{}{}{}", m, sep, d, sep, y);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid MDY date must parse");
+            prop_assert_eq!(date.year, y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_roundtrip_gb(
+            y in 1900..=2099i32,
+            m in 1..=12u32,
+            d in 1..=28u32,
+            sep in "[/\\-]"
+        ) {
+            let loc = Locale::en_gb();
+            let src = format!("{}{}{}{}{}", d, sep, m, sep, y);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid DMY date must parse");
+            prop_assert_eq!(date.year, y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_roundtrip_de_dot(
+            y in 1900..=2099i32,
+            m in 1..=12u32,
+            d in 1..=28u32,
+        ) {
+            let loc = Locale::de_de();
+            let src = format!("{}.{}.{}", d, m, y);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid German dot date must parse");
+            prop_assert_eq!(date.year, y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_2digit_pivot(
+            yy in 0..=99i32,
+            m in 1..=12u32,
+            d in 1..=28u32
+        ) {
+            let loc = Locale::en_us();
+            let src = format!("{}/{}/{:02}", m, d, yy);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid 2-digit year date must parse");
+            let expected_y = if yy <= 29 { 2000 + yy } else { 1900 + yy };
+            prop_assert_eq!(date.year, expected_y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+    }
 }
