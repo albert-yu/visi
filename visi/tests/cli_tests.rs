@@ -1931,3 +1931,112 @@ fn test_a_band_insert_outside_a_tables_columns_leaves_it_alone() {
     assert_eq!((table.start_row, table.end_row), (0, 1));
     assert_eq!((table.start_col, table.end_col), (3, 4));
 }
+
+#[test]
+fn test_cli_set_cell_type_flag_parsing() {
+    let cli = try_parse(&[
+        "visi",
+        "set",
+        "data.xlsx",
+        "--cell",
+        "A1",
+        "--value",
+        "12345",
+        "--type",
+        "string",
+        "-i",
+    ])
+    .expect("should parse set with --type string");
+
+    let Commands::Set(set_args) = cli.command else {
+        panic!("expected Commands::Set");
+    };
+    assert_eq!(set_args.cell, vec!["A1"]);
+    assert_eq!(set_args.value, vec!["12345"]);
+    assert_eq!(set_args.cell_type, Some(visi::cli::CellTypeArg::String));
+
+    let cli_alias = try_parse(&[
+        "visi",
+        "set",
+        "data.xlsx",
+        "--cell",
+        "B2",
+        "--cell-type",
+        "number",
+        "-i",
+    ])
+    .expect("should parse set with --cell-type alias");
+
+    let Commands::Set(set_args2) = cli_alias.command else {
+        panic!("expected Commands::Set");
+    };
+    assert_eq!(set_args2.cell, vec!["B2"]);
+    assert_eq!(set_args2.cell_type, Some(visi::cli::CellTypeArg::Number));
+}
+
+#[test]
+fn test_workbook_set_cell_type_and_roundtrip() {
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_cell_type_roundtrip.xlsx");
+    let file_str = file_path.to_str().unwrap();
+
+    let mut wb = WorkbookManager::new_empty().unwrap();
+    // 1. Set numeric text with explicit String type
+    wb.set_cell_with_type(
+        0,
+        0,
+        0,
+        "12345".to_string(),
+        visi_core::core::CellType::String,
+    );
+    // 2. Set normal auto cell
+    wb.set_cell(0, 0, 1, "12345".to_string());
+    // 3. Set boolean cell
+    wb.set_cell_with_type(
+        0,
+        0,
+        2,
+        "TRUE".to_string(),
+        visi_core::core::CellType::Boolean,
+    );
+    // 4. Change type of existing cell using set_cell_type
+    wb.set_cell(0, 0, 3, "999".to_string());
+    wb.set_cell_type(0, 0, 3, visi_core::core::CellType::String);
+
+    wb.evaluate().unwrap();
+
+    assert_eq!(wb.get_cell_type(0, 0, 0), visi_core::core::CellType::String);
+    assert!(matches!(
+        wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 0)),
+        visi_core::core::ResultData::String(ref s) if s == "12345"
+    ));
+
+    assert!(matches!(
+        wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 1)),
+        visi_core::core::ResultData::Integer(12345)
+    ));
+
+    assert_eq!(wb.get_cell_type(0, 0, 3), visi_core::core::CellType::String);
+    assert!(matches!(
+        wb.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 3)),
+        visi_core::core::ResultData::String(ref s) if s == "999"
+    ));
+
+    wb.save_file(file_str).unwrap();
+
+    let loaded = WorkbookManager::load_file(file_str).unwrap();
+    assert_eq!(
+        loaded.get_cell_type(0, 0, 0),
+        visi_core::core::CellType::String
+    );
+    assert!(matches!(
+        loaded.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 0)),
+        visi_core::core::ResultData::String(ref s) if s == "12345"
+    ));
+    assert!(matches!(
+        loaded.sheets[0].get_result_data(&visi_core::core::CellRef::new(0, 1)),
+        visi_core::core::ResultData::Integer(12345) | visi_core::core::ResultData::Float(_)
+    ));
+
+    let _ = fs::remove_file(&file_path);
+}

@@ -115,6 +115,17 @@ pub enum PivotAggArg {
     Min,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellTypeArg {
+    Auto,
+    Empty,
+    Number,
+    String,
+    Boolean,
+    Error,
+    Formula,
+}
+
 #[derive(Args, Debug)]
 pub struct InfoArgs {
     /// Input Excel file path (use '-' to read from stdin)
@@ -179,6 +190,10 @@ pub struct SetArgs {
     /// Set cell assignments in CELL=VALUE format (e.g. -S A1=100 -S B1="=A1*2")
     #[usage(short = 'S', long = "set", value_name = "CELL=VALUE")]
     pub set_pairs: Vec<String>,
+
+    /// Explicit cell type [auto, empty, number, string, boolean, error, formula]
+    #[usage(short = 't', long = "type", alias = "cell-type", value_enum)]
+    pub cell_type: Option<CellTypeArg>,
 
     /// Write updated workbook to target output file path
     #[usage(short, long)]

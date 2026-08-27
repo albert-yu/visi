@@ -100,6 +100,31 @@ def test_result_types(src, expected, expected_type):
     assert isinstance(v, expected_type)
 
 
+def test_set_cell_with_explicit_type():
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, "12345", cell_type="string")
+    wb.set_cell(0, 1, "12345")
+    wb.evaluate()
+    assert wb.get_cell_type(0, 0) == "string"
+    assert wb.get_cell(0, 0) == "12345"
+    assert isinstance(wb.get_cell(0, 0), str)
+    assert wb.get_cell_type(0, 1) == "number"
+    assert wb.get_cell(0, 1) == 12345
+
+    again = wb.roundtrip()
+    assert again.get_cell_type(0, 0) == "string"
+    assert again.get_cell(0, 0) == "12345"
+
+
+def test_set_cell_type_on_existing_cell():
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, "007")
+    wb.set_cell_type(0, 0, "string")
+    wb.evaluate()
+    assert wb.get_cell_type(0, 0) == "string"
+    assert wb.get_cell(0, 0) == "007"
+
+
 def test_blank_cell_is_none():
     wb = visi_core.Workbook()
     wb.set_cell(0, 0, "1")

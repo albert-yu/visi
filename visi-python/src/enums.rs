@@ -12,7 +12,7 @@
 use crate::errors::invalid_argument;
 use pyo3::PyResult;
 use visi_engine::core::chart::ChartType;
-use visi_engine::core::{PivotAggregation, PivotArea, VbaModuleKind};
+use visi_engine::core::{CellType, PivotAggregation, PivotArea, VbaModuleKind};
 
 /// Parses a chart type name (`"column"`, `"bar"`, `"line"`, ...).
 pub fn parse_chart_type(s: &str) -> PyResult<ChartType> {
@@ -25,6 +25,22 @@ pub fn parse_chart_type(s: &str) -> PyResult<ChartType> {
         "area" => Ok(ChartType::Area),
         other => Err(invalid_argument(format!(
             "unknown chart type {other:?}; expected one of: column, bar, line, pie, scatter, area"
+        ))),
+    }
+}
+
+/// Parses a cell type name (`"auto"`, `"empty"`, `"number"`, `"string"`, `"boolean"`, `"error"`, `"formula"`).
+pub fn parse_cell_type(s: &str) -> PyResult<CellType> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => Ok(CellType::Auto),
+        "empty" => Ok(CellType::Empty),
+        "number" => Ok(CellType::Number),
+        "string" => Ok(CellType::String),
+        "boolean" => Ok(CellType::Boolean),
+        "error" => Ok(CellType::Error),
+        "formula" => Ok(CellType::Formula),
+        other => Err(invalid_argument(format!(
+            "unknown cell type {other:?}; expected one of: auto, empty, number, string, boolean, error, formula"
         ))),
     }
 }
@@ -81,6 +97,11 @@ mod tests {
         for s in ["column", "bar", "line", "pie", "scatter", "area"] {
             assert!(parse_chart_type(s).is_ok(), "chart type {s:?}");
         }
+        for s in [
+            "auto", "empty", "number", "string", "boolean", "error", "formula",
+        ] {
+            assert!(parse_cell_type(s).is_ok(), "cell type {s:?}");
+        }
         for s in ["row", "column", "value", "filter"] {
             assert!(parse_pivot_area(s).is_ok(), "pivot area {s:?}");
         }
@@ -95,6 +116,7 @@ mod tests {
     #[test]
     fn is_case_insensitive() {
         assert!(matches!(parse_chart_type("COLUMN"), Ok(ChartType::Column)));
+        assert!(matches!(parse_cell_type("STRING"), Ok(CellType::String)));
         assert!(matches!(parse_pivot_area("Row"), Ok(PivotArea::Row)));
         assert!(matches!(
             parse_pivot_agg("Count-Numbers"),
@@ -105,6 +127,7 @@ mod tests {
     #[test]
     fn rejects_unknown_values() {
         assert!(parse_chart_type("doughnut").is_err());
+        assert!(parse_cell_type("unknown").is_err());
         assert!(parse_pivot_area("page").is_err());
         // Excel's own name for it, but not the spelling the CLI takes.
         assert!(parse_pivot_agg("counta").is_err());
@@ -129,6 +152,30 @@ mod tests {
                 VbaModuleKind::Document => "document",
             };
             assert_eq!(parse_vba_module_kind(name).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn every_cell_type_has_a_spelling() {
+        for ct in [
+            CellType::Auto,
+            CellType::Empty,
+            CellType::Number,
+            CellType::String,
+            CellType::Boolean,
+            CellType::Error,
+            CellType::Formula,
+        ] {
+            let name = match ct {
+                CellType::Auto => "auto",
+                CellType::Empty => "empty",
+                CellType::Number => "number",
+                CellType::String => "string",
+                CellType::Boolean => "boolean",
+                CellType::Error => "error",
+                CellType::Formula => "formula",
+            };
+            assert_eq!(parse_cell_type(name).unwrap(), ct);
         }
     }
 

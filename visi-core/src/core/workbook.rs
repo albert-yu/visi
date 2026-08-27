@@ -447,6 +447,19 @@ impl WorkbookManager {
         sheet.set_cell_with_type(row, col, value, cell_type);
     }
 
+    /// Sets the intrinsic data type of a cell at (row, col).
+    pub fn set_cell_type(
+        &mut self,
+        sheet_idx: usize,
+        row: usize,
+        col: usize,
+        cell_type: crate::core::CellType,
+    ) {
+        self.ensure_capacity(sheet_idx, row, col);
+        let sheet = &mut self.sheets[sheet_idx];
+        sheet.set_cell_type(row, col, cell_type);
+    }
+
     /// Returns the cell type at (row, col)
     pub fn get_cell_type(&self, sheet_idx: usize, row: usize, col: usize) -> crate::core::CellType {
         if let Some(sheet) = self.sheets.get(sheet_idx) {
