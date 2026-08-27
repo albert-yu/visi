@@ -9,6 +9,7 @@ pub(crate) mod extended_fn;
 pub(crate) mod finance;
 pub(crate) mod formula;
 pub(crate) mod grid_edit;
+pub mod locale;
 pub(crate) mod math_trig;
 #[doc(hidden)]
 pub mod ovba;
@@ -31,7 +32,7 @@ pub(crate) mod xml;
 pub use actions::SheetAction;
 pub use date::{
     DateFormat, SimpleDate, StringCase, date_to_excel_serial, excel_serial_to_date, format_date,
-    is_date_code, parse_date, render_date_code,
+    is_date_code, parse_date, parse_date_with_locale, render_date_code,
 };
 pub use engine::{
     Bitmask, CellRef, CellType, ColumnData, Context, DataColumn, Dependency, Direction,
@@ -39,6 +40,7 @@ pub use engine::{
     get_word_boundaries_from_str,
 };
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
+pub use locale::{DateOrder, Locale};
 pub use parser::{col_idx_to_letters, parse_a1_coordinates};
 pub use pivot::{
     PivotAggregation, PivotArea, PivotBodyRow, PivotField, PivotFilterField, PivotGrid,

@@ -29,6 +29,7 @@ pub(crate) fn create_sheet<const ROWS: usize, const COLS: usize>(
 
 mod aggregate;
 mod extended;
+mod locale;
 mod logical;
 mod math;
 mod math_trig;

@@ -308,6 +308,7 @@ pub(crate) fn import_xlsx_data_raw(
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
                 uncommitted_actions: Vec::new(),
+                locale: crate::core::locale::Locale::default(),
             };
             imported_tables.push(ImportedSheet { sheet: new_table });
 
@@ -2272,6 +2273,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         // Export it
@@ -2395,6 +2397,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
@@ -2544,6 +2547,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
@@ -2896,6 +2900,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         // Export it
@@ -2946,6 +2951,7 @@ mod tests {
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
                 uncommitted_actions: Vec::new(),
+                locale: crate::core::locale::Locale::default(),
             };
 
             // Create a chart referencing that sheet
@@ -3027,6 +3033,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
@@ -3061,6 +3068,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
@@ -3092,6 +3100,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
@@ -3122,6 +3131,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
@@ -3521,6 +3531,7 @@ mod tests {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: crate::core::locale::Locale::default(),
         };
 
         let mut project = crate::core::vba::VbaProject::new_empty();

@@ -17,6 +17,7 @@
 
 use crate::core::formula::CompiledFormula;
 use crate::core::grid_edit::{Axis, GridEdit};
+use crate::core::locale::Locale;
 use crate::core::parser::col_idx_to_letters;
 use crate::core::xlsx::{export_xlsx_data, import_xlsx_data};
 use crate::core::{
@@ -99,8 +100,8 @@ pub struct WorkbookSummary {
 /// The entry point to this crate, and the layer an embedder should drive.
 /// Two behaviors are only correct at this level:
 ///
-/// - **Cross-sheet formulas.** [`Sheet::commit`] propagates local dependencies
-///   only; [`WorkbookManager::evaluate`] is what carries values between
+/// - **Cross-sheet recalculation.** [`Sheet::commit`] only propagates local
+///   dependencies; [`WorkbookManager::evaluate`] is what carries values across
 ///   sheets.
 /// - **Pivot tables.** Nothing recomputes one implicitly.
 ///   [`WorkbookManager::refresh_pivot_table`] is the only thing that writes a
@@ -120,6 +121,8 @@ pub struct WorkbookManager {
     pub pivot_tables: Vec<PivotTable>,
     /// The VBA project, if the workbook has macros.
     pub vba_project: Option<VbaProject>,
+    /// Regional locale for date and number parsing.
+    pub locale: Locale,
 }
 
 /// Quotes a materialized pivot label that would otherwise be re-parsed as a
@@ -161,12 +164,17 @@ impl WorkbookManager {
         let (imported_tables, charts, pivot_tables, vba_project) =
             import_xlsx_data(buffer, &[], |_, _, _| {})?;
 
-        let sheets = imported_tables.into_iter().map(|it| it.sheet).collect();
+        let locale = Locale::default();
+        let mut sheets: Vec<Sheet> = imported_tables.into_iter().map(|it| it.sheet).collect();
+        for sheet in &mut sheets {
+            sheet.locale = locale.clone();
+        }
         Ok(Self {
             sheets,
             charts,
             pivot_tables,
             vba_project,
+            locale,
         })
     }
 
@@ -186,14 +194,24 @@ impl WorkbookManager {
 
     /// A new workbook containing a single empty sheet named `Sheet1`.
     pub fn new_empty() -> crate::Result<Self> {
+        let locale = Locale::default();
         let mut wb = Self {
             sheets: Vec::new(),
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            locale,
         };
         wb.add_sheet("Sheet1")?;
         Ok(wb)
+    }
+
+    /// Sets the regional locale on the workbook and propagates it to all sheets.
+    pub fn set_locale(&mut self, locale: Locale) {
+        self.locale = locale.clone();
+        for sheet in &mut self.sheets {
+            sheet.locale = locale.clone();
+        }
     }
 
     /// Recalculate all formulas in all sheets using visi-core engine
@@ -775,6 +793,7 @@ impl WorkbookManager {
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
             uncommitted_actions: Vec::new(),
+            locale: self.locale.clone(),
         };
 
         self.sheets.push(new_sheet);

@@ -18,15 +18,33 @@ use visi::utils::{
 use visi_core::core::chart::ChartType;
 use visi_core::core::{PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
 
+fn resolve_locale(cli_locale: Option<&str>) -> Option<visi_core::core::Locale> {
+    if let Some(loc_str) = cli_locale {
+        let loc = visi_core::core::Locale::from_code(loc_str).unwrap_or_else(|| {
+            exit_with_error(format!("Unrecognized locale '{loc_str}'"), EXIT_USAGE_ERROR);
+        });
+        return Some(loc);
+    }
+    for var in ["VISI_LOCALE", "LC_ALL", "LC_TIME", "LANG"] {
+        if let Ok(val) = std::env::var(var)
+            && let Some(loc) = visi_core::core::Locale::from_code(&val)
+        {
+            return Some(loc);
+        }
+    }
+    None
+}
+
 fn main() {
     let cli = Cli::parse();
     let quiet = cli.quiet;
+    let locale = resolve_locale(cli.locale.as_deref());
 
     match cli.command {
         Commands::Info(args) => handle_info(args),
-        Commands::Read(args) => handle_read(args),
-        Commands::Set(args) => handle_set(args, quiet),
-        Commands::Eval(args) => handle_eval(args, quiet),
+        Commands::Read(args) => handle_read(args, locale),
+        Commands::Set(args) => handle_set(args, quiet, locale),
+        Commands::Eval(args) => handle_eval(args, quiet, locale),
         Commands::Sheet(args) => handle_sheet(args, quiet),
         Commands::Row(args) => handle_row(args, quiet),
         Commands::Col(args) => handle_col(args, quiet),
@@ -99,10 +117,13 @@ fn handle_info(args: InfoArgs) {
     }
 }
 
-fn handle_read(args: ReadArgs) {
+fn handle_read(args: ReadArgs, locale: Option<visi_core::core::Locale>) {
     let mut wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
         exit_with_error(e, EXIT_IO_ERROR);
     });
+    if let Some(loc) = locale {
+        wb.set_locale(loc);
+    }
 
     if args.eval {
         wb.evaluate().unwrap_or_else(|e| {
@@ -214,10 +235,13 @@ fn cell_type_arg_to_cell_type(arg: CellTypeArg) -> visi_core::core::CellType {
     }
 }
 
-fn handle_set(args: SetArgs, quiet: bool) {
+fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale>) {
     let mut wb = WorkbookManager::load_file_or_create(&args.file).unwrap_or_else(|e| {
         exit_with_error(e, EXIT_IO_ERROR);
     });
+    if let Some(loc) = locale {
+        wb.set_locale(loc);
+    }
 
     let default_sheet_idx = wb
         .find_sheet_index(args.sheet.as_deref())
@@ -360,10 +384,13 @@ fn handle_set(args: SetArgs, quiet: bool) {
     }
 }
 
-fn handle_eval(args: EvalArgs, quiet: bool) {
+fn handle_eval(args: EvalArgs, quiet: bool, locale: Option<visi_core::core::Locale>) {
     let mut wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
         exit_with_error(e, EXIT_IO_ERROR);
     });
+    if let Some(loc) = locale {
+        wb.set_locale(loc);
+    }
 
     wb.evaluate().unwrap_or_else(|e| {
         exit_with_error(

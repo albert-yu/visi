@@ -164,6 +164,9 @@ pub struct Sheet {
     /// replay them.
     #[serde(skip)]
     pub uncommitted_actions: Vec<crate::core::SheetAction>,
+    /// Regional locale for date and number parsing.
+    #[serde(default)]
+    pub locale: crate::core::locale::Locale,
 }
 
 /// Arguments for [`Sheet::new`]. [`Default`] gives a 10x5 sheet with a
@@ -241,6 +244,7 @@ impl Sheet {
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),
             uncommitted_actions,
+            locale: crate::core::locale::Locale::default(),
         }
     }
 
@@ -397,9 +401,10 @@ impl Sheet {
                         (ResultData::Boolean(true), CellType::Boolean)
                     } else if src.eq_ignore_ascii_case("false") {
                         (ResultData::Boolean(false), CellType::Boolean)
-                    } else if let Some((date, format)) =
-                        crate::core::date::parse_date(src.trim_matches(' '))
-                    {
+                    } else if let Some((date, format)) = crate::core::date::parse_date_with_locale(
+                        src.trim_matches(' '),
+                        &self.locale,
+                    ) {
                         // Excel stores a typed date as a serial and remembers
                         // the notation as the cell's number format, so `6/22/26`
                         // is a number that happens to display as a date.
@@ -1410,11 +1415,15 @@ impl Sheet {
                     if let Ok(f) = s_trim.parse::<f64>() {
                         return Some(f);
                     }
-                    if let Some((date, _)) = crate::core::date::parse_date(s_trim) {
+                    if let Some((date, _)) =
+                        crate::core::date::parse_date_with_locale(s_trim, &self.locale)
+                    {
                         return Some(crate::core::date::date_to_excel_serial(date));
                     }
                     None
-                } else if let Some((date, _)) = crate::core::date::parse_date(s_trim) {
+                } else if let Some((date, _)) =
+                    crate::core::date::parse_date_with_locale(s_trim, &self.locale)
+                {
                     Some(crate::core::date::date_to_excel_serial(date))
                 } else {
                     None

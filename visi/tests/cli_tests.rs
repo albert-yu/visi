@@ -882,6 +882,7 @@ fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
         charts: Vec::new(),
         pivot_tables: Vec::new(),
         vba_project: None,
+        locale: visi_core::core::Locale::default(),
     };
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
@@ -932,6 +933,7 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
         charts: Vec::new(),
         pivot_tables: Vec::new(),
         vba_project: None,
+        locale: visi_core::core::Locale::default(),
     };
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
@@ -980,6 +982,7 @@ fn test_cross_sheet_circular_reference_terminates_without_hanging() {
         charts: Vec::new(),
         pivot_tables: Vec::new(),
         vba_project: None,
+        locale: visi_core::core::Locale::default(),
     };
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
@@ -2039,4 +2042,33 @@ fn test_workbook_set_cell_type_and_roundtrip() {
     ));
 
     let _ = fs::remove_file(&file_path);
+}
+
+#[test]
+fn test_cli_global_locale_flag_parses() {
+    let cli = try_parse(&["visi", "--locale", "de-DE", "eval", "data.xlsx"])
+        .expect("should parse global --locale flag");
+    assert_eq!(cli.locale.as_deref(), Some("de-DE"));
+}
+
+#[test]
+fn test_cli_workbook_locale_date_evaluation() {
+    let mut wb = WorkbookManager::new_empty().unwrap();
+    wb.set_locale(visi_core::core::Locale::de_de());
+    wb.set_cell(0, 0, 0, "22.06.2026".to_string());
+    wb.set_cell(0, 0, 1, "=A1+1".to_string());
+    wb.evaluate().unwrap();
+
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&visi_core::core::CellRef::new(0, 0))
+            .to_string(),
+        "46195"
+    );
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&visi_core::core::CellRef::new(0, 1))
+            .to_string(),
+        "46196"
+    );
 }

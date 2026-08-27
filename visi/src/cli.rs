@@ -18,6 +18,10 @@ pub struct Cli {
     /// Suppress non-essential informational messages to stderr
     #[usage(short, long, global)]
     pub quiet: bool,
+
+    /// Regional locale for date and number parsing (e.g. en-US, en-GB, de-DE, fr-FR)
+    #[usage(long, global)]
+    pub locale: Option<String>,
 }
 
 #[derive(Subcommands, Debug)]

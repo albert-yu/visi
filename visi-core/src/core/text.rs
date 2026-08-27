@@ -579,10 +579,19 @@ pub fn unicode(text: &str) -> Result<f64, String> {
     }
 }
 
+#[allow(dead_code)]
 pub fn value(text: &str) -> Result<f64, String> {
+    value_with_locale(text, &crate::core::locale::Locale::en_us())
+}
+
+pub fn value_with_locale(text: &str, locale: &crate::core::locale::Locale) -> Result<f64, String> {
     let s = text.trim();
     if let Ok(v) = s.parse::<f64>() {
         Ok(v)
+    } else if let Some((date, _)) = crate::core::date::parse_date_with_locale(s, locale) {
+        Ok(crate::core::date::date_to_excel_serial(date))
+    } else if let Some(f) = crate::core::date_fn::parse_time_fraction(s) {
+        Ok(f)
     } else {
         Err("#VALUE!".to_string())
     }

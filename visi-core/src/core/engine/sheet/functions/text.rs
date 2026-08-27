@@ -431,7 +431,7 @@ impl Sheet {
                     .first()
                     .map(|v| v.to_string())
                     .unwrap_or_default();
-                res_to_rd(crate::core::text::value(&text))
+                res_to_rd(crate::core::text::value_with_locale(&text, &self.locale))
             }
             "VALUETOTEXT" => {
                 let val = evaluated_args

@@ -48,10 +48,29 @@ impl Workbook {
 impl Workbook {
     /// An empty workbook with one sheet.
     #[new]
-    fn new() -> PyResult<Self> {
-        Ok(Self {
-            inner: WorkbookManager::new_empty().map_err(Wrapped)?,
-        })
+    #[pyo3(signature = (locale=None))]
+    fn new(locale: Option<&str>) -> PyResult<Self> {
+        let mut inner = WorkbookManager::new_empty().map_err(Wrapped)?;
+        if let Some(loc_str) = locale {
+            let loc = visi_engine::core::Locale::from_code(loc_str)
+                .ok_or_else(|| invalid_argument(format!("unrecognized locale '{loc_str}'")))?;
+            inner.set_locale(loc);
+        }
+        Ok(Self { inner })
+    }
+
+    /// Regional locale tag (e.g. "en-US", "de-DE", "en-GB").
+    #[getter]
+    fn locale(&self) -> String {
+        self.inner.locale.code.clone()
+    }
+
+    #[setter]
+    fn set_locale(&mut self, locale_str: &str) -> PyResult<()> {
+        let loc = visi_engine::core::Locale::from_code(locale_str)
+            .ok_or_else(|| invalid_argument(format!("unrecognized locale '{locale_str}'")))?;
+        self.inner.set_locale(loc);
+        Ok(())
     }
 
     /// Reads an `.xlsx` from disk.

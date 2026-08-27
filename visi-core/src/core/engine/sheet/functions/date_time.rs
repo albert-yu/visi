@@ -47,8 +47,13 @@ impl Sheet {
                 res_to_rd(crate::core::date_fn::datedif(start, end, &unit))
             }
             "DATEVALUE" => match evaluated_args.first() {
-                Some(ResultData::String(text)) => res_to_rd(crate::core::date_fn::datevalue(text)),
-                None => res_to_rd(crate::core::date_fn::datevalue("")),
+                Some(ResultData::String(text)) => res_to_rd(
+                    crate::core::date_fn::datevalue_with_locale(text, &self.locale),
+                ),
+                None => res_to_rd(crate::core::date_fn::datevalue_with_locale(
+                    "",
+                    &self.locale,
+                )),
                 _ => Ok(ResultData::Error("#VALUE!".to_string())),
             },
             "DAY" => {
