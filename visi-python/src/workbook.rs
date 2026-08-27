@@ -19,7 +19,9 @@ use visi_engine::core::{
     CellRef, PivotArea, VbaModuleKind, col_idx_to_letters, value_field_labels,
 };
 
-use crate::enums::{parse_chart_type, parse_pivot_agg, parse_pivot_area, parse_vba_module_kind};
+use crate::enums::{
+    parse_cell_type, parse_chart_type, parse_pivot_agg, parse_pivot_area, parse_vba_module_kind,
+};
 use crate::errors::{Wrapped, invalid_argument};
 use crate::value::result_to_py;
 
@@ -137,17 +139,38 @@ impl Workbook {
 
     /// Writes a cell's source text -- a literal (`"10"`) or a formula
     /// (`"=SUM(A1:A2)"`). Call `evaluate()` afterwards to recompute.
-    #[pyo3(signature = (row, col, value, sheet=None))]
+    #[pyo3(signature = (row, col, value, sheet=None, cell_type=None))]
     fn set_cell(
         &mut self,
         row: usize,
         col: usize,
         value: String,
         sheet: Option<&str>,
+        cell_type: Option<&str>,
     ) -> PyResult<()> {
         let idx = self.sheet_idx(sheet)?;
         self.inner.ensure_capacity(idx, row, col);
-        self.inner.set_cell(idx, row, col, value);
+        if let Some(ct_str) = cell_type {
+            let ct = parse_cell_type(ct_str)?;
+            self.inner.set_cell_with_type(idx, row, col, value, ct);
+        } else {
+            self.inner.set_cell(idx, row, col, value);
+        }
+        Ok(())
+    }
+
+    /// Sets the intrinsic data type of a cell at (row, col).
+    #[pyo3(signature = (row, col, cell_type, sheet=None))]
+    fn set_cell_type(
+        &mut self,
+        row: usize,
+        col: usize,
+        cell_type: &str,
+        sheet: Option<&str>,
+    ) -> PyResult<()> {
+        let idx = self.sheet_idx(sheet)?;
+        let ct = parse_cell_type(cell_type)?;
+        self.inner.set_cell_type(idx, row, col, ct);
         Ok(())
     }
 

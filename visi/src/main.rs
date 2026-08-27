@@ -3,11 +3,11 @@
 
 use serde_json::json;
 use visi::cli::{
-    ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands, EvalArgs,
-    ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroCheckArgs, MacroRunArgs, MacroSubcommands,
-    OutputFormat, PivotAggArg, PivotAreaArg, PivotArgs, PivotSubcommands, ReadArgs, RowArgs,
-    RowSubcommands, SetArgs, SheetArgs, SheetSubcommands, StyleArgs, StyleCellArgs,
-    StyleSubcommands, StyleTableArgs, TableArgs, TableSubcommands, VbaModuleKindArg,
+    CellTypeArg, ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands,
+    EvalArgs, ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroCheckArgs, MacroRunArgs,
+    MacroSubcommands, OutputFormat, PivotAggArg, PivotAreaArg, PivotArgs, PivotSubcommands,
+    ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs, SheetSubcommands, StyleArgs,
+    StyleCellArgs, StyleSubcommands, StyleTableArgs, TableArgs, TableSubcommands, VbaModuleKindArg,
 };
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::format::{get_cell_display_val, render_grid};
@@ -152,12 +152,23 @@ fn handle_read(args: ReadArgs) {
                 .get_src(&visi_core::core::CellRef::new(row, col))
                 .cloned()
                 .unwrap_or_default();
+            let cell_type = sheet.get_cell_type(&visi_core::core::CellRef::new(row, col));
+            let type_str = match cell_type {
+                visi_core::core::CellType::Auto => "auto",
+                visi_core::core::CellType::Empty => "empty",
+                visi_core::core::CellType::Number => "number",
+                visi_core::core::CellType::String => "string",
+                visi_core::core::CellType::Boolean => "boolean",
+                visi_core::core::CellType::Error => "error",
+                visi_core::core::CellType::Formula => "formula",
+            };
             let json_out = json!({
                 "sheet": sheet.name,
                 "cell": format!("{}{}", col_idx_to_letters(col), row + 1),
                 "row": row + 1,
                 "col": col_idx_to_letters(col),
                 "value": val_str,
+                "type": type_str,
                 "formula": if raw_src.starts_with('=') { Some(raw_src) } else { None }
             });
             println!("{}", serde_json::to_string_pretty(&json_out).unwrap());
@@ -189,6 +200,18 @@ fn handle_read(args: ReadArgs) {
         args.format,
     );
     print!("{}", rendered);
+}
+
+fn cell_type_arg_to_cell_type(arg: CellTypeArg) -> visi_core::core::CellType {
+    match arg {
+        CellTypeArg::Auto => visi_core::core::CellType::Auto,
+        CellTypeArg::Empty => visi_core::core::CellType::Empty,
+        CellTypeArg::Number => visi_core::core::CellType::Number,
+        CellTypeArg::String => visi_core::core::CellType::String,
+        CellTypeArg::Boolean => visi_core::core::CellType::Boolean,
+        CellTypeArg::Error => visi_core::core::CellType::Error,
+        CellTypeArg::Formula => visi_core::core::CellType::Formula,
+    }
 }
 
 fn handle_set(args: SetArgs, quiet: bool) {
@@ -245,16 +268,21 @@ fn handle_set(args: SetArgs, quiet: bool) {
         updates.push((sheet_idx, row, col, val_str.to_string()));
     }
 
-    if updates.is_empty() {
-        exit_with_error(
-            "Must specify cell assignment using --cell <CELL> --value <VALUE> or --set <CELL=VALUE>",
-            EXIT_USAGE_ERROR,
-        );
-    }
-
-    // Apply updates
-    for (s_idx, row, col, val) in &updates {
-        wb.set_cell(*s_idx, *row, *col, val.clone());
+    // 3. Cells specified with --cell without matching --value (for setting cell type or style on existing cells)
+    let mut type_only_cells: Vec<(usize, usize, usize)> = Vec::new();
+    if args.value.len() < args.cell.len() {
+        for cell_str in &args.cell[args.value.len()..] {
+            let (s_name, row, col) = parse_cell_ref(cell_str).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_USAGE_ERROR);
+            });
+            let sheet_idx = match s_name {
+                Some(name) => wb.find_sheet_index(Some(&name)).unwrap_or_else(|e| {
+                    exit_with_error(e, EXIT_USAGE_ERROR);
+                }),
+                None => default_sheet_idx,
+            };
+            type_only_cells.push((sheet_idx, row, col));
+        }
     }
 
     let style = visi_core::core::CellStyle {
@@ -267,8 +295,43 @@ fn handle_set(args: SetArgs, quiet: bool) {
         font_size: args.font_size,
         num_format: None,
     };
+
+    if updates.is_empty() && type_only_cells.is_empty() {
+        exit_with_error(
+            "Must specify cell assignment using --cell <CELL> --value <VALUE> or --set <CELL=VALUE>",
+            EXIT_USAGE_ERROR,
+        );
+    }
+
+    if updates.is_empty() && args.cell_type.is_none() && style.is_empty() {
+        exit_with_error(
+            "Must specify --value, --set, --type, or formatting options for specified cell(s)",
+            EXIT_USAGE_ERROR,
+        );
+    }
+
+    let explicit_type = args.cell_type.map(cell_type_arg_to_cell_type);
+
+    // Apply updates
+    for (s_idx, row, col, val) in &updates {
+        if let Some(ct) = explicit_type {
+            wb.set_cell_with_type(*s_idx, *row, *col, val.clone(), ct);
+        } else {
+            wb.set_cell(*s_idx, *row, *col, val.clone());
+        }
+    }
+
+    if let Some(ct) = explicit_type {
+        for (s_idx, row, col) in &type_only_cells {
+            wb.set_cell_type(*s_idx, *row, *col, ct);
+        }
+    }
+
     if !style.is_empty() {
         for (s_idx, row, col, _) in &updates {
+            wb.sheets[*s_idx].update_cell_style(*row, *col, |s| s.merge(&style));
+        }
+        for (s_idx, row, col) in &type_only_cells {
             wb.sheets[*s_idx].update_cell_style(*row, *col, |s| s.merge(&style));
         }
     }
@@ -288,11 +351,11 @@ fn handle_set(args: SetArgs, quiet: bool) {
         exit_with_error(e, EXIT_IO_ERROR);
     });
 
+    let total_updated = updates.len() + type_only_cells.len();
     if !quiet {
         eprintln!(
             "Successfully updated {} cell(s) and saved to '{}'.",
-            updates.len(),
-            save_path
+            total_updated, save_path
         );
     }
 }
