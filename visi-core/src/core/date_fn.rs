@@ -117,51 +117,20 @@ pub fn date_fn(year: f64, month: f64, day: f64) -> Result<f64, String> {
 }
 
 /// Parses a date-only text into an (year, month, day) triple, without
-/// resolving it to a serial number yet (datevalue and the date portion of
-/// value() in text.rs both need this). Supports the formats Excel's own
-/// DATEVALUE recognizes without relying on the current locale: ISO
-/// `YYYY-MM-DD` / `YYYY/MM/DD`, and US-style `M/D/YYYY` (2- or 4-digit
-/// year, 2-digit year assumed 20xx for 00-29 and 19xx for 30-99, matching
-/// Excel's own pivot point).
+/// Parses a date-only text into an (year, month, day) triple, without
+/// resolving it to a serial number yet. Uses default US locale.
+#[allow(dead_code)]
 pub fn parse_date_parts(text: &str) -> Option<(i32, i32, i32)> {
-    let s = text.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = if s.contains('-') {
-        s.split('-').collect()
-    } else if s.contains('/') {
-        s.split('/').collect()
-    } else {
-        return None;
-    };
-    if parts.len() != 3 {
-        return None;
-    }
-    let nums: Vec<i32> = parts
-        .iter()
-        .filter_map(|p| p.trim().parse::<i32>().ok())
-        .collect();
-    if nums.len() != 3 {
-        return None;
-    }
+    parse_date_parts_with_locale(text, &crate::core::locale::Locale::en_us())
+}
 
-    // ISO order (year first) if the first component looks like a year.
-    let (y, m, d) = if parts[0].trim().len() == 4 {
-        (nums[0], nums[1], nums[2])
-    } else {
-        // US order: month/day/year, with a 2- or 4-digit year.
-        let mut y = nums[2];
-        if parts[2].trim().len() <= 2 {
-            y = if y <= 29 { 2000 + y } else { 1900 + y };
-        }
-        (y, nums[0], nums[1])
-    };
-
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
-    Some((y, m, d))
+/// Parses a date-only text into an (year, month, day) triple using the specified locale.
+pub fn parse_date_parts_with_locale(
+    text: &str,
+    locale: &crate::core::locale::Locale,
+) -> Option<(i32, i32, i32)> {
+    crate::core::date::parse_date_with_locale(text, locale)
+        .map(|(d, _)| (d.year, d.month as i32, d.day as i32))
 }
 
 /// Days in a given month, honouring leap years.
@@ -233,8 +202,16 @@ pub fn datedif(start: f64, end: f64, unit: &str) -> Result<f64, String> {
     }
 }
 
+#[allow(dead_code)]
 pub fn datevalue(text: &str) -> Result<f64, String> {
-    match parse_date_parts(text) {
+    datevalue_with_locale(text, &crate::core::locale::Locale::en_us())
+}
+
+pub fn datevalue_with_locale(
+    text: &str,
+    locale: &crate::core::locale::Locale,
+) -> Result<f64, String> {
+    match parse_date_parts_with_locale(text, locale) {
         Some((y, m, d)) => Ok(ymd_to_serial(y, m, d)),
         None => Err("#VALUE!".to_string()),
     }

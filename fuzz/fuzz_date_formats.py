@@ -79,14 +79,27 @@ def is_date_format(fmt):
     return has_date_token and not has_number_placeholder
 
 
-DATE_FORMATTERS = [
-    (lambda d: (f"{d.month}/{d.day}/{d.year % 100:02d}", "m/d/yy")),
-    (lambda d: (f"{d.month}/{d.day}/{d.year}", "m/d/yyyy")),
-    (lambda d: (f"{d.year}-{d.month:02d}-{d.day:02d}", "yyyy-mm-dd")),
-    (lambda d: (f"{d.year}/{d.month:02d}/{d.day:02d}", "yyyy/mm/dd")),
-    (lambda d: (f"{d.day}-{MONTH_ABBR[d.month - 1]}-{d.year}", "d-mmm-yyyy")),
-    (lambda d: (f"{MONTH_ABBR[d.month - 1]}-{d.day}-{d.year}", "mmm-d-yyyy")),
-]
+LOCALE_FORMATTERS = {
+    "en-US": [
+        (lambda d: (f"{d.month}/{d.day}/{d.year % 100:02d}", "m/d/yy")),
+        (lambda d: (f"{d.month}/{d.day}/{d.year}", "m/d/yyyy")),
+        (lambda d: (f"{d.year}-{d.month:02d}-{d.day:02d}", "yyyy-mm-dd")),
+        (lambda d: (f"{d.year}/{d.month:02d}/{d.day:02d}", "yyyy/mm/dd")),
+        (lambda d: (f"{d.day}-{MONTH_ABBR[d.month - 1]}-{d.year}", "d-mmm-yyyy")),
+        (lambda d: (f"{MONTH_ABBR[d.month - 1]}-{d.day}-{d.year}", "mmm-d-yyyy")),
+    ],
+    "en-GB": [
+        (lambda d: (f"{d.day}/{d.month}/{d.year % 100:02d}", "d/m/yy")),
+        (lambda d: (f"{d.day}/{d.month}/{d.year}", "d/m/yyyy")),
+        (lambda d: (f"{d.year}-{d.month:02d}-{d.day:02d}", "yyyy-mm-dd")),
+        (lambda d: (f"{d.day}-{MONTH_ABBR[d.month - 1]}-{d.year}", "d-mmm-yyyy")),
+    ],
+    "de-DE": [
+        (lambda d: (f"{d.day}.{d.month}.{d.year % 100:02d}", "d.m.yy")),
+        (lambda d: (f"{d.day}.{d.month}.{d.year}", "d.m.yyyy")),
+        (lambda d: (f"{d.year}-{d.month:02d}-{d.day:02d}", "yyyy-mm-dd")),
+    ],
+}
 
 
 def random_date(rng):
@@ -94,15 +107,16 @@ def random_date(rng):
     return dt.date(rng.randint(1995, 2035), rng.randint(1, 12), rng.randint(1, 28))
 
 
-def build_workbook(path, rng):
+def build_workbook(path, rng, locale="en-US"):
     """Create one fuzz workbook through visi and return expected cell metadata."""
-    wb = visi_core.Workbook()
+    wb = visi_core.Workbook(locale=locale)
+    formatters = LOCALE_FORMATTERS.get(locale, LOCALE_FORMATTERS["en-US"])
     rows = rng.randint(3, 7)
     expected = {}
 
     for row in range(rows):
         date = random_date(rng)
-        literal, fmt = rng.choice(DATE_FORMATTERS)(date)
+        literal, fmt = rng.choice(formatters)(date)
         excel_row = row + 1
 
         wb.set_cell(row, 0, literal)
@@ -214,6 +228,7 @@ def main():
     parser.add_argument("--driver", choices=["auto", "applescript", "win32com", "cli", "mock"], default="auto")
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--locale", choices=["en-US", "en-GB", "de-DE"], help="Spreadsheet locale to fuzz.")
     parser.add_argument("--output-dir", default="./fuzz_results")
     args = parser.parse_args()
 
@@ -229,6 +244,8 @@ def main():
     print("=====================================================================")
     print(f" Iterations : {args.iterations}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
+    if args.locale:
+        print(f" Locale      : {args.locale}")
     if smoke_mode:
         print(" Mock mode: Excel round-trip is skipped; only visi source/round-trip is checked.")
     print("=====================================================================\n")
@@ -237,16 +254,19 @@ def main():
     failed = 0
     start = time.time()
 
+    locales = [args.locale] if args.locale else ["en-US", "en-GB", "de-DE"]
+
     for i in range(1, args.iterations + 1):
         iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1_000_000)
         rng = random.Random(iter_seed)
+        locale = rng.choice(locales)
         temp_dir = tempfile.mkdtemp(prefix=f"date_fmt_fuzz_{i}_")
         source_xlsx = os.path.join(temp_dir, "source.xlsx")
         visi_out_xlsx = os.path.join(temp_dir, "visi_out.xlsx")
         excel_out_xlsx = os.path.join(temp_dir, "excel_out.xlsx")
 
         try:
-            rows, expected, displays = build_workbook(source_xlsx, rng)
+            rows, expected, displays = build_workbook(source_xlsx, rng, locale=locale)
 
             # A visi-authored workbook is the exact baseline. Excel is allowed
             # to canonicalize built-in/localized date format spellings on save,

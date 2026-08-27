@@ -504,3 +504,25 @@ def test_duplicate_module_name_is_rejected():
     wb.add_macro("Mod1", MACRO_SRC)
     with pytest.raises(visi_core.AlreadyExistsError):
         wb.add_macro("Mod1", MACRO_SRC)
+
+
+def test_locale_support():
+    wb_us = visi_core.Workbook(locale="en-US")
+    assert wb_us.locale == "en-US"
+    wb_us.set_cell(0, 0, "06/07/2026")
+    wb_us.evaluate()
+    assert wb_us.get_cell(0, 0) == 46180.0
+
+    wb_gb = visi_core.Workbook(locale="en-GB")
+    assert wb_gb.locale == "en-GB"
+    wb_gb.set_cell(0, 0, "06/07/2026")
+    wb_gb.evaluate()
+    assert wb_gb.get_cell(0, 0) == 46209.0
+
+    wb_de = visi_core.Workbook()
+    wb_de.locale = "de-DE"
+    assert wb_de.locale == "de-DE"
+    wb_de.set_cell(0, 0, "22.06.2026")
+    wb_de.evaluate()
+    assert wb_de.get_cell(0, 0) == 46195.0
+

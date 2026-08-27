@@ -24,6 +24,8 @@
 //! `06/22/2026` and `6/22/2026` are the same format. Rendering is unpadded
 //! there, which is what Excel also does with `m/d/yyyy`.
 
+use crate::core::locale::{DateOrder, Locale};
+
 const MONTHS_FULL: [&str; 12] = [
     "January",
     "February",
@@ -182,6 +184,11 @@ pub enum DateFormat {
         /// Character separating the fields, `-` or `/`.
         sep: char,
     },
+    /// Numeric day and month, year assumed: `22/6`.
+    Dm {
+        /// Character separating the fields, `-`, `/`, or `.`.
+        sep: char,
+    },
     /// Numeric month and year, day assumed to be the 1st: `6/2026`.
     My {
         /// Character separating the fields, `-` or `/`.
@@ -271,6 +278,7 @@ impl DateFormat {
                 ..
             } => format!("{}{sep}{}{sep}d", year(year_len), month_word(month_full)),
             DateFormat::Md { sep } => format!("m{sep}d"),
+            DateFormat::Dm { sep } => format!("d{sep}m"),
             DateFormat::My { sep, year_len } => format!("m{sep}{}", year(year_len)),
             DateFormat::DMmm {
                 sep, month_full, ..
@@ -420,54 +428,43 @@ pub fn excel_serial_to_date(serial: f64) -> SimpleDate {
     }
 }
 
-fn find_month_word(part: &str) -> Option<(u32, bool)> {
-    // returns (month_1_based, is_full_name)
-    let p_lower = part.to_lowercase();
-    for (idx, &m) in MONTHS_FULL.iter().enumerate() {
-        if m.to_lowercase() == p_lower {
-            return Some((idx as u32 + 1, true));
-        }
-    }
-    for (idx, &m) in MONTHS_SHORT.iter().enumerate() {
-        if m.to_lowercase() == p_lower {
-            return Some((idx as u32 + 1, false));
-        }
-    }
-    None
-}
-
 fn parse_digits(part: &str) -> Option<i32> {
-    if !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()) {
-        part.parse::<i32>().ok()
+    let trimmed = part.trim().trim_end_matches('.');
+    if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        trimmed.parse::<i32>().ok()
     } else {
         None
     }
 }
 
-/// Recognizes a date written as text, returning both the date and the
-/// notation it was written in.
+/// Recognizes a date written as text using the default US locale.
+pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
+    parse_date_with_locale(src, &Locale::en_us())
+}
+
+/// Recognizes a date written as text according to a specific [`Locale`].
 ///
 /// Returns `None` for anything that is not a date, which is how
 /// `Sheet::commit` decides whether a literal becomes a plain number or a
 /// number carrying a date format. Text that merely *looks* like a date is
 /// therefore quoted on import (`xlsx::text_cell_src`) to keep it text.
-///
-/// Recognizes `-` and `/` as separators, two- and three-part forms, and
-/// month names in either spelling; a two-digit year below 30 is read as
-/// 20xx, otherwise 19xx. Day and month are validated against the calendar,
-/// so `2/30/2026` is not a date.
-pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
-    const DEFAULT_YEAR: i32 = 2026;
+pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate, DateFormat)> {
+    let default_year = locale.default_year();
+    let src_trim = src.trim();
+    if src_trim.is_empty() {
+        return None;
+    }
 
-    for &sep in &['-', '/'] {
-        let parts: Vec<&str> = src.split(sep).collect();
+    // Try standard delimiters: '-', '/', '.'
+    for &sep in &['-', '/', '.'] {
+        let parts: Vec<&str> = src_trim.split(sep).collect();
 
         // --- 3 PARTS ---
         if parts.len() == 3 {
             // Check if there is a word month in the parts
             let mut month_word_info = None;
             for (i, part) in parts.iter().enumerate() {
-                if let Some((m, is_full)) = find_month_word(part) {
+                if let Some((m, is_full)) = locale.match_month_word(part) {
                     month_word_info = Some((i, m, is_full));
                     break;
                 }
@@ -480,12 +477,12 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                     if i != month_idx
                         && let Some(val) = parse_digits(part)
                     {
-                        digit_parts.push((i, val, part.len()));
+                        digit_parts.push((i, val, part.trim().trim_end_matches('.').len()));
                     }
                 }
 
                 if digit_parts.len() == 2 {
-                    let case = detect_case(parts[month_idx]);
+                    let case = detect_case(parts[month_idx].trim().trim_end_matches('.'));
 
                     // Case A: Day-Month-Year (e.g., 22-Jun-2026, 22-Jun-26)
                     // month_idx is 1. digit_parts[0] is index 0 (day), digit_parts[1] is index 2 (year).
@@ -494,11 +491,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         let year_raw = digit_parts[1].1;
                         let year_len = digit_parts[1].2;
                         let year = if year_len == 2 {
-                            if year_raw < 30 {
-                                2000 + year_raw
-                            } else {
-                                1900 + year_raw
-                            }
+                            locale.expand_two_digit_year(year_raw)
                         } else {
                             year_raw
                         };
@@ -522,11 +515,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         let year_raw = digit_parts[1].1;
                         let year_len = digit_parts[1].2;
                         let year = if year_len == 2 {
-                            if year_raw < 30 {
-                                2000 + year_raw
-                            } else {
-                                1900 + year_raw
-                            }
+                            locale.expand_two_digit_year(year_raw)
                         } else {
                             year_raw
                         };
@@ -549,11 +538,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         let year_raw = digit_parts[0].1;
                         let year_len = digit_parts[0].2;
                         let year = if year_len == 2 {
-                            if year_raw < 30 {
-                                2000 + year_raw
-                            } else {
-                                1900 + year_raw
-                            }
+                            locale.expand_two_digit_year(year_raw)
                         } else {
                             year_raw
                         };
@@ -578,8 +563,8 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                     parse_digits(parts[1]),
                     parse_digits(parts[2]),
                 ) {
-                    let len0 = parts[0].len();
-                    let len2 = parts[2].len();
+                    let len0 = parts[0].trim().len();
+                    let len2 = parts[2].trim().len();
 
                     // Option A: YMD (Year first) - len0 == 4
                     if len0 == 4 {
@@ -601,63 +586,92 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                     if len2 == 4 || len2 == 2 {
                         let year_raw = val2;
                         let year = if len2 == 2 {
-                            if year_raw < 30 {
-                                2000 + year_raw
-                            } else {
-                                1900 + year_raw
-                            }
+                            locale.expand_two_digit_year(year_raw)
                         } else {
                             year_raw
                         };
 
-                        // Check if MDY or DMY
-                        // If val0 > 12, it must be DMY
-                        if val0 > 12 {
-                            let day = val0 as u32;
-                            let month = val1 as u32;
-                            if (1..=12).contains(&month)
-                                && day >= 1
-                                && day <= days_in_month(year, month)
-                            {
-                                return Some((
-                                    SimpleDate { year, month, day },
-                                    DateFormat::Dmy {
-                                        sep,
-                                        year_len: len2,
-                                    },
-                                ));
+                        match locale.date_order {
+                            DateOrder::Dmy => {
+                                let day = val0 as u32;
+                                let month = val1 as u32;
+                                if (1..=12).contains(&month)
+                                    && day >= 1
+                                    && day <= days_in_month(year, month)
+                                {
+                                    return Some((
+                                        SimpleDate { year, month, day },
+                                        DateFormat::Dmy {
+                                            sep,
+                                            year_len: len2,
+                                        },
+                                    ));
+                                }
                             }
-                        } else if val1 > 12 {
-                            // If val1 > 12, it must be MDY
-                            let month = val0 as u32;
-                            let day = val1 as u32;
-                            if (1..=12).contains(&month)
-                                && day >= 1
-                                && day <= days_in_month(year, month)
-                            {
-                                return Some((
-                                    SimpleDate { year, month, day },
-                                    DateFormat::Mdy {
-                                        sep,
-                                        year_len: len2,
-                                    },
-                                ));
+                            DateOrder::Mdy => {
+                                if val0 > 12 && val1 <= 12 {
+                                    // Unambiguous DMY fallback
+                                    let day = val0 as u32;
+                                    let month = val1 as u32;
+                                    if (1..=12).contains(&month)
+                                        && day >= 1
+                                        && day <= days_in_month(year, month)
+                                    {
+                                        return Some((
+                                            SimpleDate { year, month, day },
+                                            DateFormat::Dmy {
+                                                sep,
+                                                year_len: len2,
+                                            },
+                                        ));
+                                    }
+                                } else {
+                                    let month = val0 as u32;
+                                    let day = val1 as u32;
+                                    if (1..=12).contains(&month)
+                                        && day >= 1
+                                        && day <= days_in_month(year, month)
+                                    {
+                                        return Some((
+                                            SimpleDate { year, month, day },
+                                            DateFormat::Mdy {
+                                                sep,
+                                                year_len: len2,
+                                            },
+                                        ));
+                                    }
+                                }
                             }
-                        } else {
-                            // Defaults to MDY (standard US locale)
-                            let month = val0 as u32;
-                            let day = val1 as u32;
-                            if (1..=12).contains(&month)
-                                && day >= 1
-                                && day <= days_in_month(year, month)
-                            {
-                                return Some((
-                                    SimpleDate { year, month, day },
-                                    DateFormat::Mdy {
-                                        sep,
-                                        year_len: len2,
-                                    },
-                                ));
+                            DateOrder::Ymd => {
+                                if len0 == 2 && len2 <= 2 {
+                                    let y = locale.expand_two_digit_year(val0);
+                                    let m = val1 as u32;
+                                    let d = val2 as u32;
+                                    if (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m) {
+                                        return Some((
+                                            SimpleDate {
+                                                year: y,
+                                                month: m,
+                                                day: d,
+                                            },
+                                            DateFormat::Ymd { sep },
+                                        ));
+                                    }
+                                }
+                                let month = val0 as u32;
+                                let day = val1 as u32;
+                                if (1..=12).contains(&month)
+                                    && day >= 1
+                                    && day <= days_in_month(year, month)
+                                {
+                                    return Some((
+                                        SimpleDate { year, month, day },
+                                        DateFormat::Mdy {
+                                            sep,
+                                            year_len: len2,
+                                        },
+                                    ));
+                                }
                             }
                         }
                     }
@@ -670,7 +684,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
             // Check if there is a word month in the parts
             let mut month_word_info = None;
             for (i, part) in parts.iter().enumerate() {
-                if let Some((m, is_full)) = find_month_word(part) {
+                if let Some((m, is_full)) = locale.match_month_word(part) {
                     month_word_info = Some((i, m, is_full));
                     break;
                 }
@@ -679,18 +693,13 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
             if let Some((month_idx, month, is_full)) = month_word_info {
                 let digit_idx = if month_idx == 0 { 1 } else { 0 };
                 if let Some(digit_val) = parse_digits(parts[digit_idx]) {
-                    let digit_len = parts[digit_idx].len();
-                    let case = detect_case(parts[month_idx]);
+                    let digit_len = parts[digit_idx].trim().trim_end_matches('.').len();
+                    let case = detect_case(parts[month_idx].trim().trim_end_matches('.'));
 
                     // Case A: Month-Year (e.g. Jun-2026 or Jun-26 or 2026-Jun)
-                    // If digit_len == 4 or digit_val > 31 {
-                    if digit_len == 4 || (digit_len == 2 && digit_val == DEFAULT_YEAR % 100) {
+                    if digit_len == 4 || (digit_len == 2 && digit_val == default_year % 100) {
                         let year = if digit_len == 2 {
-                            if digit_val < 30 {
-                                2000 + digit_val
-                            } else {
-                                1900 + digit_val
-                            }
+                            locale.expand_two_digit_year(digit_val)
                         } else {
                             digit_val
                         };
@@ -726,14 +735,14 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                             }
                         }
                     } else {
-                        // Case B: Day-Month or Month-Day (assumes DEFAULT_YEAR)
+                        // Case B: Day-Month or Month-Day (assumes default_year)
                         let day = digit_val as u32;
-                        if day >= 1 && day <= days_in_month(DEFAULT_YEAR, month) {
+                        if day >= 1 && day <= days_in_month(default_year, month) {
                             if month_idx == 1 {
                                 // digit_idx is 0 (Day) -> e.g. 22-Jun
                                 return Some((
                                     SimpleDate {
-                                        year: DEFAULT_YEAR,
+                                        year: default_year,
                                         month,
                                         day,
                                     },
@@ -747,7 +756,7 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                                 // digit_idx is 1 (Day) -> e.g. Jun-22
                                 return Some((
                                     SimpleDate {
-                                        year: DEFAULT_YEAR,
+                                        year: default_year,
                                         month,
                                         day,
                                     },
@@ -764,7 +773,8 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
             } else {
                 // All 2 parts are digits (e.g. 6/22, 6/2026)
                 if let (Some(val0), Some(val1)) = (parse_digits(parts[0]), parse_digits(parts[1])) {
-                    let len1 = parts[1].len();
+                    let len0 = parts[0].trim().len();
+                    let len1 = parts[1].trim().len();
 
                     // Option A: Month-Year (e.g. 6/2026)
                     if len1 == 4 {
@@ -780,17 +790,57 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                                 DateFormat::My { sep, year_len: 4 },
                             ));
                         }
+                    } else if len0 == 4 {
+                        let year = val0;
+                        let month = val1 as u32;
+                        if (1..=12).contains(&month) {
+                            return Some((
+                                SimpleDate {
+                                    year,
+                                    month,
+                                    day: 1,
+                                },
+                                DateFormat::My { sep, year_len: 4 },
+                            ));
+                        }
+                    } else if locale.date_order == DateOrder::Dmy {
+                        let day = val0 as u32;
+                        let month = val1 as u32;
+                        if (1..=12).contains(&month)
+                            && day >= 1
+                            && day <= days_in_month(default_year, month)
+                        {
+                            return Some((
+                                SimpleDate {
+                                    year: default_year,
+                                    month,
+                                    day,
+                                },
+                                DateFormat::Dm { sep },
+                            ));
+                        }
+                        if (1..=12).contains(&(val0 as u32)) && len1 == 2 && val1 > 31 {
+                            let year = locale.expand_two_digit_year(val1);
+                            return Some((
+                                SimpleDate {
+                                    year,
+                                    month: val0 as u32,
+                                    day: 1,
+                                },
+                                DateFormat::My { sep, year_len: 2 },
+                            ));
+                        }
                     } else {
-                        // Option B: Month-Day (assumes DEFAULT_YEAR)
+                        // Option B: Month-Day (assumes default_year)
                         let month = val0 as u32;
                         let day = val1 as u32;
                         if (1..=12).contains(&month)
                             && day >= 1
-                            && day <= days_in_month(DEFAULT_YEAR, month)
+                            && day <= days_in_month(default_year, month)
                         {
                             return Some((
                                 SimpleDate {
-                                    year: DEFAULT_YEAR,
+                                    year: default_year,
                                     month,
                                     day,
                                 },
@@ -801,8 +851,8 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
                         // Option C: Month-Year with a 2-digit year that isn't a
                         // valid day (e.g. "1-34" -> Jan 1934), matching Excel's
                         // fallback when the second part can't be a day.
-                        if (1..=12).contains(&month) && len1 == 2 {
-                            let year = if val1 < 30 { 2000 + val1 } else { 1900 + val1 };
+                        if (1..=12).contains(&month) && len1 == 2 && val1 > 31 {
+                            let year = locale.expand_two_digit_year(val1);
                             return Some((
                                 SimpleDate {
                                     year,
@@ -817,6 +867,86 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
             }
         }
     }
+
+    // Also check space/comma-separated strings (e.g. "June 22, 2026", "22 June 2026", "22. Juni 2026")
+    if src_trim.contains(' ') || src_trim.contains(',') {
+        let space_parts: Vec<&str> = src_trim
+            .split([' ', ','])
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| p.trim())
+            .collect();
+
+        if space_parts.len() == 3 {
+            let mut month_word_info = None;
+            for (i, part) in space_parts.iter().enumerate() {
+                if let Some((m, is_full)) = locale.match_month_word(part) {
+                    month_word_info = Some((i, m, is_full));
+                    break;
+                }
+            }
+
+            if let Some((month_idx, month, is_full)) = month_word_info {
+                let mut digit_parts = Vec::new();
+                for (i, part) in space_parts.iter().enumerate() {
+                    if i != month_idx
+                        && let Some(val) = parse_digits(part)
+                    {
+                        digit_parts.push((i, val, part.trim_end_matches('.').len()));
+                    }
+                }
+
+                if digit_parts.len() == 2 {
+                    let case = detect_case(space_parts[month_idx].trim_end_matches('.'));
+                    // e.g. "22 June 2026" or "22. Juni 2026" (month_idx == 1, digit_parts[0] is index 0, digit_parts[1] is index 2)
+                    if month_idx == 1 && digit_parts[0].0 == 0 && digit_parts[1].0 == 2 {
+                        let day = digit_parts[0].1 as u32;
+                        let year_raw = digit_parts[1].1;
+                        let year_len = digit_parts[1].2;
+                        let year = if year_len == 2 {
+                            locale.expand_two_digit_year(year_raw)
+                        } else {
+                            year_raw
+                        };
+                        if day >= 1 && day <= days_in_month(year, month) {
+                            return Some((
+                                SimpleDate { year, month, day },
+                                DateFormat::DMmmY {
+                                    sep: '-',
+                                    year_len,
+                                    month_case: case,
+                                    month_full: is_full,
+                                },
+                            ));
+                        }
+                    }
+
+                    // e.g. "June 22, 2026" (month_idx == 0, digit_parts[0] is index 1, digit_parts[1] is index 2)
+                    if month_idx == 0 && digit_parts[0].0 == 1 && digit_parts[1].0 == 2 {
+                        let day = digit_parts[0].1 as u32;
+                        let year_raw = digit_parts[1].1;
+                        let year_len = digit_parts[1].2;
+                        let year = if year_len == 2 {
+                            locale.expand_two_digit_year(year_raw)
+                        } else {
+                            year_raw
+                        };
+                        if day >= 1 && day <= days_in_month(year, month) {
+                            return Some((
+                                SimpleDate { year, month, day },
+                                DateFormat::MmmDY {
+                                    sep: '-',
+                                    year_len,
+                                    month_case: case,
+                                    month_full: is_full,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -849,9 +979,7 @@ mod tests {
     use super::*;
 
     /// Every case pins both the parsed date and the [`DateFormat`] that
-    /// `parse_date` inferred. The format half used to be checked by feeding it
-    /// back through a `format_date` that nothing shipped; asserting the enum
-    /// directly covers the same detection logic without the dead round-trip.
+    /// `parse_date` inferred.
     #[test]
     fn test_date_parsing_and_format_detection() {
         let cases: &[(&str, SimpleDate, DateFormat)] = &[
@@ -1049,9 +1177,102 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_locale_aware_date_parsing() {
+        let de = Locale::de_de();
+        let gb = Locale::en_gb();
+        let us = Locale::en_us();
+
+        // In German locale: 22.06.2026 is Day=22, Month=6
+        let (date, fmt) = parse_date_with_locale("22.06.2026", &de).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 6,
+                day: 22
+            }
+        );
+        assert_eq!(
+            fmt,
+            DateFormat::Dmy {
+                sep: '.',
+                year_len: 4
+            }
+        );
+
+        // German month word: 22. Juni 2026
+        let (date, _) = parse_date_with_locale("22. Juni 2026", &de).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 6,
+                day: 22
+            }
+        );
+
+        // In UK locale: 05/06/2026 is 5th June 2026
+        let (date, _) = parse_date_with_locale("05/06/2026", &gb).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 6,
+                day: 5
+            }
+        );
+
+        // In US locale: 05/06/2026 is May 6th 2026
+        let (date, _) = parse_date_with_locale("05/06/2026", &us).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 5,
+                day: 6
+            }
+        );
+
+        // In UK/DE locale: 2-part "22/6" is Day 22, Month 6
+        let (date, fmt) = parse_date_with_locale("22/6", &gb).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 6,
+                day: 22
+            }
+        );
+        assert_eq!(fmt, DateFormat::Dm { sep: '/' });
+
+        // French month name: "14 juillet 2026"
+        let fr = Locale::fr_fr();
+        let (date, _) = parse_date_with_locale("14 juillet 2026", &fr).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 7,
+                day: 14
+            }
+        );
+
+        // Spanish month name: "12 de octubre de 2026" or "12 octubre 2026"
+        let es = Locale::es_es();
+        let (date, _) = parse_date_with_locale("12 octubre 2026", &es).unwrap();
+        assert_eq!(
+            date,
+            SimpleDate {
+                year: 2026,
+                month: 10,
+                day: 12
+            }
+        );
+    }
+
     /// The point of detecting a format at all: a date echoes back in the
-    /// notation it was typed in. This is the round trip the detection was
-    /// built for and had no consumer for until `format_date` existed.
+    /// notation it was typed in.
     #[test]
     fn test_format_date_round_trips_the_typed_notation() {
         let sources = [
@@ -1077,10 +1298,6 @@ mod tests {
         }
     }
 
-    /// `DateFormat` records the field order and year width but not whether a
-    /// numeric month or day was zero-padded, so a padded day-first or
-    /// month-first date comes back unpadded. Excel normalizes the same way
-    /// (`m/d/yyyy`); the ISO form is padded because its format code is.
     #[test]
     fn test_format_date_normalizes_zero_padding() {
         let (date, format) = parse_date("22-06-2026").unwrap();
@@ -1094,9 +1311,6 @@ mod tests {
         assert_eq!(format_date(date, &format), "2026-06-22");
     }
 
-    /// Month-name casing is carried by `DateFormat`, not by the format code,
-    /// so it survives `format_date` but not the trip through a worksheet
-    /// `numFmt` -- which is Excel's own behavior.
     #[test]
     fn test_format_date_preserves_month_name_case() {
         for src in ["22-JUN-2026", "22-jun-2026"] {
@@ -1111,10 +1325,6 @@ mod tests {
         );
     }
 
-    /// A month *name* contains letters that are themselves format tokens --
-    /// `December` an `m`, `May` a `y`. The renderer scans runs in one pass
-    /// precisely so a substituted name is never re-scanned; successive
-    /// string replacement mangled these.
     #[test]
     fn test_render_date_code_does_not_rescan_substituted_month_names() {
         let dec = SimpleDate {
@@ -1216,5 +1426,90 @@ mod tests {
             }),
             46195.0
         );
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn fuzz_parse_date_never_panics(
+            s in "\\PC*",
+            loc_idx in 0..11usize
+        ) {
+            let locales = [
+                Locale::en_us(),
+                Locale::en_gb(),
+                Locale::de_de(),
+                Locale::fr_fr(),
+                Locale::es_es(),
+                Locale::it_it(),
+                Locale::pt_br(),
+                Locale::nl_nl(),
+                Locale::ru_ru(),
+                Locale::zh_cn(),
+                Locale::ja_jp(),
+            ];
+            let loc = &locales[loc_idx];
+            let _ = parse_date_with_locale(&s, loc);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_roundtrip_us(
+            y in 1900..=2099i32,
+            m in 1..=12u32,
+            d in 1..=28u32,
+            sep in "[/\\-]"
+        ) {
+            let loc = Locale::en_us();
+            let src = format!("{}{}{}{}{}", m, sep, d, sep, y);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid MDY date must parse");
+            prop_assert_eq!(date.year, y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_roundtrip_gb(
+            y in 1900..=2099i32,
+            m in 1..=12u32,
+            d in 1..=28u32,
+            sep in "[/\\-]"
+        ) {
+            let loc = Locale::en_gb();
+            let src = format!("{}{}{}{}{}", d, sep, m, sep, y);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid DMY date must parse");
+            prop_assert_eq!(date.year, y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_roundtrip_de_dot(
+            y in 1900..=2099i32,
+            m in 1..=12u32,
+            d in 1..=28u32,
+        ) {
+            let loc = Locale::de_de();
+            let src = format!("{}.{}.{}", d, m, y);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid German dot date must parse");
+            prop_assert_eq!(date.year, y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
+
+        #[test]
+        fn fuzz_date_parsing_2digit_pivot(
+            yy in 0..=99i32,
+            m in 1..=12u32,
+            d in 1..=28u32
+        ) {
+            let loc = Locale::en_us();
+            let src = format!("{}/{}/{:02}", m, d, yy);
+            let (date, _) = parse_date_with_locale(&src, &loc).expect("valid 2-digit year date must parse");
+            let expected_y = if yy <= 29 { 2000 + yy } else { 1900 + yy };
+            prop_assert_eq!(date.year, expected_y);
+            prop_assert_eq!(date.month, m);
+            prop_assert_eq!(date.day, d);
+        }
     }
 }
