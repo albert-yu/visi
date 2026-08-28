@@ -44,16 +44,17 @@ Failures that name a workbook object carry an `ObjectKind`, so you can react
 without parsing message text:
 
 ```rust,no_run
-# use visi_core::{Error, ObjectKind, WorkbookManager};
-# fn f(wb: &mut WorkbookManager) -> Result<(), Box<dyn std::error::Error>> {
-match wb.rename_sheet("Sheet1", "Data") {
-    Err(Error::NotFound { kind: ObjectKind::Sheet, name, .. }) => {
-        eprintln!("no sheet called {name}");
-    }
-    other => other?,
+use visi_core::{Error, ObjectKind, WorkbookManager};
+
+fn f(wb: &mut WorkbookManager) -> Result<(), Box<dyn std::error::Error>> {
+  match wb.rename_sheet("Sheet1", "Data") {
+      Err(Error::NotFound { kind: ObjectKind::Sheet, name, .. }) => {
+          eprintln!("no sheet called {name}");
+      }
+      other => other?,
+  }
+  Ok(())
 }
-# Ok(())
-# }
 ```
 
 ## What it does
@@ -91,4 +92,4 @@ re-exported from the crate root and from `core` is the intended surface.
 
 Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
 
-[`WorkbookManager`]: https://docs.rs/visi-core/latest/visi_core/struct.WorkbookManager.html
+[`WorkbookManager`]:  https://docs.rs/visi-core/latest/visi_core/core/workbook/struct.WorkbookManager.html
