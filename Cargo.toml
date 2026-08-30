@@ -16,7 +16,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.2.7"
-rust-version = "1.88"
+rust-version = "1.91"
 homepage = "https://github.com/albert-yu/visi"
 repository = "https://github.com/albert-yu/visi"
 
