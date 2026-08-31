@@ -1566,7 +1566,7 @@ struct MacroCheckResult {
 /// handed over is the whole project. The default reading is that it is --
 /// right for a workbook and for a genuinely standalone `.bas`, wrong for a
 /// `.bas` cut out of a project that calls into its siblings, which is what
-/// `--partial` is for (issue #82). Nothing here tries to guess which; the
+/// `--partial` is for. Nothing here tries to guess which; the
 /// flag is the only thing that says.
 fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     let results = if is_vba_source_path(&args.file) {

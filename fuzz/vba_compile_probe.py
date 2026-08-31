@@ -63,10 +63,9 @@ from fuzz_vba_parse import ExcelVerdictDriver, build_module, visi_verdict
 # `Sub Gen(...)` and `args` into the `Gen` call in `Harness`, which has to
 # keep invoking it or the procedure is never compiled at all.
 CASES = [
-    # -- Minimizations of the issue #78 false negatives that survived the
-    #    first resolve.rs pass. The hypothesis under test is that each is a
-    #    genuinely-undeclared name rather than some unrelated syntax defect,
-    #    which was assumed but never measured.
+    # -- Undeclared names vs syntax defects. The hypothesis under test is
+    #    that each is a genuinely-undeclared name rather than some unrelated
+    #    syntax defect.
     ("undeclared:call-2-args", "x = arr(1, 2)"),
     ("undeclared:call-1-arg", "x = arr(1)"),
     ("undeclared:implicit-call-date", "d #1/1/2000#"),
@@ -109,10 +108,10 @@ CASES = [
     ("dup:dim-then-assign", "Dim x As Long\nx = 1"),
     ("dup:call-then-dim", "x = Helper(1)\nDim x As Long"),
 
-    # -- The other routes a name might take into procedure scope, left
-    #    unmeasured by the round above (issue #80). The parameter is the one
-    #    that needed the four-element case form; the rest are here because
-    #    they are the same question and cost one round trip each.
+    # -- The other routes a name might take into procedure scope.
+    #    The parameter is the one that needed the four-element case form; the
+    #    rest are here because they are the same question and cost one round
+    #    trip each.
     #    `dup:param-control` is the harness check: if a signature alone
     #    breaks the wrapper, every other verdict in this group is worthless.
     ("dup:param-control", "y = x", "ByVal x As Long", " 1"),
@@ -160,7 +159,7 @@ CASES = [
     ("builtin:expr-Range", 'x = Range("A1")'),
     ("builtin:expr-Worksheets", "x = Worksheets(1)"),
 
-    # -- Issue #81: a `Print` output list. Not an argument list -- `;` is a
+    # -- A `Print` output list. Not an argument list -- `;` is a
     #    separator here and nowhere else in the grammar, and the item and
     #    the separator are each independently optional. The last three are
     #    the boundary: `;` does not generalize to other bare-argument

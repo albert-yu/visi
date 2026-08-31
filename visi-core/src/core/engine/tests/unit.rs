@@ -1230,15 +1230,9 @@ fn test_excel_table_cross_sheet_reference() {
 
 #[test]
 fn test_excel_table_structured_reference_survives_commit() {
-    // Regression test: `commit()` re-derives each formula's evaluated
-    // source text via `compile_formula`/`serialize_formula` on every run
-    // (see Sheet::commit), not just the first time. That recompilation
-    // step must recognize a real ExcelTable's columns -- if it instead
-    // tried to resolve them the legacy way (as plain DataColumn names, all
-    // of which are blank for a table's columns), it would rewrite the
-    // formula's column name to a bogus placeholder and break it, even
-    // though a direct `sheet.eval()` call (bypassing compile_formula) would
-    // have worked fine.
+    // `commit()` re-derives each formula's evaluated source text via
+    // `compile_formula`/`serialize_formula` on every run (see Sheet::commit).
+    // That recompilation step recognizes a real ExcelTable's columns.
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 4,
@@ -1349,16 +1343,11 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
     );
 }
 
-/// #26 flags an absence of any circular-reference testing: `commit`'s
-/// dirty-cell BFS is bounded by `max_ops`, not real cycle detection (unlike
-/// real Excel, which shows a warning and substitutes 0 by default, or
-/// converges under user-configured iterative calculation -- neither
-/// modeled here). This is a documented, intentional shortcut, not a bug to
-/// fix, but nothing previously confirmed it actually holds: these tests
-/// lock in the safety property that matters -- a cycle terminates quickly
-/// with a finite result rather than hanging or panicking -- so a future
-/// change to the dirty-queue/max_ops logic can't silently regress that
-/// into an infinite loop.
+/// `commit`'s dirty-cell BFS is bounded by `max_ops`, not real cycle detection
+/// (unlike real Excel, which shows a warning and substitutes 0 by default, or
+/// converges under user-configured iterative calculation -- neither modeled here).
+/// These tests verify that a cycle terminates quickly with a finite result rather
+/// than hanging or panicking.
 #[test]
 fn test_self_referencing_formula_terminates_without_hanging() {
     let mut sheet = Sheet::new(SheetInit {
@@ -1414,20 +1403,9 @@ fn test_multi_cell_circular_chain_terminates_without_hanging() {
     }
 }
 
-/// Regression for a stack-overflow/hang found via visi-core/fuzz's
-/// formula_eval target within its first extended run (#26 -- zero
-/// formula-level Rust fuzz coverage existed before that target). A bare,
-/// unaggregated range reference that includes the very cell its own
-/// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P
-/// span) reads its own currently-stored value back as one element of the
-/// range on every recompute; since that stored value *is* the previous
-/// recompute's `ResultData::List`, each pass nested a List one level
-/// deeper inside itself. Per-op cost grew visibly superlinearly (measured
-/// via temporary instrumentation: ~350ms for ops 1-200, ~3.6s for ops
-/// 1000-1200) and the process stack-overflowed via recursive Clone/Drop
-/// around op ~1300 -- well before commit()'s own max_ops=10000 circuit
-/// breaker ever got a chance to trip, since each op was individually
-/// getting more expensive rather than the op *count* running away.
+/// A bare, unaggregated range reference that includes the very cell its own
+/// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P span)
+/// does not grow nested Lists unbounded on recompute passes.
 #[test]
 fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
     let mut sheet = Sheet::new(SheetInit {
@@ -1599,10 +1577,8 @@ fn bold() -> crate::core::CellStyle {
     }
 }
 
-/// `extend` used to grow `src`/`data`/`compiled_src` and leave `styles`
-/// behind, which made the new row unstylable: `set_cell_style` computed a
-/// row count from `src`, found nothing to grow, then silently dropped the
-/// style because the index was past `styles`' end.
+/// `extend` grows `src`/`data`/`compiled_src` and `styles` together so that
+/// the new row remains stylable.
 #[test]
 fn test_extend_down_keeps_styles_aligned() {
     let mut sheet = Sheet::new(SheetInit {

@@ -84,15 +84,11 @@ class ExcelFuzzGenerator:
         "LEFTB", "LENB", "MIDB", "REPT", "RIGHTB", "SEARCH", "SEARCHB",
         "SUBSTITUTE", "T", "TEXTAFTER", "TEXTBEFORE", "UNICHAR", "UNICODE"
     ]
-    # Date/engineering/information functions used to live in
-    # FUNCTIONS_DATE/FUNCTIONS_ENGINEERING/FUNCTIONS_INFO but were never
-    # actually wired into gen_expr's fn_type dispatch (dead lists -- none of
-    # these were ever generated). They've been folded into the bespoke
-    # per-function generators below (generate_date_formula/
-    # generate_engineering_formula/generate_logic_formula) instead, since
-    # their wildly varying arities (DATE takes 3 args, YEAR takes 1, BASE
-    # takes a string + radix, ...) don't fit gen_expr's uniform
-    # arbitrary-sub-expression substitution model.
+    # Date/engineering/information functions use bespoke per-function
+    # generators below (generate_date_formula/generate_engineering_formula/
+    # generate_logic_formula), since their wildly varying arities (DATE takes
+    # 3 args, YEAR takes 1, BASE takes a string + radix, ...) don't fit
+    # gen_expr's uniform arbitrary-sub-expression substitution model.
     DATE_FUNCTIONS = [
         "DATE", "DAY", "DAYS", "DAYS360", "EDATE", "EOMONTH", "HOUR", "MINUTE",
         "MONTH", "SECOND", "TIME", "WEEKDAY", "WEEKNUM", "YEAR", "YEARFRAC",
@@ -1505,7 +1501,7 @@ class ExcelFuzzGenerator:
                 u1, u2 = u2, u1
             return f'=CONVERT({round(random.uniform(-100, 500), 2)}, "{u1}", "{u2}")'
         # BESSELI/BESSELJ/BESSELK/BESSELY are deliberately absent from
-        # ENGINEERING_FUNCTIONS (see issue #94): real Excel cannot serve as
+        # ENGINEERING_FUNCTIONS: real Excel cannot serve as
         # an oracle for them because Excel is the inaccurate side. Arbitrated against
         # 60-significant-digit reference values (Decimal evaluation of the
         # ascending series), visi's BESSELJ is accurate to ~1e-16 relative
@@ -2109,18 +2105,7 @@ class ExcelFuzzGenerator:
         # followed by positive returns that more than repay it. That gives
         # exactly one sign change, so IRR/XIRR/MIRR are guaranteed a unique
         # positive root.
-        #
-        # The cashflows used to be `-outlay` followed by five *randomly
-        # signed* amounts, which routinely produced series with no real
-        # rate of return at all -- and real Excel does not report #NUM! for
-        # those, it returns a non-answer. Checked directly on three series
-        # this harness generated: Excel's XIRR returned -0.92945409,
-        # 2.98e-09 and -0.89982008, but XNPV evaluated at those very rates
-        # is -184430.99, -34415.90 and -8804.04 -- nowhere near zero -- and
-        # for the first two, XNPV has no sign change anywhere in
-        # (-0.999, 10), i.e. no root exists to find. visi answers #NUM!,
-        # which is right; comparing against Excel's output there would be
-        # asserting Excel's non-convergence garbage as the expected value.
+
         cash_rows = 6
         outlay = round(random.uniform(5000, 50000), 2)
         ws.cell(row=1, column=fin_cash_col, value=-outlay)
@@ -2266,9 +2251,7 @@ class ExcelFuzzGenerator:
 
         # --- Cross-sheet block: a real second sheet, so quoted sheet names
         # with spaces (`'Data Sheet'!A1`) and WorkbookManager::evaluate()'s
-        # 3-pass cross-sheet propagation are actually exercised end-to-end --
-        # previously this generator only ever produced single-sheet
-        # workbooks (#26).
+        # 3-pass cross-sheet propagation are actually exercised end-to-end.
         #
         # A strict one-directional chain (never a cycle, which neither
         # engine is guaranteed to resolve the same way):
@@ -2669,8 +2652,7 @@ class XLSXEvaluatedReader:
 # Excel's output. openpyxl writes no cached <v> for a formula cell, so every
 # formula cell reads as None on the "Excel" side -- 360 of 530 cells in a
 # default grid. Comparing against that isn't a weak oracle, it's a guaranteed
-# 100% mismatch, and the harness used to report it as such: exit 1 every run,
-# plus a failure-artifact directory per iteration.
+# 100% mismatch.
 #
 # So mock does not get compared. What it is actually for -- and what
 # fuzz/README.md has always called it -- is a smoke test of the pipeline

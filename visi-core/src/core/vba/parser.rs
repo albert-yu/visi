@@ -1519,8 +1519,7 @@ impl Parser {
     /// it differs was measured with `fuzz/vba_compile_probe.py` against
     /// real Excel rather than read off the spec:
     ///
-    /// - `;` separates items as `,` does (`Debug.Print "a"; 1`). Issue #81
-    ///   is that rejecting it called working code broken.
+    /// - `;` separates items as `,` does (`Debug.Print "a"; 1`).
     /// - A **trailing** separator is legal, and meaningful -- it suppresses
     ///   the newline: `Debug.Print "a";`, `Debug.Print "a",`.
     /// - So is a leading or a repeated one, which prints an empty item:
@@ -2507,8 +2506,7 @@ End Sub
 
     #[test]
     fn print_output_lists_accept_every_separator_excel_does() {
-        // Issue #81: `;` is a `Print` output separator, and rejecting it
-        // called working code broken. Every case here is one
+        // `;` is a `Print` output separator. Every case here is one
         // `fuzz/vba_compile_probe.py` measurement that real Excel compiled;
         // `_` is an empty output item.
         for (src, want) in [

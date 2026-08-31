@@ -118,11 +118,7 @@ impl Sheet {
                 // flat, row-major `List` is reshaped using the
                 // *unevaluated* range's column span, the first *row*
                 // (not column) is searched, and the match is read back
-                // out of the target row. Previously this went through
-                // `extract_matrix`, which coerces every cell through
-                // `to_f64` and silently drops non-numeric ones -- so a
-                // text header row (the common HLOOKUP case) never
-                // matched.
+                // out of the target row.
                 if let ResultData::List(list) = &evaluated_args[1] {
                     let num_cols = match &args[1] {
                         Expr::RangeRef {
@@ -203,12 +199,9 @@ impl Sheet {
             // No OLAP cube connection concept exists in this engine --
             // #N/A matches what real Excel shows once a cube function's
             // underlying connection is unavailable, the same reasoning
-            // already applied to RTD/STOCKHISTORY above, rather than
-            // the misleading echo-the-last-argument placeholder these
-            // (and GROUPBY/PIVOTBY/IMAGE/WEBSERVICE below) used to fall
-            // through to -- a plausible-looking wrong value is worse
-            // than a visible error, since it can silently corrupt a
-            // downstream calculation with no signal anything is wrong.
+            // already applied to RTD/STOCKHISTORY above -- a plausible-looking
+            // wrong value is worse than a visible error, since it can silently
+            // corrupt a downstream calculation with no signal anything is wrong.
             "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER"
             | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" => Ok(ResultData::Error("#N/A".to_string())),
             // WEBSERVICE needs actual network access to an arbitrary
@@ -220,18 +213,11 @@ impl Sheet {
             // error for a source it can't resolve to a usable image.
             "IMAGE" => Ok(ResultData::Error("#VALUE!".to_string())),
             // GROUPBY/PIVOTBY are genuine, deterministic array
-            // functions (not connection-dependent like the above) --
-            // unlike those, faking an error here would be its own
-            // regression from the previous echo-last-arg placeholder,
-            // which at least degraded gracefully for the single-
-            // aggregate-function common case. Properly implementing
-            // Excel's full row/column-field grouping and dynamic-array
-            // spill semantics is real, separately-scoped work (this
-            // engine already has the pivot-table grouping machinery in
-            // pivot.rs that a real implementation would build on) --
-            // left as a stub for now, but returning #N/A like the
-            // genuinely-unimplementable functions above would be
-            // actively misleading about *why* it's unimplemented.
+            // functions (not connection-dependent like the above).
+            // Properly implementing Excel's full row/column-field grouping and
+            // dynamic-array spill semantics is real, separately-scoped work
+            // (this engine already has the pivot-table grouping machinery in
+            // pivot.rs that a real implementation would build on).
             "GROUPBY" | "PIVOTBY" => Ok(evaluated_args.last().cloned().unwrap_or(ResultData::None)),
             "FILTERXML" => {
                 let xml = evaluated_args
@@ -1035,8 +1021,7 @@ impl Sheet {
                 // Excel gives up once the quotient gets large enough
                 // that `n - d * INT(n / d)` stops being meaningful, and
                 // reports #NUM! rather than a number built out of noise
-                // -- MOD(28^31, 3) is #NUM! there, while visi used to
-                // answer 0 from a value 28^31 cannot represent anyway.
+                // -- MOD(28^31, 3) is #NUM! there.
                 //
                 // The cutoff is on the quotient, not on either operand
                 // (MOD(1E15, 1E7) is fine, MOD(1E13, 3) is not), and is

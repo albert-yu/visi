@@ -2599,11 +2599,8 @@ fn numeric_at(sheet: &Sheet, row: usize, col: usize) -> f64 {
 /// Harvested from a differential-fuzz grid whose `G1` held a single space.
 /// OOXML strips whitespace-only `<t>` content that isn't marked
 /// `xml:space="preserve"`, so both engines see an empty string -- and Excel
-/// keeps it as a text cell. visi used to rebuild it as blank on import, which
-/// made three separate formulas in that one grid disagree with Excel at once:
-/// `TYPE(G1)` answered 1 instead of 2, `G1 < 100` answered TRUE instead of
-/// FALSE (text sorts above every number in Excel), and an `ISERROR` over a
-/// division by `AND(..., G1 < 100)` missed the `#DIV/0!` that Excel produced.
+/// keeps it as a text cell: `TYPE(G1)` is 2, `G1 < 100` is FALSE (text sorts
+/// above every number in Excel), and `ISBLANK(G1)` is FALSE.
 #[test]
 fn test_fuzz_empty_string_cell_is_text_not_blank() {
     let sheet_src = [

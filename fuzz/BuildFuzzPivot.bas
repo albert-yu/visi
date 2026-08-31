@@ -47,21 +47,8 @@ Sub BuildFuzzPivot(rowFieldsCSV As String, colFieldsCSV As String, valueFieldsCS
     pt.MergeLabels = False
     pt.HasAutoFormat = False
 
-    ' GitHub issue #14 -- this assignment is intentionally swapped relative
-    ' to the argument names. Root-caused via a throwaway diagnostic build
-    ' that logged the live `pt.RowGrand`/`pt.ColumnGrand` values (read back
-    ' immediately after assignment and again after RefreshTable) into a
-    ' worksheet, since AppleScript's `run VB macro` doesn't surface the
-    ' Immediate window for `Debug.Print`: on Mac Excel, `pt.RowGrand = True`
-    ' reads back as True right up through RefreshTable, yet the saved
-    ' .xlsx's rendered grid and `rowGrandTotals`/`colGrandTotals` XML
-    ' attributes come out as if `RowGrand`/`ColumnGrand` had been assigned
-    ' to each other -- reproduced 100% of the time (6/6 manual configs,
-    ' including a from-scratch Excel session with no prior pivot table, and
-    ' independent of which property is assigned first), so it's Mac
-    ' Excel's *save* path that swaps them, not a flaky read/write race. Not
-    ' confirmed on Windows -- `_run_win32com` in fuzz_pivot.py is untouched
-    ' since it goes through COM directly rather than this VBA macro.
+    ' Mac Excel's save path swaps RowGrand/ColumnGrand when exporting XML
+    ' attributes (rowGrandTotals/colGrandTotals) and rendering the grid.
     pt.ColumnGrand = (grandRowStr = "1")
     pt.RowGrand = (grandColStr = "1")
     pt.RefreshTable
@@ -118,9 +105,9 @@ Private Sub ApplyValueFields(pt As PivotTable, fieldsCSV As String)
         ' AddDataField, not `.Orientation = xlDataField` in a loop, is the
         ' API Excel documents for adding a field to Values more than once --
         ' the Orientation-loop pattern is non-deterministic in real Excel
-        ' when the same source column backs two value fields (see GitHub
-        ' issue #13). Omitting the Caption arg lets Excel derive its own
-        ' default caption, same as it would from the Orientation path.
+        ' when the same source column backs two value fields. Omitting the
+        ' Caption arg lets Excel derive its own default caption, same as
+        ' it would from the Orientation path.
         pt.AddDataField pf, , fn
     Next i
 End Sub

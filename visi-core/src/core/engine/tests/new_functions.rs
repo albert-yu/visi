@@ -119,11 +119,8 @@ fn test_coupon_date_functions_match_microsoft_docs_example() {
 
 #[test]
 fn test_coupncd_handles_day_of_month_clamping_correctly() {
-    // Regression for a real bug found via the differential fuzzer: walking
-    // a coupon schedule by chaining EDATE calls let day-31 clamping in a
-    // short month (e.g. April) permanently overwrite the day-of-month for
-    // every later step. COUPNCD/COUPPCD/COUPNUM now re-derive each quasi-
-    // coupon date from the maturity anchor instead of chaining.
+    // Walking a coupon schedule by anchoring each quasi-coupon date from the
+    // maturity anchor handles day-of-month clamping in short months (e.g. April).
     assert_float_close(
         &eval1("=COUPNCD(DATE(2007,11,21), EDATE(DATE(2007,11,21),30), 4)"),
         39499.0,
@@ -412,11 +409,8 @@ fn test_oddlprice_oddlyield_match_real_excel() {
         14.62856320740453,
         1e-6,
     );
-    // Basis 1 and a freq=2/basis=2 case: both regression-test E being
-    // anchored at the regular period *following* last_interest, not the
-    // one *preceding* maturity -- an earlier version used the maturity
-    // anchor, which only coincidentally matched when the two periods
-    // happened to have the same calendar length.
+    // Basis 1 and a freq=2/basis=2 case: tests E being anchored at the
+    // regular period *following* last_interest, not the one *preceding* maturity.
     assert_float_close(
         &eval1(
             "=ODDLYIELD((DATE(2001,3,3)+10), (DATE(2001,3,3)+123), DATE(2001,3,3), 0.0546, 93.74, 100, 4, 1)",
@@ -697,12 +691,8 @@ fn test_database_blank_criteria_row_matches_every_record() {
 
 #[test]
 fn test_database_aggregation_ignores_blank_and_boolean_range_values() {
-    // Regression for a real bug found via the differential fuzzer:
-    // aggregating with `to_f64` (which coerces blank -> 0 and booleans ->
-    // 1/0 for scalar arithmetic) let a single blank matched row zero out
-    // DPRODUCT entirely, and skewed DCOUNT/DSUM/DAVERAGE by counting
-    // blanks and TRUE/FALSE as numeric 0/1 -- Excel ignores both within a
-    // range argument, same as SUM/COUNT/AVERAGE do.
+    // Aggregating range arguments in DSUM/DCOUNT/DPRODUCT/DAVERAGE ignores
+    // blanks and TRUE/FALSE range cells rather than coercing them to numeric 0/1.
     let grid: [[&str; 4]; 4] = [
         ["Key", "Val", "=DSUM(A1:B4, \"Val\", D1:D2)", "Key"],
         ["x", "10", "", "x"],
@@ -720,12 +710,8 @@ fn test_database_aggregation_ignores_blank_and_boolean_range_values() {
 
 #[test]
 fn test_database_numeric_criteria_excludes_non_numeric_cells() {
-    // Regression for a real bug found via the differential fuzzer: a
-    // ">"/"<" criterion was matching blank, text, and boolean database
-    // cells by silently comparing them as if they were 0 (`to_f64`'s
-    // scalar-arithmetic default). Excel only ever matches genuine numbers
-    // against a numeric criterion -- blank/text/boolean cells must fail
-    // it outright, the same way they're excluded from range aggregation.
+    // Numeric criteria (e.g. ">"/"<") match genuine numbers only;
+    // blank/text/boolean database cells do not match.
     let grid: [[&str; 4]; 6] = [
         ["Key", "Val", "=DCOUNT(A1:B6, \"Val\", D1:D2)", "Val"],
         ["x", "1", "", "<1000"],
@@ -888,13 +874,8 @@ fn test_makearray_builds_row_major_flat_array_hand_verified() {
 
 #[test]
 fn test_index_two_arg_form_is_one_based() {
-    // Regression for a real bug found while testing MAP/BYROW: the 2-arg
-    // INDEX(array, n) form returned the element one *past* the requested
-    // 1-based position (INDEX(list,1) returned list's 2nd element), while
-    // the 3-arg row/col form was already correctly 1-based. The
-    // standalone INDEX fuzz generator only ever used the 3-arg form, so
-    // this never surfaced until a real 2-arg call (from MAP's own
-    // implementation) exercised it.
+    // The 2-arg INDEX(array, n) form is 1-based (INDEX(list, 1) returns
+    // the list's 1st element).
     let grid: [[&str; 2]; 3] = [
         ["10", "=INDEX(A1:A3, 1)"],
         ["20", "=INDEX(A1:A3, 2)"],
@@ -916,10 +897,9 @@ fn test_index_two_arg_form_is_one_based() {
 
 #[test]
 fn test_row_and_column_return_array_for_multi_row_or_col_range() {
-    // Regression for a real bug found via the differential fuzzer:
-    // ROW/COLUMN against a multi-row/multi-column reference must return
-    // an array (one entry per row/column spanned), not just the first
-    // position -- `=SUM(ROW(A1:A5))` is 1+2+3+4+5=15, not 1.
+    // ROW/COLUMN against a multi-row/multi-column reference return
+    // an array (one entry per row/column spanned) -- `=SUM(ROW(A1:A5))`
+    // is 1+2+3+4+5=15.
     let grid: [[&str; 2]; 5] = [
         ["10", "=SUM(ROW(A1:A5))"],
         ["20", "=INDEX(ROW(A1:A5), 3)"],
@@ -992,10 +972,7 @@ fn test_sheets_counts_context_sheets() {
 
 #[test]
 fn test_sheet_reports_real_workbook_ordinal() {
-    // Regression for #26: SHEET() always returned 1 regardless of true
-    // position, since `Context.sheets` is an unordered `HashMap` and
-    // nothing threaded real order down from `WorkbookManager::sheets` (a
-    // `Vec`, where order is genuine) into `Sheet::evaluate_function`.
+    // SHEET() reports the sheet's 1-based position in workbook order.
     let table1 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_1".to_string()),
@@ -1124,14 +1101,8 @@ fn test_transpose_swaps_rows_and_cols() {
 
 #[test]
 fn test_index_recovers_shape_of_nested_reshape_function() {
-    // Regression test: INDEX's 3-arg row/col form used to only recover a
-    // real 2D shape when its first argument was a bare `RangeRef`,
-    // defaulting to `num_cols = 1` (i.e. "one long row") for anything
-    // else -- including the output of another array-reshaping function.
-    // Found via `INDEX(EXPAND(A1:B2,3,3,0),3,3)` against real Excel:
-    // Excel returned the pad value 0, visi returned 5 (silently reading
-    // the wrong flat offset). Fixed by teaching `array_shape` to recurse
-    // into known array-producing function calls (`function_call_cols`).
+    // INDEX's 3-arg row/col form recovers the 2D shape of array-producing
+    // function calls (such as EXPAND).
     let grid: [[&str; 3]; 2] = [
         ["1", "2", "=INDEX(EXPAND(A1:B2,3,3,0),3,3)"],
         ["4", "5", ""],
@@ -1285,14 +1256,7 @@ fn test_fuzz_unique_distinguishes_numeric_text_from_numbers() {
 
 #[test]
 fn test_sort_and_sortby_always_place_blanks_last() {
-    // Regression test: SORT/SORTBY used the same blank-coerces-to-0/""/
-    // false comparator as ordinary `<`/`>` operators, so descending order
-    // reversed that coercion and put a blank cell *first* (0 being the
-    // largest of a set of negative numbers) instead of last. Real Excel
-    // documents that both SORT and SORTBY always place blanks last,
-    // regardless of sort direction -- found via the differential fuzzer:
-    // `SORT({-215.8,,-100,-240.97,-88},1,-1)` gave 0 instead of -88 for
-    // its first element.
+    // Both SORT and SORTBY always place blanks last, regardless of sort direction.
     let grid: [[&str; 4]; 5] = [
         ["-215.8", "10", "", "=INDEX(SORT(A1:A5,1,-1),1)"],
         ["", "20", "4", "=INDEX(SORTBY(B1:B5,C1:C5,-1),1)"],
@@ -1408,9 +1372,7 @@ fn test_randarray_respects_shape_bounds_and_whole_number_flag() {
 
 #[test]
 fn test_hlookup_exact_and_approximate_match_on_text_header_row() {
-    // extract_matrix-based HLOOKUP used to coerce every cell through
-    // to_f64 and silently drop non-numeric ones, so a text header row (the
-    // common HLOOKUP case) never matched -- see #26.
+    // HLOOKUP matches exact and approximate values on text header rows.
     let grid: [[&str; 3]; 2] = [["Jan", "Feb", "Mar"], ["10", "20", "30"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -1464,10 +1426,9 @@ fn test_date_functions_match_documented_excel_examples() {
 
 #[test]
 fn test_besselk_bessely_match_known_reference_values() {
-    // Regression for #26: BESSELK/BESSELY used to alias BESSELI/BESSELJ
-    // directly, which is a distinct-function bug, not an imprecision --
-    // K_n/Y_n diverge as x -> 0 while I_n/J_n stay finite there. Expected
-    // values are well-known constants (Abramowitz & Stegun tables).
+    // BESSELK/BESSELY match known reference values (K_n/Y_n diverge as x -> 0
+    // while I_n/J_n stay finite there). Expected values are well-known
+    // constants (Abramowitz & Stegun tables).
     assert_float_close(&eval1("=BESSELK(1,0)"), 0.4210244382, 1e-8);
     assert_float_close(&eval1("=BESSELK(1,1)"), 0.6019072301, 1e-8);
     assert_float_close(&eval1("=BESSELY(1,0)"), 0.0882569642, 1e-8);
@@ -1494,15 +1455,12 @@ fn test_complex_number_functions_round_trip() {
 
 #[test]
 fn test_cube_webservice_image_report_unavailable_connections_not_echo_stub_args() {
-    // Regression for #26: these used to echo their last argument back as
-    // a placeholder result -- a plausible-looking wrong value is worse
-    // than a visible error, since it can silently corrupt a downstream
-    // calculation with no signal anything is wrong. None has a local data
-    // source this engine can serve (a live OLAP cube connection, actual
-    // network access, real image decoding); the error codes match what
-    // real Excel shows once its equivalent live connection/resource is
-    // unavailable (#N/A for the CUBE* family, mirroring RTD/STOCKHISTORY
-    // just below; #VALUE! for WEBSERVICE/IMAGE, per Microsoft's own docs).
+    // None has a local data source this engine can serve (a live OLAP cube
+    // connection, actual network access, real image decoding); the error
+    // codes match what real Excel shows once its equivalent live connection/
+    // resource is unavailable (#N/A for the CUBE* family, mirroring
+    // RTD/STOCKHISTORY just below; #VALUE! for WEBSERVICE/IMAGE, per
+    // Microsoft's own docs).
     for formula in [
         "=CUBEKPIMEMBER(\"conn\",\"kpi\",1)",
         "=CUBEMEMBER(\"conn\",\"member\")",

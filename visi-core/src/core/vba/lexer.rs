@@ -299,9 +299,6 @@ impl Lexer {
                 // enforces for modules). Measured -- real Excel refuses to
                 // compile `_ y = 2`, while a trailing `_` continuation is
                 // fine (`fuzz/vba_compile_probe.py --only continuation`).
-                // Left as an identifier, it silently became an implicit-call
-                // statement on a name spelled `_`, which is issue #78's
-                // iter_24 false negative.
                 //
                 // Note `is_ident_start` still admits `_`: it answers a
                 // different question at `suffix_would_be_operator`, where a
@@ -778,9 +775,7 @@ mod tests {
     #[test]
     fn a_name_cannot_start_with_an_underscore() {
         // Measured against real Excel, which refuses to compile `_ y = 2`
-        // (`fuzz/vba_compile_probe.py --only continuation`). This test used
-        // to assert the opposite -- that `_leading` lexed as an identifier --
-        // which is what let issue #78's iter_24 through as a false negative.
+        // (`fuzz/vba_compile_probe.py --only continuation`).
         assert!(lex("_leading\n").is_err());
         assert!(lex("_ y = 2\n").is_err());
         // A *trailing* `_` is a real continuation and stays one.

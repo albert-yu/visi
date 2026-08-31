@@ -14,10 +14,9 @@
 //! e.g. MSForms, Office -- which this codebase doesn't yet synthesize). For
 //! a brand-new project, `VbaProject::new_empty` builds `raw_donor` (and the
 //! per-module `prefix_bytes` new modules borrow) entirely synthetically via
-//! `vba_synth.rs`, with no real Excel-authored file involved. See
-//! `vba_xlsx.rs` and `vba_synth.rs` for why that used to require one, and
-//! the design notes in this crate's VBA feature plan for the full rationale
-//! (proven via a scratchpad proof-of-concept against real Excel).
+//! `vba_synth.rs`, with no real Excel-authored file involved. See the design
+//! notes in this crate's VBA feature plan for the full rationale (proven via a
+//! scratchpad proof-of-concept against real Excel).
 
 // The syntax layer. These are `#[doc(hidden)] pub` for the same reason
 // `ovba` and `vba_xlsx` are: `visi-core/fuzz`'s `vba_parse` target needs to
@@ -60,7 +59,7 @@ pub struct ModuleSyntax {
 /// Checks a VBA module's source for syntax errors.
 ///
 /// Phase 0 of the plan in `docs/vba-macro-support.md`, plus the narrow
-/// name-resolution pass in [`resolve`] that issue #78 called for: it answers
+/// name-resolution pass in [`resolve`]: it answers
 /// whether the source *compiles*, as far as parsing and resolving the names
 /// it can see will show. It does not check types or evaluate anything, so it
 /// will still accept a module that fails at run time -- and, being an
@@ -428,16 +427,8 @@ pub struct VbaModule {
     #[serde(default)]
     pub prefix_bytes: Vec<u8>,
     /// The module stream's MODULECOOKIE record (`0x002C`) value. MS-OVBA
-    /// documents this as implementation-specific and ignorable on read, but
-    /// this codebase used to blindly overwrite every module's (including
-    /// untouched, imported ones') cookie with a hardcoded `0xFFFF` on every
-    /// export -- discovered while investigating why every workbook this
-    /// codebase produces failed `has vb project` in real Excel, by diffing
-    /// a re-exported real donor project's `dir` stream against the
-    /// original's record-by-record and finding this was the one place real
-    /// data was being discarded and replaced rather than round-tripped
-    /// verbatim. Preserved here instead so an imported module's original
-    /// value survives re-export.
+    /// documents this as implementation-specific and ignorable on read.
+    /// Preserved here so an imported module's original value survives re-export.
     #[serde(default = "default_module_cookie")]
     pub module_cookie: u16,
     /// This module stream's already-compressed source, as read back
@@ -729,7 +720,7 @@ mod tests {
     const CALLEE: &str = "Public Sub DoWork(n As Long)\nEnd Sub\n";
 
     /// The two scopes differ on exactly one thing, and only on it: a name
-    /// no supplied module declares. Issue #82.
+    /// no supplied module declares.
     #[test]
     fn partial_scope_accepts_a_call_into_source_not_supplied() {
         // A fragment on its own: reported by default, accepted as partial.

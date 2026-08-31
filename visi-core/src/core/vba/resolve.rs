@@ -2,12 +2,10 @@
 //!
 //! `parser.rs` cannot "even tell a procedure call from an array index
 //! without a symbol table" (see its module doc and
-//! `docs/vba-macro-support.md`). [issue #78] quantified the fallout: 11 of
-//! 100 win32com-generated cases were false negatives -- `check_syntax`
-//! accepted source real Excel refuses to compile -- and traced essentially
-//! all of them to one shape: an **implicit-call statement** (`x y`, no
-//! parentheses, no leading `Call`) where `x` resolves to something that is
-//! definitely not callable. Measured directly against Excel:
+//! `docs/vba-macro-support.md`). This pass addresses an **implicit-call
+//! statement** (`x y`, no parentheses, no leading `Call`) where `x` resolves
+//! to something that is definitely not callable. Measured directly against
+//! Excel:
 //!
 //! ```text
 //! x y = 1        ' compiles -- x is a real Sub taking a ParamArray
@@ -18,12 +16,11 @@
 //! ```
 //!
 //! This pass only ever *rejects*; it never turns an acceptable module into a
-//! rejected one beyond that. The risk the issue calls out explicitly is
-//! getting "undeclared" and "declared but non-callable" confused: rejecting
-//! a name this pass simply hasn't seen would produce a false positive (a
-//! macro `check_syntax` breaks even though Excel accepts it), which the
-//! project's own docs call the worse failure mode. So the rule implemented
-//! here is deliberately one-sided --
+//! rejected one beyond that. The risk is getting "undeclared" and "declared
+//! but non-callable" confused: rejecting a name this pass simply hasn't seen
+//! would produce a false positive (a macro `check_syntax` breaks even though
+//! Excel accepts it), which the project's own docs call the worse failure
+//! mode. So the rule implemented here is deliberately one-sided --
 //!
 //! - A call target that resolves (locally, or at module level) to a
 //!   `Sub`/`Function`/`Property`/`Declare` is accepted.
@@ -55,22 +52,22 @@
 //! Excel compiles a *project*, not a file, so `x = arr(1)` is legal as soon
 //! as any module declares `arr`. A checker holding one module of several
 //! therefore cannot distinguish an undeclared name from a cross-module
-//! reference, and guessing would produce exactly the false positive the
-//! issue warns about. [`Scope::complete_project`] gates the rule: with it
-//! `false`, an unresolvable name is accepted and only the
-//! definitely-not-callable rule above applies. `check_syntax` sets it (a
-//! standalone `.bas` is the whole story), `VbaProject::check_modules` sets
-//! it after unioning every module's names, and `VbaModule::check_syntax`
-//! does not, having no project to consult.
+//! reference, and guessing would produce a false positive.
+//! [`Scope::complete_project`] gates the rule: with it `false`, an
+//! unresolvable name is accepted and only the definitely-not-callable rule
+//! above applies. `check_syntax` sets it (a standalone `.bas` is the whole
+//! story), `VbaProject::check_modules` sets it after unioning every module's
+//! names, and `VbaModule::check_syntax` does not, having no project to
+//! consult.
 //!
 //! Which is a *default*, not a deduction: source handed over on its own
 //! carries no evidence either way, and a `.bas` cut out of a bigger project
-//! legitimately calls into its siblings ([issue #82]). So the assumption is
-//! overridable -- `check_syntax_partial`, `VbaProject::check_modules_partial`
-//! and `visi macro check --partial` are the same checks with this `false` --
-//! but it stays the default, since weakening it for everyone would cost the
-//! rule its reach over the standalone module the differential harness
-//! compiles, which genuinely is self-contained.
+//! legitimately calls into its siblings. So the assumption is overridable --
+//! `check_syntax_partial`, `VbaProject::check_modules_partial` and
+//! `visi macro check --partial` are the same checks with this `false` -- but
+//! it stays the default, since weakening it for everyone would cost the rule
+//! its reach over the standalone module the differential harness compiles,
+//! which genuinely is self-contained.
 //!
 //! ## Rules here that are not about resolving a name
 //!
@@ -89,40 +86,6 @@
 //! - **Duplicate declaration**, in [`check_duplicate_declarations`] -- the
 //!   one order-sensitive rule here, since `Dim x` then `x = 1` is ordinary
 //!   code while the reverse is a compile error.
-//!
-//! ## Where this leaves issue #78
-//!
-//! All 12 saved false-negative reproductions
-//! (`fuzz_results/failures/vba_parse_iter_*`) are now reported. They split
-//! four ways, and only the first group is what the issue predicted:
-//!
-//! | Cause | Cases |
-//! | --- | --- |
-//! | undeclared name used with call syntax | iter_22, 40, 50, 64, 93 |
-//! | a plain local used as a call target | iter_12, 15, 46 |
-//! | `ReDim Preserve` on an undeclared name | iter_14, 57 |
-//! | a name starting with `_` | iter_24 |
-//! | built-in type keyword as a declared name (fixed earlier) | iter_4 |
-//!
-//! Validating that against two unseen seeds of 60 generated cases each
-//! (4242 and 91177) gave **0 false positives on both**, which is the number
-//! that matters here -- this is the first thing in the checker that can
-//! reject a module for a reason other than its own syntax.
-//!
-//! Those runs turned up two more shapes not in the original twelve, both
-//! since measured and implemented: the bare-identifier statement above, and
-//! duplicate declaration. On seed 91177 *all five* surviving false
-//! negatives were the latter -- one shape, not five gaps -- because the
-//! generator emits its `Dim` last while ordinary code declares first.
-//!
-//! What the fuzzer cannot bound is worth stating plainly: its grammar never
-//! emits a type-declaration suffix, so it could not have caught the one real
-//! false positive this work introduced (`Trim$` resolving as `"trim$"`; see
-//! [`norm`]). A differential run bounds the error rate *over the shapes it
-//! generates*, which is narrower than what real modules contain.
-//!
-//! [issue #78]: https://github.com/albert-yu/visi/issues/78
-//! [issue #82]: https://github.com/albert-yu/visi/issues/82
 
 use super::ast::{
     Arg, CaseMatch, Expr, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
@@ -466,13 +429,10 @@ fn collect_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
 /// [`collect_locals`]) so an explicit `Dim`/`Const`/parameter -- collected
 /// first -- always wins regardless of where in the procedure text an
 /// assignment to the same name happens to sit; VBA's own scoping does not
-/// care about textual order either. It is exactly this shape --
-/// `x = ws.Range("A1").Value` earlier in a procedure, then a bare `x i`
-/// later -- that accounts for most of the false negatives issue #78
-/// measured: real VBA scoping makes a procedure-local shadow anything
-/// external unconditionally, so treating it as a known plain scalar here
-/// carries the same safety argument as the explicit-`Dim` case, not a new
-/// risk of a false positive.
+/// care about textual order either. Real VBA scoping makes a procedure-local
+/// shadow anything external unconditionally, so treating it as a known
+/// plain scalar here carries the same safety argument as the explicit-`Dim`
+/// case, not a new risk of a false positive.
 fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     for stmt in body {
         match stmt {
@@ -562,9 +522,7 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
 /// parameter -- and declaring one that is already there is the error. Each
 /// of the last five was confirmed with a control running the same route
 /// *without* the trailing `Dim`, so the rejection is the duplicate and not
-/// the route statement being unacceptable on its own (issue #80; the
-/// parameter case needed `build_module`'s signature form, since the wrapper
-/// procedure had no parameters to give it before).
+/// the route statement being unacceptable on its own.
 ///
 /// Only a `Dim`/`Static`/`Const` *reports*. A `ReDim` of a name already in
 /// scope is the ordinary resize and compiles, which is why the routes only
@@ -904,8 +862,7 @@ mod tests {
         check_module(&module, &scope).map_err(|e| e.message)
     }
 
-    // `Dim x : x y` -- the exact case measured against real Excel in issue
-    // #78: a locally declared plain-scalar local used as a call target.
+    // `Dim x : x y` -- a locally declared plain-scalar local used as a call target.
     #[test]
     fn rejects_local_plain_scalar_as_call_target() {
         let err = check("Sub Test()\n    Dim x As Long\n    x 5\nEnd Sub\n").unwrap_err();
@@ -1017,10 +974,8 @@ mod tests {
 
     #[test]
     fn every_route_into_scope_collides_with_a_later_dim() {
-        // Issue #80. All five measured against Excel, which rejects each
-        // (`fuzz/vba_compile_probe.py --only dup:`); the parameter one is
-        // what the harness could not express before, since its wrapper
-        // procedure took no parameters.
+        // All five measured against Excel, which rejects each
+        // (`fuzz/vba_compile_probe.py --only dup:`).
         for src in [
             "Sub T(ByVal x As Long)\n    Dim x As Long\nEnd Sub\n",
             "Sub T()\n    For x = 1 To 3\n        y = x\n    Next x\n    Dim x As Long\nEnd Sub\n",

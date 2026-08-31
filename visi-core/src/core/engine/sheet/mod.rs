@@ -1018,11 +1018,10 @@ impl Sheet {
                 // O(width * height * deps.len()) instead of O(width *
                 // deps.len()). For a wide range (e.g. `=C:LL`, 322
                 // columns) evaluated repeatedly (e.g. inside a self-
-                // referential formula bounded by commit()'s max_ops, see
-                // the fix just above), that quadratic-in-width blowup was
+                // referential formula bounded by commit()'s max_ops),
+                // that quadratic-in-width blowup was
                 // the difference between finishing in under a second and
-                // taking tens of seconds to minutes -- found via the same
-                // visi-core/fuzz formula_eval run (#26).
+                // taking tens of seconds to minutes.
                 let mut seen_col_deps: HashSet<usize> = HashSet::new();
 
                 let mut results = Vec::new();
@@ -1048,10 +1047,8 @@ impl Sheet {
                             // stored value back into itself: on every
                             // recompute the stored value *is* this List,
                             // so reading it back would nest a List inside
-                            // itself one level deeper each pass --
-                            // unbounded growth that only stops at a stack
-                            // overflow in recursive Clone/Drop, found via
-                            // visi-core/fuzz's formula_eval target (#26).
+                            // itself one level deeper each pass (unbounded
+                            // growth).
                             // Blank matches this engine's existing
                             // convention for an unresolvable self-read
                             // elsewhere (e.g. ISBLANK(GET(...)) on an
@@ -1277,9 +1274,7 @@ impl Sheet {
     /// blank-coerces-to-0/""/false rule (correct for comparison operators,
     /// MATCH, etc.), which would otherwise rank a blank ahead of every
     /// negative number once descending order reverses the comparison.
-    /// Found via the differential fuzzer: `SORT({-215.8,,-100,-240.97,-88},1,-1)`
-    /// put the blank first (coerced to 0, the largest value once reversed)
-    /// instead of last, so `INDEX(...,1)` returned 0 instead of -88.
+    /// E.g. `SORT({-215.8,,-100,-240.97,-88},1,-1)` puts the blank last.
     fn sort_compare_blanks_last(
         l: &ResultData,
         r: &ResultData,
@@ -2904,8 +2899,7 @@ impl Sheet {
     /// would have, purely from its argument expressions -- needed because
     /// this engine's flat `ResultData::List` carries no shape of its own,
     /// so nesting one of these calls inside another (e.g.
-    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) previously fell back to treating
-    /// the whole result as a single row, corrupting the flat-index math.
+    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) requires recovering the 2D shape.
     /// Returns `None` for anything not in this known set, so callers fall
     /// back to the single-row assumption.
     #[allow(clippy::too_many_arguments)]

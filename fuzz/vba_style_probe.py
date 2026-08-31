@@ -3,9 +3,8 @@
 What does Excel's VBA style surface actually do?
 ===============================================
 Phase 3 of `docs/vba-macro-support.md` maps `.Interior.Color`, `.Font.*` and
-`.NumberFormat` onto `CellStyle`. Issue #58 flags the colour conversion as
-"the single most likely thing to ship backwards", because VBA's `Color` is a
-**BGR** `Long` while `CellStyle.bg_color` is an `"#RRGGBB"` string -- so
+`.NumberFormat` onto `CellStyle`. The colour conversion is notable
+because VBA's `Color` is a **BGR** `Long` while `CellStyle.bg_color` is an `"#RRGGBB"` string -- so
 `&HFF0000` is *blue*, not red, and getting it wrong produces a file that opens
 fine and is the wrong colour.
 
@@ -111,7 +110,7 @@ WRITE_CASES = [
     'ws.Range("H3").Font.Size = 14 :: CStr(ws.Range("H3").Font.Size)',
     'ws.Range("H4").Font.Name = "Courier New" :: ws.Range("H4").Font.Name',
     'ws.Range("H5").Font.Color = RGB(0, 0, 255) :: CStr(ws.Range("H5").Font.Color)',
-    # --- number format, and the date question issue #58 asks for
+    # --- number format and date formatting
     'ws.Range("I1").Value = 46195\\nws.Range("I1").NumberFormat = "m/d/yy" :: ws.Range("I1").Text',
     'ws.Range("I2").Value = 46195\\nws.Range("I2").NumberFormat = "m/d/yy"\\nws.Range("I2").NumberFormat = "General" :: ws.Range("I2").Text & "|" & CStr(ws.Range("I2").Value2)',
     # setting a format on the *existing* date cell: does the serial survive

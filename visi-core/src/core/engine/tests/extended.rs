@@ -258,14 +258,9 @@ fn test_error_type_and_ifna_receive_the_actual_error() {
 
 #[test]
 fn test_datedif_counts_only_completed_intervals() {
-    // DATEDIF used to compute each unit independently -- plain `m2 - m1`
-    // for "M"/"YM", plain `d2 - d1` for "MD", and `(end - start) % 365`
-    // for "YD" -- which overcounts by a month whenever the end day of
-    // month hasn't reached the start's, and could even go negative
-    // ("MD" reported -9 for one of these pairs). DATEDIF counts
-    // *completed* intervals, so a short final month has to borrow the
-    // length of the month preceding the end date. Every expected value
-    // below was read out of real Excel.
+    // DATEDIF counts *completed* intervals, so a short final month has to
+    // borrow the length of the month preceding the end date. Every expected
+    // value below was read out of real Excel.
     for (start, end, unit, expected) in [
         (40314.0, 45719.0, "M", 177.0),
         (42733.0, 45935.0, "M", 105.0),
@@ -299,7 +294,7 @@ fn test_besselj_stays_accurate_where_excel_does_not() {
     // is not: at x = 9.59, order 1, visi's relative error is ~1e-13 while
     // Excel's is ~1.3e-5. The fuzz generator therefore caps its Bessel
     // arguments below where Excel degrades; this test pins visi's own
-    // accuracy so that cap can never quietly mask a real regression here.
+    // accuracy.
     for (x, n, expected) in [
         (9.59_f64, 1.0_f64, 0.141754162508486556734783214599_f64),
         (8.72, 2.0, 0.079558608902434556482112499322),
@@ -320,10 +315,7 @@ fn test_besselj_stays_accurate_where_excel_does_not() {
 #[test]
 fn test_present_but_non_numeric_optional_argument_is_value_error() {
     // An *optional* numeric argument that is absent falls back to its
-    // default, but one that is present and non-numeric is #VALUE!. These
-    // were conflated by the `.and_then(to_f64).unwrap_or(default)` shape,
-    // so LOG silently computed base 10 for a text base and MOD silently
-    // treated a text operand as 0.
+    // default, but one that is present and non-numeric is #VALUE!.
     let sheet = Sheet::new(SheetInit::default());
     for f in ["=LOG(3.14, \"E\")", "=MOD(5, \"E\")", "=MOD(\"E\", 5)"] {
         let got = sheet.eval(f, None).unwrap().0;
@@ -348,10 +340,6 @@ fn test_present_but_non_numeric_optional_argument_is_value_error() {
 
 #[test]
 fn test_forecast_ets_reproduces_excel_on_well_posed_series() {
-    // The ETS family used to be hardcoded stubs (SEASONALITY always 1,
-    // STAT always 0.5, CONFINT always 0, and FORECAST.ETS falling back to
-    // a straight linear fit). It is now a real AAA Holt-Winters model.
-    //
     // Excel's alpha/beta/gamma come out of a proprietary optimizer that an
     // independent implementation cannot be expected to reproduce digit for
     // digit on noisy data. What *is* checkable -- and what these cases

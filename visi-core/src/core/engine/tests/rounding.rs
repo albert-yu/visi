@@ -1990,8 +1990,6 @@ fn test_scientific_notation_respects_the_twenty_character_budget() {
     );
     assert_eq!(format_excel_number(1.0 / 3e20), "3.33333333333333E-21");
 
-    // The mantissa used to be fixed at 15 significant digits regardless of
-    // the exponent width, which made the first of these 21 characters.
     assert!(format_excel_number(2.277577478736661e-171).len() <= 20);
     assert!(format_excel_number(-2.277577478736661e-171).len() <= 21); // plus the sign
 }
@@ -2001,8 +1999,7 @@ fn test_number_to_text_keeps_only_excels_fifteen_significant_digits() {
     use crate::core::engine::result_data::format_excel_number;
 
     // 43^11 is 929293739471223048 as an f64; Excel shows 15 significant
-    // digits and zeroes the rest. The old formatter emitted the f64's own
-    // digits here, which leaked precision Excel never displays.
+    // digits and zeroes the rest.
     assert_eq!(format_excel_number(43f64.powi(11)), "929293739471223000");
     assert_eq!(
         format_excel_number(-(43f64.powi(11))),

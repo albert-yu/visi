@@ -158,8 +158,7 @@ pub fn days_in_month(year: i32, month: i32) -> i32 {
 /// the month preceding the end date, and the month count drops by one
 /// (which can in turn borrow a year). Computing the parts independently
 /// instead -- plain `m2 - m1`, plain `d2 - d1` -- overcounts by a month
-/// whenever the end day is earlier, and can even go negative ("MD" of a
-/// pair whose end day precedes its start day used to report -9).
+/// whenever the end day is earlier, and can even go negative.
 fn datedif_parts(start: f64, end: f64) -> (i32, i32, i32) {
     let (y1, m1, d1) = serial_to_ymd(start);
     let (y2, m2, d2) = serial_to_ymd(end);
@@ -657,7 +656,7 @@ pub fn actual_actual_year_days(start: f64, end: f64) -> f64 {
         // Within a single year the denominator is 366 when either the
         // period actually contains a 29 February, or the whole period
         // lies inside one leap year; otherwise 365. Taking the *end*
-        // year's leap-ness alone (what this used to do) is wrong for a
+        // year's leap-ness alone is wrong for a
         // short period that ends in a leap year before the leap day.
         //
         // Four real-Excel data points pin all three branches down:

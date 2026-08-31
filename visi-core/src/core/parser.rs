@@ -724,7 +724,7 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                 // string (e.g. `="\`) would otherwise push `i` one past
                 // `chars.len()`, so the final `chars[last_idx..i]` slice
                 // below panics -- clamp instead of blindly skipping two
-                // chars. Found via visi-core/fuzz's formula_eval target.
+                // chars.
                 i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
@@ -2109,9 +2109,7 @@ mod tests {
     use super::*;
 
     /// Scientific-notation literals are numbers, not a number followed by a
-    /// name. The lexer used to stop at the digits, so `=1E+5` came apart into
-    /// `1`, `E`, `+`, `5` and the parser rejected the leftovers -- every form
-    /// below failed outright, while Excel accepts all of them.
+    /// name.
     #[test]
     fn test_lex_scientific_notation_literals() {
         for (src, want) in [
@@ -2708,26 +2706,16 @@ mod tests {
 
     #[test]
     fn test_compile_formula_never_panics_on_unterminated_quote_ending_in_backslash() {
-        // Regression for a crash found via visi-core/fuzz's formula_eval
-        // target within seconds of adding it (#26 -- the harness had zero
-        // formula-level fuzz coverage before): a `\` as the very last
-        // character of an unterminated quoted string (e.g. `="\`) pushed
-        // the scan index one past chars.len(), so the final
-        // chars[last_idx..i] slice panicked with a range-out-of-bounds
-        // error. Doesn't need to produce any particular result, just not
-        // crash on malformed input.
+        // Unterminated quoted strings ending in a backslash (e.g. `="\"`)
+        // must not crash on malformed input.
         let _ = compile_formula("=\"\\", &[]);
         let _ = compile_formula("=\"unterminated\\", &[]);
     }
 
     #[test]
     fn test_rewrite_structured_table_reference_never_panics_on_unterminated_quote() {
-        // This function's in-quote/backslash scan loop has the exact same
-        // unbounded-overshoot shape as compile_formula's (fixed the same
-        // way, defensively) -- but its own final slice happens to be the
-        // open-ended `chars[last_idx..]` rather than `chars[last_idx..i]`,
-        // so an overshot `i` doesn't actually panic here today. Kept as a
-        // safety-net regression test in case that changes.
+        // Defensive check that unterminated quotes ending in a backslash
+        // do not panic.
         let _ = rewrite_structured_table_reference("=Sales[Amount]&\"\\", "Sales", None, None);
     }
 

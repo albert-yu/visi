@@ -908,8 +908,7 @@ class ExcelDriver:
         if self.driver_type == "mock":
             return {}
         # `linefeed`, not "\n": AppleScript string literals do not carry a
-        # newline escape, and the whole batch silently returned nothing until
-        # this was fixed.
+        # newline escape.
         calls = "\n".join(
             f'    set acc to acc & "{i}=" & (run VB macro "Harness{i}") & linefeed'
             for i in indices

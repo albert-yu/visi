@@ -2693,10 +2693,7 @@ fn is_constant(e: &Expr) -> bool {
 /// `Len`, `Val` and `Sgn` belong here alongside the `C*` conversions, and the
 /// discriminating case has to hold the *string* side constant to show it:
 /// against `(-32768 & -2.5)` all four raise error 13 while `Int(a)`, `Abs(a)`
-/// and a bare `a` do not. An earlier round put `Len` in on the strength of
-/// its `As Long` signature, tested it against a *runtime* string -- where
-/// nothing is strict, see `compare_ctx` -- concluded it did not belong, and
-/// took it out again. `Int` and `Abs` stay out for a reason that is visible
+/// and a bare `a` do not. `Int` and `Abs` stay out for a reason that is visible
 /// in their signatures: they return the type they were handed, so a Variant
 /// argument makes them Variant, where `Len` is always `Long`.
 const STATICALLY_NUMERIC: &[&str] = &[
@@ -2912,8 +2909,6 @@ fn operand_kind(e: &Expr) -> Operand {
         // one bottoms out at a literal through unary operators and the other
         // through a comparison. Measured -- `TypeName(32767) >= (Not True)`
         // is error 13 while `TypeName(0) >= (3# >= Empty)` compares as text.
-        // This used to check one level, which put `(Not True)` and `(-7)` in
-        // the wrong bucket.
         Expr::Paren { expr, .. } | Expr::Unary { expr, .. }
             if operand_kind(expr) == Operand::Literal =>
         {
@@ -3875,8 +3870,7 @@ mod tests {
         // Typed, but the width is `Long`, so there is nothing to overflow.
         assert_eq!(expr("CStr(Len(\"abcde\") + 32763)"), "String|32768");
         assert_eq!(expr("CStr(CInt(Empty) + 32768)"), "String|32768");
-        // `^` overflows at runtime too; this was found by fuzz/fuzz_vba.py
-        // after earlier tests had incorrectly expected an infinity here.
+        // `^` overflows at runtime too.
         assert_eq!(
             run("    Dim vb\n    vb = 4652\n    F = CStr(32767 ^ vb)"),
             "ERR|6"
@@ -3941,7 +3935,7 @@ mod tests {
     fn instr_of_an_empty_haystack_is_zero() {
         // `InStr("", "")` is 0 while `InStr("a", "")` is 1: an empty needle
         // matches at the start position only when there is a string to match
-        // in. Measured; this used to report 1 for the empty/empty pair.
+        // in. Measured.
         assert_eq!(expr("CStr(InStr(\"\", \"\"))"), "String|0");
         assert_eq!(expr("CStr(InStr(Empty, \"\"))"), "String|0");
         assert_eq!(expr("CStr(InStr(\"a\", \"\"))"), "String|1");
@@ -4024,9 +4018,8 @@ mod tests {
             run("    Dim a\n    a = \"13\"\n    F = (a <= (\"\" <> Empty))"),
             "Boolean|False"
         );
-        // Against a Boolean that *is* static, every string kind converts --
-        // including the fold, which used to take the numeric path here and
-        // is what `fuzz/fuzz_vba.py` found on seed 271828.
+        // Against a Boolean that *is* static, every string kind converts,
+        // including the fold.
         assert_eq!(expr("((\"1\" + \"3\") <= False)"), "Boolean|True");
         assert_eq!(expr("((Empty & \"13\") <= False)"), "Boolean|True");
         assert_eq!(expr("((\"1\" + \"3\") = True)"), "Boolean|True");
@@ -4048,13 +4041,6 @@ mod tests {
 
     #[test]
     fn a_string_converts_with_cbool_against_a_static_boolean() {
-        // Measured with `fuzz/vba_expr_probe.py`. This used to read "compares
-        // as text", which fit `("011" < False)` -- True under both readings --
-        // and was wrong about every case that discriminates them:
-        // `a = "-1"` makes `a = True` **True**, which no text comparison
-        // produces. `fuzz/fuzz_vba.py` found it on a generated case whose
-        // visible symptom was a *cell* holding the wrong value.
-        //
         // The rule: convert the string with `CBool`, compare as Booleans, and
         // fall back to the ordinary runtime ordering only when the conversion
         // fails. Ordering is numeric, so True (-1) sorts below False (0).
@@ -4592,9 +4578,7 @@ mod tests {
     fn fuzz_statement_conditions_read_null_as_false_unlike_cbool() {
         // Harvested from fuzz/fuzz_vba.py's win32com (Windows) run, seed 1,
         // case 2: `If (-Null) Then ... Else ... End If` ran the Else branch
-        // in real Excel rather than raising 94 the way `CBool(Null)` does --
-        // visi previously shared one `to_bool` between statement conditions
-        // and CBool/the logical operators, so `If Null Then` raised 94 too.
+        // in real Excel rather than raising 94 the way `CBool(Null)` does.
         //
         // Measured directly (win32com, real Windows Excel) that this is a
         // real, separate rule rather than a slip in the Gen2 case: `If Null

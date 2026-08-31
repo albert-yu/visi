@@ -84,13 +84,9 @@ fn test_chart_edit_show_legend_and_hide_legend_are_mutually_exclusive() {
 
 #[test]
 fn test_pivot_filter_values_accepts_leading_hyphen_values() {
-    // Regression test: `visi pivot filter --values -7,3,12` used to fail
-    // parsing entirely -- a numeric-looking column's filter values can
-    // legitimately start with "-" (e.g. a negative Amount), but without
-    // `allow_hyphen_values` it mistook the leading "-7" for an unknown
-    // flag ("error: unexpected argument '-7' found") instead of treating it
-    // as the value for `--values`. Found via fuzz/fuzz_pivot.py, whose
-    // NumStr source column includes negative-number-looking text.
+    // A numeric-looking column's filter values can legitimately start with
+    // "-" (e.g. a negative Amount); `allow_hyphen_values` ensures leading
+    // "-7" is treated as the value for `--values` rather than an unknown flag.
     let cli = try_parse(&[
         "visi",
         "pivot",
@@ -393,10 +389,8 @@ fn test_workbook_vba_this_workbook_module_needs_no_sheet_binding() {
         None
     );
 
-    // Regression test: adding ThisWorkbook used to force a caller to pass
-    // some --sheet, which got stored as ThisWorkbook's bound_sheet_id and
-    // then made that sheet's *real* code-behind module add fail with "That
-    // sheet already has a bound document module".
+    // Adding ThisWorkbook does not set a bound_sheet_id, so that Sheet1's
+    // real code-behind module add succeeds.
     let sheet1_id = wb.sheets[0].id;
     wb.add_vba_module(
         "Sheet1".to_string(),
@@ -686,15 +680,7 @@ fn test_pivot_field_area_reassignment_evicts_from_previous_area() {
     // Matches real Excel's PivotField.Orientation semantics (verified via
     // the win32com fuzz driver): a field can only live in one of
     // Row/Column/Filter at a time, so re-adding it to a different area
-    // moves it rather than leaving it in both. Previously visi's
-    // `add_pivot_field` just pushed onto the target area's Vec, so a field
-    // used as e.g. both a column field and a filter field would stay
-    // grouped by in the column area *and* filtered -- a config real Excel
-    // can't represent, since assigning the page/filter orientation there
-    // relocates the field out of the column area. Discovered via
-    // fuzz/fuzz_pivot.py's differential fuzzer (iteration mismatched by 8
-    // cells because visi kept a two-level column grouping Excel had
-    // collapsed to one level).
+    // moves it rather than leaving it in both.
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_pivot_field_area_reassignment.xlsx");
     let file_str = file_path.to_str().unwrap();
@@ -763,9 +749,7 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
 
     // Verified against real Excel: a filter/page field always renders as
     // its own row above the row/col header grid ("FieldName" | "(All)" or
-    // "(Multiple Items)"), followed by one blank spacer row -- visi's
-    // pivot output previously never rendered these at all, leaving every
-    // pivot with a filter field completely cell-misaligned vs. Excel.
+    // "(Multiple Items)"), followed by one blank spacer row.
     let temp_dir = std::env::temp_dir();
     let file_path = temp_dir.join("test_pivot_filter_header_row.xlsx");
     let file_str = file_path.to_str().unwrap();
@@ -871,10 +855,8 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
 
 #[test]
 fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
-    // Regression for #26: SHEET() always returned 1 regardless of true
-    // position, since the Context WorkbookManager::evaluate builds didn't
-    // carry real sheet order (self.sheets is a Vec, but Context.sheets is
-    // an unordered HashMap). Exercised through WorkbookManager::evaluate
+    // SHEET() reports the sheet's 1-based position when evaluated across
+    // WorkbookManager::evaluate. Exercised through WorkbookManager::evaluate
     // itself, not just a hand-built Context, since that's the actual
     // production code path that populates it.
     let mut wb = WorkbookManager {
@@ -918,16 +900,10 @@ fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
 
 #[test]
 fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
-    // Regression for #26: WorkbookManager::evaluate() called
-    // mark_all_dirty() once before its 3-pass loop instead of once per
-    // pass. Sheet::commit drains and clears a sheet's dirty queue as it
-    // processes it, so without re-marking, passes 2 and 3 had nothing
-    // left dirty and were silent no-ops -- a cross-sheet chain more than
-    // one hop deep (First's formula -> Second's formula -> First's
-    // formula again) kept whichever stale value pass 1 happened to
-    // compute before the sheet it depended on had a chance to update.
-    // Found via the fuzzer's new cross-sheet generator block, which
-    // exercises exactly this shape.
+    // WorkbookManager::evaluate re-marks dirty cells across multiple
+    // passes so that a cross-sheet chain more than one hop deep
+    // (First's formula -> Second's formula -> First's formula again)
+    // resolves correctly.
     let mut wb = WorkbookManager {
         sheets: Vec::new(),
         charts: Vec::new(),
@@ -970,13 +946,8 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
 
 #[test]
 fn test_cross_sheet_circular_reference_terminates_without_hanging() {
-    // #26 flags an absence of circular-reference testing; this is the
-    // cross-sheet counterpart to visi-core's own self-reference/multi-cell
-    // cycle tests, exercised through WorkbookManager::evaluate() (the
-    // fixed 3-pass loop) rather than a single Sheet::commit call. A cycle
-    // here is naturally bounded by the fixed pass count, but nothing
-    // previously confirmed that -- especially after the mark_all_dirty
-    // per-pass fix above, which makes every pass do real work again.
+    // Cross-sheet circular reference test: cross-sheet cycle evaluation is
+    // naturally bounded by the fixed pass count.
     let mut wb = WorkbookManager {
         sheets: Vec::new(),
         charts: Vec::new(),
@@ -1085,9 +1056,6 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
 fn test_style_cell_ref_sheet_prefix_overrides_sheet_flag() {
     // `visi style cell --cell 'Sheet2!C3' --sheet Sheet1` must style C3 on
     // *Sheet2*: an explicit prefix in the reference beats the --sheet flag.
-    // That resolution used to live inside WorkbookManager, which parsed the
-    // A1 string itself; it now happens in the CLI, since the workbook API is
-    // index-based. This pins the behavior across that boundary move.
     use visi_core::core::CellStyle;
 
     let temp_dir = std::env::temp_dir();

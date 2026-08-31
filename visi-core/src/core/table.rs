@@ -56,7 +56,7 @@ pub struct ExcelTable {
     /// tells them apart by this flag and so must we -- `ListObject`'s
     /// `.DataBodyRange` is `Nothing` and `.ListRows.Count` is 0 for the
     /// former and a real range and 1 for the latter. Measured with
-    /// `fuzz/vba_table_probe.py --empty`, which is issue #11's shape.
+    /// `fuzz/vba_table_probe.py --empty`.
     #[serde(default)]
     pub has_insert_row: bool,
 }

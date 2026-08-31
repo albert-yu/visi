@@ -4,8 +4,7 @@
 //! low byte is red -- while [`CellStyle`](crate::core::CellStyle) stores
 //! `"#RRGGBB"`. So `&HFF0000` is **blue**, not red, and an implementation
 //! that treats the `Long` as `0xRRGGBB` produces a file that opens without
-//! complaint and is the wrong colour. Issue #58 called this out as the single
-//! most likely thing to ship backwards, so it is measured rather than
+//! complaint and is the wrong colour. It is measured rather than
 //! recalled: `fuzz/vba_style_probe.py --paint` has Excel *save* a workbook
 //! after setting colours and reads the real ARGB back with `openpyxl`, which
 //! is a channel neither implementation can talk its way past.
@@ -182,8 +181,7 @@ mod tests {
 
     #[test]
     fn the_long_is_bgr_so_ff0000_is_blue() {
-        // The case issue #58 named as the most likely thing to ship
-        // backwards, and the one `--paint` settles against the saved file.
+        // Settled against the saved file via `--paint`.
         assert_eq!(bgr_to_hex(0x00FF_0000), "#0000FF");
         assert_eq!(bgr_to_hex(255), "#FF0000");
         assert_eq!(bgr_to_hex(rgb(1, 2, 3)), "#010203");

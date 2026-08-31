@@ -110,13 +110,7 @@ fn test_regex_functions_use_real_regex_not_literal_substring() {
 
 #[test]
 fn test_text_number_format_codes() {
-    // TEXT()'s number-format handling used to be a crude stub: `%` always
-    // hardcoded exactly 1 decimal place regardless of the format string,
-    // and `,` (thousands grouping), `$` (currency), and date-token
-    // formats ("yyyy-mm-dd") weren't implemented at all -- the raw
-    // number was returned unformatted. Found via differential fuzzing
-    // (every TEXT() call with one of these formats mismatched real
-    // Excel).
+    // Tests TEXT() with currency, thousands grouping, percentage, and date format codes.
     let grid = [[
         "=TEXT(-7679.0669, \"$#,##0.00\")",
         "=TEXT(3021.1929, \"#,##0\")",
