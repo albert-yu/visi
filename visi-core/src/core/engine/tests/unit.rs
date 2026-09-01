@@ -181,14 +181,14 @@ fn test_new_excel_formulas() {
     test_booleans("=ISNUMBER(\"foo\")", false).unwrap();
     test_booleans("=ISTEXT(\"foo\")", true).unwrap();
     test_booleans("=ISTEXT(5)", false).unwrap();
-    test_booleans("=ISBLANK(GET(10, 10))", true).unwrap();
+    test_booleans("=ISBLANK(J10)", true).unwrap();
     test_booleans("=ISERROR(1 / 0)", true).unwrap();
     test_booleans("=ISERROR(5)", false).unwrap();
 
     test_floats("=PRODUCT(2, 3, 4)", 24.0).unwrap();
     test_floats("=MOD(10, 3)", 1.0).unwrap();
     test_floats("=MOD(-10, 3)", 2.0).unwrap();
-    test_floats("=COUNTA(1, \"foo\", GET(10, 10))", 2.0).unwrap();
+    test_floats("=COUNTA(1, \"foo\", J10)", 2.0).unwrap();
 
     test_floats("=IFERROR(5, 10)", 5.0).unwrap();
     test_floats("=IFERROR(1 / 0, 10)", 10.0).unwrap();
@@ -447,10 +447,10 @@ fn test_concatenation() {
     test_strings("=CONCATENATE(\"Hello\", \" World\")", "Hello World").unwrap();
     test_strings("=CONCATENATE(\"ABC\", \"DEF\")", "ABCDEF").unwrap();
 
-    test_strings("=CONCATENATE(str(5), \" items\")", "5 items").unwrap();
-    test_strings("=CONCATENATE(\"Value: \", str(42))", "Value: 42").unwrap();
-    test_strings("=CONCATENATE(str(3.14), \" is pi\")", "3.14 is pi").unwrap();
-    test_strings("=CONCATENATE(\"Result: \", str(True))", "Result: TRUE").unwrap();
+    test_strings("=CONCATENATE(5, \" items\")", "5 items").unwrap();
+    test_strings("=CONCATENATE(\"Value: \", 42)", "Value: 42").unwrap();
+    test_strings("=CONCATENATE(3.14, \" is pi\")", "3.14 is pi").unwrap();
+    test_strings("=CONCATENATE(\"Result: \", TRUE)", "Result: TRUE").unwrap();
 }
 
 #[test]
