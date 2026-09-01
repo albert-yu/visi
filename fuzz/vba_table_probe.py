@@ -3,14 +3,13 @@
 What does Excel's `ListObjects` surface actually do?
 ===================================================
 Phase 3 of `docs/vba-macro-support.md` maps `ListObjects` onto `ExcelTable`.
-Issue #58 flags three things that have to be measured rather than assumed:
+Three things have to be measured rather than assumed:
 
 * `ListObject.Name = "X"` is **not** a field write -- names are unique
   workbook-wide and a rename cascades into formula *text* across the whole
   workbook. What does Excel do to a `Sales[Amount]` formula when the table is
   renamed, and what does it do when the new name is already taken?
-* `.DataBodyRange` on a table with **zero data rows** is the case calamine
-  used to panic on (issue #11). Is it `Nothing`, an error, or an empty range?
+* `.DataBodyRange` on a table with **zero data rows**. Is it `Nothing`, an error, or an empty range?
 * `.ListRows.Add` has to interact with the table's extent and with the
   header/totals flags.
 
@@ -116,7 +115,7 @@ WRITE_CASES = [
     "Set lo = ws.ListObjects(1)\\nlo.ShowTotals = True :: lo.Range.Address & \"|\" & lo.TotalsRowRange.Address",
 ]
 
-# Issue #11's shape: a table with zero data rows.
+# A table with zero data rows.
 #
 # The obvious fixture -- a table whose `ref` covers only its header row --
 # does **not** work: Excel treats that file as damaged and opens a modal

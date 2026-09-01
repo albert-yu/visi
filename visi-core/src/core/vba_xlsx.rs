@@ -439,7 +439,7 @@ pub fn export_vba_project(
 /// `sheet_id_to_worksheet_name` must map each sheet id to the name it was
 /// *actually* written under in `workbook_xml` -- `xlsx::export_xlsx_data`
 /// truncates names over 31 chars and de-duplicates collisions, so matching
-/// against a module's bound `Sheet::name` directly (as this used to) could
+/// against a module's bound `Sheet::name` directly could
 /// silently fail to find the element for a long or colliding sheet name,
 /// leaving that Document module's codeName -- and so its sheet binding --
 /// unattached in the saved file.

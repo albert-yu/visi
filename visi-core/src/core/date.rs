@@ -455,13 +455,11 @@ pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate,
         return None;
     }
 
-    // Try standard delimiters: '-', '/', '.'
     for &sep in &['-', '/', '.'] {
         let parts: Vec<&str> = src_trim.split(sep).collect();
 
         // --- 3 PARTS ---
         if parts.len() == 3 {
-            // Check if there is a word month in the parts
             let mut month_word_info = None;
             for (i, part) in parts.iter().enumerate() {
                 if let Some((m, is_full)) = locale.match_month_word(part) {
@@ -681,7 +679,6 @@ pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate,
 
         // --- 2 PARTS ---
         if parts.len() == 2 {
-            // Check if there is a word month in the parts
             let mut month_word_info = None;
             for (i, part) in parts.iter().enumerate() {
                 if let Some((m, is_full)) = locale.match_month_word(part) {

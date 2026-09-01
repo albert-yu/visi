@@ -643,7 +643,7 @@ pub fn parse_vba_number(s: &str) -> VResult<f64> {
     // -1 and `CDbl("1+")` is 1 -- as is `"1 -"`, the space being trimmed, and
     // `"1E2-"`, which is -100. It is a suffix, not a second sign: `"-1-"` and
     // `"1--"` are both error 13. Measured; this is what makes `CBool("1-")`
-    // True where visi used to raise 13 and take the other `If` branch.
+    // True.
     let negated_by_suffix = normalised.ends_with('-');
     let body = match normalised.strip_suffix(['-', '+']) {
         Some(rest) => {
@@ -793,10 +793,7 @@ pub fn add(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
         return Ok(Variant::Str(s.clone()));
     }
     // `Empty + Empty` falls through to `arith` and lands on the Integer 0,
-    // which is what `TypeName(Empty + Empty)` reports in Excel. It used to
-    // short-circuit to Empty here; that came from reading the result back
-    // through the fuzz harness, which cannot see the difference -- Empty and
-    // the Integer 0 both render as "0" once assigned onward.
+    // which is what `TypeName(Empty + Empty)` reports in Excel.
     keep_date(lhs, rhs, arith(lhs, rhs, mode, |a, b| a + b)?)
 }
 
@@ -1025,8 +1022,7 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     let base = lhs.to_f64()?;
     let exp = rhs.to_f64()?;
     // A negative base with a fractional exponent has no real result, and VBA
-    // raises error 5 rather than returning NaN. Found by fuzz/fuzz_vba.py via
-    // `(-1) ^ 1.5`, which this used to return as a quiet NaN.
+    // raises error 5 rather than returning NaN.
     if base < 0.0 && exp.fract() != 0.0 {
         return Err(VbaError::invalid_call());
     }
@@ -1038,8 +1034,7 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     }
     let r = base.powf(exp);
     // Excel raises overflow when exponentiation exceeds Double range even
-    // with runtime operands (`b = 3# : e = 32767 : b ^ e`). Earlier fuzzing
-    // had this backwards and let runtime exponentiation return INF.
+    // with runtime operands (`b = 3# : e = 32767 : b ^ e`).
     let _ = mode;
     if !r.is_finite() && base.is_finite() && exp.is_finite() {
         return Err(VbaError::overflow());

@@ -110,13 +110,11 @@ pub(crate) fn import_xlsx_data_raw(
                     (acc.0.max(r as usize + 1), acc.1.max(c as usize + 1))
                 });
 
-            // Fallback for empty worksheets
             if rows == 0 || cols == 0 {
                 rows = 10;
                 cols = 5;
             }
 
-            // Unique sheet name
             let mut sheet_name = orig_sheet_name.clone();
             let mut count = 1;
             while existing_sheets.iter().any(|t| t.name == sheet_name)
@@ -357,7 +355,6 @@ pub(crate) fn import_xlsx_data_raw(
             continue;
         };
 
-        // Ensure sheet has enough capacity to hold the table's range.
         if end_row >= imported.sheet.row_count() || end_col >= imported.sheet.col_count() {
             imported.sheet.ensure_capacity(end_row, end_col);
         }
@@ -894,7 +891,6 @@ pub(crate) fn export_xlsx_data_raw(
         }
     }
 
-    // Export charts
     for chart in charts {
         let parts: Vec<&str> = chart.data_range.split('!').collect();
         let ref_table_name = parts.first().copied().unwrap_or("").trim();
@@ -1413,8 +1409,7 @@ pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option
 }
 
 /// Escapes text for use inside an XML attribute value. Shared by
-/// `pivot_xlsx.rs` and `vba_xlsx.rs`, which used to each carry their own
-/// (already-drifted: only this version escaped `'`) copy.
+/// `pivot_xlsx.rs` and `vba_xlsx.rs`.
 pub(crate) fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1498,8 +1493,7 @@ fn parse_sheet_drawing_rels(xml: &str) -> Option<String> {
 /// so taking the basename via `get_filename` sidesteps resolving the
 /// `Target` attribute's form entirely: `../tables/table1.xml` (what Excel
 /// and `rust_xlsxwriter` emit) and `/xl/tables/table1.xml` (the absolute
-/// package path `openpyxl` emits, GitHub issue #16) both reduce to the same
-/// name. A worksheet can own several tables, hence a `Vec` -- unlike
+/// package path `openpyxl` emits) both reduce to the same name. A worksheet can own several tables, hence a `Vec` -- unlike
 /// `parse_sheet_drawing_rels`, which stops at the first match because a
 /// worksheet has at most one drawing.
 fn parse_sheet_table_rels(xml: &str) -> Vec<String> {
@@ -1945,10 +1939,8 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
 ///
 /// This deliberately replaces calamine's `load_tables`/`table_by_name`. That
 /// API panics ("invalid range bounds") on a table with a header row and zero
-/// data rows -- a shape `export_xlsx_data` itself produces -- and needing to
-/// work around it was the reason this workspace previously vendored a
-/// patched calamine. Reading the parts here removes the need for that
-/// entirely; calamine is now used only for cell data.
+/// data rows -- a shape `export_xlsx_data` itself produces.
+/// Reading the parts here avoids that issue; calamine is now used only for cell data.
 ///
 /// Within a sheet, tables keep their relationship order. Across sheets the
 /// order is irrelevant -- each table is attached to its own sheet -- but the
@@ -2257,7 +2249,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_import_export_cycle() {
-        // Create a mock sheet
         let mut columns = Vec::new();
         let col1 = DataColumn::from_src("A", vec!["10".to_string(), "20".to_string()]);
         columns.push(col1);
@@ -2276,11 +2267,9 @@ mod tests {
             locale: crate::core::locale::Locale::default(),
         };
 
-        // Export it
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
-        // Import it back
         let (imported_tables, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
@@ -2290,7 +2279,6 @@ mod tests {
         assert_eq!(imported_table.name, "Sheet1");
         assert_eq!(imported_table.columns.len(), 2);
 
-        // Verify content
         assert_eq!(imported_table.columns[0].src[0], "10");
         assert_eq!(imported_table.columns[0].src[1], "20");
         assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
@@ -2527,12 +2515,9 @@ mod tests {
     #[test]
     fn test_xlsx_import_data_offset_from_column_a_is_not_lost() {
         // Column A is entirely blank; real data starts at column B, with a
-        // formula in column C referencing it. Regression test for a bug
-        // where calamine's used-range addressing (relative to the range's
-        // own top-left corner, not the sheet's absolute A1 origin) caused
-        // column B's data to be silently stored at internal column 0 and
-        // labeled "A" on import, making it unreachable by its true B1-style
-        // reference and vanishing from column A entirely.
+        // formula in column C referencing it. Verify that used-range
+        // addressing accounts for sheet-absolute origin so column B data
+        // is preserved at column B.
         let col_a = DataColumn::from_src("A", vec![String::new(), String::new()]);
 
         let col_b = DataColumn::from_src("B", vec!["42".to_string(), "8".to_string()]);
@@ -2621,15 +2606,9 @@ mod tests {
 
     #[test]
     fn test_xlsx_zero_data_row_table_import_export_cycle() {
-        // Regression test for a real crash found via visi-core's pivot-table
-        // fuzz testing: exporting an Excel Table with a header row but zero
-        // data rows, then reimporting it, used to panic inside calamine's
-        // `Xlsx::table_by_name` ("invalid range bounds") -- unrelated to
-        // pivot tables specifically, a plain header-only table triggers it
-        // on its own. The import path no longer goes through calamine's
-        // table API at all (see `import_tables_from_zip`), so this now
-        // passes against stock upstream calamine, where the panic is still
-        // present and unfixed.
+        // Exporting an Excel Table with a header row but zero data rows,
+        // then reimporting it, should succeed and parse the table bounds
+        // correctly.
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 1,
@@ -2677,13 +2656,10 @@ mod tests {
 
     #[test]
     fn test_xlsx_table_import_with_absolute_relationship_target() {
-        // Regression test for GitHub issue #16: openpyxl (and other OPC-
-        // compliant writers) may emit worksheet->table relationship
-        // `Target` attributes as absolute package paths
+        // Openpyxl (and other OPC-compliant writers) may emit worksheet->table
+        // relationship `Target` attributes as absolute package paths
         // ("/xl/tables/table1.xml") rather than the "../tables/table1.xml"
-        // relative form Excel and rust_xlsxwriter always use. calamine 0.26
-        // only special-cased the relative form, so an absolute target
-        // silently resolved to zero tables. `parse_sheet_table_rels` now
+        // relative form Excel and rust_xlsxwriter use. `parse_sheet_table_rels`
         // takes the basename of the `Target` regardless of its form, which
         // makes both spellings equivalent by construction. Simulate an
         // openpyxl-authored file by rewriting a normally-exported file's
@@ -2885,7 +2861,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_empty_table_preservation() {
-        // Create an empty sheet (e.g., 5 columns, 10 rows, all empty strings)
         let mut columns = Vec::new();
         for _ in 0..5 {
             let col = DataColumn::new(10);
@@ -2903,11 +2878,9 @@ mod tests {
             locale: crate::core::locale::Locale::default(),
         };
 
-        // Export it
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
-        // Import it back
         let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
@@ -2929,7 +2902,6 @@ mod tests {
             crate::core::chart::ChartType::Column,
             crate::core::chart::ChartType::Scatter,
         ] {
-            // Create a sheet with data for the chart to reference
             let mut columns = Vec::new();
             let col1 = DataColumn::from_src(
                 "A",
@@ -2954,7 +2926,6 @@ mod tests {
                 locale: crate::core::locale::Locale::default(),
             };
 
-            // Create a chart referencing that sheet
             let chart = crate::core::chart::Chart {
                 id: 101,
                 name: "Chart 1".to_string(),
@@ -2968,12 +2939,10 @@ mod tests {
                 anchor_col: 2,
             };
 
-            // Export sheet + chart
             let xlsx_data =
                 export_xlsx_data(&[sheet], std::slice::from_ref(&chart), &[], None).unwrap();
             assert!(!xlsx_data.is_empty());
 
-            // Import back
             let (imported_tables, imported_charts, _, _) =
                 import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
@@ -3161,8 +3130,6 @@ mod tests {
     /// These stand in for a check CI cannot run: the only authority on
     /// whether Excel accepts a pivot part is Excel, and
     /// `fuzz/pivot_filter_probe.py --variant visi` is what actually asks it.
-    /// What these pin is the two specific things that were wrong, so a
-    /// regression shows up here rather than as an unopenable file.
     fn emitted_pivot_parts(
         sheets: &[Sheet],
         pivots: &[crate::core::pivot::PivotTable],
@@ -3421,17 +3388,8 @@ mod tests {
 
     #[test]
     fn test_xlsx_pivot_outer_field_subtotal_off_survives_round_trip() {
-        // Regression test: `import_pivot_tables` used to always construct
-        // row/col `PivotField`s via `PivotField::new`, whose `subtotal`
-        // defaults to `true`, ignoring the `<item t="default"/>` marker (or
-        // lack thereof) `build_pivot_xml_unit` had already written into
-        // each `<pivotField>`'s `<items>`. Since every `visi pivot`
-        // CLI command round-trips the whole workbook through xlsx (a fresh
-        // process per invocation), a `subtotal: false` set at pivot-build
-        // time was silently discarded before the next command ran --
-        // discovered via fuzz/fuzz_pivot.py, whose Python driver renders
-        // Excel's *own* PivotTable via VBA (which does honor the toggle)
-        // while `visi` always showed the subtotal row regardless.
+        // An outer/solo row/col field's `subtotal: false` setting must
+        // survive xlsx round-trip.
         use crate::core::pivot::{
             PivotAggregation, PivotField, PivotSource, PivotTable, PivotValueField,
         };
@@ -3464,17 +3422,7 @@ mod tests {
 
         // A single row field ("Region") with its subtotal explicitly turned
         // off -- i.e. it's currently the *innermost* (only) field of its
-        // axis. This is exactly the state a field is in right after `visi
-        // pivot add-field --area row --column Region --no-subtotal` and
-        // before any second row field is ever added: the earlier version of
-        // this fix suppressed the `<item t="default"/>` marker for
-        // whichever field is innermost *at export time*, on the theory that
-        // a subtotal has nothing to summarize there anyway -- but that
-        // meant a field's `false` was only ever durable once it stopped
-        // being innermost, which never survives the CLI's per-invocation
-        // xlsx round-trip: each `add-field` call re-imports the file before
-        // making its change, so a solo field's `false` was already lost by
-        // the time a second field's `add-field` call could read it back.
+        // axis. This setting must be preserved through export and re-import.
         let pivot = PivotTable {
             id: 42,
             name: "Pivot1".to_string(),
@@ -3516,12 +3464,8 @@ mod tests {
 
     #[test]
     fn test_xlsx_document_module_codename_survives_sheet_name_truncation() {
-        // Regression test: patch_workbook_code_names used to match a bound
-        // Document module's sheet by its original `Sheet::name`, but a
-        // worksheet name over 31 chars gets truncated on export -- so the
-        // needle it searched for never matched, and the codeName (and thus
-        // the module's sheet binding) was silently dropped from the saved
-        // file.
+        // Bound Document module sheet matching should succeed even when a
+        // worksheet name over 31 chars gets truncated on export.
         let long_name = "A".repeat(40);
         let sheet = Sheet {
             id: 1,

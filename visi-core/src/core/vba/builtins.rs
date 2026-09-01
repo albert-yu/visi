@@ -173,9 +173,7 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         }
         "cvar" => need(args, 0)?,
         // Always a Double, whatever the argument: `Val(1%)`, `Val(255)` and
-        // `Val("100000")` are all Doubles. An earlier version typed the
-        // result like a literal, inferred from a fuzz case where `Val` may
-        // never have run -- measuring it directly settled it.
+        // `Val("100000")` are all Doubles.
         "val" => Variant::Double(val_of(&arg(args, 0))),
 
         // ---- maths -------------------------------------------------------

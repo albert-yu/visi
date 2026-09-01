@@ -181,14 +181,14 @@ fn test_new_excel_formulas() {
     test_booleans("=ISNUMBER(\"foo\")", false).unwrap();
     test_booleans("=ISTEXT(\"foo\")", true).unwrap();
     test_booleans("=ISTEXT(5)", false).unwrap();
-    test_booleans("=ISBLANK(GET(10, 10))", true).unwrap();
+    test_booleans("=ISBLANK(J10)", true).unwrap();
     test_booleans("=ISERROR(1 / 0)", true).unwrap();
     test_booleans("=ISERROR(5)", false).unwrap();
 
     test_floats("=PRODUCT(2, 3, 4)", 24.0).unwrap();
     test_floats("=MOD(10, 3)", 1.0).unwrap();
     test_floats("=MOD(-10, 3)", 2.0).unwrap();
-    test_floats("=COUNTA(1, \"foo\", GET(10, 10))", 2.0).unwrap();
+    test_floats("=COUNTA(1, \"foo\", J10)", 2.0).unwrap();
 
     test_floats("=IFERROR(5, 10)", 5.0).unwrap();
     test_floats("=IFERROR(1 / 0, 10)", 10.0).unwrap();
@@ -447,10 +447,10 @@ fn test_concatenation() {
     test_strings("=CONCATENATE(\"Hello\", \" World\")", "Hello World").unwrap();
     test_strings("=CONCATENATE(\"ABC\", \"DEF\")", "ABCDEF").unwrap();
 
-    test_strings("=CONCATENATE(str(5), \" items\")", "5 items").unwrap();
-    test_strings("=CONCATENATE(\"Value: \", str(42))", "Value: 42").unwrap();
-    test_strings("=CONCATENATE(str(3.14), \" is pi\")", "3.14 is pi").unwrap();
-    test_strings("=CONCATENATE(\"Result: \", str(True))", "Result: TRUE").unwrap();
+    test_strings("=CONCATENATE(5, \" items\")", "5 items").unwrap();
+    test_strings("=CONCATENATE(\"Value: \", 42)", "Value: 42").unwrap();
+    test_strings("=CONCATENATE(3.14, \" is pi\")", "3.14 is pi").unwrap();
+    test_strings("=CONCATENATE(\"Result: \", TRUE)", "Result: TRUE").unwrap();
 }
 
 #[test]
@@ -1230,15 +1230,9 @@ fn test_excel_table_cross_sheet_reference() {
 
 #[test]
 fn test_excel_table_structured_reference_survives_commit() {
-    // Regression test: `commit()` re-derives each formula's evaluated
-    // source text via `compile_formula`/`serialize_formula` on every run
-    // (see Sheet::commit), not just the first time. That recompilation
-    // step must recognize a real ExcelTable's columns -- if it instead
-    // tried to resolve them the legacy way (as plain DataColumn names, all
-    // of which are blank for a table's columns), it would rewrite the
-    // formula's column name to a bogus placeholder and break it, even
-    // though a direct `sheet.eval()` call (bypassing compile_formula) would
-    // have worked fine.
+    // `commit()` re-derives each formula's evaluated source text via
+    // `compile_formula`/`serialize_formula` on every run (see Sheet::commit).
+    // That recompilation step recognizes a real ExcelTable's columns.
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 4,
@@ -1349,16 +1343,11 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
     );
 }
 
-/// #26 flags an absence of any circular-reference testing: `commit`'s
-/// dirty-cell BFS is bounded by `max_ops`, not real cycle detection (unlike
-/// real Excel, which shows a warning and substitutes 0 by default, or
-/// converges under user-configured iterative calculation -- neither
-/// modeled here). This is a documented, intentional shortcut, not a bug to
-/// fix, but nothing previously confirmed it actually holds: these tests
-/// lock in the safety property that matters -- a cycle terminates quickly
-/// with a finite result rather than hanging or panicking -- so a future
-/// change to the dirty-queue/max_ops logic can't silently regress that
-/// into an infinite loop.
+/// `commit`'s dirty-cell BFS is bounded by `max_ops`, not real cycle detection
+/// (unlike real Excel, which shows a warning and substitutes 0 by default, or
+/// converges under user-configured iterative calculation -- neither modeled here).
+/// These tests verify that a cycle terminates quickly with a finite result rather
+/// than hanging or panicking.
 #[test]
 fn test_self_referencing_formula_terminates_without_hanging() {
     let mut sheet = Sheet::new(SheetInit {
@@ -1414,20 +1403,9 @@ fn test_multi_cell_circular_chain_terminates_without_hanging() {
     }
 }
 
-/// Regression for a stack-overflow/hang found via visi-core/fuzz's
-/// formula_eval target within its first extended run (#26 -- zero
-/// formula-level Rust fuzz coverage existed before that target). A bare,
-/// unaggregated range reference that includes the very cell its own
-/// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P
-/// span) reads its own currently-stored value back as one element of the
-/// range on every recompute; since that stored value *is* the previous
-/// recompute's `ResultData::List`, each pass nested a List one level
-/// deeper inside itself. Per-op cost grew visibly superlinearly (measured
-/// via temporary instrumentation: ~350ms for ops 1-200, ~3.6s for ops
-/// 1000-1200) and the process stack-overflowed via recursive Clone/Drop
-/// around op ~1300 -- well before commit()'s own max_ops=10000 circuit
-/// breaker ever got a chance to trip, since each op was individually
-/// getting more expensive rather than the op *count* running away.
+/// A bare, unaggregated range reference that includes the very cell its own
+/// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P span)
+/// does not grow nested Lists unbounded on recompute passes.
 #[test]
 fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
     let mut sheet = Sheet::new(SheetInit {
@@ -1599,10 +1577,8 @@ fn bold() -> crate::core::CellStyle {
     }
 }
 
-/// `extend` used to grow `src`/`data`/`compiled_src` and leave `styles`
-/// behind, which made the new row unstylable: `set_cell_style` computed a
-/// row count from `src`, found nothing to grow, then silently dropped the
-/// style because the index was past `styles`' end.
+/// `extend` grows `src`/`data`/`compiled_src` and `styles` together so that
+/// the new row remains stylable.
 #[test]
 fn test_extend_down_keeps_styles_aligned() {
     let mut sheet = Sheet::new(SheetInit {
@@ -1731,17 +1707,11 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
         ..Default::default()
     });
 
-    // Row 0: Explicit String date text
     sheet.set_cell_with_type(0, 0, "6/22/26".to_string(), CellType::String);
-    // Row 1: Explicit String number text
     sheet.set_cell_with_type(1, 0, "12345".to_string(), CellType::String);
-    // Row 2: Explicit String boolean text
     sheet.set_cell_with_type(2, 0, "TRUE".to_string(), CellType::String);
-    // Row 3: Leading apostrophe forces String
     sheet.set_cell_src(3, 0, "'6/22/26".to_string());
-    // Row 4: Untyped date literal (infers Number with date format)
     sheet.set_cell_src(4, 0, "6/22/26".to_string());
-    // Row 5: Formulas checking TYPE
     sheet.set_cell_src(0, 1, "=TYPE(A1)".to_string());
     sheet.set_cell_src(1, 1, "=TYPE(A2)".to_string());
     sheet.set_cell_src(2, 1, "=TYPE(A3)".to_string());
@@ -1750,7 +1720,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
 
     sheet.commit(None).unwrap();
 
-    // Verify Row 0 (String date text)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(0, 0)),
         ResultData::String(ref s) if s == "6/22/26"
@@ -1764,7 +1733,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     );
     assert!(matches!(sheet.get_result_data(&CellRef::new(0, 1)), ResultData::Float(f) if f == 2.0)); // TYPE 2 = text
 
-    // Verify Row 1 (String number text)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(1, 0)),
         ResultData::String(ref s) if s == "12345"
@@ -1772,7 +1740,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     assert_eq!(sheet.get_cell_type(&CellRef::new(1, 0)), CellType::String);
     assert!(matches!(sheet.get_result_data(&CellRef::new(1, 1)), ResultData::Float(f) if f == 2.0));
 
-    // Verify Row 2 (String boolean text)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(2, 0)),
         ResultData::String(ref s) if s == "TRUE"
@@ -1780,7 +1747,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     assert_eq!(sheet.get_cell_type(&CellRef::new(2, 0)), CellType::String);
     assert!(matches!(sheet.get_result_data(&CellRef::new(2, 1)), ResultData::Float(f) if f == 2.0));
 
-    // Verify Row 3 (Apostrophe forced string)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(3, 0)),
         ResultData::String(ref s) if s == "6/22/26"
@@ -1789,7 +1755,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     assert_eq!(sheet.columns[0].src[3], "6/22/26"); // stripped apostrophe
     assert!(matches!(sheet.get_result_data(&CellRef::new(3, 1)), ResultData::Float(f) if f == 2.0));
 
-    // Verify Row 4 (Inferred date number)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(4, 0)),
         ResultData::Float(f) if (f - 46195.0).abs() < f64::EPSILON
@@ -1802,4 +1767,41 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
             .is_some()
     );
     assert!(matches!(sheet.get_result_data(&CellRef::new(4, 1)), ResultData::Float(f) if f == 1.0)); // TYPE 1 = number
+}
+
+#[test]
+fn test_bracket_slice_evaluation() {
+    let sheet = Sheet::new(SheetInit::default());
+    let (res, _) = sheet.eval("=[1, 2, 3, 4, 5][1:3]", None).unwrap();
+    let ResultData::List(items) = res else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 2.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 3.0));
+
+    let (res_no_end, _) = sheet.eval("=[1, 2, 3, 4, 5][2:]", None).unwrap();
+    let ResultData::List(items) = res_no_end else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 3);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 3.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 4.0));
+    assert!(matches!(items[2], ResultData::Float(f) if f == 5.0));
+
+    let (res_no_start, _) = sheet.eval("=[1, 2, 3, 4, 5][:2]", None).unwrap();
+    let ResultData::List(items) = res_no_start else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 1.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 2.0));
+
+    let (res_neg, _) = sheet.eval("=[1, 2, 3, 4, 5][-2:]", None).unwrap();
+    let ResultData::List(items) = res_neg else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 4.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 5.0));
 }

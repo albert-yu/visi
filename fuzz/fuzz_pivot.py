@@ -302,8 +302,7 @@ MACRO_SOURCE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Bu
 # labeled plain "Count" in the value-field-settings UI); visi's
 # `CountNumbers` counts only numeric values -- matches Excel's `xlCountNums`.
 # There is no separate "CountA" member in Excel's `XlConsolidationFunction`
-# enum (confirmed via Excel.sdef) -- an earlier draft of this mapping
-# assumed one existed and was wrong. `BuildFuzzPivot.bas` (invoked by the
+# enum (confirmed via Excel.sdef). `BuildFuzzPivot.bas` (invoked by the
 # AppleScript path) matches these same keys directly in its `Select Case`,
 # so only the win32com path needs its own VBA constant-name mapping.
 AGG_TO_WIN32COM_FUNCTION = {
@@ -606,7 +605,7 @@ class ExcelPivotDriver:
                 if res.returncode == 0:
                     break
                 # A non-timeout AppleScript failure this late in a session is
-                # session degradation, not a config problem (issue #15) --
+                # session degradation, not a config problem --
                 # a plain retry against the same stuck process just fails
                 # again, so restart Excel outright before the next attempt.
                 self._restart_excel()
@@ -719,11 +718,9 @@ class ExcelPivotDriver:
                 pf = pt.PivotFields(f["column"])
                 # AddDataField, not `.Orientation = xlDataField` in a loop:
                 # the Orientation-loop pattern is non-deterministic in real
-                # Excel when the same source column backs two value fields
-                # (GitHub issue #13, root-caused via the macro path -- see
-                # BuildFuzzPivot.bas's ApplyValueFields). Omitting Caption
-                # lets Excel derive its own default, same as the
-                # Orientation path would.
+                # Excel when the same source column backs two value fields.
+                # Omitting Caption lets Excel derive its own default, same
+                # as the Orientation path would.
                 fn = getattr(c, AGG_TO_WIN32COM_FUNCTION[f["agg"]])
                 pt.AddDataField(pf, Function=fn)
             if config["filter_field"]:
@@ -746,17 +743,10 @@ class ExcelPivotDriver:
 
             pt.MergeLabels = False
             pt.HasAutoFormat = False
-            # GitHub issue #14: assigning RowGrand/ColumnGrand straight from
-            # grand_totals_row/grand_totals_col is wrong -- the live
-            # properties read back correctly right up through RefreshTable,
-            # but the *saved* .xlsx's rendered grid and
-            # rowGrandTotals/colGrandTotals XML attributes come out as if
-            # the two properties were swapped. Originally found on Mac
-            # Excel via BuildFuzzPivot.bas; now confirmed on Windows too via
-            # this win32com/COM path (fuzz/fuzz_pivot.py, seed 584357:
-            # grand_totals_row=True, grand_totals_col=False produced a saved
-            # file with no "Grand Total" row at all -- exactly the swapped
-            # result). Same swap applied on both platforms.
+            # Assigning RowGrand/ColumnGrand straight from
+            # grand_totals_row/grand_totals_col is swapped because Excel's saved
+            # .xlsx rendered grid and rowGrandTotals/colGrandTotals XML attributes
+            # match the swapped properties.
             pt.ColumnGrand = config["grand_totals_row"]
             pt.RowGrand = config["grand_totals_col"]
             pt.RefreshTable()

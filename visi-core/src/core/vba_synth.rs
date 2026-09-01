@@ -3,7 +3,7 @@
 //! `vba_xlsx::build_vba_project_bin` patches on every export, plus each
 //! module's opaque p-code prefix. Together these let a workbook's first VBA
 //! module be created without copying any bytes from a real, Excel-authored
-//! file -- see `vba.rs` for why that used to be necessary.
+//! file.
 //!
 //! The `dir`-stream record IDs used by `build_skeleton_dir` (PROJECTSYSKIND,
 //! PROJECTLCID, PROJECTVERSION, ...) are documented in the public
@@ -166,7 +166,7 @@ mod tests {
 
     /// Independently walks `synthetic_module_prefix`'s output the same way
     /// a reader is understood to (see the module doc comment), as a
-    /// regression guard on the layout rather than a proof it satisfies
+    /// consistency check on the layout rather than a proof it satisfies
     /// Excel.
     #[test]
     fn synthetic_prefix_is_self_consistent() {

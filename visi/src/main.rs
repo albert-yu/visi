@@ -134,7 +134,6 @@ fn handle_read(args: ReadArgs, locale: Option<visi_core::core::Locale>) {
         });
     }
 
-    // Determine target sheet and bounds
     let mut sheet_name_opt = args.sheet.clone();
     let mut target_cell = None;
     let mut target_range = None;
@@ -165,7 +164,6 @@ fn handle_read(args: ReadArgs, locale: Option<visi_core::core::Locale>) {
 
     let sheet = &wb.sheets[sheet_idx];
 
-    // Single cell display
     if let Some((row, col)) = target_cell {
         let val_str = get_cell_display_val(sheet, row, col, args.raw);
         if args.format == OutputFormat::Json {
@@ -199,7 +197,6 @@ fn handle_read(args: ReadArgs, locale: Option<visi_core::core::Locale>) {
         return;
     }
 
-    // Grid / Range display
     let (min_row, min_col, max_row, max_col) = match target_range {
         Some(range) => range,
         None => (
@@ -251,7 +248,6 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
 
     let mut updates: Vec<(usize, usize, usize, String)> = Vec::new(); // (sheet_idx, row, col, val)
 
-    // 1. Parallel --cell and --value pairs
     for (cell_str, val_str) in args.cell.iter().zip(args.value.iter()) {
         let (s_name, row, col) = parse_cell_ref(cell_str).unwrap_or_else(|e| {
             exit_with_error(e, EXIT_USAGE_ERROR);
@@ -265,7 +261,6 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
         updates.push((sheet_idx, row, col, val_str.clone()));
     }
 
-    // 2. Multiple --set pairs (e.g. A1=100)
     for pair in &args.set_pairs {
         let parts: Vec<&str> = pair.splitn(2, '=').collect();
         if parts.len() != 2 {
@@ -292,7 +287,6 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
         updates.push((sheet_idx, row, col, val_str.to_string()));
     }
 
-    // 3. Cells specified with --cell without matching --value (for setting cell type or style on existing cells)
     let mut type_only_cells: Vec<(usize, usize, usize)> = Vec::new();
     if args.value.len() < args.cell.len() {
         for cell_str in &args.cell[args.value.len()..] {
@@ -336,7 +330,6 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
 
     let explicit_type = args.cell_type.map(cell_type_arg_to_cell_type);
 
-    // Apply updates
     for (s_idx, row, col, val) in &updates {
         if let Some(ct) = explicit_type {
             wb.set_cell_with_type(*s_idx, *row, *col, val.clone(), ct);
@@ -360,7 +353,6 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
         }
     }
 
-    // Evaluate formulas if required
     if args.eval {
         wb.evaluate().unwrap_or_else(|e| {
             exit_with_error(
@@ -419,7 +411,6 @@ fn handle_eval(args: EvalArgs, quiet: bool, locale: Option<visi_core::core::Loca
         print!("{}", rendered);
     }
 
-    // Save if output path or in-place specified
     if args.in_place || args.output.is_some() {
         let save_path = resolve_output_path(args.output, args.in_place, &args.file);
         wb.save_file(&save_path).unwrap_or_else(|e| {
@@ -1566,7 +1557,7 @@ struct MacroCheckResult {
 /// handed over is the whole project. The default reading is that it is --
 /// right for a workbook and for a genuinely standalone `.bas`, wrong for a
 /// `.bas` cut out of a project that calls into its siblings, which is what
-/// `--partial` is for (issue #82). Nothing here tries to guess which; the
+/// `--partial` is for. Nothing here tries to guess which; the
 /// flag is the only thing that says.
 fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     let results = if is_vba_source_path(&args.file) {

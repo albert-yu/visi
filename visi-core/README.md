@@ -7,8 +7,8 @@ An embeddable spreadsheet engine: Excel formula compilation and evaluation,
 a dependency-tracking recalculation engine, and `.xlsx` import/export.
 
 `visi-core` is the engine behind the [`visi`](https://crates.io/crates/visi)
-command-line tool, published separately so it can be embedded directly. It
-makes no CLI or filesystem assumptions — everything is driven through byte
+command-line tool, published separately so it can be embedded directly in apps.
+It makes no I/O assumptions — everything is driven through byte
 buffers — and it uses `web-time` and `getrandom` rather than `std::time` so
 it can target wasm.
 
@@ -19,9 +19,9 @@ it can target wasm.
 visi-core = "0.1"
 ```
 
-[`WorkbookManager`] is the entry point. It owns a workbook's sheets, charts,
-pivot tables and VBA project, and is the layer that makes cross-sheet formulas
-behave correctly — prefer it over reaching for `core::engine::Sheet` directly.
+Use [`WorkbookManager`] as the entry point. It owns a workbook's sheets, charts,
+pivot tables and VBA project. Prefer it over reaching for `core::engine::Sheet`
+directly, since formulas can reference across sheets.
 
 ```rust,no_run
 use visi_core::WorkbookManager;
@@ -39,21 +39,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Fallible calls return `visi_core::Error`, which implements `std::error::Error`.
-Failures that name a workbook object carry an `ObjectKind`, so you can react
-without parsing message text:
+Example error handling:
 
 ```rust,no_run
-# use visi_core::{Error, ObjectKind, WorkbookManager};
-# fn f(wb: &mut WorkbookManager) -> Result<(), Box<dyn std::error::Error>> {
-match wb.rename_sheet("Sheet1", "Data") {
-    Err(Error::NotFound { kind: ObjectKind::Sheet, name, .. }) => {
-        eprintln!("no sheet called {name}");
-    }
-    other => other?,
+use visi_core::{Error, ObjectKind, WorkbookManager};
+
+fn f(wb: &mut WorkbookManager) -> Result<(), Box<dyn std::error::Error>> {
+  match wb.rename_sheet("Sheet1", "Data") {
+      Err(Error::NotFound { kind: ObjectKind::Sheet, name, .. }) => {
+          eprintln!("no sheet called {name}");
+      }
+      other => other?,
+  }
+  Ok(())
 }
-# Ok(())
-# }
 ```
 
 ## What it does
@@ -91,4 +90,4 @@ re-exported from the crate root and from `core` is the intended surface.
 
 Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
 
-[`WorkbookManager`]: https://docs.rs/visi-core/latest/visi_core/struct.WorkbookManager.html
+[`WorkbookManager`]:  https://docs.rs/visi-core/latest/visi_core/core/workbook/struct.WorkbookManager.html

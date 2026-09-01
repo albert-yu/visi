@@ -342,13 +342,7 @@ pub fn imdiv(in_str1: &str, in_str2: &str) -> Result<String, String> {
 // --- Complex transcendental functions -------------------------------------
 //
 // These all compute on `ComplexNum` end to end and format exactly once, at
-// the public boundary. An earlier version composed them out of the public
-// string-returning helpers (e.g. `imtan` = `imdiv(imsin(s), imcos(s))`),
-// which round-tripped every intermediate through
-// format_complex/parse_complex -- i.e. through Excel's 15-significant-digit
-// *display* rounding -- and lost several digits of precision before the
-// final division even started. That showed up against real Excel as a
-// last-few-digits disagreement on IMTAN/IMCOT/IMSEC/IMCSC/IMSECH/IMCSCH.
+// the public boundary, avoiding intermediate string formatting and rounding.
 
 fn c_exp(c: ComplexNum) -> ComplexNum {
     let mag = c.re.exp();
@@ -678,8 +672,7 @@ fn harmonic(m: usize) -> f64 {
 ///        + (-1)^n (1/2) sum_{k=0}^inf [psi(k+1)+psi(n+k+1)]/(k!(n+k)!) (x/2)^(2k+n)
 ///
 /// Confirmed by hand against known reference values (K_0(1) ~ 0.4210244,
-/// K_1(1) ~ 0.6019072). Diverges as x -> 0, unlike I_n, so this used to be
-/// a real correctness bug when it aliased `besseli` directly -- see #26.
+/// K_1(1) ~ 0.6019072). Diverges as x -> 0, unlike I_n.
 pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
     if x <= 0.0 || n < 0.0 {
         return Err("#NUM!".to_string());
@@ -730,9 +723,7 @@ pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
 ///        - (1/pi) sum_{k=0}^inf (-1)^k [psi(k+1)+psi(n+k+1)]/(k!(n+k)!) (x/2)^(2k+n)
 ///
 /// Confirmed by hand against known reference values (Y_0(1) ~ 0.0882570,
-/// Y_1(1) ~ -0.7812128). Unlike `besselj` it diverges as x -> 0, so this
-/// used to be a real correctness bug when it aliased `besselj` directly --
-/// see #26.
+/// Y_1(1) ~ -0.7812128). Unlike `besselj` it diverges as x -> 0.
 pub fn bessely(x: f64, n: f64) -> Result<f64, String> {
     if x <= 0.0 || n < 0.0 {
         return Err("#NUM!".to_string());

@@ -142,10 +142,6 @@ pub(crate) fn format_excel_number(f: f64) -> String {
     // rendering stays within 20 characters, and only then falls back to
     // scientific. The minus sign is *not* charged against that budget --
     // real Excel writes -2.05237592634038E-10, which is 21 characters.
-    //
-    // That is a much wider decimal range than the magnitude cutoffs this
-    // used to apply (1e-5 .. 1e11), which turned e.g. 976121418126.432 --
-    // which real Excel writes out in full -- into "9.76121418126432E+11".
     // Verified against real Excel: 1e18 and 1e19 render in full (19 and 20
     // characters) while 1e20 (21) goes scientific, and 0.000001207666770903
     // renders in full (20) while 0.00000120766677090395 (22) goes

@@ -393,7 +393,7 @@ class ExcelVerdictDriver:
                 )
             except subprocess.TimeoutExpired:
                 # A hang is the compile-error signal -- but it is also what
-                # session degradation looks like (fuzz_pivot.py's issue #15),
+                # session degradation looks like,
                 # so confirm it survives a restart before believing it.
                 self.restart_excel()
                 if attempt == 0:
@@ -514,8 +514,7 @@ def main():
     print(f" Cases       : {len(cases)}")
     # The seed goes in every saved failure's directory name. Without it two
     # runs both save to `vba_parse_iter_7` and the second silently destroys
-    # the first's reproduction -- which is exactly what happened to the
-    # issue #78 corpus while it was being used as a reference set.
+    # the first's reproduction.
     run_tag = "" if args.corpus else f"_seed_{seed}"
     print(f" Source      : {args.corpus or f'generated (seed {seed})'}")
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")

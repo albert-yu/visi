@@ -18,10 +18,9 @@
 //!
 //! - **Omitting** a real built-in makes `macro check` reject working code --
 //!   a false positive, which `docs/vba-macro-support.md` calls the worse
-//!   failure mode, and which issue #78 specifically warns against.
+//!   failure mode.
 //! - **Including** a name that is not really a built-in only means one
-//!   undeclared-name mistake goes unreported -- a false negative, which is
-//!   exactly today's behaviour and therefore no regression at all.
+//!   undeclared-name mistake goes unreported -- a false negative.
 //!
 //! So this list is deliberately over-broad. It carries names whose spelling
 //! is contextual (`Name`, `Line`, `Width`, `Get`, `Put` are statements in

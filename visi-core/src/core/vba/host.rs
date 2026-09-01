@@ -320,15 +320,6 @@ fn dead_range(member: &str) -> VbaError {
     VbaError::new(1004, format!("Method '{member}' of object 'Range' failed"))
 }
 
-/// The names `Sheet::evaluate_function` implements that are *not* Excel
-/// functions.
-///
-/// `WorksheetFunction` must not expose them: a macro calling
-/// `WorksheetFunction.Slice(...)` would work here and fail in Excel, which is
-/// the one direction of divergence a differential harness cannot catch (it
-/// generates what Excel accepts).
-const ENGINE_ONLY_FUNCTIONS: &[&str] = &["GET", "GET_COL", "GET_COL_IDX", "SLICE", "STR"];
-
 /// The workbook a macro is running against.
 ///
 /// Holds the workbook mutably for the whole run, which is why every object is
@@ -610,9 +601,6 @@ impl<'w> Host<'w> {
                 self.stale = false;
                 Ok(())
             }
-            // The property issue #58 gated on the import gap being closed
-            // first, since a macro can set a filter, save, and carry on.
-            //
             // Measured: assigning re-renders the grid **immediately**, with
             // no `RefreshTable` -- reading a pivot cell straight afterwards
             // shows the filtered value. That is a deliberate exception to
@@ -1785,8 +1773,7 @@ impl<'w> Host<'w> {
         let r = self.range(token, name)?;
         let lower = name.to_ascii_lowercase();
 
-        // `Color` is a BGR `Long`; `CellStyle` stores `"#RRGGBB"`. Getting
-        // this backwards is the failure issue #58 singled out.
+        // `Color` is a BGR `Long`; `CellStyle` stores `"#RRGGBB"`.
         if lower == "color" {
             let hex = color::bgr_to_hex(long_arg(value)?);
             return self.style_write(r, move |s| {
@@ -2155,9 +2142,6 @@ impl<'w> Host<'w> {
         raises: bool,
     ) -> VResult<Variant> {
         let upper = name.to_uppercase();
-        if ENGINE_ONLY_FUNCTIONS.contains(&upper.as_str()) {
-            return Err(unsupported(&format!("WorksheetFunction.{name}")));
-        }
         self.recalculate();
 
         let mut exprs = Vec::with_capacity(args.len());
@@ -2706,8 +2690,7 @@ mod tests {
 
     #[test]
     fn for_each_over_a_range_is_row_major() {
-        // The one ordering question issue #57 asked to confirm rather than
-        // assume. Excel walks left-to-right, then down.
+        // Excel walks left-to-right, then down.
         assert_eq!(
             probe(
                 "For Each c In ws.Range(\"A1:B2\")\\n s = s & c.Address(False, False) & \" \"\\nNext :: s"
@@ -2921,22 +2904,6 @@ mod tests {
         assert_eq!(
             probe("CStr(Application.WorksheetFunction.Sum(ws.Range(\"F1\")))"),
             "ERR|1004"
-        );
-    }
-
-    #[test]
-    fn worksheet_function_does_not_expose_the_engines_own_functions() {
-        // `SLICE` and friends are `evaluate_function` names that Excel has
-        // never heard of. A macro using one would work here and fail in
-        // Excel -- the one direction a differential harness cannot catch,
-        // since it only generates what Excel accepts.
-        assert_eq!(
-            probe("CStr(Application.WorksheetFunction.Slice(ws.Range(\"A1:A3\"), 1))"),
-            "ERR|438"
-        );
-        assert_eq!(
-            probe("CStr(Application.WorksheetFunction.Get(1))"),
-            "ERR|438"
         );
     }
 
@@ -3480,8 +3447,8 @@ mod tests {
 
     #[test]
     fn interior_color_is_bgr_so_ff0000_is_blue() {
-        // The failure issue #58 named as most likely. `&HFF0000` must land in
-        // the *blue* channel of the stored style, not the red one.
+        // `&HFF0000` must land in the *blue* channel of the stored style,
+        // not the red one.
         assert_eq!(
             probe(
                 r#"ws.Range("G2").Interior.Color = &HFF0000 :: CStr(ws.Range("G2").Interior.Color)"#
@@ -3701,10 +3668,10 @@ mod tests {
 
     #[test]
     fn number_format_changes_the_rendering_and_leaves_the_serial_alone() {
-        // Issue #58 asked for this explicitly: writing `NumberFormat` from a
-        // macro can turn a date cell into a plain number *visually* while the
-        // serial stays put, which is correct and is exactly `core::date`'s
-        // model -- there is no date value type to lose.
+        // Writing `NumberFormat` from a macro can turn a date cell into
+        // a plain number *visually* while the serial stays put, which is
+        // correct and is exactly `core::date`'s model -- there is no date
+        // value type to lose.
         assert_eq!(
             probe(
                 "ws.Range(\"I1\").Value = 46195\\n\
@@ -4020,10 +3987,9 @@ mod tests {
 
     #[test]
     fn a_table_with_no_data_rows_has_no_data_body_range() {
-        // Issue #11's shape, and #58's explicit question. Measured: deleting
-        // the only data row leaves the extent alone -- the table keeps its
-        // insert-row placeholder -- while `DataBodyRange` becomes `Nothing`
-        // and `ListRows.Count` becomes 0.
+        // Measured: deleting the only data row leaves the extent alone --
+        // the table keeps its insert-row placeholder -- while `DataBodyRange`
+        // becomes `Nothing` and `ListRows.Count` becomes 0.
         assert_eq!(
             table_probe(
                 r#"ws.ListObjects("Other").ListRows(1).Delete :: TypeName(ws.ListObjects("Other").DataBodyRange)"#

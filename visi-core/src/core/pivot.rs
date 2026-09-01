@@ -657,11 +657,8 @@ fn build_axis(
     // duplicate of it -- confirmed against real Excel via
     // fuzz/fuzz_pivot.py: a column axis with a single field, filtered down
     // to exactly one distinct value (so there's no possible subtotal
-    // either), still got its own redundant "Grand Total" column. An
-    // earlier version of this guard suppressed the grand total whenever
-    // there was only one *leaf* group, on the assumption Excel considered
-    // it redundant -- that assumption doesn't hold; only skip it when
-    // there's no data to total at all.
+    // either), still got its own redundant "Grand Total" column. Only
+    // skip it when there's no data to total at all.
     if grand_total && !flat.is_empty() {
         flat.push(FlatGroup {
             labels: vec![None; fields.len()],
@@ -906,7 +903,6 @@ pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid,
         filter_rows.push((ff.column.clone(), state));
     }
 
-    // Apply filter fields to build the working record set.
     let mut records: Vec<Vec<ResultData>> = Vec::new();
     'row: for row_vals in &all_rows {
         for ff in &pivot.filter_fields {
@@ -1675,9 +1671,9 @@ mod tests {
 
     #[test]
     fn test_nested_row_field_second_level_labels_are_not_lost() {
-        // Regression test: the second (innermost) row field's own labels
-        // must survive being nested under the first field's groups, not be
-        // truncated away when the group tree is flattened.
+        // The second (innermost) row field's own labels must survive being
+        // nested under the first field's groups, not be truncated away when
+        // the group tree is flattened.
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.row_fields = vec![PivotField::new("Region"), PivotField::new("Product")];
@@ -1737,17 +1733,12 @@ mod tests {
 
     #[test]
     fn test_filter_field_selection_matches_case_insensitively() {
-        // Regression test (fuzz/fuzz_pivot.py iteration 8, seed 599783): a
-        // filter field's selectable items are Excel pivot-cache items,
+        // A filter field's selectable items are Excel pivot-cache items,
         // which merge case-different text into a single item exactly like
         // row/col group labels do (see
         // test_case_variant_values_merge_using_globally_first_seen_casing)
         // -- so selecting "east" must match *every* row spelled "East" or
-        // "east", not just rows with that exact casing. An earlier version
-        // of `compute_pivot`'s filter step compared the raw row value
-        // against `selected_values` with plain string equality, which
-        // under-counted case variants; real Excel (driven via
-        // fuzz_pivot.py's AppleScript/VBA macro path) matched them all.
+        // "east", not just rows with that exact casing.
         let mut sheet = Sheet::new(SheetInit {
             name: Some("Data".to_string()),
             rows: 4,
@@ -1839,18 +1830,10 @@ mod tests {
 
     #[test]
     fn test_col_axis_subtotal_group_gets_total_caption_and_grand_total_stays_outermost() {
-        // Regression test: with a 2-level column axis (both fields'
-        // subtotals enabled by default), the header logic never gave a
-        // column-axis subtotal group its own "<value> Total" caption at
-        // all -- it just repeated the parent group's plain label, which
-        // the header's own "repeated label merges" dedup pass then blanked
-        // out entirely since it looked identical to the leaf column next
-        // to it. Separately, the grand-total column's caption was placed
-        // on the *deepest* column-field row (indistinguishable from the
-        // outermost row in every single-column-field case this was
-        // originally verified against), but real Excel puts it on the
-        // *outermost* row instead -- confirmed once a genuine 2-level
-        // column axis was tested against real Excel via fuzz/fuzz_pivot.py.
+        // With a 2-level column axis (both fields' subtotals enabled by
+        // default), the header logic gives a column-axis subtotal group its
+        // own "<value> Total" caption. The grand-total column's caption is
+        // placed on the *outermost* row.
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.row_fields = vec![PivotField::new("Rep")];
@@ -1869,15 +1852,10 @@ mod tests {
 
     #[test]
     fn test_col_axis_subtotal_caption_uses_value_field_label_with_multiple_value_fields() {
-        // Regression test for issue #17: with 2+ value fields, a col-field
-        // subtotal group used to repeat the literal text "<n> Total" under
-        // every value-field sub-column, plus an extra value-field-label row
-        // beneath it. Real Excel instead repeats the value field's own name
-        // directly on the subtotal's caption row ("<n> Min of Amount",
+        // With 2+ value fields, a col-field subtotal group repeats the value
+        // field's own name directly on the subtotal's caption row ("<n> Min of Amount",
         // "<n> Sum of Amount") and emits no separate label row underneath
-        // for those sub-columns -- confirmed against real Excel via
-        // fuzz/fuzz_pivot.py (--seed 100 --iterations 8, iteration 6/seed
-        // 106).
+        // for those sub-columns.
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.row_fields = vec![];
@@ -1921,21 +1899,8 @@ mod tests {
 
     #[test]
     fn test_col_axis_repeated_leaf_value_under_different_parents_is_not_falsely_merged() {
-        // Regression test: the header's "merge a repeated label across the
-        // columns it spans" dedup used to compare a cell's text against
-        // the last *non-blank* value seen anywhere earlier in the row, with
-        // no regard for which column group it actually came from. That's
-        // correct for the case it was built for (a value field fanning one
-        // group out into several adjacent sub-columns, or a shallower
-        // field spanning several *of its own* deeper sub-columns), but it
-        // also silently blanked a deeper field's leaf value whenever it
-        // happened to equal the leaf value of the *previous, unrelated*
-        // outer-field branch -- e.g. two different outer groups that each
-        // have exactly one child, and both children happen to be named the
-        // same. Discovered via fuzz/fuzz_pivot.py: a `Cat` branch with only
-        // a "west" `Mixed` child, immediately followed by another `Cat`
-        // branch whose only `Mixed` child was *also* "west", lost the
-        // second one's column entirely.
+        // Repeated leaf values under different parent groups are preserved
+        // rather than merged across unrelated outer-field branches.
         let mut sheet = Sheet::new(SheetInit {
             name: Some("Data".to_string()),
             rows: 3,
@@ -2055,16 +2020,8 @@ mod tests {
 
     #[test]
     fn test_grand_total_still_shows_with_only_one_leaf_group() {
-        // Regression test: an earlier version of this suppressed the grand
-        // total whenever an axis had only one *leaf* group, on the theory
-        // that a grand total identical to that lone group's own value would
-        // be a redundant duplicate Excel wouldn't bother showing. That
-        // theory turned out to be wrong -- verified against real Excel via
-        // fuzz/fuzz_pivot.py: a column field filtered down to exactly one
-        // distinct value still got its own "Grand Total" column, an exact
-        // duplicate of the single real column right next to it. Excel
-        // shows the grand total whenever the toggle is on, full stop,
-        // regardless of how many groups it's summarizing.
+        // Excel shows the grand total whenever the toggle is on, regardless of
+        // how many groups it's summarizing (even with only one leaf group).
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.filter_fields = vec![PivotFilterField {
@@ -2078,14 +2035,8 @@ mod tests {
 
     #[test]
     fn test_case_variant_values_merge_using_globally_first_seen_casing() {
-        // Regression test: case-insensitive grouping used to merge values
-        // independently within each branch of the *other* axis, so which
-        // casing "won" depended on which branch happened to be built
-        // first -- a value could display as "EAST" under one Group and
-        // "east" under another, when Excel shows one consistent spelling
-        // (the field's first occurrence anywhere in the source data) no
-        // matter which other-axis branch it's nested under. Discovered via
-        // fuzz/fuzz_pivot.py, whose generator deliberately mixes casings.
+        // Case-insensitive grouping merges values consistently across all
+        // branches using the field's first occurrence anywhere in the source data.
         let mut sheet = Sheet::new(SheetInit {
             name: Some("Data".to_string()),
             rows: 5,
@@ -2133,16 +2084,8 @@ mod tests {
     #[test]
     fn test_case_canonicalization_uses_first_seen_casing_from_unfiltered_source_not_just_surviving_rows()
      {
-        // Regression test: the canonical casing for a case-insensitively
-        // merged group used to be decided by scanning only the *filtered*
-        // record set, not the full source data -- so if a filter field
-        // happened to exclude whichever row had the true first occurrence
-        // of a value, a later-appearing (but filter-surviving) casing won
-        // instead. Excel's pivot cache assigns canonical casing once from
-        // the raw source data field-wide; a filter only hides cached items
-        // afterward, it never changes which casing was "first". Discovered
-        // via fuzz/fuzz_pivot.py with a filter field present alongside a
-        // case-variant row field.
+        // Canonical casing for a case-insensitively merged group is determined
+        // from the full source data field-wide, not just the filtered record set.
         let mut sheet = Sheet::new(SheetInit {
             name: Some("Data".to_string()),
             rows: 4,
@@ -2232,11 +2175,7 @@ mod tests {
 
     #[test]
     fn test_negative_looking_text_sorts_last_among_text_siblings() {
-        // Harvested from fuzz/fuzz_pivot.py's win32com (Windows) run, seed
-        // 584357: a text "NumStr" column mixing zero-padded/decimal/plain
-        // numeric-looking strings with a negative one. visi's alphabetical
-        // text sort previously placed "-7" first (its leading '-' sorts
-        // before every digit); real Windows Excel sorts it by its digits
+        // Real Windows Excel sorts negative-looking text by its digits
         // with the '-' stripped ("7"), which happens to land it last
         // among these particular siblings -- see `text_sort_key` and the
         // next test for a case where stripped-sign placement is *not*
@@ -2376,18 +2315,10 @@ mod tests {
 
     #[test]
     fn test_value_field_labels_distinct_aggregations_without_sum_stay_unsuffixed() {
-        // Regression test (fuzz/fuzz_pivot.py iteration 4, seed 883294):
-        // reusing a source column across multiple value fields with
+        // Reusing a source column across multiple value fields with
         // *different*, non-Sum aggregations produces distinct default
         // captions on its own ("Max of Amount", "Count of Amount"), so
-        // real Excel leaves them alone -- no "Amount2" suffix. An earlier
-        // version of `value_field_labels` suffixed on any repeated column
-        // regardless of aggregation, which real Excel (driven via
-        // fuzz_pivot.py's AppleScript/VBA macro path) did not do here: the
-        // dataFields XML it wrote out named these plainly as "Count of
-        // Amount" and "Max of Amount". (Reusing a column that *does* have
-        // a Sum value field is a different story -- see
-        // test_value_field_labels_sum_clones_column_for_later_fields.)
+        // real Excel leaves them alone -- no "Amount2" suffix.
         let fields = vec![
             PivotValueField::new("Amount", PivotAggregation::Count),
             PivotValueField::new("Amount", PivotAggregation::Max),
@@ -2400,16 +2331,10 @@ mod tests {
 
     #[test]
     fn test_value_field_labels_sum_clones_column_for_later_fields() {
-        // Regression test (fuzz/fuzz_pivot.py iteration 3, seed 406509,
-        // found in a follow-up fuzz batch after the fix above): unlike
-        // other aggregations, the *first* value field on a column that
-        // uses `Sum` silently clones that column ("Amount" -> "Amount2")
-        // for every value field *after* it in the list, regardless of
-        // their own aggregation -- confirmed by direct probing against
-        // real Excel (build a pivot with N value fields on one column via
-        // the same VBA `AddDataField` macro fuzz_pivot.py uses, across
-        // every ordering of {sum, count, average, max, min}). "Rate" here
-        // has no Sum field at all, so it's unaffected and stays plain.
+        // Unlike other aggregations, the *first* value field on a column that
+        // uses `Sum` clones that column ("Amount" -> "Amount2") for every value
+        // field *after* it in the list, regardless of their own aggregation.
+        // "Rate" here has no Sum field at all, so it's unaffected and stays plain.
         let fields = vec![
             PivotValueField::new("Amount", PivotAggregation::Sum),
             PivotValueField::new("Rate", PivotAggregation::Average),
@@ -2493,10 +2418,9 @@ mod tests {
 
     #[test]
     fn test_value_field_labels_count_numbers_shares_plain_count_caption() {
-        // Regression test (fuzz/fuzz_pivot.py iteration 1, seed 837909):
         // Excel's default caption for the "Count Numbers" summary function
         // is "Count of <field>" -- identical to plain "Count" -- not
-        // "Count Numbers of <field>". Since both aggregations now generate
+        // "Count Numbers of <field>". Since both aggregations generate
         // the same caption text, using both on the same column is exactly
         // the collide-and-suffix case above.
         let fields = vec![
@@ -2524,15 +2448,11 @@ mod tests {
 
     #[test]
     fn test_flat_pivot_with_no_row_or_col_fields_has_no_reserved_label_column() {
-        // Regression test: with neither row nor column fields (a single
-        // aggregate value, no grouping at all), Excel doesn't reserve a
-        // separate row-label column the way it does whenever *either* axis
-        // has fields -- the value field's own header sits directly above
-        // the value, one column wide total (verified against real Excel
-        // via fuzz/fuzz_pivot.py; previously visi always reserved a
-        // placeholder label column here, one column too many, which put
-        // the header/value one column to the right of where Excel puts
-        // them and left a stray blank column in between).
+        // With neither row nor column fields (a single aggregate value, no
+        // grouping at all), Excel doesn't reserve a separate row-label
+        // column the way it does whenever *either* axis has fields -- the
+        // value field's own header sits directly above the value, one column
+        // wide total.
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.row_fields = vec![];
@@ -2550,16 +2470,13 @@ mod tests {
 
     #[test]
     fn test_no_row_fields_with_multiple_value_fields_has_no_reserved_label_column_either() {
-        // Regression test: unlike the single-value-field case (which
-        // reserves one corner column for that field's own label, e.g. "Max
-        // of Amount"), with *multiple* value fields and no row fields
-        // there's no single unambiguous label to put in a corner -- each
-        // value field's label already shows up in its own column further
-        // along the header -- so Excel reserves no column for it at all,
-        // regardless of whether column fields are present (verified
-        // against real Excel via fuzz/fuzz_pivot.py). Previously visi
-        // always reserved one placeholder column whenever row fields were
-        // empty, off by one column versus Excel's actual grid.
+        // Unlike the single-value-field case (which reserves one corner
+        // column for that field's own label, e.g. "Max of Amount"), with
+        // *multiple* value fields and no row fields there's no single
+        // unambiguous label to put in a corner -- each value field's label
+        // already shows up in its own column further along the header -- so
+        // Excel reserves no column for it at all, regardless of whether
+        // column fields are present.
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.row_fields = vec![];
@@ -2580,17 +2497,10 @@ mod tests {
 
     #[test]
     fn test_multiple_value_fields_with_no_column_fields_share_one_header_row() {
-        // Regression test: `compute_pivot` used to unconditionally add an
-        // extra header row for the value-field labels whenever there was
-        // more than one value field, regardless of whether there were any
-        // column fields for that extra row to distinguish itself from --
-        // with no column fields at all there's no column-group-values row
-        // in the first place, so Excel just lists each value field as a
+        // With no column fields at all there's no column-group-values row
+        // in the first place, so Excel lists each value field as a
         // plain adjacent column in the single header row, like an ordinary
-        // flat table (verified against real Excel via fuzz/fuzz_pivot.py:
-        // this previously pushed every row's data down by one row versus
-        // Excel's actual output whenever a pivot had 2+ value fields and no
-        // column fields).
+        // flat table.
         let sheet = source_sheet();
         let mut pivot = base_pivot();
         pivot.value_fields = vec![
@@ -2691,10 +2601,8 @@ mod tests {
     // over the same filtered records; xlsx export/import round-trips
     // field assignments faithfully). This is a self-consistency fuzzer,
     // not a check against real Excel -- that's `fuzz/fuzz_pivot.py`'s job
-    // -- but it's cheap to run in `cargo test` and catches crashes/logic
-    // regressions in the group-tree flattening/subtotal/grand-total code
-    // (see `test_nested_row_field_second_level_labels_are_not_lost` for a
-    // bug this style of check would have caught immediately).
+    // -- but it's cheap to run in `cargo test` and catches crashes and logic
+    // issues in the group-tree flattening/subtotal/grand-total code.
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
@@ -3027,13 +2935,7 @@ mod tests {
         for seed in 0u64..300 {
             let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
             let use_table = seed % 2 == 0;
-            // A zero-data-row (header-only) Excel Table used to panic on
-            // export+reimport ("invalid range bounds" inside calamine's
-            // `Range::range`, reachable via `Xlsx::table_by_name`) --
-            // this fuzz loop is what originally found that bug. The import
-            // path no longer calls calamine's table API at all (see
-            // `xlsx::import_tables_from_zip`), so the Table-sourced arm no
-            // longer needs to avoid num_rows=0.
+            // Zero-data-row (header-only) Excel Table coverage.
             let num_rows = rng.gen_range(0..=40usize);
             let (mut sheet, col_names) = fuzz_source_sheet(&mut rng, num_rows);
             if use_table {

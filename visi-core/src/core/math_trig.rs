@@ -186,10 +186,8 @@ pub fn ceiling_math(x: f64, significance: Option<f64>, mode: Option<f64>) -> Res
         Ok((x / sig_abs).ceil() * sig_abs)
     } else {
         if m != 0.0 {
-            // Round away from zero (towards negative infinity)
             Ok((x / sig_abs).floor() * sig_abs)
         } else {
-            // Round towards zero
             Ok((x / sig_abs).ceil() * sig_abs)
         }
     }
@@ -207,10 +205,8 @@ pub fn floor_math(x: f64, significance: Option<f64>, mode: Option<f64>) -> Resul
         Ok((x / sig_abs).floor() * sig_abs)
     } else {
         if m != 0.0 {
-            // Round towards zero
             Ok((x / sig_abs).ceil() * sig_abs)
         } else {
-            // Round away from zero (towards negative infinity)
             Ok((x / sig_abs).floor() * sig_abs)
         }
     }
@@ -376,8 +372,7 @@ pub fn arabic(text: &str) -> Result<f64, String> {
 /// two places below the numeral it precedes (CM, CD, XC, XL, IX, IV).
 /// Forms 1-4 unlock progressively longer "reaches" and additionally allow
 /// the half-power numerals (V, L, D) to be subtracted, which is how Excel
-/// gets its shorter non-classical spellings. `form` used to be ignored
-/// outright, so every form rendered as form 0.
+/// gets its shorter non-classical spellings.
 ///
 /// Writing the numerals in descending order M D C L X V I (indices 0..6),
 /// let `reach` be the index distance from the minuend to the subtrahend.

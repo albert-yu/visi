@@ -160,9 +160,7 @@ fn test_probability_distributions_match_known_reference_values() {
     // against independent numeric integration of their PDFs (Simpson's
     // rule over ~4e5 points in a scratch Python script), not against this
     // engine's own incomplete-beta implementation, to avoid confirming a
-    // shared bug. None of these had any regression test before -- #26
-    // calls out the whole NORM.*/BETA.*/GAMMA*/CHISQ.* family as
-    // fuzzer-covered but locally untested.
+    // shared bug.
     // NORM.DIST/GAUSS go through `erf`'s Abramowitz & Stegun 7.1.26
     // approximation, whose documented max absolute error is ~1.5e-7 --
     // looser tolerance here reflects that implementation limit, not
@@ -287,8 +285,7 @@ fn test_fuzz_mode_mult_orders_ties_by_first_appearance_not_value() {
     // "b", 10, 0, 479.283, -26, -50, 10}, a three-way tie between 34, 0
     // and 10 (each appears twice). Real Excel's INDEX(MODE.MULT(...), 1)
     // is 34 -- the first value to reach the tied count while scanning the
-    // range -- not 0, the smallest. visi previously sorted tied modes by
-    // value ascending.
+    // range -- not 0, the smallest.
     let grid = [
         ["34", "0"],
         ["0", "479.283"],
@@ -304,13 +301,11 @@ fn test_fuzz_mode_mult_orders_ties_by_first_appearance_not_value() {
 
 #[test]
 fn test_t_test_uses_each_samples_own_length_for_its_mean() {
-    // Regression for #26: t_test's test_type==2 (equal-variance two-sample)
-    // branch divided array2's sum by array1's length (n1) instead of its
-    // own (n2) to get its mean -- silently correct only when the two
-    // samples happen to be the same length. Reference p-value computed by
-    // an independent Python script (closed-form pooled-variance t-stat,
-    // then numeric integration of the t-PDF for the p-value -- not this
-    // engine's own incomplete-beta routine).
+    // t_test's test_type==2 (equal-variance two-sample)
+    // branch divides array2's sum by its own length (n2) to get its mean.
+    // Reference p-value computed by an independent Python script (closed-form
+    // pooled-variance t-stat, then numeric integration of the t-PDF for the
+    // p-value -- not this engine's own incomplete-beta routine).
     let grid = [
         ["10", "12", "14", "16", "18", ""],
         ["20", "22", "24", "", "", ""],
@@ -409,14 +404,7 @@ fn test_regression_and_correlation() {
 
 #[test]
 fn test_inv_normal_cdf_matches_real_excel_to_near_double_precision() {
-    // erf() used to be the classic Abramowitz & Stegun 7.1.26 rational
-    // approximation, with a documented max error of ~1.5e-7 -- that
-    // bounded the precision of everything built on it (normal_cdf,
-    // inv_normal_cdf, and therefore CONFIDENCE/CONFIDENCE.NORM/
-    // NORM.S.INV/NORMSINV/NORMINV/LOGINV/LOGNORM.INV), which is why all
-    // of them mismatched real Excel in the ~7th significant digit on
-    // every differential fuzzing run. Now delegates to libm's erf/erfc
-    // (a pure-Rust fdlibm port, full double precision).
+    // Delegates to libm's erf/erfc (a pure-Rust fdlibm port, full double precision).
     // 1.959963984540054 is the well-known two-sided 95% confidence
     // z-value.
     assert_float_close(&eval1("=NORM.S.INV(0.975)"), 1.959963984540054, 1e-9);
@@ -586,9 +574,7 @@ fn test_chitest_single_category_is_not_available() {
 // All values below are from real Excel 16.111.3. The rule splits on how
 // the text arrived: supplied directly as an argument it is coerced (and
 // is an error if it will not coerce), while text reached through a
-// reference is skipped. Getting this wrong is quiet rather than loud --
-// DEVSQ("abc", 3, 4, 5) used to answer 2, the spread of the remaining
-// three numbers, instead of #VALUE!.
+// reference is skipped.
 // ---------------------------------------------------------------------
 
 fn assert_err(source: &str, expected: &str) {
@@ -718,9 +704,8 @@ fn test_chitest_rejects_only_a_negative_total_not_negative_expected_values() {
 fn test_normal_cdf_keeps_its_left_tail() {
     // Computed via erfc rather than 0.5 * (1 + erf(x/sqrt(2))), which
     // cancels catastrophically once erf approaches -1 and eventually
-    // rounds to exactly 0 -- NORM.S.DIST(-11, TRUE) used to return 0, so
-    // even SIGN() of it disagreed with Excel. Both reference values are
-    // real Excel's, and it resolves the tail well past -30.
+    // rounds to exactly 0. Both reference values are real Excel's, and it
+    // resolves the tail well past -30.
     assert_float_close(
         &eval1("=NORM.S.DIST(-11, TRUE)"),
         1.9106595744986622e-28,
@@ -792,11 +777,11 @@ fn test_paired_sums_error_only_when_a_range_holds_no_numbers() {
 // what the sub-ULP tolerances here are justified against.
 #[allow(clippy::excessive_precision)]
 fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
-    // F.DIST.RT used to be computed as 1 - CDF. For a large F statistic
-    // the CDF is within an ULP or two of 1, so that subtraction discarded
-    // most of the answer's digits; it now goes through the incomplete
-    // beta's symmetry instead. All reference values are real Excel's, and
-    // everything below agrees with it to better than 2e-13 relative.
+    // For a large F statistic the CDF is within an ULP or two of 1, so
+    // subtraction 1 - CDF discards most of the answer's digits; F.DIST.RT
+    // goes through the incomplete beta's symmetry instead. All reference
+    // values are real Excel's, and everything below agrees with it to
+    // better than 2e-13 relative.
     // Reference values here are 40-digit mpmath evaluations of the
     // regularized incomplete beta, not Excel's. visi is closer to the
     // truth than Excel on this first one: 3.5e-16 relative against
@@ -836,8 +821,7 @@ fn test_chitest_takes_degrees_of_freedom_from_the_raw_range_size() {
     // CHITEST drops pairs where either side is non-numeric, but takes the
     // degrees of freedom from the ranges' *original* size. With one text
     // cell in a two-cell pair, one pair survives and Excel still evaluates
-    // against df = 1 -- using the survivor count would give df = 0 and
-    // #NUM!, which is what visi used to return.
+    // against df = 1 -- using the survivor count would incorrectly give df = 0.
     //
     // Reference values are real Excel's. The second also exercises the
     // right tail: computing it as 1 - CDF underflowed to exactly 0.
@@ -1063,8 +1047,7 @@ fn test_fuzz_chitest_mismatched_range_with_no_numbers_is_value() {
 #[test]
 fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
     // GCD, LCM and MULTINOMIAL coerce text that looks numeric and reject
-    // everything else -- so this is narrower than "text is #VALUE!", which
-    // is what it used to do. All values are real Excel's.
+    // everything else. All values are real Excel's.
     assert_float_close(&eval1("=GCD(\"12\", 8)"), 4.0, 1e-12);
     assert_float_close(&eval1("=LCM(\"4\", 6)"), 12.0, 1e-12);
     assert_float_close(&eval1("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
@@ -1094,9 +1077,8 @@ fn test_incomplete_beta_prefactor_accuracy() {
     // expected values are 50-digit mpmath evaluations of the regularized
     // incomplete beta, not Excel's.
     //
-    // The FTEST case is the one this was chased down for: the true value
-    // is 0.94171633283387507291, which renders at 15 digits as
-    // 0.941716332833875. visi used to be ~10 ULP high and print ...876.
+    // The true value is 0.94171633283387507291, which renders at 15 digits
+    // as 0.941716332833875.
     let mut sheet = create_sheet(&[
         ["127.95", "127.95"],
         ["5", "5"],

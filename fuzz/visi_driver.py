@@ -266,7 +266,7 @@ class VisiPivotDriver(_BaseDriver):
                 grand_totals_col=config["grand_totals_col"],
             )
         # One roundtrip per mutation, standing in for the file each `-i` CLI
-        # invocation used to write and reopen. Dropping these would quietly
+        # invocation writes and reopens. Dropping these would quietly
         # stop exercising pivot_xlsx.rs's hand-rolled OOXML.
         wb = wb.roundtrip()
 

@@ -65,8 +65,7 @@ use crate::core::pivot::field_is_numeric as is_all_numeric;
 /// subtotal placeholder.
 ///
 /// The indices are the whole point: they are what ties a pivot field's items
-/// back to the cache. Emitting `0..n` here while the cache stored the values
-/// in another order is how visi produced files Excel refused to open.
+/// back to the cache.
 fn build_items_xml(shared_idx: &[usize], with_default: bool) -> String {
     let count = shared_idx.len() + usize::from(with_default);
     let mut s = format!("<items count=\"{count}\">");
@@ -474,15 +473,8 @@ fn build_pivot_xml_unit(
             // whether it's currently the innermost field of its axis (a
             // subtotal never actually renders there either way --
             // `flatten_groups` separately gates on `!is_innermost` at
-            // compute time). Suppressing the marker specifically for the
-            // innermost field here used to lose a `subtotal: false` the
-            // moment it round-tripped through xlsx while it *was* the sole
-            // field on its axis -- exactly what happens between every pair
-            // of `visi pivot add-field --area row` CLI calls, since each is
-            // a separate process that re-imports the file first: a field
-            // added with `--no-subtotal` before a second row field existed
-            // would already have forgotten that setting by the time the
-            // second field's `add-field` call read it back in.
+            // compute time) so that `subtotal: false` round-trips cleanly
+            // even when it is currently the sole field on its axis.
             let subtotal_enabled = pivot.row_fields[pos].subtotal;
             let idxs = shared_idx_for(&field_items, &cache_items, i);
             items_xml = Some(build_items_xml(&idxs, subtotal_enabled));

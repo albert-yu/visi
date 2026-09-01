@@ -98,12 +98,7 @@ pub fn normal_cdf(x: f64) -> f64 {
 }
 
 /// Error function erf(x). Delegates to `libm` (a pure-Rust fdlibm port,
-/// full double precision) rather than the ~1.5e-7-max-error Abramowitz &
-/// Stegun 7.1.26 rational approximation this used to hand-roll -- that
-/// bounded precision propagated into every function built on
-/// normal_cdf/inv_normal_cdf (CONFIDENCE, CONFIDENCE.NORM, NORM.S.INV,
-/// NORMSINV, NORMINV, LOGINV, LOGNORM.INV, ...), which is why real Excel
-/// and visi disagreed in the ~7th significant digit on all of them.
+/// full double precision).
 pub fn erf(x: f64) -> f64 {
     libm::erf(x)
 }
@@ -115,15 +110,10 @@ pub fn erfc(x: f64) -> f64 {
     libm::erfc(x)
 }
 
-/// log|Gamma(x)|. Delegates to `libm` (a pure-Rust fdlibm port) rather
-/// than the 9-term Lanczos approximation this used to hand-roll, for the
-/// same reason `erf` does: Lanczos is good to roughly 1e-13 relative,
-/// which is visible against Excel. GAMMALN(1) is exactly 0 and Lanczos
-/// returned 2.16e-13, and the error propagated into everything built on
-/// it (the beta/F/t densities, COMBIN, HYPGEOM.DIST, ...).
+/// log|Gamma(x)|. Delegates to `libm` (a pure-Rust fdlibm port).
 ///
-/// libm returns +inf at the non-positive-integer poles where this used to
-/// return NaN; both normalize to #NUM! at the dispatch boundary.
+/// libm returns +inf at the non-positive-integer poles;
+/// normalized to #NUM! at the dispatch boundary.
 pub fn lgamma(x: f64) -> f64 {
     libm::lgamma(x)
 }
@@ -1760,7 +1750,7 @@ pub fn frequency(data: &[f64], bins: &[f64]) -> Result<Vec<f64>, String> {
     // Excel sorts the bins internally to work out the interval each value
     // falls in, but reports each interval's count back at that bin's
     // *original* position in bins_array, with the overflow count last.
-    // Returning the counts in sorted order instead (what this used to do)
+    // Returning the counts in sorted order instead
     // silently permutes the result whenever bins_array isn't already
     // ascending. Verified against real Excel with bins [25, -10, 8] over
     // data [5, -20, 30, 1, 12]: Excel gives [1, 1, 2, 1], i.e. the sorted

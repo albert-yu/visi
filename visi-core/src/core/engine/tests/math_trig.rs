@@ -120,15 +120,10 @@ fn test_fuzz_sin_cos_tan_and_reciprocals_num_error_past_2_pow_27() {
 
 #[test]
 fn test_fuzz_coth_does_not_overflow_to_nan_for_a_large_argument() {
-    // Harvested from fuzz/fuzz_excel.py seed 711993: COTH(47692.3), where
-    // 47692.3 is VARPA's own ordinary, finite result -- not an extreme
-    // input. COTH's old implementation, `x.cosh() / x.sinh()`, has both
-    // sides overflow to `f64::INFINITY` well before |x| gets anywhere near
-    // where coth itself misbehaves (~710), leaving `inf / inf = NaN`,
-    // which this engine's NaN guard turns into `#NUM!` -- for an `x`
-    // where real Excel returns a perfectly good answer near +-1 (COTH of
-    // any large positive number this size is `1`, confirmed against real
-    // Excel). `tanh` saturates to +-1 directly with no such overflow.
+    // Computing `x.cosh() / x.sinh()` causes both sides to overflow to
+    // `f64::INFINITY` well before |x| gets anywhere near where coth itself
+    // misbehaves (~710), leaving `inf / inf = NaN`. `tanh` saturates to +-1
+    // directly with no such overflow.
     assert_eq!(num("=COTH(47692.3)"), 1.0);
     // Ordinary arguments are untouched.
     assert!((num("=COTH(1)") - 1.3130352854993312).abs() < 1e-9);
@@ -348,11 +343,9 @@ fn test_sumsq_result_is_snapped_before_rounddown_observes_it() {
 
 #[test]
 fn test_ceiling_floor_honor_significance_argument() {
-    // Legacy 2-arg CEILING/FLOOR were completely ignoring their second
-    // (significance) argument and just calling f64::ceil()/floor() --
-    // e.g. CEILING(63.55, 5) returned 64 (plain ceil), not a multiple of
-    // 5 at all, when it should round up to the nearest multiple of 5
-    // (65). Found via differential fuzzing against real Excel.
+    // CEILING/FLOOR round to the nearest multiple of the second
+    // (significance) argument: e.g. CEILING(63.55, 5) rounds up to the
+    // nearest multiple of 5 (65).
     let grid = [["=CEILING(63.55, 5)", "=FLOOR(16.34, 10)"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -368,9 +361,7 @@ fn test_ceiling_floor_honor_significance_argument() {
 fn test_gcd_lcm_error_on_non_numeric_argument() {
     // Unlike SUM/AVERAGE-style aggregates, real Excel's GCD/LCM don't
     // silently ignore a non-numeric cell in a range argument -- they
-    // return #VALUE!. visi used to flatten with the same lenient logic
-    // SUM uses, silently dropping the text cell and computing GCD/LCM
-    // over whatever numbers were left.
+    // return #VALUE!.
     let grid = [["\"not a number\"", "6", "=GCD(A1:B1)", "=LCM(A1:B1)"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -454,9 +445,8 @@ fn test_fuzz_gcd_lcm_one_cell_blank_range_is_missing_operand() {
 
 #[test]
 fn test_mmult_error_on_non_numeric_cell() {
-    // MMULT used to coerce a non-numeric cell in either operand to 0
-    // (via to_f64(..).unwrap_or(0.0)) instead of propagating #VALUE! the
-    // way real Excel does.
+    // MMULT propagates #VALUE! on a non-numeric cell in either operand
+    // the way real Excel does.
     let grid = [
         ["1", "2"],
         ["3", "4"],
@@ -524,11 +514,7 @@ fn test_complex_number_trig_exp_log_functions_are_actually_computed() {
 
     // sqrt(-1) = i. Real Excel reports this as "6.12323399573677E-17+i",
     // not a clean "i": the polar form's angle is f64's rounded pi/2, and
-    // cos(pi/2) in f64 is ~6.12e-17 rather than exactly 0. visi matches
-    // that verbatim on purpose -- an earlier version snapped the
-    // negligible component to zero, which reads "more correct" but
-    // disagrees with the thing this engine is trying to be compatible
-    // with (confirmed by probing real Excel directly).
+    // cos(pi/2) in f64 is ~6.12e-17 rather than exactly 0.
     let r6 = sheet.get_result_data(&CellRef::new(0, 5));
     assert!(
         matches!(r6, ResultData::String(ref s) if s == "6.12323399573677E-17+i"),
@@ -545,12 +531,8 @@ fn test_complex_number_trig_exp_log_functions_are_actually_computed() {
 
 #[test]
 fn test_complex_number_formatting_uses_excel_precision_not_raw_f64() {
-    // format_complex used to interpolate the real/imaginary f64 parts
-    // directly (`format!("{}", c.re)`), which prints full f64 precision
-    // (e.g. 0.1 + 0.2 as raw f64 addition prints "0.30000000000000004")
-    // instead of Excel's 15-significant-digit display rules. Every IM*
-    // result with a non-exact float component mismatched real Excel by a
-    // handful of ULPs in the last few digits.
+    // format_complex prints according to Excel's 15-significant-digit display rules
+    // rather than raw f64 precision.
     let grid = [["=IMSUM(0.1, 0.2)"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -564,14 +546,9 @@ fn test_complex_number_formatting_uses_excel_precision_not_raw_f64() {
 
 #[test]
 fn test_complex_tan_cot_stay_precise_for_large_imaginary_parts() {
-    // IMTAN/IMCOT used to be computed as the complex quotient
-    // sin(z)/cos(z), which loses most of its significant digits once
-    // |Im z| grows: both operands pick up components of order
-    // cosh(Im z) (already ~550 by Im z = 7) and the result's real part is
-    // the tiny residual left after those large nearly-equal terms cancel.
-    // Against real Excel that showed up as agreement to only ~10
-    // significant digits. Now computed from the double-angle identities,
-    // where every intermediate is the same magnitude as the result.
+    // IMTAN/IMCOT are computed from the double-angle identities,
+    // where every intermediate is the same magnitude as the result,
+    // keeping precision for large imaginary parts.
     //
     // Reference values are verbatim real-Excel output. The tolerance is
     // per-component relative 1e-14 rather than string equality: the last
@@ -959,7 +936,7 @@ fn test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary() {
     // (the divisor itself) instead, as if `INT(quotient)` had come out to
     // 12 rather than the mathematically exact 13 -- a real Excel
     // precision loss at this boundary, not a rounding convention
-    // difference (see "docs/excel-discrepancies.md" section 15, which
+    // difference (see "docs/excel-discrepancies.md" section 14, which
     // this is another instance of). visi's 0 is correct and is left
     // alone.
     assert_eq!(num("=MOD(-47, (47 / -13))"), 0.0);
@@ -972,7 +949,7 @@ fn test_fuzz_mod_tiny_power_against_negative_divisor_is_not_zero() {
     // number and the divisor is -3740, so Excel's documented
     // n - d*INT(n/d) rule gives a remainder infinitesimally above -3740,
     // not 0. This is the same Excel precision loss documented in
-    // docs/excel-discrepancies.md section 15.
+    // docs/excel-discrepancies.md section 14.
     assert!((num("=MOD((-5 ^ -16), (-44 * 85))") + 3740.0).abs() < 1e-9);
 }
 
@@ -1131,11 +1108,7 @@ fn test_fuzz_log_first_arg_type_error_wins_over_later_arg_error() {
     // (1x3 vs 3x2) are #N/A. Real Excel checks LOG's first argument
     // before ever looking at whether the second is itself an error, so
     // the result is #VALUE! (from the first-argument check), not #N/A
-    // (measured via win32com: LOG("C", NA()) is #VALUE!). visi previously
-    // had a generic pre-dispatch scan that returned the *first* error
-    // found across all arguments regardless of position, so it surfaced
-    // the #N/A from argument 2 instead of ever reaching LOG's own
-    // first-argument check.
+    // (measured via win32com: LOG("C", NA()) is #VALUE!).
     match eval_one("=LOG(\"C\", NA())") {
         ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
         other => panic!("expected #VALUE!, got {other:?}"),
@@ -1163,8 +1136,7 @@ fn test_fuzz_seriessum_rejects_numeric_looking_text_coefficient() {
     // 1, 2, A1:A4) is #VALUE! -- unlike GCD/LCM/MULTINOMIAL, a
     // numeric-looking string in the coefficients isn't coerced (confirmed
     // directly via win32com with no blank at all either:
-    // SERIESSUM(1.49, 1, 2, {"2", 27, -35}) is also #VALUE!). visi
-    // previously coerced the string and returned a number.
+    // SERIESSUM(1.49, 1, 2, {"2", 27, -35}) is also #VALUE!).
     let grid = [
         ["", "=SERIESSUM(1.49, 1, 2, A1:A4)"],
         ["\"2\"", ""],

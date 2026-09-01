@@ -186,12 +186,9 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
     // gives #NUM! from the default guess returns a real rate when handed
     // a guess near the true root, so this is a convergence outcome, not a
     // claim that no root exists).
-    //
-    // The bound is -0.999 rather than the -0.9999 it used to be because
-    // the iteration reliably stalled a hair *above* the old threshold
-    // (around -0.99989999), slipping through as if it were a genuine
-    // answer. No real per-period rate lives in that gap anyway -- it would
-    // be a loss of 99.9% per period.
+    // The bound is -0.999 because the iteration can stall around -0.99989999.
+    // No real per-period rate lives in that gap anyway -- it would be a loss
+    // of 99.9% per period.
     if r <= -0.999 { None } else { Some(r) }
 }
 
@@ -1275,9 +1272,7 @@ pub fn amordegrc(
     let life = 1.0 / rate;
     // Confirmed against real Excel: a life of 2 years or less (rate >=
     // 0.5) is rejected outright with #NUM!. There is no separate
-    // "life < 3 => 1.0" bracket -- the whole (2, 5) range uses 1.5 (an
-    // earlier assumption of a 1.0 bracket there was off by exactly the
-    // 1.5 factor once checked against real Excel).
+    // "life < 3 => 1.0" bracket -- the whole (2, 5) range uses 1.5.
     if life <= 2.0 {
         return Err("#NUM!".to_string());
     }
@@ -1451,9 +1446,7 @@ pub fn oddfyield(
 /// Excel via the differential fuzzer, across bases 0-4 and multiple
 /// frequencies, to be the *actual* (or 30/360, per basis) length of the
 /// regular period immediately *following* `last_interest` -- not the
-/// period immediately preceding `maturity`, which an earlier version used
-/// and which only coincidentally matched when both periods happened to
-/// have the same calendar length.
+/// period immediately preceding `maturity`.
 /// Day count for an ODDLPRICE/ODDLYIELD span whose end date is a **coupon
 /// date** rather than the settlement date. On basis 0 those spans pull a
 /// month-end end date back to the 30th; every other basis just uses its

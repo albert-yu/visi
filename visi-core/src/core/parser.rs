@@ -43,6 +43,11 @@ pub enum Expr {
         end_col_abs: bool,
     },
     List(Vec<Expr>),
+    Slice {
+        expr: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     FunctionCall {
         name: String,
         args: Vec<Expr>,
@@ -626,7 +631,6 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
         ));
     }
 
-    // Try to parse column range ref like A:A or $A:$B
     if let Some((start_col, start_col_abs, next_idx)) = parse_col_pattern(chars, idx)
         && next_idx < chars.len()
         && chars[next_idx] == ':'
@@ -648,7 +652,6 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
         ));
     }
 
-    // Try to parse whole-row refs like 1:3 or $1:$3.
     if let Some((start_row, start_row_abs, next_idx)) = parse_row_pattern(chars, idx)
         && next_idx < chars.len()
         && chars[next_idx] == ':'
@@ -724,7 +727,7 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                 // string (e.g. `="\`) would otherwise push `i` one past
                 // `chars.len()`, so the final `chars[last_idx..i]` slice
                 // below panics -- clamp instead of blindly skipping two
-                // chars. Found via visi-core/fuzz's formula_eval target.
+                // chars.
                 i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
@@ -1740,12 +1743,10 @@ impl<'a> Parser<'a> {
                             Some(p.parse()?)
                         };
 
-                        let start_expr = start_val.unwrap_or(Expr::Number(0.0));
-                        let end_expr = end_val.unwrap_or(Expr::Number(-1.0));
-
-                        lhs = Expr::FunctionCall {
-                            name: "SLICE".to_string(),
-                            args: vec![lhs, start_expr, end_expr],
+                        lhs = Expr::Slice {
+                            expr: Box::new(lhs),
+                            start: start_val.map(Box::new),
+                            end: end_val.map(Box::new),
                         };
                     } else {
                         let mut p = Parser::new(&inner_tokens);
@@ -1758,12 +1759,11 @@ impl<'a> Parser<'a> {
                                 _ => None,
                             };
                             if let Some(col_name) = col_name_opt {
-                                lhs = Expr::FunctionCall {
-                                    name: "GET_COL".to_string(),
-                                    args: vec![
-                                        Expr::String(sheet_name.clone()),
-                                        Expr::String(col_name.clone()),
-                                    ],
+                                lhs = Expr::StructuredRef {
+                                    sheet: Some(sheet_name.clone()),
+                                    column: Some(col_name),
+                                    is_this_row: false,
+                                    section: SheetSection::Data,
                                 };
                                 continue;
                             }
@@ -2109,9 +2109,7 @@ mod tests {
     use super::*;
 
     /// Scientific-notation literals are numbers, not a number followed by a
-    /// name. The lexer used to stop at the digits, so `=1E+5` came apart into
-    /// `1`, `E`, `+`, `5` and the parser rejected the leftovers -- every form
-    /// below failed outright, while Excel accepts all of them.
+    /// name.
     #[test]
     fn test_lex_scientific_notation_literals() {
         for (src, want) in [
@@ -2203,7 +2201,6 @@ mod tests {
 
         let sheets = vec![table1, table2];
 
-        // 1. Single-quote notation
         let formula_quote = compile_formula("='My Sheet'!B1 + 10", &sheets);
         match &formula_quote.parts[1] {
             FormulaPart::SheetReference {
@@ -2216,11 +2213,9 @@ mod tests {
             _ => panic!("Expected SheetReference"),
         }
 
-        // 2. Serialization wraps sheet name with spaces in single quotes
         let serialized_quote = serialize_formula(&formula_quote, &sheets);
         assert_eq!(serialized_quote, "='My Sheet'!B1 + 10");
 
-        // 3. parse_excel_formula handles single-quoted sheet references
         let ast_quote = parse_excel_formula("'My Sheet'!B1 + 10").unwrap();
         match ast_quote {
             Expr::BinaryOp { left, .. } => match *left {
@@ -2306,7 +2301,6 @@ mod tests {
 
         let sheets = vec![table1];
 
-        // 1. Check compile_formula with unquoted period name
         let formula = compile_formula("=Model_SL_5.5Yr!B10 + 10", &sheets);
         assert_eq!(formula.parts.len(), 3);
         match &formula.parts[1] {
@@ -2320,7 +2314,6 @@ mod tests {
             _ => panic!("Expected SheetReference"),
         }
 
-        // 2. Check parse_excel_formula with unquoted period name
         let ast = parse_excel_formula("Model_SL_5.5Yr!B10 + 10").unwrap();
         match ast {
             Expr::BinaryOp { left, .. } => match *left {
@@ -2347,7 +2340,6 @@ mod tests {
         });
         let sheets = vec![table1];
 
-        // Test compiling local column range
         let formula = compile_formula("=SUM(A:B)", &sheets);
         assert_eq!(formula.parts.len(), 3);
         match &formula.parts[1] {
@@ -2368,11 +2360,9 @@ mod tests {
             _ => panic!("Expected RangeReference"),
         }
 
-        // Test serializing local column range
         let serialized = serialize_formula(&formula, &sheets);
         assert_eq!(serialized, "=SUM(A:B)");
 
-        // Test compiling cross-sheet column range
         let table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
@@ -2406,7 +2396,6 @@ mod tests {
         let serialized_cross = serialize_formula(&formula_cross, &tables_multi);
         assert_eq!(serialized_cross, "=SUM(Sheet2!$A:$C)");
 
-        // Test parse_excel_formula with column range
         let ast = parse_excel_formula("SUM(A:A)").unwrap();
         match ast {
             Expr::FunctionCall { name, args } => {
@@ -2449,7 +2438,6 @@ mod tests {
 
         let sheets = vec![table1];
 
-        // 1. Test compile_formula with TableName[ColumnName]
         let f1 = compile_formula("=Sheet1[Sales]", &sheets);
         assert_eq!(f1.parts.len(), 2);
         match &f1.parts[1] {
@@ -2467,11 +2455,9 @@ mod tests {
             _ => panic!("Expected StructuredReference, got {:?}", f1.parts[1]),
         }
 
-        // 2. Test serialize_formula (omits prefix for current sheet)
         let s1 = serialize_formula(&f1, &sheets);
         assert_eq!(s1, "=[Sales]");
 
-        // 3. Test compile_formula with [@ColumnName]
         let f2 = compile_formula("=[@Cost]", &sheets);
         match &f2.parts[1] {
             FormulaPart::StructuredReference {
@@ -2490,7 +2476,6 @@ mod tests {
         let s2 = serialize_formula(&f2, &sheets);
         assert_eq!(s2, "=[@Cost]");
 
-        // 4. Test parsing special items: TableName[[#Headers],[Sales]]
         let f3 = compile_formula("=Sheet1[[#Headers],[Sales]]", &sheets);
         match &f3.parts[1] {
             FormulaPart::StructuredReference {
@@ -2508,7 +2493,6 @@ mod tests {
         let s3 = serialize_formula(&f3, &sheets);
         assert_eq!(s3, "=[[#Headers], [Sales]]");
 
-        // 5. Test retaining prefix when referencing a remote sheet
         let mut table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
@@ -2525,7 +2509,6 @@ mod tests {
         let s4 = serialize_formula(&f4, &multi_tables);
         assert_eq!(s4, "=Sheet2[Revenue]");
 
-        // 5. Test parse_excel_formula for evaluation AST
         let ast = parse_excel_formula("Sheet1[@Sales] + 10").unwrap();
         match ast {
             Expr::BinaryOp { op, left, right: _ } => {
@@ -2708,26 +2691,16 @@ mod tests {
 
     #[test]
     fn test_compile_formula_never_panics_on_unterminated_quote_ending_in_backslash() {
-        // Regression for a crash found via visi-core/fuzz's formula_eval
-        // target within seconds of adding it (#26 -- the harness had zero
-        // formula-level fuzz coverage before): a `\` as the very last
-        // character of an unterminated quoted string (e.g. `="\`) pushed
-        // the scan index one past chars.len(), so the final
-        // chars[last_idx..i] slice panicked with a range-out-of-bounds
-        // error. Doesn't need to produce any particular result, just not
-        // crash on malformed input.
+        // Unterminated quoted strings ending in a backslash (e.g. `="\"`)
+        // must not crash on malformed input.
         let _ = compile_formula("=\"\\", &[]);
         let _ = compile_formula("=\"unterminated\\", &[]);
     }
 
     #[test]
     fn test_rewrite_structured_table_reference_never_panics_on_unterminated_quote() {
-        // This function's in-quote/backslash scan loop has the exact same
-        // unbounded-overshoot shape as compile_formula's (fixed the same
-        // way, defensively) -- but its own final slice happens to be the
-        // open-ended `chars[last_idx..]` rather than `chars[last_idx..i]`,
-        // so an overshot `i` doesn't actually panic here today. Kept as a
-        // safety-net regression test in case that changes.
+        // Defensive check that unterminated quotes ending in a backslash
+        // do not panic.
         let _ = rewrite_structured_table_reference("=Sales[Amount]&\"\\", "Sales", None, None);
     }
 
@@ -2766,5 +2739,52 @@ mod tests {
         assert!(match_error_code(&"#NOPE".chars().collect::<Vec<_>>(), 0).is_none());
         // A prefix of a real code with nothing after it, likewise.
         assert!(match_error_code(&"#RE".chars().collect::<Vec<_>>(), 0).is_none());
+    }
+
+    #[test]
+    fn test_bracket_slice_parsing() {
+        let ast = parse_excel_formula("arr[1:3]").unwrap();
+        assert_eq!(
+            ast,
+            Expr::Slice {
+                expr: Box::new(Expr::Identifier("arr".to_string())),
+                start: Some(Box::new(Expr::Number(1.0))),
+                end: Some(Box::new(Expr::Number(3.0))),
+            }
+        );
+
+        let ast_no_end = parse_excel_formula("arr[2:]").unwrap();
+        assert_eq!(
+            ast_no_end,
+            Expr::Slice {
+                expr: Box::new(Expr::Identifier("arr".to_string())),
+                start: Some(Box::new(Expr::Number(2.0))),
+                end: None,
+            }
+        );
+
+        let ast_no_start = parse_excel_formula("arr[:2]").unwrap();
+        assert_eq!(
+            ast_no_start,
+            Expr::Slice {
+                expr: Box::new(Expr::Identifier("arr".to_string())),
+                start: None,
+                end: Some(Box::new(Expr::Number(2.0))),
+            }
+        );
+    }
+
+    #[test]
+    fn test_sheet_column_bracket_indexing() {
+        let ast = parse_excel_formula("Sheet1[\"Sales\"]").unwrap();
+        assert_eq!(
+            ast,
+            Expr::StructuredRef {
+                sheet: Some("Sheet1".to_string()),
+                column: Some("Sales".to_string()),
+                is_this_row: false,
+                section: SheetSection::Data,
+            }
+        );
     }
 }

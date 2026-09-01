@@ -457,15 +457,12 @@ impl Sheet {
                 }
             }
 
-            // Write compiled cache
             if let Some(col) = self.columns.get_mut(cell_ref.col)
                 && cell_ref.row < col.compiled_src.len()
             {
                 col.compiled_src[cell_ref.row] = compiled_to_cache.unwrap_or_default();
             }
 
-            // Update dependencies
-            // 1. Remove old reverse dependencies
             if let Some(old_deps) = self.dependencies_rev.remove(&cell_ref) {
                 for provider in old_deps {
                     if let Some(dependents) = self.dependencies.get_mut(&provider) {
@@ -474,7 +471,7 @@ impl Sheet {
                 }
             }
 
-            // 2. Add new dependencies (only if not empty to save map allocations)
+            // Add new dependencies (only if not empty to save map allocations)
             if !new_deps.is_empty() {
                 let mut new_deps_set = HashSet::new();
                 for provider in new_deps {
@@ -514,7 +511,6 @@ impl Sheet {
                 }
             }
 
-            // Update data and cell type
             if let Some(col) = self.columns.get_mut(cell_ref.col)
                 && cell_ref.row < col.data.len()
             {
@@ -1018,11 +1014,10 @@ impl Sheet {
                 // O(width * height * deps.len()) instead of O(width *
                 // deps.len()). For a wide range (e.g. `=C:LL`, 322
                 // columns) evaluated repeatedly (e.g. inside a self-
-                // referential formula bounded by commit()'s max_ops, see
-                // the fix just above), that quadratic-in-width blowup was
+                // referential formula bounded by commit()'s max_ops),
+                // that quadratic-in-width blowup was
                 // the difference between finishing in under a second and
-                // taking tens of seconds to minutes -- found via the same
-                // visi-core/fuzz formula_eval run (#26).
+                // taking tens of seconds to minutes.
                 let mut seen_col_deps: HashSet<usize> = HashSet::new();
 
                 let mut results = Vec::new();
@@ -1048,10 +1043,8 @@ impl Sheet {
                             // stored value back into itself: on every
                             // recompute the stored value *is* this List,
                             // so reading it back would nest a List inside
-                            // itself one level deeper each pass --
-                            // unbounded growth that only stops at a stack
-                            // overflow in recursive Clone/Drop, found via
-                            // visi-core/fuzz's formula_eval target (#26).
+                            // itself one level deeper each pass (unbounded
+                            // growth).
                             // Blank matches this engine's existing
                             // convention for an unresolvable self-read
                             // elsewhere (e.g. ISBLANK(GET(...)) on an
@@ -1106,6 +1099,54 @@ impl Sheet {
                     results.push(self.evaluate_ast(item, context, row, col, deps, scope)?);
                 }
                 Ok(ResultData::List(results))
+            }
+            Expr::Slice { expr, start, end } => {
+                let target_val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
+                if let ResultData::Error(_) = &target_val {
+                    return Ok(target_val);
+                }
+                if let ResultData::List(list) = target_val {
+                    let len = list.len() as isize;
+                    let start_idx = if let Some(start_expr) = start {
+                        let s_val =
+                            self.evaluate_ast(start_expr, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &s_val {
+                            return Ok(s_val);
+                        }
+                        let s = self.to_f64(&s_val).unwrap_or(0.0) as isize;
+                        if s < 0 {
+                            (len + s).max(0) as usize
+                        } else {
+                            s.min(len) as usize
+                        }
+                    } else {
+                        0
+                    };
+
+                    let end_idx = if let Some(end_expr) = end {
+                        let e_val = self.evaluate_ast(end_expr, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &e_val {
+                            return Ok(e_val);
+                        }
+                        let e = self.to_f64(&e_val).unwrap_or(len as f64) as isize;
+                        if e < 0 {
+                            (len + e).max(0) as usize
+                        } else {
+                            e.min(len) as usize
+                        }
+                    } else {
+                        len as usize
+                    };
+
+                    let sliced = if start_idx < end_idx && start_idx < list.len() {
+                        list[start_idx..end_idx.min(list.len())].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    Ok(ResultData::List(sliced))
+                } else {
+                    Ok(ResultData::None)
+                }
             }
             Expr::UnaryOp { op, expr } => {
                 let val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
@@ -1215,7 +1256,6 @@ impl Sheet {
     }
 
     fn compare_excel_values(l: &ResultData, r: &ResultData) -> std::cmp::Ordering {
-        // Coerce ResultData::None against the type of the opposing operand
         match (l, r) {
             (ResultData::None, ResultData::None) => return std::cmp::Ordering::Equal,
             (ResultData::None, ResultData::Integer(b)) => {
@@ -1277,9 +1317,7 @@ impl Sheet {
     /// blank-coerces-to-0/""/false rule (correct for comparison operators,
     /// MATCH, etc.), which would otherwise rank a blank ahead of every
     /// negative number once descending order reverses the comparison.
-    /// Found via the differential fuzzer: `SORT({-215.8,,-100,-240.97,-88},1,-1)`
-    /// put the blank first (coerced to 0, the largest value once reversed)
-    /// instead of last, so `INDEX(...,1)` returned 0 instead of -88.
+    /// E.g. `SORT({-215.8,,-100,-240.97,-88},1,-1)` puts the blank last.
     fn sort_compare_blanks_last(
         l: &ResultData,
         r: &ResultData,
@@ -2904,8 +2942,7 @@ impl Sheet {
     /// would have, purely from its argument expressions -- needed because
     /// this engine's flat `ResultData::List` carries no shape of its own,
     /// so nesting one of these calls inside another (e.g.
-    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) previously fell back to treating
-    /// the whole result as a single row, corrupting the flat-index math.
+    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) requires recovering the 2D shape.
     /// Returns `None` for anything not in this known set, so callers fall
     /// back to the single-row assumption.
     #[allow(clippy::too_many_arguments)]

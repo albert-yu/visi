@@ -612,8 +612,7 @@ fn test_fuzz_int_concatenate_month_two_digit_year_as_date() {
 }
 
 /// Scientific-notation literals evaluate inside formulas, not just as bare
-/// cell values. The lexer used to split `1E+5` into `1`, `E`, `+`, `5`, so
-/// every one of these was a parse error while Excel accepted them.
+/// cell values.
 #[test]
 fn test_scientific_notation_literals_evaluate() {
     let sheet_src = [
