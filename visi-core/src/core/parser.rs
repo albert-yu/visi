@@ -43,6 +43,11 @@ pub enum Expr {
         end_col_abs: bool,
     },
     List(Vec<Expr>),
+    Slice {
+        expr: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
     FunctionCall {
         name: String,
         args: Vec<Expr>,
@@ -1738,12 +1743,10 @@ impl<'a> Parser<'a> {
                             Some(p.parse()?)
                         };
 
-                        let start_expr = start_val.unwrap_or(Expr::Number(0.0));
-                        let end_expr = end_val.unwrap_or(Expr::Number(-1.0));
-
-                        lhs = Expr::FunctionCall {
-                            name: "SLICE".to_string(),
-                            args: vec![lhs, start_expr, end_expr],
+                        lhs = Expr::Slice {
+                            expr: Box::new(lhs),
+                            start: start_val.map(Box::new),
+                            end: end_val.map(Box::new),
                         };
                     } else {
                         let mut p = Parser::new(&inner_tokens);
@@ -1756,12 +1759,11 @@ impl<'a> Parser<'a> {
                                 _ => None,
                             };
                             if let Some(col_name) = col_name_opt {
-                                lhs = Expr::FunctionCall {
-                                    name: "GET_COL".to_string(),
-                                    args: vec![
-                                        Expr::String(sheet_name.clone()),
-                                        Expr::String(col_name.clone()),
-                                    ],
+                                lhs = Expr::StructuredRef {
+                                    sheet: Some(sheet_name.clone()),
+                                    column: Some(col_name),
+                                    is_this_row: false,
+                                    section: SheetSection::Data,
                                 };
                                 continue;
                             }
@@ -2737,5 +2739,52 @@ mod tests {
         assert!(match_error_code(&"#NOPE".chars().collect::<Vec<_>>(), 0).is_none());
         // A prefix of a real code with nothing after it, likewise.
         assert!(match_error_code(&"#RE".chars().collect::<Vec<_>>(), 0).is_none());
+    }
+
+    #[test]
+    fn test_bracket_slice_parsing() {
+        let ast = parse_excel_formula("arr[1:3]").unwrap();
+        assert_eq!(
+            ast,
+            Expr::Slice {
+                expr: Box::new(Expr::Identifier("arr".to_string())),
+                start: Some(Box::new(Expr::Number(1.0))),
+                end: Some(Box::new(Expr::Number(3.0))),
+            }
+        );
+
+        let ast_no_end = parse_excel_formula("arr[2:]").unwrap();
+        assert_eq!(
+            ast_no_end,
+            Expr::Slice {
+                expr: Box::new(Expr::Identifier("arr".to_string())),
+                start: Some(Box::new(Expr::Number(2.0))),
+                end: None,
+            }
+        );
+
+        let ast_no_start = parse_excel_formula("arr[:2]").unwrap();
+        assert_eq!(
+            ast_no_start,
+            Expr::Slice {
+                expr: Box::new(Expr::Identifier("arr".to_string())),
+                start: None,
+                end: Some(Box::new(Expr::Number(2.0))),
+            }
+        );
+    }
+
+    #[test]
+    fn test_sheet_column_bracket_indexing() {
+        let ast = parse_excel_formula("Sheet1[\"Sales\"]").unwrap();
+        assert_eq!(
+            ast,
+            Expr::StructuredRef {
+                sheet: Some("Sheet1".to_string()),
+                column: Some("Sales".to_string()),
+                is_this_row: false,
+                section: SheetSection::Data,
+            }
+        );
     }
 }

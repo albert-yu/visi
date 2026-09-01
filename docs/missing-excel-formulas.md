@@ -13,10 +13,6 @@ Last updated: 2026-08-31
 - Genuinely implemented in visi-core: **507**
 - Missing or non-functional: **15**
 
-visi-core implements `GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, and
-`STR` — these are engine-specific extensions, not Excel functions, so they
-aren't counted above in either total.
-
 ## Caveats
 
 - This is a name-level diff, not a semantics/argument-compatibility check.

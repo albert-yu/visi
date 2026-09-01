@@ -1768,3 +1768,40 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     );
     assert!(matches!(sheet.get_result_data(&CellRef::new(4, 1)), ResultData::Float(f) if f == 1.0)); // TYPE 1 = number
 }
+
+#[test]
+fn test_bracket_slice_evaluation() {
+    let sheet = Sheet::new(SheetInit::default());
+    let (res, _) = sheet.eval("=[1, 2, 3, 4, 5][1:3]", None).unwrap();
+    let ResultData::List(items) = res else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 2.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 3.0));
+
+    let (res_no_end, _) = sheet.eval("=[1, 2, 3, 4, 5][2:]", None).unwrap();
+    let ResultData::List(items) = res_no_end else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 3);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 3.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 4.0));
+    assert!(matches!(items[2], ResultData::Float(f) if f == 5.0));
+
+    let (res_no_start, _) = sheet.eval("=[1, 2, 3, 4, 5][:2]", None).unwrap();
+    let ResultData::List(items) = res_no_start else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 1.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 2.0));
+
+    let (res_neg, _) = sheet.eval("=[1, 2, 3, 4, 5][-2:]", None).unwrap();
+    let ResultData::List(items) = res_neg else {
+        panic!("expected List")
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], ResultData::Float(f) if f == 4.0));
+    assert!(matches!(items[1], ResultData::Float(f) if f == 5.0));
+}

@@ -4,7 +4,7 @@
 //! family in turn.
 
 use super::{FnCall, res_to_rd};
-use crate::core::engine::cell::{CellRef, Dependency, EngineError, EvalError};
+use crate::core::engine::cell::{Dependency, EngineError, EvalError};
 use crate::core::engine::result_data::ResultData;
 use crate::core::engine::sheet::Sheet;
 use crate::core::finance;
@@ -315,14 +315,6 @@ impl Sheet {
                     Ok(ResultData::Float(max_val))
                 }
             }
-
-            "STR" => {
-                if evaluated_args.is_empty() {
-                    Ok(ResultData::String(String::new()))
-                } else {
-                    Ok(ResultData::String(evaluated_args[0].to_string()))
-                }
-            }
             "SQRT" => {
                 let val = self.to_f64_arg(evaluated_args.first(), "SQRT")?;
                 if val < 0.0 {
@@ -403,112 +395,6 @@ impl Sheet {
                 let val = self.to_f64_arg(evaluated_args.first(), "EXP")?;
                 Ok(ResultData::Float(val.exp()))
             }
-            "GET" => {
-                if evaluated_args.len() == 2 {
-                    let row = self.to_f64(&evaluated_args[0]).unwrap_or(0.0) as usize;
-                    let col = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as usize;
-                    let cell_ref = CellRef::new(row, col);
-                    deps.push(Dependency::Local(cell_ref));
-                    Ok(self.get_result_data(&cell_ref))
-                } else if evaluated_args.len() == 3 {
-                    let sheet_name = evaluated_args[0].to_string();
-                    let row = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as usize;
-                    let col = self.to_f64(&evaluated_args[2]).unwrap_or(0.0) as usize;
-                    let cell_ref = CellRef::new(row, col);
-
-                    if sheet_name == self.name {
-                        deps.push(Dependency::Local(cell_ref));
-                        Ok(self.get_result_data(&cell_ref))
-                    } else {
-                        deps.push(Dependency::Remote {
-                            sheet: sheet_name.clone(),
-                            cell: cell_ref,
-                        });
-                        if let Some(ctx) = context {
-                            if let Some(t) = ctx.sheets.get(&sheet_name) {
-                                Ok(t.get_result_data(&cell_ref))
-                            } else {
-                                Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                                    "Sheet not found: {}",
-                                    sheet_name
-                                ))))
-                            }
-                        } else {
-                            Err(EngineError::EvalError(EvalError::UnknownFunction(
-                                "No context".to_string(),
-                            )))
-                        }
-                    }
-                } else {
-                    Err(EngineError::EvalError(EvalError::UnknownFunction(
-                        "get() takes 2 or 3 arguments".to_string(),
-                    )))
-                }
-            }
-            "GET_COL" => {
-                if evaluated_args.len() == 2 {
-                    let sheet_name = evaluated_args[0].to_string();
-                    let col_name = evaluated_args[1].to_string();
-                    let is_self = sheet_name == self.name;
-
-                    if let Some(ctx) = context {
-                        if let Some(sheet) = ctx.sheets.get(&sheet_name) {
-                            if let Some(col_idx) =
-                                sheet.columns.iter().position(|c| c.name == col_name)
-                            {
-                                if is_self {
-                                    deps.push(Dependency::LocalColumn(col_idx));
-                                } else {
-                                    deps.push(Dependency::RemoteColumn {
-                                        sheet: sheet_name.clone(),
-                                        col: col_idx,
-                                    });
-                                }
-                                let mut results = Vec::new();
-                                for row in 0..sheet.row_count() {
-                                    let cell_ref = CellRef::new(row, col_idx);
-                                    results.push(sheet.get_result_data(&cell_ref));
-                                }
-                                Ok(ResultData::List(results))
-                            } else {
-                                Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                                    "Column not found: {}",
-                                    col_name
-                                ))))
-                            }
-                        } else {
-                            Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                                "Sheet not found: {}",
-                                sheet_name
-                            ))))
-                        }
-                    } else if is_self {
-                        if let Some(col_idx) = self.columns.iter().position(|c| c.name == col_name)
-                        {
-                            deps.push(Dependency::LocalColumn(col_idx));
-                            let mut results = Vec::new();
-                            for row in 0..self.row_count() {
-                                let cell_ref = CellRef::new(row, col_idx);
-                                results.push(self.get_result_data(&cell_ref));
-                            }
-                            Ok(ResultData::List(results))
-                        } else {
-                            Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                                "Column not found: {}",
-                                col_name
-                            ))))
-                        }
-                    } else {
-                        Err(EngineError::EvalError(EvalError::UnknownFunction(
-                            "No context to resolve sheet reference".to_string(),
-                        )))
-                    }
-                } else {
-                    Err(EngineError::EvalError(EvalError::UnknownFunction(
-                        "get_col() takes 2 arguments".to_string(),
-                    )))
-                }
-            }
             "ABS" => {
                 let val = self.to_f64_arg(evaluated_args.first(), "ABS")?;
                 Ok(ResultData::Float(val.abs()))
@@ -569,43 +455,6 @@ impl Sheet {
                 };
                 Ok(ResultData::Float(rounded))
             }
-            "SLICE" => {
-                if evaluated_args.len() == 3 {
-                    if let ResultData::List(list) = &evaluated_args[0] {
-                        let start = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as isize;
-                        let mut end = self.to_f64(&evaluated_args[2]).unwrap_or(-1.0) as isize;
-
-                        let len = list.len() as isize;
-                        let start_idx = if start < 0 {
-                            (len + start).max(0)
-                        } else {
-                            start.min(len)
-                        } as usize;
-
-                        if end == -1 {
-                            end = len;
-                        }
-                        let end_idx = if end < 0 {
-                            (len + end).max(0)
-                        } else {
-                            end.min(len)
-                        } as usize;
-
-                        let sliced = if start_idx < end_idx && start_idx < list.len() {
-                            list[start_idx..end_idx.min(list.len())].to_vec()
-                        } else {
-                            Vec::new()
-                        };
-                        Ok(ResultData::List(sliced))
-                    } else {
-                        Ok(ResultData::None)
-                    }
-                } else {
-                    Err(EngineError::EvalError(EvalError::UnknownFunction(
-                        "SLICE requires 3 arguments".to_string(),
-                    )))
-                }
-            }
             "INDEX" => {
                 if evaluated_args.len() == 2 {
                     if let ResultData::List(raw) = &evaluated_args[0] {
@@ -661,62 +510,6 @@ impl Sheet {
                 } else {
                     Err(EngineError::EvalError(EvalError::UnknownFunction(
                         "INDEX requires 2 or 3 arguments".to_string(),
-                    )))
-                }
-            }
-            "GET_COL_IDX" => {
-                if evaluated_args.len() == 2 {
-                    let sheet_name = evaluated_args[0].to_string();
-                    let col_idx = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as usize;
-                    let is_self = sheet_name == self.name;
-
-                    if let Some(ctx) = context {
-                        if let Some(sheet) = ctx.sheets.get(&sheet_name) {
-                            if is_self {
-                                deps.push(Dependency::LocalColumn(col_idx));
-                            } else {
-                                deps.push(Dependency::RemoteColumn {
-                                    sheet: sheet_name.clone(),
-                                    col: col_idx,
-                                });
-                            }
-                            let mut results = Vec::new();
-                            for row in 0..sheet.row_count() {
-                                let cell_ref = CellRef::new(row, col_idx);
-                                results.push(sheet.get_result_data(&cell_ref));
-                            }
-                            Ok(ResultData::List(results))
-                        } else {
-                            Err(EngineError::EvalError(EvalError::UnknownFunction(format!(
-                                "Sheet not found: {}",
-                                sheet_name
-                            ))))
-                        }
-                    } else if is_self {
-                        deps.push(Dependency::LocalColumn(col_idx));
-                        let mut results = Vec::new();
-                        for row in 0..self.row_count() {
-                            let cell_ref = CellRef::new(row, col_idx);
-                            results.push(self.get_result_data(&cell_ref));
-                        }
-                        Ok(ResultData::List(results))
-                    } else {
-                        Err(EngineError::EvalError(EvalError::UnknownFunction(
-                            "No context to resolve sheet reference".to_string(),
-                        )))
-                    }
-                } else if evaluated_args.len() == 1 {
-                    let col_idx = self.to_f64(&evaluated_args[0]).unwrap_or(0.0) as usize;
-                    deps.push(Dependency::LocalColumn(col_idx));
-                    let mut results = Vec::new();
-                    for row in 0..self.row_count() {
-                        let cell_ref = CellRef::new(row, col_idx);
-                        results.push(self.get_result_data(&cell_ref));
-                    }
-                    Ok(ResultData::List(results))
-                } else {
-                    Err(EngineError::EvalError(EvalError::UnknownFunction(
-                        "GET_COL_IDX requires 1 or 2 arguments".to_string(),
                     )))
                 }
             }

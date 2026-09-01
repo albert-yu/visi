@@ -492,11 +492,7 @@ That last pair is the whole reason `Application` and
 argument expressions — a `Range` becomes a real range reference — and hands
 them to `Sheet::call_worksheet_function`, a `pub(crate)` entry point onto the
 existing `evaluate_function`. That is what makes the range-versus-scalar
-coercion split above fall out rather than being written twice. The engine's
-own non-Excel functions (`GET`, `GET_COL`, `GET_COL_IDX`, `SLICE`, `STR`) are
-blocked: a macro using one would work here and fail in Excel, which is the one
-direction of divergence a differential harness cannot catch, since it only
-generates what Excel accepts.
+coercion split above fall out rather than being written twice.
 
 **Two limits are ours, not Excel's.** Excel's grid is sparse and `visi`'s
 `Sheet` is a dense `Vec` per column, so `ws.Range("XFD1048576").Value = 1`

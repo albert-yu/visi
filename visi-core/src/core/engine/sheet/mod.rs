@@ -1100,6 +1100,54 @@ impl Sheet {
                 }
                 Ok(ResultData::List(results))
             }
+            Expr::Slice { expr, start, end } => {
+                let target_val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
+                if let ResultData::Error(_) = &target_val {
+                    return Ok(target_val);
+                }
+                if let ResultData::List(list) = target_val {
+                    let len = list.len() as isize;
+                    let start_idx = if let Some(start_expr) = start {
+                        let s_val =
+                            self.evaluate_ast(start_expr, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &s_val {
+                            return Ok(s_val);
+                        }
+                        let s = self.to_f64(&s_val).unwrap_or(0.0) as isize;
+                        if s < 0 {
+                            (len + s).max(0) as usize
+                        } else {
+                            s.min(len) as usize
+                        }
+                    } else {
+                        0
+                    };
+
+                    let end_idx = if let Some(end_expr) = end {
+                        let e_val = self.evaluate_ast(end_expr, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &e_val {
+                            return Ok(e_val);
+                        }
+                        let e = self.to_f64(&e_val).unwrap_or(len as f64) as isize;
+                        if e < 0 {
+                            (len + e).max(0) as usize
+                        } else {
+                            e.min(len) as usize
+                        }
+                    } else {
+                        len as usize
+                    };
+
+                    let sliced = if start_idx < end_idx && start_idx < list.len() {
+                        list[start_idx..end_idx.min(list.len())].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    Ok(ResultData::List(sliced))
+                } else {
+                    Ok(ResultData::None)
+                }
+            }
             Expr::UnaryOp { op, expr } => {
                 let val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
                 match op {
