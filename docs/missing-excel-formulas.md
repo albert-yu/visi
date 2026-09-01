@@ -3,7 +3,7 @@
 A tracking list of standard Microsoft Excel functions (as documented in Excel
 formula reference) and their implementation status in `visi-core`.
 
-Last updated: 2026-08-11
+Last updated: 2026-08-31
 
 ---
 
@@ -23,29 +23,6 @@ aren't counted above in either total.
   A handful of implemented functions likely don't cover every argument form
   Excel supports (array forms, optional args, etc.) — that's out of scope
   for this list.
-- A prior revision of this file double-counted 28 financial functions (they
-  appeared in both "Implemented" and "Missing") and, separately, counted 70
-  functions as implemented that are either dispatched to a placeholder that
-  just echoes back an argument (see "Recognized but not functional" below)
-  or aren't dispatched at all (`CHOOSE`, since fixed). Both classes have
-  been moved out of "Implemented" in that revision; a later revision moved
-  the now-genuinely-implemented ones back in.
-- **The previous revision's "~39 unaccounted-for" functions are now
-  identified.** Diffing this file's "Implemented" list against Microsoft's
-  own alphabetical function list turned up exactly 39 names. 38 of them
-  are the pre-2010 "compatibility" aliases of functions already
-  implemented under their modern dotted names (`BETADIST`, `BETAINV`,
-  `BINOMDIST`, `CHIDIST`, `CHIINV`, `CHITEST`, `CONFIDENCE`, `COVAR`,
-  `CRITBINOM`, `EXPONDIST`, `FDIST`, `FINV`, `FTEST`, `GAMMADIST`,
-  `GAMMAINV`, `HYPGEOMDIST`, `LOGINV`, `LOGNORMDIST`, `MODE`,
-  `NEGBINOMDIST`, `NORMDIST`, `NORMINV`, `NORMSDIST`, `NORMSINV`,
-  `PERCENTILE`, `PERCENTRANK`, `POISSON`, `QUARTILE`, `RANK`, `STDEV`,
-  `STDEVP`, `TDIST`, `TINV`, `TTEST`, `VAR`, `VARP`, `WEIBULL`, `ZTEST`) —
-  verified directly against `visi-core/src/core/engine/sheet.rs`: every one
-  is already an alias on the same match arm as its modern name (e.g.
-  `"BETA.DIST" | "BETADIST" => { ... }`). These were simply missing from
-  this file's own "Implemented" list, not missing from visi-core. The 39th,
-  `JIS`, was a genuine gap (see below) and has since been implemented.
 - `SHEET()` is a known, documented approximation: it always returns `1`,
   since this engine has no notion of a sheet's true ordinal position within
   the workbook. Bare `COLUMN()`/`ROW()` (no argument, meaning "the current
