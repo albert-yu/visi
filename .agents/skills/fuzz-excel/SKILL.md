@@ -155,7 +155,7 @@ never the thing a test asserts.
 - Reach for a Windows result whenever the case smells platform-specific: VBA
   `Err.Number` values, object-model error numbers, locale/date rendering,
   chart and drawing XML details, anything Mac-only in the AppleScript bridge.
-  Section 17 of `docs/excel-discrepancies.md` is an existing instance —
+  Section 16 of `docs/excel-discrepancies.md` is an existing instance —
   Excel for Mac's error number there is not even reproducible run to run.
 - On Windows, run the harnesses with `--driver win32com`. On macOS, run them
   with `--excel-path "/Applications/Microsoft Excel.app"` (AppleScript). If no

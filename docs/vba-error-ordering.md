@@ -443,7 +443,7 @@ It survives unrelated intervening statements but clears once the error has
 been reported, and `Val` — a different parser — is immune. That is a sticky
 floating-point status flag being read by the conversion routine, not
 behaviour worth reproducing. Full table in
-[`excel-discrepancies.md` §16](excel-discrepancies.md).
+[`excel-discrepancies.md` §15](excel-discrepancies.md).
 
 ## 15. A static String over a `Null` is error 94
 

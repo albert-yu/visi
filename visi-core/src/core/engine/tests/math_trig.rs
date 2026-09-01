@@ -936,7 +936,7 @@ fn test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary() {
     // (the divisor itself) instead, as if `INT(quotient)` had come out to
     // 12 rather than the mathematically exact 13 -- a real Excel
     // precision loss at this boundary, not a rounding convention
-    // difference (see "docs/excel-discrepancies.md" section 15, which
+    // difference (see "docs/excel-discrepancies.md" section 14, which
     // this is another instance of). visi's 0 is correct and is left
     // alone.
     assert_eq!(num("=MOD(-47, (47 / -13))"), 0.0);
@@ -949,7 +949,7 @@ fn test_fuzz_mod_tiny_power_against_negative_divisor_is_not_zero() {
     // number and the divisor is -3740, so Excel's documented
     // n - d*INT(n/d) rule gives a remainder infinitesimally above -3740,
     // not 0. This is the same Excel precision loss documented in
-    // docs/excel-discrepancies.md section 15.
+    // docs/excel-discrepancies.md section 14.
     assert!((num("=MOD((-5 ^ -16), (-44 * 85))") + 3740.0).abs() < 1e-9);
 }
 

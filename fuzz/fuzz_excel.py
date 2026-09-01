@@ -56,7 +56,7 @@ class ExcelFuzzGenerator:
         "MEDIAN", "VAR.S", "VAR.P", "VARA", "VARPA",
         "STDEV.S", "STDEV.P", "STDEVA", "STDEVPA", "SKEW", "SKEW.P",
         # MULTINOMIAL is accurate in visi but Excel rounds some integer-valued
-        # answers just below the integer (docs/excel-discrepancies.md #25),
+        # answers just below the integer (docs/excel-discrepancies.md #24),
         # which leaks through wrappers like INT(MULTINOMIAL(...)).
         "KURT", "MAXA", "MINA", "GCD", "LCM", "SUMSQ",
         "COUNT", "COUNTA", "COUNTBLANK", "SUMPRODUCT",
@@ -132,7 +132,7 @@ class ExcelFuzzGenerator:
         "ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR",
         "IFERROR", "IFNA", "IFS", "SWITCH",
         # ISERR/ISNA turn the documented error-class precedence divergence
-        # (docs/excel-discrepancies.md #13) into a boolean mismatch instead of
+        # (docs/excel-discrepancies.md #12) into a boolean mismatch instead of
         # a tolerated both-error case, so keep them out of the random wrapper
         # pool. ISERROR still exercises error detection without caring which
         # class won.
@@ -165,12 +165,12 @@ class ExcelFuzzGenerator:
         "PERCENTILE", "PERCENTILE.INC", "PERCENTILE.EXC",
         # QUARTILE.EXC excluded: visi's exclusive-quartile interpolation
         # rejects some quart/sample-size combinations Excel accepts (see
-        # "docs/excel-discrepancies.md" section 10). QUARTILE.INC and the PERCENTILE.* family
+        # "docs/excel-discrepancies.md" section 9). QUARTILE.INC and the PERCENTILE.* family
         # agree and stay fuzzed.
         "QUARTILE", "QUARTILE.INC",
         "PERCENTRANK", "PERCENTRANK.INC", "PERCENTRANK.EXC",
         # FREQUENCY excluded: its bins_array coercion for non-numeric bins
-        # is not understood (see "docs/excel-discrepancies.md" section 12).
+        # is not understood (see "docs/excel-discrepancies.md" section 11).
         "RANK", "RANK.EQ", "RANK.AVG", "TRIMMEAN", "MODE.MULT",
     ]
     LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
@@ -333,7 +333,7 @@ class ExcelFuzzGenerator:
         # demonstrably exists (the same call returns a rate when handed a
         # guess near it), so the comparison asserts whether Excel's
         # iteration converged from its default 0.1 rather than anything
-        # about correctness. See "docs/excel-discrepancies.md" section 11.
+        # about correctness. See "docs/excel-discrepancies.md" section 10.
         "PV", "FV", "PMT", "NPER", "IPMT", "PPMT", "CUMIPMT",
         "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
         # EUROCONVERT is implemented, but Excel exposes it through the Euro
@@ -351,7 +351,7 @@ class ExcelFuzzGenerator:
         "ODDLPRICE", "ODDLYIELD",
     ]
     # AMORDEGRC, ODDFPRICE and ODDFYIELD are excluded as known visi gaps --
-    # see "docs/excel-discrepancies.md" sections 7 and 8. AMORDEGRC's coefficient brackets and
+    # see "docs/excel-discrepancies.md" sections 6 and 7. AMORDEGRC's coefficient brackets and
     # end-of-life switch to straight line aren't fully reverse-engineered,
     # and Excel rejects odd-first-coupon orderings (returning #NUM!) that
     # visi accepts. The regular-coupon bond functions above are unaffected
@@ -562,7 +562,7 @@ class ExcelFuzzGenerator:
             # Short strings. Keep the random cell-value alphabet ASCII: Windows
             # Excel's Unicode collation is locale-sensitive and not a stable
             # oracle for SORT/SORTBY text ordering (docs/excel-discrepancies.md
-            # #23). Punctuation still exercises shared-string/text paths beyond
+            # #22). Punctuation still exercises shared-string/text paths beyond
             # plain `[A-Za-z 123]`.
             if random.random() < 0.25:
                 samples = ["a,b", "quote ' test", "paren(test)", "dash-test"]
@@ -570,7 +570,7 @@ class ExcelFuzzGenerator:
             # Avoid whitespace-only strings: OOXML/openpyxl can strip them to
             # empty shared strings unless xml:space="preserve", which makes
             # Excel and visi disagree about blank-vs-empty-string observability
-            # in functions such as ARRAYTOTEXT (docs/excel-discrepancies.md #14).
+            # in functions such as ARRAYTOTEXT (docs/excel-discrepancies.md #13).
             chars = string.ascii_letters + "123"
             return "".join(random.choice(chars) for _ in range(random.randint(1, 8)))
         elif choice < 0.88:
@@ -686,7 +686,7 @@ class ExcelFuzzGenerator:
                 # flattens that all the way to exactly 0 where visi's
                 # f64::powf keeps the (correct, nonzero) subnormal value, a
                 # divergence with no engine bug behind it (see
-                # "docs/excel-discrepancies.md" section 18). Not worth
+                # "docs/excel-discrepancies.md" section 17). Not worth
                 # excluding `^` outright for this rare a combination -- just
                 # avoid pairing a magnitude-prone left operand with it.
                 if op == "^" and left.startswith(("FACT(", "GAMMA(", "EXP(", "PERMUT(", "COMBIN(")):
@@ -697,7 +697,7 @@ class ExcelFuzzGenerator:
                 # what visi's `^` gives every time), but for a handful of
                 # specific exponent values it instead returns a real
                 # number with no describable pattern separating those from
-                # the rest (see "docs/excel-discrepancies.md" section 19).
+                # the rest (see "docs/excel-discrepancies.md" section 18).
                 # Both `POWER(...)` and a bare nested `^` (e.g. `(F4 ^ -4)`,
                 # seed 394540's `LEFT(F4, 3) ^ (F4 ^ -4)`) reliably land in
                 # that near-zero/fractional range, so keep either off the
@@ -716,7 +716,7 @@ class ExcelFuzzGenerator:
                 # by making the dividend tiny. Excel then loses the small
                 # operand and returns 0 instead of the true (nonzero)
                 # remainder -- visi keeps the mathematically correct value
-                # (see "docs/excel-discrepancies.md" section 15, e.g.
+                # (see "docs/excel-discrepancies.md" section 14, e.g.
                 # MOD(36, POWER(-327.3, 69)) and seed 747962's
                 # MOD((-5 ^ -16), (-44 * 85))). Not a new bug, just a
                 # generator gap: this shape was never fully kept out of the
@@ -850,7 +850,7 @@ class ExcelFuzzGenerator:
             # day-28 issue in *any* month can land on 28 February and turn
             # the whole quasi-coupon schedule end-of-month -- which is the
             # case ACCRINT is known to get wrong. See
-            # "docs/excel-discrepancies.md" section 9.
+            # "docs/excel-discrepancies.md" section 8.
             d = 27
         return f"DATE({y}, {m}, {d})"
 
@@ -1031,7 +1031,7 @@ class ExcelFuzzGenerator:
         # reimplementation of calendar math against either engine.
         bond_rate = lambda: round(random.uniform(0.01, 0.10), 4)
         bond_basis = lambda: random.choice([0, 1, 2, 3, 4])
-        # docs/excel-discrepancies.md #22: COUPDAYS basis 1 has unresolved
+        # docs/excel-discrepancies.md #21: COUPDAYS basis 1 has unresolved
         # Excel coupon-period quirks around some quarterly schedules. Keep the
         # other bases fuzzed, and keep basis 1 for the neighbouring functions.
         coupdays_basis = lambda: random.choice([0, 2, 3, 4])
@@ -1082,7 +1082,7 @@ class ExcelFuzzGenerator:
             settlement = f"EDATE({issue}, {random.randint(1, 6)})"
             maturity = f"EDATE({issue}, {random.randint(7, 36)})"
             rate = bond_rate()
-            # docs/excel-discrepancies.md #24: PRICEMAT/YIELDMAT basis 0 has
+            # docs/excel-discrepancies.md #23: PRICEMAT/YIELDMAT basis 0 has
             # unresolved month-end 30/360 leg quirks on issue-anchored schedules.
             basis = random.choice([1, 2, 3, 4])
             if fn == "PRICEMAT":
@@ -1120,7 +1120,7 @@ class ExcelFuzzGenerator:
             # Restricted to basis 0/4 (30/360) -- see the doc comment on
             # finance::accrint for why bases 1/2/3 aren't fuzzed here.
             # February month-end issue dates are excluded as a known gap;
-            # see "docs/excel-discrepancies.md" section 9.
+            # see "docs/excel-discrepancies.md" section 8.
             issue = self._fin_date(avoid_february_month_end=True)
             freq = bond_freq()
             months = 12 // freq
@@ -1576,7 +1576,7 @@ class ExcelFuzzGenerator:
         if fn == "DATEDIF":
             # "YD" is excluded: Excel's is internally inconsistent and no
             # candidate rule fits more than 5 of 8 probed data points (see
-            # "docs/excel-discrepancies.md" section 6). The other units agree.
+            # "docs/excel-discrepancies.md" section 5). The other units agree.
             s1, s2 = serial(40000, 43000), serial(43001, 46000)
             unit = random.choice(["Y", "M", "D", "MD", "YM"])
             return f'=DATEDIF({s1}, {s2}, "{unit}")'
@@ -2704,7 +2704,7 @@ class DifferentialComparator:
         # *different* error, visi and Excel sometimes surface different
         # ones -- which error wins depends on Excel's internal evaluation
         # order and differs per operator and per function. That is a
-        # documented divergence ("docs/excel-discrepancies.md" section 13),
+        # documented divergence ("docs/excel-discrepancies.md" section 12),
         # and by default a disagreement where *both* engines errored is
         # counted separately rather than as a failure.
         #
@@ -2967,7 +2967,7 @@ def main():
         help=(
             "Count a disagreement where both engines errored but with different "
             "error classes as a failure. Off by default -- see "
-            "docs/excel-discrepancies.md section 13."
+            "docs/excel-discrepancies.md section 12."
         ),
     )
     args = parser.parse_args()
