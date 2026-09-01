@@ -131,7 +131,6 @@ fn test_workbook_create_and_formula_evaluation() {
     let bytes = visi_core::export_xlsx_data(&[initial_sheet], &[], &[], None).unwrap();
     fs::write(&file_path, bytes).unwrap();
 
-    // Load with WorkbookManager and evaluate
     let mut wb = WorkbookManager::load_file(file_str).unwrap();
     wb.evaluate().unwrap();
 
@@ -142,7 +141,6 @@ fn test_workbook_create_and_formula_evaluation() {
     assert_eq!(b1_val.to_string(), "30");
     assert_eq!(b2_val.to_string(), "30");
 
-    // Update cell A1 to 50
     wb.set_cell(0, 0, 0, "50".to_string());
     wb.evaluate().unwrap();
 
@@ -152,7 +150,6 @@ fn test_workbook_create_and_formula_evaluation() {
     assert_eq!(b1_val_updated.to_string(), "70");
     assert_eq!(b2_val_updated.to_string(), "70");
 
-    // Save file
     let out_path = temp_dir.join("output_eval.xlsx");
     wb.save_file(out_path.to_str().unwrap()).unwrap();
     assert!(out_path.exists());
@@ -999,7 +996,6 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
 
     let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
 
-    // Set value and style on A1
     wb.set_cell(0, 0, 0, "Styled Header".to_string());
     // 0-based (row, col): A1.
     wb.set_cell_style(
@@ -1033,7 +1029,6 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
     )
     .unwrap();
 
-    // Verify in-memory styles on wb
     let style_a1 = wb.get_cell_style(None, 0, 0).unwrap().unwrap();
     assert_eq!(style_a1.font_color, Some("#FF0000".to_string()));
     assert_eq!(style_a1.bg_color, Some("#FFFF00".to_string()));
@@ -1046,7 +1041,6 @@ fn test_cell_style_setting_and_xlsx_round_trip() {
     assert_eq!(style_b2.bold, Some(true));
     assert_eq!(style_b2.font_color, Some("blue".to_string()));
 
-    // Save workbook to file (generates formatted OOXML XLSX output)
     wb.save_file(file_str).unwrap();
 
     let _ = fs::remove_file(file_path);
@@ -1104,7 +1098,6 @@ fn test_table_style_theme_setting_and_xlsx_round_trip() {
 
     let mut wb = WorkbookManager::load_file_or_create(file_str).unwrap();
 
-    // Add table data
     wb.set_cell(0, 0, 0, "ID".to_string());
     wb.set_cell(0, 0, 1, "Name".to_string());
     wb.set_cell(0, 1, 0, "1".to_string());
@@ -1120,7 +1113,6 @@ fn test_table_style_theme_setting_and_xlsx_round_trip() {
         Some("TableStyleMedium9".to_string())
     );
 
-    // Save and reload workbook
     wb.save_file(file_str).unwrap();
     let reloaded = WorkbookManager::load_file(file_str).unwrap();
 
@@ -1952,7 +1944,6 @@ fn test_workbook_set_cell_type_and_roundtrip() {
     let file_str = file_path.to_str().unwrap();
 
     let mut wb = WorkbookManager::new_empty().unwrap();
-    // 1. Set numeric text with explicit String type
     wb.set_cell_with_type(
         0,
         0,
@@ -1960,9 +1951,7 @@ fn test_workbook_set_cell_type_and_roundtrip() {
         "12345".to_string(),
         visi_core::core::CellType::String,
     );
-    // 2. Set normal auto cell
     wb.set_cell(0, 0, 1, "12345".to_string());
-    // 3. Set boolean cell
     wb.set_cell_with_type(
         0,
         0,
@@ -1970,7 +1959,6 @@ fn test_workbook_set_cell_type_and_roundtrip() {
         "TRUE".to_string(),
         visi_core::core::CellType::Boolean,
     );
-    // 4. Change type of existing cell using set_cell_type
     wb.set_cell(0, 0, 3, "999".to_string());
     wb.set_cell_type(0, 0, 3, visi_core::core::CellType::String);
 

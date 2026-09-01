@@ -626,7 +626,6 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
         ));
     }
 
-    // Try to parse column range ref like A:A or $A:$B
     if let Some((start_col, start_col_abs, next_idx)) = parse_col_pattern(chars, idx)
         && next_idx < chars.len()
         && chars[next_idx] == ':'
@@ -648,7 +647,6 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
         ));
     }
 
-    // Try to parse whole-row refs like 1:3 or $1:$3.
     if let Some((start_row, start_row_abs, next_idx)) = parse_row_pattern(chars, idx)
         && next_idx < chars.len()
         && chars[next_idx] == ':'
@@ -2201,7 +2199,6 @@ mod tests {
 
         let sheets = vec![table1, table2];
 
-        // 1. Single-quote notation
         let formula_quote = compile_formula("='My Sheet'!B1 + 10", &sheets);
         match &formula_quote.parts[1] {
             FormulaPart::SheetReference {
@@ -2214,11 +2211,9 @@ mod tests {
             _ => panic!("Expected SheetReference"),
         }
 
-        // 2. Serialization wraps sheet name with spaces in single quotes
         let serialized_quote = serialize_formula(&formula_quote, &sheets);
         assert_eq!(serialized_quote, "='My Sheet'!B1 + 10");
 
-        // 3. parse_excel_formula handles single-quoted sheet references
         let ast_quote = parse_excel_formula("'My Sheet'!B1 + 10").unwrap();
         match ast_quote {
             Expr::BinaryOp { left, .. } => match *left {
@@ -2304,7 +2299,6 @@ mod tests {
 
         let sheets = vec![table1];
 
-        // 1. Check compile_formula with unquoted period name
         let formula = compile_formula("=Model_SL_5.5Yr!B10 + 10", &sheets);
         assert_eq!(formula.parts.len(), 3);
         match &formula.parts[1] {
@@ -2318,7 +2312,6 @@ mod tests {
             _ => panic!("Expected SheetReference"),
         }
 
-        // 2. Check parse_excel_formula with unquoted period name
         let ast = parse_excel_formula("Model_SL_5.5Yr!B10 + 10").unwrap();
         match ast {
             Expr::BinaryOp { left, .. } => match *left {
@@ -2345,7 +2338,6 @@ mod tests {
         });
         let sheets = vec![table1];
 
-        // Test compiling local column range
         let formula = compile_formula("=SUM(A:B)", &sheets);
         assert_eq!(formula.parts.len(), 3);
         match &formula.parts[1] {
@@ -2366,11 +2358,9 @@ mod tests {
             _ => panic!("Expected RangeReference"),
         }
 
-        // Test serializing local column range
         let serialized = serialize_formula(&formula, &sheets);
         assert_eq!(serialized, "=SUM(A:B)");
 
-        // Test compiling cross-sheet column range
         let table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
@@ -2404,7 +2394,6 @@ mod tests {
         let serialized_cross = serialize_formula(&formula_cross, &tables_multi);
         assert_eq!(serialized_cross, "=SUM(Sheet2!$A:$C)");
 
-        // Test parse_excel_formula with column range
         let ast = parse_excel_formula("SUM(A:A)").unwrap();
         match ast {
             Expr::FunctionCall { name, args } => {
@@ -2447,7 +2436,6 @@ mod tests {
 
         let sheets = vec![table1];
 
-        // 1. Test compile_formula with TableName[ColumnName]
         let f1 = compile_formula("=Sheet1[Sales]", &sheets);
         assert_eq!(f1.parts.len(), 2);
         match &f1.parts[1] {
@@ -2465,11 +2453,9 @@ mod tests {
             _ => panic!("Expected StructuredReference, got {:?}", f1.parts[1]),
         }
 
-        // 2. Test serialize_formula (omits prefix for current sheet)
         let s1 = serialize_formula(&f1, &sheets);
         assert_eq!(s1, "=[Sales]");
 
-        // 3. Test compile_formula with [@ColumnName]
         let f2 = compile_formula("=[@Cost]", &sheets);
         match &f2.parts[1] {
             FormulaPart::StructuredReference {
@@ -2488,7 +2474,6 @@ mod tests {
         let s2 = serialize_formula(&f2, &sheets);
         assert_eq!(s2, "=[@Cost]");
 
-        // 4. Test parsing special items: TableName[[#Headers],[Sales]]
         let f3 = compile_formula("=Sheet1[[#Headers],[Sales]]", &sheets);
         match &f3.parts[1] {
             FormulaPart::StructuredReference {
@@ -2506,7 +2491,6 @@ mod tests {
         let s3 = serialize_formula(&f3, &sheets);
         assert_eq!(s3, "=[[#Headers], [Sales]]");
 
-        // 5. Test retaining prefix when referencing a remote sheet
         let mut table2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
@@ -2523,7 +2507,6 @@ mod tests {
         let s4 = serialize_formula(&f4, &multi_tables);
         assert_eq!(s4, "=Sheet2[Revenue]");
 
-        // 5. Test parse_excel_formula for evaluation AST
         let ast = parse_excel_formula("Sheet1[@Sales] + 10").unwrap();
         match ast {
             Expr::BinaryOp { op, left, right: _ } => {

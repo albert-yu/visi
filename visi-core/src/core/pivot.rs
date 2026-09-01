@@ -903,7 +903,6 @@ pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid,
         filter_rows.push((ff.column.clone(), state));
     }
 
-    // Apply filter fields to build the working record set.
     let mut records: Vec<Vec<ResultData>> = Vec::new();
     'row: for row_vals in &all_rows {
         for ff in &pivot.filter_fields {

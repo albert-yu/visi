@@ -457,15 +457,12 @@ impl Sheet {
                 }
             }
 
-            // Write compiled cache
             if let Some(col) = self.columns.get_mut(cell_ref.col)
                 && cell_ref.row < col.compiled_src.len()
             {
                 col.compiled_src[cell_ref.row] = compiled_to_cache.unwrap_or_default();
             }
 
-            // Update dependencies
-            // 1. Remove old reverse dependencies
             if let Some(old_deps) = self.dependencies_rev.remove(&cell_ref) {
                 for provider in old_deps {
                     if let Some(dependents) = self.dependencies.get_mut(&provider) {
@@ -474,7 +471,7 @@ impl Sheet {
                 }
             }
 
-            // 2. Add new dependencies (only if not empty to save map allocations)
+            // Add new dependencies (only if not empty to save map allocations)
             if !new_deps.is_empty() {
                 let mut new_deps_set = HashSet::new();
                 for provider in new_deps {
@@ -514,7 +511,6 @@ impl Sheet {
                 }
             }
 
-            // Update data and cell type
             if let Some(col) = self.columns.get_mut(cell_ref.col)
                 && cell_ref.row < col.data.len()
             {
@@ -1212,7 +1208,6 @@ impl Sheet {
     }
 
     fn compare_excel_values(l: &ResultData, r: &ResultData) -> std::cmp::Ordering {
-        // Coerce ResultData::None against the type of the opposing operand
         match (l, r) {
             (ResultData::None, ResultData::None) => return std::cmp::Ordering::Equal,
             (ResultData::None, ResultData::Integer(b)) => {

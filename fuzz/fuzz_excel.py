@@ -3058,10 +3058,9 @@ def main():
                 failed_count += 1
                 print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
                 print(f"   Found {len(mismatches)} cell mismatch(es):")
-                for m in mismatches[:5]:  # Print first 5 mismatches
+                for m in mismatches[:5]:
                     print(f"   - Cell {m['key'][1]} on {m['key'][0]}: visi={m['visi']} | Excel={m['excel']} (Formula: {m['formula']})")
 
-                # Save failure artifact
                 fail_case_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")

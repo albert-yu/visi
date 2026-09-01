@@ -13,7 +13,6 @@ pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
         m += adj * 12;
     }
 
-    // Days before year y (using Gregorian rules)
     let y1 = y - 1;
     let mut days = y1 * 365 + y1 / 4 - y1 / 100 + y1 / 400;
 
@@ -64,7 +63,6 @@ pub fn serial_to_ymd(serial: f64) -> (i32, i32, i32) {
     if s > 60 {
         s -= 1;
     }
-    // Shift to Dec 31 1BC offset
     let days = s + 693595;
 
     let mut y = (days as f64 / 365.2425) as i64 + 2;

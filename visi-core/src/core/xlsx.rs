@@ -110,13 +110,11 @@ pub(crate) fn import_xlsx_data_raw(
                     (acc.0.max(r as usize + 1), acc.1.max(c as usize + 1))
                 });
 
-            // Fallback for empty worksheets
             if rows == 0 || cols == 0 {
                 rows = 10;
                 cols = 5;
             }
 
-            // Unique sheet name
             let mut sheet_name = orig_sheet_name.clone();
             let mut count = 1;
             while existing_sheets.iter().any(|t| t.name == sheet_name)
@@ -357,7 +355,6 @@ pub(crate) fn import_xlsx_data_raw(
             continue;
         };
 
-        // Ensure sheet has enough capacity to hold the table's range.
         if end_row >= imported.sheet.row_count() || end_col >= imported.sheet.col_count() {
             imported.sheet.ensure_capacity(end_row, end_col);
         }
@@ -894,7 +891,6 @@ pub(crate) fn export_xlsx_data_raw(
         }
     }
 
-    // Export charts
     for chart in charts {
         let parts: Vec<&str> = chart.data_range.split('!').collect();
         let ref_table_name = parts.first().copied().unwrap_or("").trim();
@@ -2253,7 +2249,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_import_export_cycle() {
-        // Create a mock sheet
         let mut columns = Vec::new();
         let col1 = DataColumn::from_src("A", vec!["10".to_string(), "20".to_string()]);
         columns.push(col1);
@@ -2272,11 +2267,9 @@ mod tests {
             locale: crate::core::locale::Locale::default(),
         };
 
-        // Export it
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
-        // Import it back
         let (imported_tables, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
@@ -2286,7 +2279,6 @@ mod tests {
         assert_eq!(imported_table.name, "Sheet1");
         assert_eq!(imported_table.columns.len(), 2);
 
-        // Verify content
         assert_eq!(imported_table.columns[0].src[0], "10");
         assert_eq!(imported_table.columns[0].src[1], "20");
         assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
@@ -2869,7 +2861,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_empty_table_preservation() {
-        // Create an empty sheet (e.g., 5 columns, 10 rows, all empty strings)
         let mut columns = Vec::new();
         for _ in 0..5 {
             let col = DataColumn::new(10);
@@ -2887,11 +2878,9 @@ mod tests {
             locale: crate::core::locale::Locale::default(),
         };
 
-        // Export it
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
-        // Import it back
         let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
         assert_eq!(imported_tables.len(), 1);
 
@@ -2913,7 +2902,6 @@ mod tests {
             crate::core::chart::ChartType::Column,
             crate::core::chart::ChartType::Scatter,
         ] {
-            // Create a sheet with data for the chart to reference
             let mut columns = Vec::new();
             let col1 = DataColumn::from_src(
                 "A",
@@ -2938,7 +2926,6 @@ mod tests {
                 locale: crate::core::locale::Locale::default(),
             };
 
-            // Create a chart referencing that sheet
             let chart = crate::core::chart::Chart {
                 id: 101,
                 name: "Chart 1".to_string(),
@@ -2952,12 +2939,10 @@ mod tests {
                 anchor_col: 2,
             };
 
-            // Export sheet + chart
             let xlsx_data =
                 export_xlsx_data(&[sheet], std::slice::from_ref(&chart), &[], None).unwrap();
             assert!(!xlsx_data.is_empty());
 
-            // Import back
             let (imported_tables, imported_charts, _, _) =
                 import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 

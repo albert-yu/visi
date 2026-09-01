@@ -1707,17 +1707,11 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
         ..Default::default()
     });
 
-    // Row 0: Explicit String date text
     sheet.set_cell_with_type(0, 0, "6/22/26".to_string(), CellType::String);
-    // Row 1: Explicit String number text
     sheet.set_cell_with_type(1, 0, "12345".to_string(), CellType::String);
-    // Row 2: Explicit String boolean text
     sheet.set_cell_with_type(2, 0, "TRUE".to_string(), CellType::String);
-    // Row 3: Leading apostrophe forces String
     sheet.set_cell_src(3, 0, "'6/22/26".to_string());
-    // Row 4: Untyped date literal (infers Number with date format)
     sheet.set_cell_src(4, 0, "6/22/26".to_string());
-    // Row 5: Formulas checking TYPE
     sheet.set_cell_src(0, 1, "=TYPE(A1)".to_string());
     sheet.set_cell_src(1, 1, "=TYPE(A2)".to_string());
     sheet.set_cell_src(2, 1, "=TYPE(A3)".to_string());
@@ -1726,7 +1720,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
 
     sheet.commit(None).unwrap();
 
-    // Verify Row 0 (String date text)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(0, 0)),
         ResultData::String(ref s) if s == "6/22/26"
@@ -1740,7 +1733,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     );
     assert!(matches!(sheet.get_result_data(&CellRef::new(0, 1)), ResultData::Float(f) if f == 2.0)); // TYPE 2 = text
 
-    // Verify Row 1 (String number text)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(1, 0)),
         ResultData::String(ref s) if s == "12345"
@@ -1748,7 +1740,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     assert_eq!(sheet.get_cell_type(&CellRef::new(1, 0)), CellType::String);
     assert!(matches!(sheet.get_result_data(&CellRef::new(1, 1)), ResultData::Float(f) if f == 2.0));
 
-    // Verify Row 2 (String boolean text)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(2, 0)),
         ResultData::String(ref s) if s == "TRUE"
@@ -1756,7 +1747,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     assert_eq!(sheet.get_cell_type(&CellRef::new(2, 0)), CellType::String);
     assert!(matches!(sheet.get_result_data(&CellRef::new(2, 1)), ResultData::Float(f) if f == 2.0));
 
-    // Verify Row 3 (Apostrophe forced string)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(3, 0)),
         ResultData::String(ref s) if s == "6/22/26"
@@ -1765,7 +1755,6 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
     assert_eq!(sheet.columns[0].src[3], "6/22/26"); // stripped apostrophe
     assert!(matches!(sheet.get_result_data(&CellRef::new(3, 1)), ResultData::Float(f) if f == 2.0));
 
-    // Verify Row 4 (Inferred date number)
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(4, 0)),
         ResultData::Float(f) if (f - 46195.0).abs() < f64::EPSILON

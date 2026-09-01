@@ -300,13 +300,11 @@ impl Sheet {
             return;
         }
         let table_clone = self.clone();
-        // Handle deletion within a single column
         if start.col == end.col {
             let start_index = start.row;
             let end_index = end.row;
 
             if let Some(column) = self.columns.get_mut(start.col) {
-                // Handle single row deletion
                 if start.row == end.row && start_index < column.src.len() {
                     let src = &mut column.src[start_index];
                     let end_offset = std::cmp::min(end.char_offset, src.len());
@@ -318,17 +316,11 @@ impl Sheet {
                             crate::core::parser::compile_formula(&updated_src, &[table_clone]);
                         column.compiled_src[start_index] = compiled;
                     }
-                }
-                // Handle multi-row deletion
-                else if start_index < column.len() {
-                    // Delete complete rows between start and end
-                    if end_index >= start_index {
-                        column.drain_rows(start_index..=end_index);
-                    }
+                } else if start_index < column.len() && end_index >= start_index {
+                    column.drain_rows(start_index..=end_index);
                 }
             }
         } else {
-            // Handle multi-column deletion
             for col in start.col..=end.col {
                 if let Some(column) = self.columns.get_mut(col) {
                     let start_index = if col == start.col { col } else { 0 };
@@ -339,11 +331,8 @@ impl Sheet {
                         column.src.len() - 1
                     };
 
-                    if start_index < column.len() {
-                        // Delete rows in this column
-                        if end_index >= start_index {
-                            column.drain_rows(start_index..=end_index);
-                        }
+                    if start_index < column.len() && end_index >= start_index {
+                        column.drain_rows(start_index..=end_index);
                     }
                 }
             }
@@ -487,7 +476,6 @@ impl Sheet {
     pub fn insert_row(&mut self, index: usize) {
         let row_count = self.row_count();
         if index >= row_count {
-            // Append at the end
             for column in &mut self.columns {
                 column.push_row();
             }
@@ -497,7 +485,6 @@ impl Sheet {
                     index: row_count,
                 });
         } else {
-            // Insert at the specified index
             for column in &mut self.columns {
                 column.insert_row(index);
             }

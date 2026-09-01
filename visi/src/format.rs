@@ -45,7 +45,6 @@ pub fn render_grid(
         return "(empty grid)".to_string();
     }
 
-    // Build 2D matrix of values
     let mut matrix: Vec<Vec<String>> = Vec::with_capacity(row_count);
     for r in min_row..=max_row {
         let mut row_vals = Vec::with_capacity(col_count);
@@ -78,7 +77,6 @@ fn render_ascii_table(
     let num_rows = matrix.len();
     let num_cols = matrix[0].len();
 
-    // Determine row label header ("#" or "")
     let mut header_row_labels = Vec::with_capacity(num_cols);
     if use_headers {
         header_row_labels = matrix[0].clone();
@@ -90,9 +88,7 @@ fn render_ascii_table(
 
     let start_data_row = if use_headers { 1 } else { 0 };
 
-    // Calculate maximum width for each column
     let mut col_widths = Vec::with_capacity(num_cols + 1);
-    // Row numbers column width
     let max_row_label = (min_row + num_rows).to_string();
     let mut label_col_width = max_row_label.len().max(2);
     if use_headers {
@@ -112,7 +108,6 @@ fn render_ascii_table(
 
     let mut out = String::new();
 
-    // Helper to build separator line e.g. +------+-----+
     let make_separator = || {
         let mut line = String::from("+");
         for w in &col_widths {
@@ -125,7 +120,6 @@ fn render_ascii_table(
 
     out.push_str(&make_separator());
 
-    // Print Header Line
     out.push('|');
     out.push_str(&format!(" {:^width$} |", "#", width = col_widths[0]));
     for (c, header_label) in header_row_labels.iter().enumerate().take(num_cols) {
@@ -138,7 +132,6 @@ fn render_ascii_table(
     out.push('\n');
     out.push_str(&make_separator());
 
-    // Print Data Rows
     for (r_idx, row) in matrix.iter().enumerate().skip(start_data_row) {
         let row_num = min_row + r_idx + 1;
         out.push('|');

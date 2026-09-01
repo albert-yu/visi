@@ -186,10 +186,8 @@ pub fn ceiling_math(x: f64, significance: Option<f64>, mode: Option<f64>) -> Res
         Ok((x / sig_abs).ceil() * sig_abs)
     } else {
         if m != 0.0 {
-            // Round away from zero (towards negative infinity)
             Ok((x / sig_abs).floor() * sig_abs)
         } else {
-            // Round towards zero
             Ok((x / sig_abs).ceil() * sig_abs)
         }
     }
@@ -207,10 +205,8 @@ pub fn floor_math(x: f64, significance: Option<f64>, mode: Option<f64>) -> Resul
         Ok((x / sig_abs).floor() * sig_abs)
     } else {
         if m != 0.0 {
-            // Round towards zero
             Ok((x / sig_abs).ceil() * sig_abs)
         } else {
-            // Round away from zero (towards negative infinity)
             Ok((x / sig_abs).floor() * sig_abs)
         }
     }

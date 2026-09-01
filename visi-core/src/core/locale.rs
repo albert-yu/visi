@@ -250,7 +250,6 @@ impl Locale {
             return Some(res);
         }
 
-        // Fall back to English dictionary if not already English
         if lang != "en"
             && let Some(res) = match_month_for_lang("en", cleaned)
         {
