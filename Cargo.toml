@@ -15,7 +15,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.8"
+version = "0.2.9"
 rust-version = "1.91"
 homepage = "https://github.com/albert-yu/visi"
 repository = "https://github.com/albert-yu/visi"
