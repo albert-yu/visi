@@ -88,7 +88,7 @@
 //!   code while the reverse is a compile error.
 
 use super::ast::{
-    Arg, CaseMatch, Expr, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
+    Arg, CaseMatch, Expr, Literal, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
 };
 use super::builtin_names::is_builtin;
 use super::parser::ParseError;
@@ -676,7 +676,9 @@ fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
         } => {
             for (cond, b) in branches {
                 check_expr(cond, ctx)?;
-                check_block(b, ctx)?;
+                if !expr_is_literal_false(cond) {
+                    check_block(b, ctx)?;
+                }
             }
             if let Some(b) = else_body {
                 check_block(b, ctx)?;
@@ -770,6 +772,10 @@ fn check_args(args: &[Arg], ctx: &Ctx<'_>) -> Result<(), ParseError> {
         }
     }
     Ok(())
+}
+
+fn expr_is_literal_false(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(Literal::Bool(false)))
 }
 
 /// Walks an expression, checking every **call target** in it.
@@ -1109,6 +1115,18 @@ mod tests {
         // Minimized from vba_parse_iter_40 / 64 / 93.
         let err = check("Sub Test()\n    x = arr(1, 2)\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Sub or Function not defined: arr"), "{err}");
+    }
+
+    #[test]
+    fn name_resolution_skips_statically_false_if_bodies() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 964686, iter 16:
+        // Excel compiles this when the unresolved indexed name lives only in
+        // an `If False` branch, while true syntax errors in the branch are
+        // still caught by the parser before this resolution pass runs.
+        assert!(
+            check("Sub Test()\n    If False Then\n        x = arr(1, 2)\n    End If\nEnd Sub\n")
+                .is_ok()
+        );
     }
 
     #[test]

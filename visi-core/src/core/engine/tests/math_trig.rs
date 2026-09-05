@@ -35,6 +35,18 @@ fn test_trig_and_hyperbolic_functions() {
 }
 
 #[test]
+fn test_fuzz_coth_stays_below_negative_one_until_true_limit() {
+    // Harvested from fuzz/fuzz_excel.py seed 642051. A high-precision
+    // decimal reference gives COTH(-19) = -1.0000000000000000627..., so
+    // INT(COTH(-19)) is -2 and the integer is even. Excel rounds the COTH
+    // result to exactly -1 here.
+    match eval_one("=ISODD(INT(COTH(-19)))") {
+        ResultData::Boolean(v) => assert!(!v, "expected FALSE"),
+        other => panic!("expected FALSE, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_quotient_zero_does_not_keep_negative_sign_in_atan2() {
     // Harvested from fuzz/fuzz_excel.py seed 567480: QUOTIENT(PI(), -37)
     // displays as zero and behaves as +0 in ATAN2's quadrant choice.

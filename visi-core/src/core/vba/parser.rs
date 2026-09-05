@@ -129,6 +129,7 @@ struct Parser {
     /// `Next` close several nested `For`s; the innermost loop consumes the
     /// token and leaves this counter for its enclosing loops to drain.
     pending_next: usize,
+    with_depth: usize,
 }
 
 impl Parser {
@@ -137,6 +138,7 @@ impl Parser {
             toks,
             i: 0,
             pending_next: 0,
+            with_depth: 0,
         }
     }
 
@@ -289,6 +291,10 @@ impl Parser {
 
     fn at_stmt_end(&self) -> bool {
         matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof) || self.peek().is_punct(":")
+    }
+
+    fn at_physical_line_start(&self) -> bool {
+        self.i == 0 || matches!(self.toks[self.i - 1].kind, TokenKind::Newline)
     }
 
     fn expect_stmt_end(&mut self) -> Result<(), ParseError> {
@@ -658,6 +664,15 @@ impl Parser {
                 break;
             }
             let stmt = self.parse_stmt()?;
+            if let Stmt::Label { name, pos } = &stmt
+                && name.chars().all(|c| c.is_ascii_digit())
+                && self.at_stmt_end()
+            {
+                return Err(ParseError {
+                    message: "expected statement after line number".to_string(),
+                    pos: *pos,
+                });
+            }
             let is_label = matches!(stmt, Stmt::Label { .. });
             out.push(stmt);
             if is_label {
@@ -679,7 +694,8 @@ impl Parser {
         let t = self.peek().clone();
 
         // A line number is a jump target, exactly like a label.
-        if let TokenKind::Number { value, base, .. } = &t.kind
+        if self.at_physical_line_start()
+            && let TokenKind::Number { value, base, .. } = &t.kind
             && *base == NumBase::Decimal
             && value.fract() == 0.0
             && *value >= 0.0
@@ -693,7 +709,7 @@ impl Parser {
 
         // `Failed:` -- a label. `:=` lexes as one token, so a named argument
         // cannot be mistaken for one.
-        if t.ident().is_some() && self.at(1).is_punct(":") {
+        if self.at_physical_line_start() && t.ident().is_some() && self.at(1).is_punct(":") {
             let (name, _) = self.expect_ident()?;
             self.expect_punct(":")?;
             return Ok(Stmt::Label { name, pos });
@@ -1393,7 +1409,15 @@ impl Parser {
         self.expect_kw("with")?;
         let subject = self.parse_expr()?;
         self.expect_stmt_end()?;
-        let body = self.parse_block()?;
+        self.with_depth += 1;
+        let body = match self.parse_block() {
+            Ok(body) => body,
+            Err(err) => {
+                self.with_depth -= 1;
+                return Err(err);
+            }
+        };
+        self.with_depth -= 1;
         if !(self.peek().is_kw("end") && self.at(1).is_kw("with")) {
             return Err(self.unclosed("With without End With", pos));
         }
@@ -1483,6 +1507,12 @@ impl Parser {
         }
 
         if self.at_stmt_end() || self.peek().is_kw("else") {
+            if !can_be_statement_call_target(&target) {
+                return Err(ParseError {
+                    message: "expected statement".to_string(),
+                    pos,
+                });
+            }
             return Ok(Stmt::Call { expr: target, pos });
         }
 
@@ -1901,6 +1931,12 @@ impl Parser {
             }
             // A leading `.` inside a `With` block.
             TokenKind::Punct(".") => {
+                if self.with_depth == 0 {
+                    return Err(ParseError {
+                        message: "leading '.' outside With block".to_string(),
+                        pos,
+                    });
+                }
                 self.i += 1;
                 let (name, _) = self.expect_ident()?;
                 Ok(Expr::Member {
@@ -1911,6 +1947,12 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 let lower = name.to_ascii_lowercase();
+                if lower == "loop" {
+                    return Err(ParseError {
+                        message: "expected expression".to_string(),
+                        pos,
+                    });
+                }
                 match lower.as_str() {
                     "true" => {
                         self.i += 1;
@@ -1994,6 +2036,13 @@ fn binary(op: BinOp, lhs: Expr, rhs: Expr, pos: Pos) -> Expr {
 
 fn describe(t: &Token) -> String {
     describe_kind(&t.kind)
+}
+
+fn can_be_statement_call_target(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Ident { .. } | Expr::Member { .. } | Expr::Bang { .. } | Expr::Call { .. }
+    )
 }
 
 fn describe_kind(k: &TokenKind) -> String {
@@ -2361,6 +2410,32 @@ mod tests {
     fn statements_can_share_a_line_via_colons() {
         let m = parse("Sub S()\n    a = 1: b = 2: c = 3\nEnd Sub\n");
         assert_eq!(m.procedures()[0].body.len(), 3);
+    }
+
+    #[test]
+    fn labels_cannot_start_after_a_colon_separator() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 367946, iter 87:
+        // real Excel refuses a line number in the middle of a colon-separated
+        // statement list (`x = 1: 1: y = 2`).
+        assert!(parse_module("Sub S()\n    x = 1: 1: y = 2\nEnd Sub\n").is_err());
+        // Harvested from run seed 612052, iter 16: a bare number on its own
+        // line is not a valid statement just because line numbers exist.
+        assert!(parse_module("Sub S()\n3\nEnd Sub\n").is_err());
+    }
+
+    #[test]
+    fn leading_dot_requires_a_with_block() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 612052, iter 33.
+        assert!(parse_module("Sub S()\n    x = .x + 1\nEnd Sub\n").is_err());
+    }
+
+    #[test]
+    fn loop_keyword_is_not_an_expression() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 216847, iter 34.
+        assert!(
+            parse_module("Sub S()\n    With obj\n        .a = Loop .b(1)\n    End With\nEnd Sub\n")
+                .is_err()
+        );
     }
 
     // ---- declarations ---------------------------------------------------

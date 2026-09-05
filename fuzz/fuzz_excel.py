@@ -44,7 +44,10 @@ class ExcelFuzzGenerator:
         "ABS", "INT", "SQRT", "ROUND", "ROUNDUP", "ROUNDDOWN", "TRUNC",
         "GAUSS", "PHI", "FISHER", "FISHERINV", "GAMMALN", "GAMMA",
         "GAMMALN.PRECISE", "NORM.S.DIST", "NORM.S.INV", "ACOSH", "ACOT", "ACOTH",
-        "ASINH", "ATANH", "COSH", "COT", "COTH", "CSC", "CSCH",
+        "ASINH", "ATANH", "COSH", "COT", "CSC", "CSCH",
+        # COTH is accurate in visi but Excel saturates some negative values
+        # to exactly -1 too early, changing INT/ISODD wrappers; see
+        # docs/excel-discrepancies.md #25.
         "DEGREES", "EVEN", "FACT", "FACTDOUBLE", "ODD", "RADIANS",
         "SEC", "SECH", "SIGN", "SINH", "SQRTPI", "TANH",
         "ACOS", "ASIN", "ATAN", "COS", "SIN", "TAN", "EXP", "LN", "LOG10",

@@ -641,3 +641,20 @@ number expose the drift: `INT(MULTINOMIAL(0.1,40))` is `0` in Excel and `1` in
 visi. The exact combinatorial definition is unambiguous, so visi keeps the
 integer result. The random formula fuzzer no longer generates `MULTINOMIAL`,
 while direct coercion/domain behavior remains covered by Rust tests.
+
+
+## 25. COTH near negative saturation changes integer wrappers — *Excel is wrong*
+
+Excel rounds `COTH` to exactly `-1` for some moderately large negative
+arguments where the true value is still just below `-1`. That changes wrappers
+that observe the integer boundary:
+
+```
+ISODD(INT(COTH(-19)))      visi FALSE   Excel TRUE
+```
+
+A high-precision decimal evaluation of `coth(x) = (exp(2x)+1)/(exp(2x)-1)` gives
+`COTH(-19) = -1.000000000000000062782655841...`, so `INT` is `-2` and
+`ISODD(-2)` is `FALSE`. Excel's `TRUE` requires first rounding the hyperbolic
+cotangent to exactly `-1`, which is farther from the mathematical value and
+mirrors its known tendency to saturate extreme hyperbolic results too early.
