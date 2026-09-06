@@ -1,5 +1,7 @@
 # Known discrepancies with Microsoft Excel
 
+_This documentation was authored by an LLM._
+
 Last updated: 2026-08-31
 
 Cases where `visi-core` and real Microsoft Excel (verified against 16.111.3 on
