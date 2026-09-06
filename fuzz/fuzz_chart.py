@@ -49,9 +49,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chart_xlsx_reader import read_charts  # noqa: E402
 from fuzz_excel import SMOKE_BANNER, smoke_check  # noqa: E402
 
-# -----------------------------------------------------------------------------
-# 1. Source workbook + chart configuration generator
-# -----------------------------------------------------------------------------
+
+
+
 
 
 class ChartFuzzGenerator:
@@ -74,15 +74,15 @@ class ChartFuzzGenerator:
     """
 
     CHART_TYPES = ["column", "bar", "line", "pie", "scatter", "area"]
-    # Pie and Area are excluded here deliberately, not as an oversight:
-    # Excel's AppleScript `chart wizard` command rejects `category title`/
-    # `value title` parameters for Pie charts outright (Parameter error -50
-    # -- pie charts have no axes to title), and Area chart axis titles were
-    # found not to read back through openpyxl's `_charts` in a manual spike
-    # against this Excel/openpyxl version (unexplained further -- see
-    # fuzz/README.md's Chart Fuzzing section). Restricting xlabel/ylabel
-    # generation to the four types confirmed to round-trip cleanly keeps the
-    # fuzzer meaningful instead of chasing an openpyxl reader quirk.
+
+
+
+
+
+
+
+
+    
     AXIS_LABEL_TYPES = ["column", "bar", "line", "scatter"]
 
     TITLES = ["Sales", "Revenue by Region", "Q3 Results", None]
@@ -132,10 +132,10 @@ class ChartFuzzGenerator:
             else:
                 ws.cell(row=i, column=2, value=random.randint(1, 1000))
             if self.shape == "rich":
-                # Extra series-shaped data is deliberately present even though
-                # the current chart model consumes one value column. It keeps
-                # the input workbook closer to real chart sources without
-                # changing the pass/fail comparison scope.
+
+
+
+                
                 ws.cell(row=i, column=3, value=random.randint(-250, 250) if random.random() > 0.15 else None)
                 ws.cell(row=i, column=4, value=random.choice(["North", "South", "East", "West", None]))
         if self.shape == "rich":
@@ -148,22 +148,22 @@ class ChartFuzzGenerator:
 
         range_str = f"Sheet1!A1:B{num_rows}"
         add_config = self._random_config()
-        # Pick a distinct chart type for the edit step often enough to
-        # meaningfully exercise `chart edit --chart-type`, not just
-        # relabeling the same type.
+
+
+        
         other_types = [t for t in self.CHART_TYPES if t != add_config["chart_type"]]
         edit_type = random.choice(other_types) if random.random() < 0.7 else add_config["chart_type"]
         edit_config = self._random_config(chart_type=edit_type)
         return range_str, add_config, edit_config
 
 
-# -----------------------------------------------------------------------------
-# 2. Drivers
-# -----------------------------------------------------------------------------
 
 
-# `VisiChartDriver` moved to visi_driver.py, which drives visi either through
-# the in-process `visi_core` bindings or through the `visi chart` CLI.
+
+
+
+
+
 from visi_driver import (  # noqa: E402,F401
     VisiChartDriver,
     add_backend_arg,
@@ -217,7 +217,7 @@ class ExcelChartDriver:
         else:
             raise RuntimeError(f"Unsupported chart driver type: {self.driver_type}")
 
-    # -- AppleScript (macOS) --------------------------------------------
+    
 
     GALLERY_NAMES = {
         "column": "column clustered",
@@ -238,18 +238,18 @@ class ExcelChartDriver:
             app_name = os.path.splitext(os.path.basename(app_name))[0]
 
         gallery = self.GALLERY_NAMES[config["chart_type"]]
-        # `range_str` looks like "Sheet1!A1:B10"; `chart wizard`'s `source`
-        # parameter wants a bare range object relative to the active sheet.
+
+        
         cell_range = range_str.split("!", 1)[1]
 
         wizard_parts = [f'source (range {self._applescript_str(cell_range)} of ws)', f"gallery {gallery}"]
         wizard_parts.append(f'has legend {"true" if config["show_legend"] else "false"}')
         if config["title"]:
             wizard_parts.append(f'title {self._applescript_str(config["title"])}')
-        # Pie charts have no axes -- passing category/value title raises a
-        # generic Parameter error (-50), so these are omitted entirely for
-        # Pie regardless of what the (always-None, per the generator) config
-        # says.
+
+
+
+        
         if config["chart_type"] != "pie":
             if config["xlabel"]:
                 wizard_parts.append(f'category title {self._applescript_str(config["xlabel"])}')
@@ -300,7 +300,7 @@ class ExcelChartDriver:
         if res is not None and res.returncode != 0:
             raise RuntimeError(f"Excel chart AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}")
 
-    # -- win32com (Windows) -----------------------------------------------
+    
 
     WIN32COM_CHART_TYPE = {
         "column": "xlColumnClustered",
@@ -320,16 +320,16 @@ class ExcelChartDriver:
 
         cell_range = range_str.split("!", 1)[1]
 
-        # COM automation against a fresh Excel.Application is occasionally
-        # flaky in a way that surfaces as unrelated-looking errors (RPC
-        # server unavailable, "Call was rejected by callee", a raw OLE
-        # error code) rather than a clean failure -- transient, not
-        # reproducible, and not an Excel/visi disagreement. Retry with a
-        # fresh Application instance, mirroring fuzz_excel.py's win32com
-        # driver (see its own comment for the "'bool' object is not
-        # callable" variant this same pattern covers there). All 9 failures
-        # in a 400-iteration fuzz_chart.py run were this class of error,
-        # zero were real chart-content mismatches.
+
+
+
+
+
+
+
+
+
+        
         last_err = None
         for attempt in range(5):
             if attempt > 0:
@@ -339,11 +339,11 @@ class ExcelChartDriver:
                     stderr=subprocess.DEVNULL,
                 )
                 time.sleep(1.0)
-            # `Dispatch` (late binding) never populates
-            # `win32com.client.constants` -- that module only fills in once
-            # the Excel type library has been generated, which only
-            # `gencache.EnsureDispatch` triggers. Plain `Dispatch` here made
-            # every `c.xl*` lookup below raise AttributeError.
+
+
+
+
+            
             excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
@@ -360,8 +360,8 @@ class ExcelChartDriver:
                     chart.ChartTitle.Text = config["title"]
                 else:
                     chart.HasTitle = False
-                # Pie charts raise an error on `chart.Axes(...)` (no axes
-                # exist), matching the AppleScript `chart wizard` gap above.
+
+                
                 if config["chart_type"] != "pie":
                     if config["xlabel"]:
                         cat_axis = chart.Axes(c.xlCategory)
@@ -383,9 +383,9 @@ class ExcelChartDriver:
             raise last_err
 
 
-# -----------------------------------------------------------------------------
-# 3. Comparator
-# -----------------------------------------------------------------------------
+
+
+
 
 
 class ChartComparator:
@@ -444,9 +444,9 @@ class ChartComparator:
         return len(mismatches) == 0, mismatches
 
 
-# -----------------------------------------------------------------------------
-# 4. Main fuzzing loop
-# -----------------------------------------------------------------------------
+
+
+
 
 
 def main():

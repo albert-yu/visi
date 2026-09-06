@@ -1,25 +1,25 @@
 Attribute VB_Name = "Module1"
-' Builds a pivot table on Sheet1 of ThisWorkbook from a config encoded as
-' plain strings, so it can be invoked from AppleScript's `run VB macro`
-' (which Mac Excel's AppleScript dictionary supports for *running* an
-' existing macro, even though it has no working path to *create* a
-' PivotCache directly via AppleScript -- see fuzz/README.md's "Pivot Table
-' Fuzzing" section for how this file fits into fuzz/fuzz_pivot.py).
-'
-' This is the reference implementation `fuzz_pivot.py`'s VisiPivotDriver and
-' win32com driver are meant to match: same PivotCaches.Create /
-' CreatePivotTable / PivotFields object model, just reached through VBA
-' instead of Python's win32com bindings.
-'
-' Argument encoding (all strings, since `run VB macro`'s arg1..arg14 are
-' most reliably passed/coerced as text across the AppleScript boundary):
-'   rowFieldsCSV / colFieldsCSV : "Name:1;Name2:0" (name:subtotalOnOff), or "" for none
-'   valueFieldsCSV              : "Name:sum;Name2:count-numbers" (name:aggKeyword), required
-'   filterSpec                  : "" for no filter field, else "Name|val1,val2" (values may be empty -> filters out everything)
-'   destCell                    : e.g. "H1"
-'   grandRowStr / grandColStr   : "1" or "0"
-'   sourceIsTableStr            : "1" if sourceRef names an Excel Table (ListObject), "0" if it's a plain range
-'   sourceRef                   : table name, or a range like "A1:F31"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Sub BuildFuzzPivot(rowFieldsCSV As String, colFieldsCSV As String, valueFieldsCSV As String, _
                     filterSpec As String, destCell As String, grandRowStr As String, grandColStr As String, _
                     sourceIsTableStr As String, sourceRef As String)
@@ -47,8 +47,8 @@ Sub BuildFuzzPivot(rowFieldsCSV As String, colFieldsCSV As String, valueFieldsCS
     pt.MergeLabels = False
     pt.HasAutoFormat = False
 
-    ' Mac Excel's save path swaps RowGrand/ColumnGrand when exporting XML
-    ' attributes (rowGrandTotals/colGrandTotals) and rendering the grid.
+
+
     pt.ColumnGrand = (grandRowStr = "1")
     pt.RowGrand = (grandColStr = "1")
     pt.RefreshTable
@@ -66,20 +66,20 @@ Private Sub ApplyAxisFields(pt As PivotTable, fieldsCSV As String, orientation A
         Dim pf As PivotField
         Set pf = pt.PivotFields(nv(0))
         pf.Orientation = orientation
-        ' Per-field, not the table-wide PivotTable.RowAxisLayout /
-        ' ColumnAxisLayout / SubtotalLocation methods: those hang Mac Excel
-        ' outright (not a catchable VBA error -- confirmed by wrapping each
-        ' one in its own On Error Resume Next block and still hanging) when
-        ' invoked this way, so don't reach for them here even though this
-        ' per-field LayoutForm setting is known NOT to actually change the
-        ' exported <pivotField>'s `compact` attribute (Excel still shows
-        ' "Row Labels"/"Column Labels" captions instead of the field name --
-        ' a real, still-open gap, see fuzz/README.md).
+
+
+
+
+
+
+
+
+
         pf.LayoutForm = xlTabular
         pf.LayoutSubtotalLocation = xlAtBottom
         pf.RepeatLabels = False
         If nv(1) = "0" Then
-            pf.Subtotals(1) = False ' index 1 = Automatic, the single generic subtotal
+            pf.Subtotals(1) = False
         End If
     Next i
 End Sub
@@ -102,12 +102,12 @@ Private Sub ApplyValueFields(pt As PivotTable, fieldsCSV As String)
             Case "max": fn = xlMax
             Case "min": fn = xlMin
         End Select
-        ' AddDataField, not `.Orientation = xlDataField` in a loop, is the
-        ' API Excel documents for adding a field to Values more than once --
-        ' the Orientation-loop pattern is non-deterministic in real Excel
-        ' when the same source column backs two value fields. Omitting the
-        ' Caption arg lets Excel derive its own default caption, same as
-        ' it would from the Orientation path.
+
+
+
+
+
+
         pt.AddDataField pf, , fn
     Next i
 End Sub
@@ -127,14 +127,14 @@ Private Sub ApplyFilterField(pt As PivotTable, filterSpec As String)
     Set pf = pt.PivotFields(colName)
     pf.Orientation = xlPageField
 
-    ' An empty valuesPart means the config wants "select nothing" -- but
-    ' Excel refuses to let the last visible PivotItem in a field be hidden
-    ' (runtime error 1004, "Method 'Visible' of object 'PivotItem' failed"),
-    ' so hiding every item here would crash. visi's CLI has the identical
-    ' gap (no verb for an empty selection -- see VisiPivotDriver.run's
-    ' comment in fuzz_pivot.py) and handles it the same way: leave the
-    ' field unfiltered ("(All)") rather than attempting an unrepresentable
-    ' all-hidden state.
+
+
+
+
+
+
+
+
     If Len(valuesPart) = 0 Then Exit Sub
 
     Dim pi As PivotItem

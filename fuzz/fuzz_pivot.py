@@ -74,9 +74,9 @@ from fuzz_excel import (  # noqa: E402
 )
 
 
-# -----------------------------------------------------------------------------
-# 1. Source workbook + pivot configuration generator
-# -----------------------------------------------------------------------------
+
+
+
 
 
 class PivotFuzzGenerator:
@@ -94,13 +94,13 @@ class PivotFuzzGenerator:
     BASIC_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
     RICH_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag", "DateBucket", "Segment", "Amount2"]
     COL_NAMES = BASIC_COL_NAMES
-    CATEGORICAL_COLS = [0, 1, 2]  # Cat, Mixed, NumStr -- candidates for row/col fields
-    NUMERIC_COLS = [3, 4]  # Amount, Rate -- candidates for value fields
-    FILTERABLE_COLS = [0, 1, 2, 5]  # any column can be a filter field
+    CATEGORICAL_COLS = [0, 1, 2]
+    NUMERIC_COLS = [3, 4]
+    FILTERABLE_COLS = [0, 1, 2, 5]
 
     CATEGORIES = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
-    # Same values in different cases, to probe case-insensitive grouping
-    # parity between visi and Excel.
+
+
     CASE_VARIANTS = ["East", "east", "WEST", "west", "North"]
     AGGREGATIONS = ["sum", "count", "count-numbers", "average", "max", "min"]
 
@@ -110,9 +110,9 @@ class PivotFuzzGenerator:
         self.shape = shape
         if shape == "rich":
             self.COL_NAMES = self.RICH_COL_NAMES
-            # Keep the pass/fail pivot configuration on the same stable field
-            # families as the basic fuzzer, while the richer source columns sit
-            # beside them for import/export and cache-shape coverage.
+
+
+
             self.CATEGORICAL_COLS = [0, 1, 2]
             self.NUMERIC_COLS = [3, 4]
             self.FILTERABLE_COLS = [0, 1, 2, 5]
@@ -130,9 +130,9 @@ class PivotFuzzGenerator:
         if roll < 0.25:
             return None
         if roll < 0.5:
-            return f"0{random.randint(0, 9)}"  # e.g. "08"
+            return f"0{random.randint(0, 9)}"
         if roll < 0.75:
-            return f".0{random.randint(0, 999)}"  # e.g. ".0394"
+            return f".0{random.randint(0, 999)}"
         return str(random.randint(-50, 50))
 
     def generate(self, source_path, num_rows, use_table):
@@ -155,25 +155,25 @@ class PivotFuzzGenerator:
         for c, name in enumerate(self.COL_NAMES, start=1):
             ws.cell(row=1, column=c, value=name)
 
-        # Track each filterable column's actual distinct (blank-normalized)
-        # values as we generate, so the filter field picked below can select
-        # a real subset instead of guessing at what exists. Both visi and
-        # Excel merge case-different text into a single pivot item keyed by
-        # whichever casing appeared first in the source (see pivot.rs's
-        # `test_case_variant_values_merge_using_globally_first_seen_casing`)
-        # -- a real Excel user filtering via the UI only ever sees one
-        # checkbox per merged item, under that one casing. So `distinct`
-        # must canonicalize to that same first-seen casing per
-        # case-insensitive key, or the filter field below could pick two
-        # different casings of what's actually a single merged item (e.g.
-        # both "East" and "east") as if they were independently
-        # selectable -- an unrepresentable config that made real Excel and
-        # visi diverge for a reason that has nothing to do with either
-        # engine's pivot correctness (fuzz/fuzz_pivot.py iteration 8, seed
-        # 599783: selecting "east" alone failed to match the merged
-        # "East"/"east" group in real Excel, since VBA's PivotItem.Name
-        # comparison is case-sensitive and the group's canonical name was
-        # "East").
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         canonical_casing = {}
 
         def canonicalize(value):
@@ -248,17 +248,17 @@ class PivotFuzzGenerator:
         if random.random() < 0.5:
             fcol = random.choice(self.FILTERABLE_COLS)
             values = sorted(distinct[fcol])
-            # Always at least one selected value. An empty selection means
-            # "select nothing", which real Excel cannot represent -- it
-            # refuses to hide a page field's last visible PivotItem (runtime
-            # error 1004), so BuildFuzzPivot.bas falls back to leaving the
-            # field unfiltered at "(All)". Emitting one made visi render an
-            # empty grid against Excel's full one and report every cell of it
-            # as a mismatch (iteration 5, seed 244209) -- an unrepresentable
-            # config, not an engine disagreement, the same class of bogus
-            # failure the `canonicalize` comment above describes. `values` is
-            # never empty itself: every filterable column gets a value (or
-            # "(blank)") on every one of the >= 1 generated rows.
+
+
+
+
+
+
+
+
+
+
+
             selected = [v for v in values if random.random() < 0.5]
             if not selected:
                 selected = [random.choice(values)]
@@ -266,11 +266,11 @@ class PivotFuzzGenerator:
 
         return {
             "source_range": source_range,
-            # The same block as 0-based inclusive (start_row, start_col,
-            # end_row, end_col), for the bindings backend, which takes indices
-            # rather than A1. Derived here beside `source_range` so the two
-            # cannot disagree, and so neither the driver nor visi-python needs
-            # an A1 parser of its own.
+
+
+
+
+
             "source_bounds": (0, 0, num_rows, last_col - 1),
             "table_name": table_name,
             "row_fields": row_fields,
@@ -282,29 +282,29 @@ class PivotFuzzGenerator:
         }
 
 
-# -----------------------------------------------------------------------------
-# 2. Execution drivers
-# -----------------------------------------------------------------------------
+
+
+
 
 PIVOT_NAME = "FuzzPivot"
-DEST_CELL = "H1"  # two columns clear of the source block (A:F)
-DEST_RC = (0, 7)  # DEST_CELL as 0-based (row, col); must agree with it
-# Macro-enabled workbook carrying BuildFuzzPivot.bas, generated on first use
-# by `visi macro add` (see ExcelPivotDriver._ensure_macro_template). Cached on
-# disk rather than rebuilt per iteration -- it's identical every time, and the
-# AppleScript round trip already dominates the per-iteration cost. Gitignored:
-# it's a build artifact derived from BuildFuzzPivot.bas, which *is* checked in.
+DEST_CELL = "H1"
+DEST_RC = (0, 7)
+
+
+
+
+
 MACRO_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pivot_macro_template.xlsm")
 MACRO_SOURCE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BuildFuzzPivot.bas")
 
-# visi's `Count` aggregation counts any non-blank value -- matches Excel's
-# `xlCount` (the *default* summary function Excel picks for a text field,
-# labeled plain "Count" in the value-field-settings UI); visi's
-# `CountNumbers` counts only numeric values -- matches Excel's `xlCountNums`.
-# There is no separate "CountA" member in Excel's `XlConsolidationFunction`
-# enum (confirmed via Excel.sdef). `BuildFuzzPivot.bas` (invoked by the
-# AppleScript path) matches these same keys directly in its `Select Case`,
-# so only the win32com path needs its own VBA constant-name mapping.
+
+
+
+
+
+
+
+
 AGG_TO_WIN32COM_FUNCTION = {
     "sum": "xlSum",
     "count": "xlCount",
@@ -315,8 +315,8 @@ AGG_TO_WIN32COM_FUNCTION = {
 }
 
 
-# `VisiPivotDriver` moved to visi_driver.py, which drives visi either through
-# the in-process `visi_core` bindings or through the `visi pivot` CLI.
+
+
 from visi_driver import (  # noqa: E402,F401
     VisiPivotDriver,
     add_backend_arg,
@@ -358,8 +358,8 @@ class ExcelPivotDriver:
 
     def __init__(self, excel_path=None, driver_type="auto", visi_path=None):
         self.excel_path = excel_path
-        # Only used to build the macro template (AppleScript path); the
-        # comparison itself never goes through the CLI.
+
+
         self.visi_path = visi_path
         self.driver_type = driver_type
         if driver_type == "auto":
@@ -376,10 +376,10 @@ class ExcelPivotDriver:
             print("[ExcelPivotDriver Warning] Running in mock mode (Excel not invoked).")
             return
         elif self.driver_type == "applescript":
-            # Excel needs a macro-enabled (.xlsm) copy to run BuildFuzzPivot
-            # from; build one alongside the requested output path, then
-            # copy its bytes back so callers don't need to know about the
-            # extension difference.
+
+
+
+
             macro_file = os.path.splitext(output_file)[0] + ".xlsm"
             self._prepare_macro_workbook(source_file, config, macro_file)
             self._run_applescript_macro(os.path.abspath(macro_file), config, dest_cell)
@@ -390,7 +390,7 @@ class ExcelPivotDriver:
         else:
             raise RuntimeError(f"Unsupported pivot driver type: {self.driver_type}")
 
-    # -- AppleScript (macOS) --------------------------------------------
+
 
     def _applescript_str(self, s):
         escaped = s.replace("\\", "\\\\").replace('"', '\\"')
@@ -419,10 +419,10 @@ class ExcelPivotDriver:
         with open(MACRO_SOURCE_PATH) as f:
             source = f.read()
 
-        # The module name must match the .bas's own `Attribute VB_Name` line
-        # (visi writes the source verbatim and does not reconcile the two).
-        # It's the *module* name; `run VB macro` invokes the procedure name,
-        # `BuildFuzzPivot`, which is deliberately distinct from it.
+
+
+
+
         via = self._build_macro_template_via_bindings(source)
         if via is None:
             via = self._build_macro_template_via_cli()
@@ -491,19 +491,19 @@ class ExcelPivotDriver:
             macro_ws.add_table(table)
 
         macro_wb.save(macro_file)
-        # openpyxl's `keep_vba=True` path stashes a raw copy of the VBA
-        # project's zip parts in `macro_wb.vba_archive` (an in-memory
-        # ZipFile) but never closes it itself. Left unclosed, it only gets
-        # reclaimed by Python's *cyclic* garbage collector (Workbook's
-        # worksheet<->parent references form a reference cycle, so simple
-        # refcounting alone never frees it) -- and the cyclic collector may
-        # clear its underlying BytesIO buffer before running the ZipFile's
-        # own __del__/close() finalizer, which then raises "ValueError: I/O
-        # operation on closed file" from inside that finalizer. Python
-        # reports this as a harmless-but-noisy "Exception ignored while
-        # calling deallocator" on stderr -- it doesn't affect the saved
-        # file or the fuzzer's result, but closing it explicitly here (while
-        # its BytesIO is still guaranteed live) avoids the race entirely.
+
+
+
+
+
+
+
+
+
+
+
+
+
         if macro_wb.vba_archive is not None:
             macro_wb.vba_archive.close()
 
@@ -526,11 +526,11 @@ class ExcelPivotDriver:
         source_is_table = "1" if config["table_name"] else "0"
         source_ref = config["table_name"] if config["table_name"] else config["source_range"]
 
-        # Labeled command parameters in this dictionary use space-separated
-        # syntax (`label value`), not `label:value` colons -- confirmed via
-        # the same real-Excel trial-and-error that found `create pivot
-        # table`'s working form (see class docstring); colons here produce
-        # a plain syntax error, not a runtime one.
+
+
+
+
+
         run_macro_line = (
             f'        run VB macro "BuildFuzzPivot" '
             f'arg1 {self._applescript_str(row_fields_csv)} '
@@ -590,7 +590,7 @@ class ExcelPivotDriver:
         if pgrep.stdout.strip():
             time.sleep(1.0)
         subprocess.run(["open", "-a", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(4.0)  # give the app time to finish launching before the next AppleScript call
+        time.sleep(4.0)
 
     def _run_applescript_macro(self, abs_output, config, dest_cell=DEST_CELL):
         script = self._build_applescript_macro_call(abs_output, config, dest_cell)
@@ -604,17 +604,17 @@ class ExcelPivotDriver:
                 )
                 if res.returncode == 0:
                     break
-                # A non-timeout AppleScript failure this late in a session is
-                # session degradation, not a config problem --
-                # a plain retry against the same stuck process just fails
-                # again, so restart Excel outright before the next attempt.
+
+
+
+
                 self._restart_excel()
             except subprocess.TimeoutExpired:
                 self._restart_excel()
         if res is not None and res.returncode != 0:
             raise RuntimeError(f"Excel pivot AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}")
 
-    # -- win32com (Windows) -----------------------------------------------
+
 
     def _run_win32com(self, abs_output, config, dest_cell=DEST_CELL):
         try:
@@ -623,16 +623,16 @@ class ExcelPivotDriver:
         except ImportError:
             raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
 
-        # COM automation against a fresh Excel.Application is occasionally
-        # flaky in a way that surfaces as unrelated-looking errors (RPC
-        # server unavailable, "Call was rejected by callee", a raw OLE
-        # error code) rather than a clean failure -- transient, not
-        # reproducible, and not an Excel/visi disagreement. Retry with a
-        # fresh Application instance, mirroring fuzz_excel.py's and
-        # fuzz_chart.py's win32com drivers (see fuzz_excel.py's for the
-        # "'bool' object is not callable" variant this same pattern covers
-        # there; fuzz_chart.py's for the class of RPC/OLE errors this
-        # pattern was added here for).
+
+
+
+
+
+
+
+
+
+
         last_err = None
         for attempt in range(5):
             if attempt > 0:
@@ -655,10 +655,10 @@ class ExcelPivotDriver:
         import win32com.client
         from win32com.client import constants as c
 
-        # `Dispatch` (late binding) never populates `win32com.client.constants`
-        # -- that module only fills in once the Excel type library has been
-        # generated, which only `gencache.EnsureDispatch` triggers. Plain
-        # `Dispatch` here made every `c.xl*` lookup below raise AttributeError.
+
+
+
+
         excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
@@ -673,24 +673,24 @@ class ExcelPivotDriver:
             pc = wb.PivotCaches().Create(SourceType=c.xlDatabase, SourceData=src_range)
             pt = pc.CreatePivotTable(TableDestination=ws.Range(dest_cell), TableName=PIVOT_NAME)
 
-            # Mirrors BuildFuzzPivot.bas's ApplyAxisFields/ApplyValueFields --
-            # this driver and that macro are meant to be the same object
-            # model reached two different ways (see ExcelPivotDriver's
-            # class docstring), so field-application logic here should not
-            # drift from the macro's.
-            #
-            # Per-field LayoutForm/LayoutSubtotalLocation, not
-            # PivotTable.RowAxisLayout/SubtotalLocation: the macro avoids
-            # the table-wide methods because they hang Mac Excel outright.
-            # On Windows they don't hang -- but unlike the per-field
-            # setting (a documented no-op there, see the macro's comment),
-            # they actually switch real Excel into Tabular Form, which
-            # replaces the "Row Labels"/"Column Labels"/"Grand Total"
-            # captions visi's pivot writer always emits with the field's
-            # own name. visi has no tabular-layout support to match that
-            # against, so using the table-wide methods here was producing
-            # a guaranteed mismatch on every row/col-labeled cell, not a
-            # real engine bug.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             for f in config["row_fields"]:
                 pf = pt.PivotFields(f["column"])
                 pf.Orientation = c.xlRowField
@@ -698,11 +698,11 @@ class ExcelPivotDriver:
                 pf.LayoutSubtotalLocation = c.xlAtBottom
                 pf.RepeatLabels = False
                 if not f["subtotal"]:
-                    # VBA's `pf.Subtotals(1) = False` is an indexed
-                    # property-let with no Python equivalent syntax --
-                    # win32com exposes the same property as a plain 12-bool
-                    # array (index 0 = "Automatic", matching VBA's 1-based
-                    # Subtotals(1)), so assign the whole array instead.
+
+
+
+
+
                     subtotals = [False] * 12
                     pf.Subtotals = subtotals
             for f in config["col_fields"]:
@@ -716,11 +716,11 @@ class ExcelPivotDriver:
                     pf.Subtotals = subtotals
             for f in config["value_fields"]:
                 pf = pt.PivotFields(f["column"])
-                # AddDataField, not `.Orientation = xlDataField` in a loop:
-                # the Orientation-loop pattern is non-deterministic in real
-                # Excel when the same source column backs two value fields.
-                # Omitting Caption lets Excel derive its own default, same
-                # as the Orientation path would.
+
+
+
+
+
                 fn = getattr(c, AGG_TO_WIN32COM_FUNCTION[f["agg"]])
                 pt.AddDataField(pf, Function=fn)
             if config["filter_field"]:
@@ -728,25 +728,25 @@ class ExcelPivotDriver:
                 values = set(config["filter_field"]["values"])
                 pf = pt.PivotFields(col)
                 pf.Orientation = c.xlPageField
-                # An empty `values` means the config wants "select nothing",
-                # but Excel refuses to let the last visible PivotItem in a
-                # field be hidden (runtime error 1004) -- visi's CLI has the
-                # identical gap (see VisiPivotDriver.run's comment above) and
-                # handles it the same way: leave the field unfiltered
-                # ("(All)") rather than attempting an unrepresentable
-                # all-hidden state. Mirrors the fix applied to
-                # BuildFuzzPivot.bas's ApplyFilterField for the AppleScript
-                # path.
+
+
+
+
+
+
+
+
+
                 if values:
                     for item in pf.PivotItems():
                         item.Visible = item.Name in values
 
             pt.MergeLabels = False
             pt.HasAutoFormat = False
-            # Assigning RowGrand/ColumnGrand straight from
-            # grand_totals_row/grand_totals_col is swapped because Excel's saved
-            # .xlsx rendered grid and rowGrandTotals/colGrandTotals XML attributes
-            # match the swapped properties.
+
+
+
+
             pt.ColumnGrand = config["grand_totals_row"]
             pt.RowGrand = config["grand_totals_col"]
             pt.RefreshTable()
@@ -756,9 +756,9 @@ class ExcelPivotDriver:
             excel.Quit()
 
 
-# -----------------------------------------------------------------------------
-# 3. CLI & test runner orchestrator
-# -----------------------------------------------------------------------------
+
+
+
 
 
 def main():

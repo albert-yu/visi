@@ -164,10 +164,10 @@ End Property
         return ModuleSource("GrammarM", "standard", source)
 
     def class_module(self):
-        # Kept simple enough that the harness can reference it from dead code
-        # without needing any runtime object model. Events are class-module
-        # syntax in real Excel, so they live here rather than in the standard
-        # harness module.
+
+
+
+
         source = '''Attribute VB_Name = "GrammarC"
 Option Explicit
 Public Event Changed(ByVal value As Long)

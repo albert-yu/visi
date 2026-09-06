@@ -57,9 +57,9 @@ except ImportError:
 
 from fuzz_vba import HARNESS_TEMPLATE, ExcelDriver, visi_result
 
-# Matches the fuzzer's generated procedures, so a probe can paste in a
-# statement from a failing case unchanged. `n` is a Null holder, since a Null
-# literal is not foldable and several rules turn on that.
+
+
+
 PREAMBLE = ["Dim va, vb, vc, vd, ve, vi, vn, a, b, c, n", "n = Null"]
 
 

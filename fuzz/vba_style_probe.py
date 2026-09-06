@@ -59,23 +59,23 @@ PREAMBLE = [
     "Dim v, s, c",
 ]
 
-# Reads first, then writes -- a batch boundary re-opens the workbook, so a
-# read moved below a write silently measures the wrong thing.
+
+
 READ_CASES = [
-    # --- what RGB() composes, which is the whole question
+
     "CStr(RGB(255, 0, 0))",
     "CStr(RGB(0, 255, 0))",
     "CStr(RGB(0, 0, 255))",
     "CStr(RGB(1, 2, 3))",
     "TypeName(RGB(1, 2, 3))",
-    # out-of-range components, since a macro can pass anything
+
     "CStr(RGB(300, 0, 0))",
     "CStr(RGB(-1, 0, 0))",
     "CStr(RGB(1.6, 0, 0))",
-    # --- the objects themselves
+
     'TypeName(ws.Range("A1").Interior)',
     'TypeName(ws.Range("A1").Font)',
-    # --- defaults on an untouched cell
+
     'CStr(ws.Range("A1").Interior.Color)',
     'CStr(ws.Range("A1").Interior.ColorIndex)',
     'CStr(ws.Range("A1").Font.Bold)',
@@ -86,42 +86,42 @@ READ_CASES = [
     'CStr(ws.Range("A1").Font.Color)',
     'CStr(ws.Range("A1").Font.ColorIndex)',
     'ws.Range("A1").NumberFormat',
-    # C1 is a date-formatted serial in the fixture.
+
     'ws.Range("C1").NumberFormat',
     'CStr(ws.Range("C1").Value2)',
-    # --- a multi-cell read, where the cells disagree
+
     'CStr(ws.Range("A1:A2").Font.Bold)',
     'CStr(IsNull(ws.Range("A1:A2").Interior.Color))',
 ]
 
 WRITE_CASES = [
-    # --- setting a fill, read back through the object model
+
     'ws.Range("G1").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("G1").Interior.Color)',
     'ws.Range("G2").Interior.Color = &HFF0000 :: CStr(ws.Range("G2").Interior.Color)',
     'ws.Range("G3").Interior.Color = RGB(1, 2, 3) :: CStr(ws.Range("G3").Interior.Color)',
-    # does setting Color move ColorIndex, and vice versa
+
     'ws.Range("G4").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("G4").Interior.ColorIndex)',
     'ws.Range("G5").Interior.ColorIndex = 3 :: CStr(ws.Range("G5").Interior.Color)',
-    # clearing
+
     'ws.Range("G6").Interior.Color = RGB(255, 0, 0)\\nws.Range("G6").Interior.ColorIndex = -4142 :: CStr(ws.Range("G6").Interior.Color)',
-    # --- font
+
     'ws.Range("H1").Font.Bold = True :: CStr(ws.Range("H1").Font.Bold)',
     'ws.Range("H2").Font.Italic = True :: CStr(ws.Range("H2").Font.Italic)',
     'ws.Range("H3").Font.Size = 14 :: CStr(ws.Range("H3").Font.Size)',
     'ws.Range("H4").Font.Name = "Courier New" :: ws.Range("H4").Font.Name',
     'ws.Range("H5").Font.Color = RGB(0, 0, 255) :: CStr(ws.Range("H5").Font.Color)',
-    # --- number format and date formatting
+
     'ws.Range("I1").Value = 46195\\nws.Range("I1").NumberFormat = "m/d/yy" :: ws.Range("I1").Text',
     'ws.Range("I2").Value = 46195\\nws.Range("I2").NumberFormat = "m/d/yy"\\nws.Range("I2").NumberFormat = "General" :: ws.Range("I2").Text & "|" & CStr(ws.Range("I2").Value2)',
-    # setting a format on the *existing* date cell: does the serial survive
+
     'ws.Range("C1").NumberFormat = "General" :: CStr(ws.Range("C1").Value2) & "|" & TypeName(ws.Range("C1").Value)',
-    # --- a whole range at once
+
     'ws.Range("J1:J3").Interior.Color = RGB(0, 255, 0) :: CStr(ws.Range("J3").Interior.Color)',
     'ws.Range("J1:J3").Font.Bold = True :: CStr(ws.Range("J2").Font.Bold)',
-    # --- reading a range whose cells *disagree*. Written here rather than
-    # read off the fixture, because a fixture built by openpyxl leaves it
-    # ambiguous whether a `False` means "Excel says False" or "the fixture
-    # never applied the bold".
+
+
+
+
     'ws.Range("K1").Font.Bold = True :: CStr(IsNull(ws.Range("K1:K2").Font.Bold))',
     'ws.Range("K3").Font.Bold = True\\nws.Range("K4").Font.Bold = True :: CStr(ws.Range("K3:K4").Font.Bold)',
     'ws.Range("L1").Interior.Color = RGB(255, 0, 0) :: CStr(IsNull(ws.Range("L1:L2").Interior.Color))',
@@ -129,17 +129,17 @@ WRITE_CASES = [
     'ws.Range("M2").Font.Size = 10.5 :: TypeName(ws.Range("M2").Font.Size)',
 ]
 
-# `ColorIndex` is a palette slot, not a colour. Rather than decide whether to
-# support it from documentation, ask Excel what each slot actually is: set the
-# index, read the `Color` back. Slot 1..56 plus `xlNone`.
+
+
+
 PALETTE_CASES = [
     f'ws.Range("A{i}").Interior.ColorIndex = {i} :: CStr(ws.Range("A{i}").Interior.Color)'
     for i in range(1, 57)
 ]
 
-# The `--paint` channel: a macro that only writes, after which Excel saves and
-# openpyxl reads the actual ARGB. `expect` is what the colour *should* be if
-# `Color` is BGR, and is what the run checks against.
+
+
+
 PAINT = [
     ("A1", "Interior", "RGB(255, 0, 0)", "FFFF0000"),
     ("A2", "Interior", "&HFF0000", "FF0000FF"),
@@ -186,7 +186,7 @@ def build_workbook(path):
     ws["A1"] = 10
     ws["A2"] = 20
     ws["A2"].font = openpyxl.styles.Font(bold=True)
-    # 46195 is 2026-06-22 in the 1900 system.
+
     ws["C1"] = 46195
     ws["C1"].number_format = "m/d/yy"
     wb.save(path)

@@ -27,15 +27,15 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 
-# Namespace definitions for OpenXML spreadsheet reading
+
 NS = {
     'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
     'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 }
 
-# -----------------------------------------------------------------------------
-# 1. Formula & Data Generator
-# -----------------------------------------------------------------------------
+
+
+
 
 class ExcelFuzzGenerator:
     """Generates random data grids and formula trees for Excel compatibility testing."""
@@ -45,9 +45,9 @@ class ExcelFuzzGenerator:
         "GAUSS", "PHI", "FISHER", "FISHERINV", "GAMMALN", "GAMMA",
         "GAMMALN.PRECISE", "NORM.S.DIST", "NORM.S.INV", "ACOSH", "ACOT", "ACOTH",
         "ASINH", "ATANH", "COSH", "COT", "CSC", "CSCH",
-        # COTH is accurate in visi but Excel saturates some negative values
-        # to exactly -1 too early, changing INT/ISODD wrappers; see
-        # docs/excel-discrepancies.md #25.
+
+
+
         "DEGREES", "EVEN", "FACT", "FACTDOUBLE", "ODD", "RADIANS",
         "SEC", "SECH", "SIGN", "SINH", "SQRTPI", "TANH",
         "ACOS", "ASIN", "ATAN", "COS", "SIN", "TAN", "EXP", "LN", "LOG10",
@@ -58,9 +58,9 @@ class ExcelFuzzGenerator:
         "AVEDEV", "AVERAGEA", "DEVSQ", "GEOMEAN", "HARMEAN",
         "MEDIAN", "VAR.S", "VAR.P", "VARA", "VARPA",
         "STDEV.S", "STDEV.P", "STDEVA", "STDEVPA", "SKEW", "SKEW.P",
-        # MULTINOMIAL is accurate in visi but Excel rounds some integer-valued
-        # answers just below the integer (docs/excel-discrepancies.md #24),
-        # which leaks through wrappers like INT(MULTINOMIAL(...)).
+
+
+
         "KURT", "MAXA", "MINA", "GCD", "LCM", "SUMSQ",
         "COUNT", "COUNTA", "COUNTBLANK", "SUMPRODUCT",
         "VAR", "VARP", "STDEV", "STDEVP",
@@ -68,30 +68,30 @@ class ExcelFuzzGenerator:
     FUNCTIONS_STAT_BIVARIATE = [
         "CORREL", "PEARSON", "SLOPE", "INTERCEPT", "RSQ", "STEYX",
         "COVARIANCE.P", "COVARIANCE.S", "COVAR", "F.TEST", "FTEST",
-        # CHITEST/CHISQ.TEST have several Excel-specific non-numeric-pair and
-        # degree-of-freedom rules still being pinned down; keep their reduced
-        # cases in Rust tests rather than letting them dominate random fuzzing.
+
+
+
         "SUMX2MY2", "SUMX2PY2", "SUMXMY2",
     ]
-    # Two-plain-numeric-argument math functions -- fits the same recursive
-    # sub-expression substitution as the "binary" fn_type in gen_expr, just
-    # rendered as a function call instead of an infix operator.
+
+
+
     FUNCTIONS_TWO_NUM = ["ATAN2", "LOG", "MOD", "POWER", "QUOTIENT", "PERCENTOF"]
     FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
     FUNCTIONS_TEXT = [
         "CONCATENATE", "LEFT", "RIGHT", "LEN", "UPPER", "LOWER",
-        # DBCS is locale-dependent in real Excel: on this Windows oracle it is
-        # a no-op for ASCII, while visi intentionally maps ASCII to full-width.
-        # Keep it out of the differential generator.
+
+
+
         "ASC", "CLEAN", "CODE", "EXACT", "FIND", "FINDB",
         "LEFTB", "LENB", "MIDB", "REPT", "RIGHTB", "SEARCH", "SEARCHB",
         "SUBSTITUTE", "T", "TEXTAFTER", "TEXTBEFORE", "UNICHAR", "UNICODE"
     ]
-    # Date/engineering/information functions use bespoke per-function
-    # generators below (generate_date_formula/generate_engineering_formula/
-    # generate_logic_formula), since their wildly varying arities (DATE takes
-    # 3 args, YEAR takes 1, BASE takes a string + radix, ...) don't fit
-    # gen_expr's uniform arbitrary-sub-expression substitution model.
+
+
+
+
+
     DATE_FUNCTIONS = [
         "DATE", "DAY", "DAYS", "DAYS360", "EDATE", "EOMONTH", "HOUR", "MINUTE",
         "MONTH", "SECOND", "TIME", "WEEKDAY", "WEEKNUM", "YEAR", "YEARFRAC",
@@ -108,46 +108,46 @@ class ExcelFuzzGenerator:
         "IMCOT", "IMCSC", "IMCSCH", "IMDIV", "IMEXP", "IMLN", "IMLOG10",
         "IMLOG2", "IMPOWER", "IMPRODUCT", "IMREAL", "IMSEC", "IMSECH",
         "IMSIN", "IMSINH", "IMSQRT", "IMSUB", "IMSUM", "IMTAN",
-        # IS.CEILING is not an Excel function name in the Windows oracle
-        # (it returns #NAME?); the implemented/comparable spelling is
-        # ISO.CEILING, and it stays fuzzed here.
+
+
+
         "ISO.CEILING", "CEILING", "CEILING.MATH", "CEILING.PRECISE",
         "FLOOR", "FLOOR.MATH", "FLOOR.PRECISE",
         "COMBIN", "COMBINA", "PERMUT", "PERMUTATIONA", "MROUND",
     ]
-    # LET is deliberately excluded, like the LAMBDA family above: real
-    # Excel can't open an openpyxl-authored file containing an
-    # `_xlfn.`-prefixed LET at all (confirmed by isolating both
-    # `_xlfn.LET(a, 5, a+1)` -- no nesting, still corrupts -- and
-    # `_xlfn.LET(a, _xlfn.SKEW.P(F1,F2), a+1)` in their own single-cell
-    # workbooks: `open` returns without error but no workbook window
-    # appears), while leaving it bare gets it silently rewritten to
-    # `_xludf.LET` (Excel's "unrecognized name" marker) and `#NAME?` --
-    # an unfixable-either-way authoring limitation, not a visi bug (see
-    # LAMBDA_FUNCTIONS above for the same failure signature). LET is
-    # generated deterministically once per LOGIC_EXTRA_FUNCTIONS entry
-    # (not randomly), so leaving it in this list would corrupt or
-    # mismatch on every single fuzz iteration. Its correctness is instead
-    # verified by visi-core's own Rust unit tests (see
-    # test_let_binds_names_in_sequence_and_rejects_duplicate_names in
-    # engine/tests/new_functions.rs).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     LOGIC_EXTRA_FUNCTIONS = [
         "ISEVEN", "ISODD", "ISLOGICAL", "ISNONTEXT", "TYPE", "XOR",
         "IFERROR", "IFNA", "IFS", "SWITCH",
-        # ISERR/ISNA turn the documented error-class precedence divergence
-        # (docs/excel-discrepancies.md #12) into a boolean mismatch instead of
-        # a tolerated both-error case, so keep them out of the random wrapper
-        # pool. ISERROR still exercises error detection without caring which
-        # class won.
+
+
+
+
+
         "ISBLANK", "ISERROR", "ISNUMBER", "ISTEXT",
         "CHOOSE",
     ]
-    # Statistical distribution/percentile-rank functions: unlike
-    # FUNCTIONS_MULTI_NUM/STAT_BIVARIATE these need domain-restricted scalar
-    # parameters (probabilities in (0,1), positive shape/scale params,
-    # integer trial counts, ...) that gen_expr's arbitrary sub-expression
-    # substitution can't guarantee, so they get their own generator --
-    # same rationale as generate_financial_formula.
+
+
+
+
+
+
     DISTRIBUTION_FUNCTIONS = [
         "BETA.DIST", "BETADIST", "BETA.INV", "BETAINV",
         "BINOM.DIST", "BINOMDIST", "BINOM.DIST.RANGE", "BINOM.INV", "CRITBINOM",
@@ -166,86 +166,86 @@ class ExcelFuzzGenerator:
         "T.TEST", "TTEST", "WEIBULL.DIST", "WEIBULL", "Z.TEST", "ZTEST",
         "LARGE", "SMALL",
         "PERCENTILE", "PERCENTILE.INC", "PERCENTILE.EXC",
-        # QUARTILE.EXC excluded: visi's exclusive-quartile interpolation
-        # rejects some quart/sample-size combinations Excel accepts (see
-        # "docs/excel-discrepancies.md" section 9). QUARTILE.INC and the PERCENTILE.* family
-        # agree and stay fuzzed.
+
+
+
+
         "QUARTILE", "QUARTILE.INC",
         "PERCENTRANK", "PERCENTRANK.INC", "PERCENTRANK.EXC",
-        # FREQUENCY excluded: its bins_array coercion for non-numeric bins
-        # is not understood (see "docs/excel-discrepancies.md" section 11).
+
+
         "RANK", "RANK.EQ", "RANK.AVG", "TRIMMEAN", "MODE.MULT",
     ]
     LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
-    # JIS is deliberately excluded for the same practical reason as DBCS in
-    # FUNCTIONS_TEXT: the installed Windows Excel oracle does not recognize
-    # either bare or `_xlfn.`-prefixed JIS (it returns #NAME?), while visi
-    # implements the documented text conversion locally.
-    #
-    # FILTERXML is implemented and works through Excel's interactive Evaluate
-    # path, but this harness writes formulas through openpyxl-authored OOXML;
-    # that route stores FILTERXML as `_xlfn.FILTERXML(...)`, which the same
-    # Windows Excel oracle opens as #NAME?. Keep FILTERXML pinned in Rust unit
-    # tests rather than making every fuzz iteration fail on an authoring quirk.
-    #
-    # ENCODEURL is deliberately excluded: even correctly written as
-    # `_xlfn.ENCODEURL(...)`, the installed real-Excel build (16.111.3)
-    # returns `#NAME?` for it -- confirmed by isolating both the bare and
-    # `_xlfn.`-prefixed forms in their own single-cell workbook and
-    # comparing against `_xlfn.CONCAT`/`_xlfn.TEXTJOIN` (same era of
-    # function, both resolve fine) in the same file. Not a visi bug or a
-    # prefixing bug, just a function this particular Excel build doesn't
-    # implement.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     TEXT_EXTRA_FUNCTIONS = [
         "PROPER", "TRIM", "CHAR", "TEXTJOIN", "TEXTSPLIT", "VALUE", "VALUETOTEXT",
         "N", "NA", "DOLLAR", "FIXED", "NUMBERVALUE", "ARABIC", "ROMAN", "BAHTTEXT",
         "REGEXEXTRACT", "REGEXREPLACE", "REGEXTEST", "REPLACE", "REPLACEB",
         "CONCAT", "ERROR.TYPE", "MID", "TEXT", "ADDRESS", "ARRAYTOTEXT",
     ]
-    # Array/matrix-returning functions. Excel would spill these across
-    # multiple cells; visi's xlsx export caches one value per cell (see
-    # AGENTS.md), so each is wrapped in INDEX(...) to pin down the single
-    # scalar a plain cell comparison can check, matching how a spreadsheet
-    # author would consume them from one cell in practice.
+
+
+
+
+
     ARRAY_FUNCTIONS = [
         "MDETERM", "MINVERSE", "MMULT", "MUNIT", "SEQUENCE",
         "LINEST", "LOGEST", "GROWTH", "TREND",
         "FORECAST", "FORECAST.LINEAR",
         "SERIESSUM",
     ]
-    # The FORECAST.ETS family, fuzzed against a *well-posed* series (see
-    # the ETS block in create_fuzz_workbook): a regular timeline carrying an
-    # exact linear trend plus an exactly repeating season.
-    #
-    # That restriction is deliberate and is what makes the comparison
-    # meaningful. Excel fits alpha/beta/gamma with a proprietary optimizer
-    # and reports them to three decimals; no independent implementation
-    # reproduces those digits on noisy data, so a random series would only
-    # ever be asserting "did you reimplement Microsoft's optimizer". On a
-    # series the model fits perfectly the forecast is the same for any sane
-    # parameter triple -- Excel returns the exact continuation -- so what
-    # actually gets tested is the part that *is* well-defined: timeline
-    # validation and gap filling, season-length detection, the Holt-Winters
-    # recurrences, and extrapolation.
-    #
-    # STAT types 1-3 (alpha/beta/gamma) are excluded for the same reason:
-    # they report the optimizer's chosen parameters, which stay
-    # implementation-specific even when the forecast doesn't. Types 4-8
-    # (MASE/SMAPE/MAE/RMSE/step) are well-defined and are included.
-    # FORECAST.ETS.SEASONALITY is deliberately absent. Excel's automatic
-    # season-length detection is a heuristic that does not simply report the
-    # series' true period, and its answer turns on the *arrangement* of the
-    # seasonal offsets rather than on their magnitude or the trend. Probed
-    # directly, over 16 points with slope 2 and the same four offsets merely
-    # permuted: [8, -2, -8, 2] -> 4, [11, -11, 2, -2] -> 2,
-    # [2, -2, 11, -11] -> 2, and [-2, -11, 11, 2] -> 0, i.e. Excel reports
-    # *no* seasonality for a series that is exactly period-4. (Trend
-    # strength is not the trigger: holding the offsets fixed and sweeping
-    # the slope from 0 to 4 leaves the answer at 4 throughout.) Comparing
-    # against that is asserting a specific heuristic, not correctness, so
-    # detection is covered by visi-core's own unit tests -- on the patterns
-    # where Excel's answer *is* the true period -- and every function below
-    # is handed an explicit season length instead.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     ETS_FUNCTIONS = [
         "FORECAST.ETS", "FORECAST.ETS.CONFINT",
         "FORECAST.ETS.STAT4", "FORECAST.ETS.STAT5", "FORECAST.ETS.STAT6",
@@ -255,97 +255,97 @@ class ExcelFuzzGenerator:
         "AVERAGEIF", "AVERAGEIFS", "COUNTIF", "COUNTIFS",
         "MAXIFS", "MINIFS", "SUMIF", "SUMIFS", "SUBTOTAL", "AGGREGATE",
     ]
-    # Volatile/non-deterministic functions: each engine evaluates these
-    # independently (different real-world instant, different RNG state), so
-    # exact-value comparison would spuriously fail. RANDBETWEEN/RANDARRAY are
-    # called with min==max to force a deterministic value out of an
-    # inherently random function; RAND/NOW/TODAY have no such knob, so they
-    # get wrapped in a range/plausibility check both engines must satisfy
-    # regardless of the actual random or wall-clock value.
+
+
+
+
+
+
+
     VOLATILE_FUNCTIONS = ["RAND", "RANDBETWEEN", "RANDARRAY", "NOW", "TODAY"]
     DATABASE_FUNCTIONS = [
         "DSUM", "DAVERAGE", "DCOUNT", "DCOUNTA", "DGET", "DMAX", "DMIN",
         "DPRODUCT", "DSTDEV", "DSTDEVP", "DVAR", "DVARP",
     ]
-    # LAMBDA family: deliberately left empty -- none of MAP/REDUCE/BYROW/
-    # BYCOL/MAKEARRAY/SCAN are fuzzed against real Excel. Two independent,
-    # confirmed failure modes rule the whole family out, not just the
-    # dynamic-array-spilling ones:
-    #   - BYROW/BYCOL/MAKEARRAY/SCAN (and a bare, uninvoked LAMBDA) return
-    #     or are a dynamic-array-spilling value, and this environment's
-    #     Excel AppleScript automation bridge breaks intermittently on
-    #     *any* dynamic-array-spilling formula (confirmed directly with a
-    #     plain `=SEQUENCE(3)`, no LAMBDA involved at all).
-    #   - MAP and REDUCE looked fuzzable (their result is pinned to a
-    #     scalar via INDEX(...)/its own scalar return), but real Excel
-    #     silently fails to open an openpyxl-authored file containing an
-    #     `_xlfn.LAMBDA(...)` formula at all -- confirmed by isolating
-    #     `INDEX(MAP(F1:F5, _xlfn.LAMBDA(x, x*2+1)), 1)` (LAMBDA prefixed,
-    #     MAP left bare) in its own single-cell workbook: Excel's own
-    #     AppleScript `open` returns without error, but no window and no
-    #     workbook actually appears (`count of workbooks` stays 0), the
-    #     same silent-corruption signature `_xlfn.`-prefixing a LET
-    #     variable named "r"/"c" produces (see the LET generator below).
-    #     Leaving LAMBDA bare avoids the corruption but then Excel doesn't
-    #     recognize it (`_xludf.LAMBDA`, `#NAME?`) -- an unfixable-either-
-    #     way formula authoring limitation, not a visi bug.
-    # Their expected values are instead verified by hand-calculated
-    # arithmetic / Microsoft's documented SCAN example in visi-core's own
-    # Rust unit tests (see engine/tests/new_functions.rs).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     LAMBDA_FUNCTIONS = []
-    # CELL/INFO are fuzzed only over the narrow info_type subsets visi
-    # implements. GETPIVOTDATA is deliberately absent: fuzz_excel.py creates
-    # ordinary formula workbooks, not native pivot tables, so there is no
-    # stable pivot destination for Excel to resolve. Pivot definitions and
-    # grids are covered by fuzz_pivot.py instead.
+
+
+
+
+
     RANGE_INFO_FUNCTIONS = [
         "ROW", "ROWS", "COLUMN", "COLUMNS", "AREAS", "ISREF",
         "FORMULATEXT", "ISFORMULA", "HYPERLINK", "SHEETS", "SHEET", "INDIRECT", "OFFSET",
         "CELL", "INFO",
     ]
-    # Dynamic-array reshaping/lookup functions. TRANSPOSE is deliberately
-    # excluded: every authoring variant tried (bare, `_xlfn.`,
-    # `_xlfn._xlws.`, standalone, nested in SUM/INDEX) gave real Excel
-    # `#VALUE!` when the formula was written by openpyxl rather than Excel
-    # itself -- TRANSPOSE has always required the legacy CSE `t="array"`
-    # formula flag, which openpyxl's plain string assignment never
-    # produces, so it would be a guaranteed mismatch every run regardless
-    # of visi's own (hand-verified correct) logic. LOOKUP is also excluded:
-    # its vector form requires an ascending-sorted lookup array or its
-    # result is documented by Microsoft as unpredictable, and this
-    # generator's plain-value columns are unsorted random data -- verified
-    # correct against real Excel on sorted data instead, in visi-core's own
-    # Rust unit tests (see engine/tests/new_functions.rs). XMATCH is fuzzed
-    # in its default exact-match mode only (well-defined regardless of
-    # sort order), looking up a value known to be present so both engines
-    # are guaranteed a match.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     ARRAY_RESHAPE_FUNCTIONS = [
         "HSTACK", "VSTACK", "CHOOSEROWS", "CHOOSECOLS", "DROP", "TAKE",
         "EXPAND", "TOCOL", "TOROW", "WRAPROWS", "WRAPCOLS", "UNIQUE",
         "SORT", "SORTBY", "FILTER", "TRIMRANGE", "XMATCH",
     ]
 
-    # Scalar-argument TVM/depreciation functions. Unlike the generic
-    # FUNCTIONS_* lists above, financial functions can't have arbitrary
-    # sub-expressions substituted into their arguments (a rate must stay
-    # small and positive, a period must stay within [1, nper], etc.), so
-    # they get their own generator methods below instead of feeding into
-    # gen_expr's recursive substitution.
+
+
+
+
+
+
     FINANCIAL_FUNCTIONS = [
-        # RATE excluded: Excel gives up with #NUM! on series where a root
-        # demonstrably exists (the same call returns a rate when handed a
-        # guess near it), so the comparison asserts whether Excel's
-        # iteration converged from its default 0.1 rather than anything
-        # about correctness. See "docs/excel-discrepancies.md" section 10.
+
+
+
+
+
         "PV", "FV", "PMT", "NPER", "IPMT", "PPMT", "CUMIPMT",
         "CUMPRINC", "NPV", "IRR", "MIRR", "XNPV", "XIRR", "SLN", "SYD",
-        # EUROCONVERT is implemented, but Excel exposes it through the Euro
-        # Currency Tools add-in; the installed oracle returns #NAME? without
-        # that add-in, so visi pins it against Microsoft's published rates in
-        # Rust tests instead of fuzz_excel.py.
+
+
+
+
         "DB", "DDB", "VDB", "EFFECT", "NOMINAL", "DOLLARDE", "DOLLARFR",
         "FVSCHEDULE", "RRI", "PDURATION", "ISPMT",
-        # Day-count / bond-pricing functions (see finance.rs).
+
         "COUPDAYBS", "COUPDAYS", "COUPDAYSNC", "COUPNCD", "COUPNUM", "COUPPCD",
         "PRICE", "YIELD", "DURATION", "MDURATION",
         "DISC", "PRICEDISC", "YIELDDISC", "PRICEMAT", "YIELDMAT",
@@ -353,35 +353,35 @@ class ExcelFuzzGenerator:
         "ACCRINT", "ACCRINTM", "AMORLINC",
         "ODDLPRICE", "ODDLYIELD",
     ]
-    # AMORDEGRC, ODDFPRICE and ODDFYIELD are excluded as known visi gaps --
-    # see "docs/excel-discrepancies.md" sections 6 and 7. AMORDEGRC's coefficient brackets and
-    # end-of-life switch to straight line aren't fully reverse-engineered,
-    # and Excel rejects odd-first-coupon orderings (returning #NUM!) that
-    # visi accepts. The regular-coupon bond functions above are unaffected
-    # and stay fuzzed.
 
-    # Every function name below needs a bare `_xlfn.` prefix (not the
-    # `_xlfn._xlws.` double-namespace some dynamic-array functions use --
-    # HSTACK/VSTACK/CHOOSEROWS/CHOOSECOLS/DROP/TAKE/EXPAND/TOCOL/TOROW/
-    # WRAPROWS/WRAPCOLS/UNIQUE/SORT/SORTBY/FILTER/TRIMRANGE/XMATCH, plus
-    # RRI/PDURATION/FORMULATEXT/ISFORMULA/SHEETS/SHEET, are already handled
-    # by their own bespoke generators and deliberately excluded here to
-    # avoid double-prefixing) when written into an openpyxl-authored file,
-    # or real Excel shows `#NAME?` for it -- these are exactly the
-    # functions real Excel itself rewrote as `_xludf.NAME` (its own "I
-    # don't recognize this name" marker) when it re-saved a workbook
-    # containing them unprefixed, confirmed against the actual installed
-    # Excel build (16.111.3) by round-tripping every FUNCTIONS_*/
-    # DISTRIBUTION_FUNCTIONS/ENGINEERING_FUNCTIONS/DATE_FUNCTIONS/
-    # TEXT_EXTRA_FUNCTIONS/LOGIC_EXTRA_FUNCTIONS/ARRAY_FUNCTIONS/
-    # CONDITIONAL_AGG_FUNCTIONS/RANGE_INFO_FUNCTIONS entry through this
-    # generator's own formula construction and reading back which cells
-    # Excel could and couldn't recognize. Applied as a single post-
-    # processing pass over every formula cell in create_fuzz_workbook
-    # (see _apply_xlfn_prefixes) rather than threading prefix logic
-    # through every individual generator method, since the vast majority
-    # of call sites build formula text by directly interpolating the
-    # function name (`f"{fn}(...)"`) with no single seam to hook.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     NEEDS_XLFN_PREFIX = frozenset([
         "ACOT", "ACOTH", "AGGREGATE", "ARABIC", "ARRAYTOTEXT", "BASE",
         "BETA.DIST", "BETA.INV", "BINOM.DIST", "BINOM.DIST.RANGE", "BINOM.INV",
@@ -434,28 +434,28 @@ class ExcelFuzzGenerator:
     def __init__(self, seed=None):
         if seed is not None:
             random.seed(seed)
-        # Populated by create_fuzz_workbook() once it defines an Excel Table
-        # over the value grid; used by generate_formula() to emit structured
-        # references. Left unset (no structured refs generated) if a caller
-        # invokes generate_formula() without going through
-        # create_fuzz_workbook() first.
+
+
+
+
+
         self._table_name = None
         self._table_cols = []
-        # Populated by create_fuzz_workbook()'s financial data block; used
-        # by generate_financial_formula() for the array-argument functions
-        # (NPV/IRR/MIRR/XNPV/XIRR/FVSCHEDULE). visi's parser has no `{...}`
-        # array-literal syntax, so those functions must reference real
-        # ranges rather than inline arrays.
+
+
+
+
+
         self._fin_cash_range = None
         self._fin_date_range = None
         self._fin_schedule_range = None
-        # Populated by create_fuzz_workbook(); the table block's own
-        # A1:...N range, reused as the "database" argument for the D*
-        # database functions (generate_database_formula) since it already
-        # has a header row of column-letter names plus random data rows.
+
+
+
+
         self._db_range = None
-        # Populated by create_fuzz_workbook()'s ETS block; used by
-        # generate_ets_formula().
+
+
         self._ets_timeline_range = None
         self._ets_values_range = None
         self._ets_next_target = 0
@@ -554,36 +554,36 @@ class ExcelFuzzGenerator:
         """Generates a random cell input value (number, string, boolean, edge case)."""
         choice = random.random()
         if choice < 0.35:
-            # Integers
+
             return random.randint(-100, 100)
         elif choice < 0.60:
-            # Floating point numbers (including zero)
+
             if random.random() < 0.1:
                 return 0.0
             return round(random.uniform(-500.0, 500.0), random.randint(0, 4))
         elif choice < 0.78:
-            # Short strings. Keep the random cell-value alphabet ASCII: Windows
-            # Excel's Unicode collation is locale-sensitive and not a stable
-            # oracle for SORT/SORTBY text ordering (docs/excel-discrepancies.md
-            # #22). Punctuation still exercises shared-string/text paths beyond
-            # plain `[A-Za-z 123]`.
+
+
+
+
+
             if random.random() < 0.25:
                 samples = ["a,b", "quote ' test", "paren(test)", "dash-test"]
                 return random.choice(samples)
-            # Avoid whitespace-only strings: OOXML/openpyxl can strip them to
-            # empty shared strings unless xml:space="preserve", which makes
-            # Excel and visi disagree about blank-vs-empty-string observability
-            # in functions such as ARRAYTOTEXT (docs/excel-discrepancies.md #13).
+
+
+
+
             chars = string.ascii_letters + "123"
             return "".join(random.choice(chars) for _ in range(random.randint(1, 8)))
         elif choice < 0.88:
-            # Booleans
+
             return random.choice([True, False])
         elif choice < 0.98:
-            # Empty / None
+
             return None
         else:
-            # Small integers for range indexes
+
             return random.randint(1, 10)
 
     def _generate_text_expr(self, fn, gen_expr, depth):
@@ -627,9 +627,9 @@ class ExcelFuzzGenerator:
             delim = "|" if "|" in source else ("," if "," in source else "--")
             return f"{fn}({literal(source)}, {literal(delim)})"
         if fn == "UNICHAR":
-            # Keep generated output in the console/codepage-safe ASCII range;
-            # Unicode storage paths are covered elsewhere, and the Windows
-            # harness prints mismatches through a legacy console encoding.
+
+
+
             return f"UNICHAR({random.randint(65, 90)})"
 
         raise AssertionError(f"FUNCTIONS_TEXT has no generator for {fn}")
@@ -660,10 +660,10 @@ class ExcelFuzzGenerator:
 
         def gen_expr(depth=0):
             if depth >= 2 or random.random() < 0.4:
-                # Leaf node: cell ref, scalar constant, or (if a table is
-                # present) a structured reference to a column's header text.
-                # The header ref evaluates to a plain scalar string, just
-                # like a cell ref would, so it can drop in anywhere.
+
+
+
+
                 roll = random.random()
                 if self._has_table() and roll < 0.15:
                     return self._random_structured_header_ref()
@@ -673,8 +673,8 @@ class ExcelFuzzGenerator:
                 elif remaining < 0.95:
                     return str(random.randint(-50, 50))
                 else:
-                    # PI() is a plain zero-arg numeric constant, so it fits
-                    # anywhere a scalar leaf does.
+
+
                     return "PI()"
 
             fn_type = random.choice(["binary", "multi_num", "single_num", "logic", "text", "stat_bivariate", "two_num"])
@@ -683,29 +683,29 @@ class ExcelFuzzGenerator:
                 op = random.choice(["+", "-", "*", "/", "^"])
                 left = gen_expr(depth + 1)
                 right = gen_expr(depth + 1)
-                # A huge base (FACT grows past 1e9 by its argument 13) raised
-                # to a very negative exponent underflows the true
-                # mathematical result into subnormal territory -- Excel's `^`
-                # flattens that all the way to exactly 0 where visi's
-                # f64::powf keeps the (correct, nonzero) subnormal value, a
-                # divergence with no engine bug behind it (see
-                # "docs/excel-discrepancies.md" section 17). Not worth
-                # excluding `^` outright for this rare a combination -- just
-                # avoid pairing a magnitude-prone left operand with it.
+
+
+
+
+
+
+
+
+
                 if op == "^" and left.startswith(("FACT(", "GAMMA(", "EXP(", "PERMUT(", "COMBIN(")):
                     op = random.choice(["+", "-", "*", "/"])
-                # A negative base raised to a fractional exponent close to
-                # zero is a coin flip in real Excel -- almost always
-                # #NUM! (mathematically undefined over the reals, which is
-                # what visi's `^` gives every time), but for a handful of
-                # specific exponent values it instead returns a real
-                # number with no describable pattern separating those from
-                # the rest (see "docs/excel-discrepancies.md" section 18).
-                # Both `POWER(...)` and a bare nested `^` (e.g. `(F4 ^ -4)`,
-                # seed 394540's `LEFT(F4, 3) ^ (F4 ^ -4)`) reliably land in
-                # that near-zero/fractional range, so keep either off the
-                # right side of `^` rather than chasing which exact
-                # exponents Excel's `^` happens to like.
+
+
+
+
+
+
+
+
+
+
+
+
                 if op == "^" and ("^" in right or right.startswith("POWER(")):
                     op = random.choice(["+", "-", "*", "/"])
                 return f"({left} {op} {right})"
@@ -714,16 +714,16 @@ class ExcelFuzzGenerator:
                 fn = random.choice(self.FUNCTIONS_TWO_NUM)
                 a = gen_expr(depth + 1)
                 b = gen_expr(depth + 1)
-                # A MOD operand built from POWER (or `^`) can put the divisor
-                # far above the dividend either by making the divisor huge or
-                # by making the dividend tiny. Excel then loses the small
-                # operand and returns 0 instead of the true (nonzero)
-                # remainder -- visi keeps the mathematically correct value
-                # (see "docs/excel-discrepancies.md" section 14, e.g.
-                # MOD(36, POWER(-327.3, 69)) and seed 747962's
-                # MOD((-5 ^ -16), (-44 * 85))). Not a new bug, just a
-                # generator gap: this shape was never fully kept out of the
-                # fuzzer.
+
+
+
+
+
+
+
+
+
+
                 if fn == "MOD" and (
                     "POWER(" in a
                     or "^" in a
@@ -740,28 +740,28 @@ class ExcelFuzzGenerator:
                 fn = random.choice(self.FUNCTIONS_MULTI_NUM)
                 roll = random.random()
                 if fn == "COUNTBLANK":
-                    # Unlike every other entry in FUNCTIONS_MULTI_NUM,
-                    # COUNTBLANK takes exactly one range argument -- it's
-                    # not a variadic numeric aggregate. Handing it a bare
-                    # scalar or a comma-separated arg list (as the general
-                    # cases below do) isn't just semantically odd, it's a
-                    # formula real Excel's own UI would never let you save:
-                    # openpyxl writes it anyway, and the resulting file
-                    # silently fails to open in real Excel (no error, no
-                    # window, workbook count stays 0) rather than showing a
-                    # clean parse error. Confirmed by isolating
-                    # `=COUNTBLANK(1,2,3)` in its own workbook. Whole-column
-                    # references are avoided here too: Excel counts blanks
-                    # across all 1,048,576 rows, while visi evaluates only
-                    # the imported sheet extent.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                     arg = self._random_structured_col_ref() if (self._has_table() and roll < 0.3) else random_range_ref()
                 elif self._has_table() and roll < 0.22:
-                    # Single-column structured reference, e.g. SUM(Sheet1[A]).
+
                     arg = self._random_structured_col_ref()
                 elif self._has_table() and roll < 0.34:
-                    # Whole-column A:A / $A:$A style reference into the
-                    # formula-free table block. This covers an address form
-                    # ordinary rectangular range generation never produced.
+
+
+
                     arg = self._random_table_whole_col_ref()
                 elif roll < 0.72:
                     arg = random_range_ref()
@@ -801,7 +801,7 @@ class ExcelFuzzGenerator:
 
         return "=" + gen_expr(0)
 
-    # -- Financial function argument helpers -----------------------------
+
     def _fin_rate(self, lo=0.001, hi=0.03):
         """Per-period rate. Deliberately realistic (0.1%-3%), not the
         0.5%-20% range an earlier version used: at high per-period rates
@@ -848,12 +848,12 @@ class ExcelFuzzGenerator:
         m = random.randint(1, 12)
         d = random.randint(1, 28)
         if avoid_february_month_end and d == 28:
-            # Capped at 27, not just rewritten when the month is February.
-            # ACCRINT derives its first-interest date with EDATE, so a
-            # day-28 issue in *any* month can land on 28 February and turn
-            # the whole quasi-coupon schedule end-of-month -- which is the
-            # case ACCRINT is known to get wrong. See
-            # "docs/excel-discrepancies.md" section 8.
+
+
+
+
+
+
             d = 27
         return f"DATE({y}, {m}, {d})"
 
@@ -911,11 +911,11 @@ class ExcelFuzzGenerator:
             typ = self._fin_type01()
             return f"={fn}({rate}, {nper}, {pv}, {start}, {end}, {typ})"
 
-        # NPV/IRR/MIRR/XNPV/XIRR/FVSCHEDULE take an array argument. visi's
-        # parser has no `{...}` array-literal syntax, so these always
-        # reference the financial data block create_fuzz_workbook lays out
-        # before calling this method -- there is no standalone-call path
-        # for this generator, so no inline-array fallback is needed.
+
+
+
+
+
         if fn == "NPV":
             assert self._fin_cash_range
             return f"=NPV({self._fin_rate()}, {self._fin_cash_range})"
@@ -995,17 +995,17 @@ class ExcelFuzzGenerator:
             principal = self._fin_money(1000, 50000, allow_negative=False)
             return f"=FVSCHEDULE({principal}, {self._fin_schedule_range})"
 
-        # RRI and PDURATION were both added in Excel 2013; real Excel's own
-        # OOXML writer always stores post-2007 functions with an `_xlfn.`
-        # prefix in the underlying formula text (invisible in the formula
-        # bar) so older parsers degrade gracefully instead of choking on an
-        # unknown name -- confirmed as the actual cause of a real `#NAME?`
-        # mismatch this generator produced: openpyxl writes plain
-        # `RRI(...)`/`PDURATION(...)` with no prefix, and Excel refuses to
-        # recognize the bare name on load. visi already strips a leading
-        # `_xlfn.` before dispatch (see evaluate_function in sheet.rs), so
-        # writing the prefix here is what a real xlsx producer would do and
-        # keeps both sides consistent.
+
+
+
+
+
+
+
+
+
+
+
         if fn == "RRI":
             nper = self._fin_int(1, 30)
             pv = self._fin_money(1000, 50000, allow_negative=False)
@@ -1025,18 +1025,18 @@ class ExcelFuzzGenerator:
             pv = self._fin_money(1000, 100000, allow_negative=False)
             return f"=ISPMT({rate}, {per}, {nper}, {pv})"
 
-        # -- Day-count / bond-pricing functions --------------------------
-        # Settlement is always the anchor DATE(...) literal; every other
-        # date (maturity, issue, coupon dates, ...) is derived from it via
-        # EDATE(...)/serial-day arithmetic *inside* the generated formula
-        # (see _fin_date) so visi and Excel compute the same derived date
-        # with their own matching logic instead of racing a Python
-        # reimplementation of calendar math against either engine.
+
+
+
+
+
+
+
         bond_rate = lambda: round(random.uniform(0.01, 0.10), 4)
         bond_basis = lambda: random.choice([0, 1, 2, 3, 4])
-        # docs/excel-discrepancies.md #21: COUPDAYS basis 1 has unresolved
-        # Excel coupon-period quirks around some quarterly schedules. Keep the
-        # other bases fuzzed, and keep basis 1 for the neighbouring functions.
+
+
+
         coupdays_basis = lambda: random.choice([0, 2, 3, 4])
         bond_freq = lambda: random.choice([1, 2, 4])
 
@@ -1085,8 +1085,8 @@ class ExcelFuzzGenerator:
             settlement = f"EDATE({issue}, {random.randint(1, 6)})"
             maturity = f"EDATE({issue}, {random.randint(7, 36)})"
             rate = bond_rate()
-            # docs/excel-discrepancies.md #23: PRICEMAT/YIELDMAT basis 0 has
-            # unresolved month-end 30/360 leg quirks on issue-anchored schedules.
+
+
             basis = random.choice([1, 2, 3, 4])
             if fn == "PRICEMAT":
                 return f"=PRICEMAT({settlement}, {maturity}, {issue}, {rate}, {bond_rate()}, {basis})"
@@ -1120,10 +1120,10 @@ class ExcelFuzzGenerator:
             return f"=ACCRINTM({issue}, {settlement}, {bond_rate()}, {par}, {bond_basis()})"
 
         if fn == "ACCRINT":
-            # Restricted to basis 0/4 (30/360) -- see the doc comment on
-            # finance::accrint for why bases 1/2/3 aren't fuzzed here.
-            # February month-end issue dates are excluded as a known gap;
-            # see "docs/excel-discrepancies.md" section 8.
+
+
+
+
             issue = self._fin_date(avoid_february_month_end=True)
             freq = bond_freq()
             months = 12 // freq
@@ -1138,20 +1138,20 @@ class ExcelFuzzGenerator:
             )
 
         if fn in ("AMORLINC", "AMORDEGRC"):
-            # life is kept >= 4: AMORDEGRC rejects life <= 2 outright
-            # (#NUM!), and real Excel's AMORDEGRC switches early to
-            # straight-line for life in (2, 4) in a way not yet
-            # reverse-engineered here (see finance::amordegrc's doc
-            # comment).
-            #
-            # period is kept at least 3 below life: real Excel's AMORDEGRC
-            # also switches from declining-balance to straight-line for
-            # the last couple of periods before life is exhausted (found
-            # via the differential fuzzer at life=5, period=4 -- one
-            # period short of the end), which this implementation doesn't
-            # yet replicate. Periods comfortably before that tail (the
-            # margin validated by a full life=12 sequence, periods 0-9)
-            # match real Excel exactly.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             date_purchased = self._fin_date()
             first_period = f"EDATE({date_purchased}, {random.randint(1, 11)})"
             cost = self._fin_money_value(1000, 50000, allow_negative=False)
@@ -1162,13 +1162,13 @@ class ExcelFuzzGenerator:
             return f"={fn}({cost}, {date_purchased}, {first_period}, {salvage}, {period}, {rate}, {bond_basis()})"
 
         if fn in ("ODDFPRICE", "ODDFYIELD"):
-            # stub_days is capped to less than one regular coupon period
-            # ("short" odd first coupon). visi's implementation doesn't yet
-            # match real Excel's undocumented internal algorithm for a
-            # "long" odd first coupon (stub longer than a full period) --
-            # confirmed as a real, separate discrepancy by the differential
-            # fuzzer, distinct from (and on top of) the E/day-count fixes
-            # that made the short-stub case match exactly.
+
+
+
+
+
+
+
             issue = self._fin_date()
             freq = bond_freq()
             period_days = 360 // freq
@@ -1192,12 +1192,12 @@ class ExcelFuzzGenerator:
             )
 
         if fn in ("ODDLPRICE", "ODDLYIELD"):
-            # stub_days is capped to less than one regular coupon period,
-            # same reasoning as ODDFPRICE/ODDFYIELD above: a "long" odd
-            # last period (longer than one regular period) isn't yet
-            # correctly handled here (a real, distinct discrepancy from
-            # the E/day-count fixes that made the short-stub case match
-            # exactly).
+
+
+
+
+
+
             last_interest = self._fin_date()
             freq = bond_freq()
             period_days = 360 // freq
@@ -1221,7 +1221,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for financial function {fn}")
 
-    # -- Statistical distribution / percentile-rank function generator ---
+
     def generate_distribution_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained formula for one DISTRIBUTION_FUNCTIONS entry, with
         domain-valid scalar parameters (probabilities in (0,1), positive
@@ -1383,7 +1383,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for distribution function {fn}")
 
-    # -- Lookup function generator ----------------------------------------
+
     def generate_lookup_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained INDEX/MATCH/VLOOKUP/HLOOKUP/XLOOKUP formula against
         a real backward-looking range in the plain-value rows of the formula
@@ -1430,7 +1430,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for lookup function {fn}")
 
-    # -- Engineering / complex-number function generator -------------------
+
     def generate_engineering_formula(self, fn):
         """Self-contained formula for one ENGINEERING_FUNCTIONS entry.
         Base-conversion functions need digit strings valid in their source
@@ -1503,19 +1503,19 @@ class ExcelFuzzGenerator:
             if random.random() < 0.5:
                 u1, u2 = u2, u1
             return f'=CONVERT({round(random.uniform(-100, 500), 2)}, "{u1}", "{u2}")'
-        # BESSELI/BESSELJ/BESSELK/BESSELY are deliberately absent from
-        # ENGINEERING_FUNCTIONS: real Excel cannot serve as
-        # an oracle for them because Excel is the inaccurate side. Arbitrated against
-        # 60-significant-digit reference values (Decimal evaluation of the
-        # ascending series), visi's BESSELJ is accurate to ~1e-16 relative
-        # while Excel's error is 3.8e-7 at BESSELJ(2.95, 3), 1.3e-6 at
-        # BESSELJ(8.72, 2) and 1.8e-6 at BESSELJ(9.59, 1) -- all far past
-        # this comparator's 1e-7 tolerance. The degradation depends on the
-        # order as well as the argument, so there is no argument range
-        # that keeps Excel trustworthy. visi's own accuracy is pinned
-        # directly instead, against those high-precision references, by
-        # test_besselj_stays_accurate_where_excel_does_not in
-        # visi-core/src/core/engine/tests/extended.rs.
+
+
+
+
+
+
+
+
+
+
+
+
+
         if fn == "COMPLEX":
             suf = random.choice(["i", "j"])
             return f'=COMPLEX({random.randint(-9, 9)}, {random.randint(-9, 9)}, "{suf}")'
@@ -1545,7 +1545,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for engineering function {fn}")
 
-    # -- Date function generator --------------------------------------------
+
     def generate_date_formula(self, fn):
         """Self-contained formula for one DATE_FUNCTIONS entry, using plain
         Excel serial-date integers (visi has no DATE-literal parsing outside
@@ -1577,9 +1577,9 @@ class ExcelFuzzGenerator:
             s1, s2 = serial(), serial()
             return f"=YEARFRAC({min(s1, s2)}, {max(s1, s2)}, {random.choice([0, 1, 2, 3, 4])})"
         if fn == "DATEDIF":
-            # "YD" is excluded: Excel's is internally inconsistent and no
-            # candidate rule fits more than 5 of 8 probed data points (see
-            # "docs/excel-discrepancies.md" section 5). The other units agree.
+
+
+
             s1, s2 = serial(40000, 43000), serial(43001, 46000)
             unit = random.choice(["Y", "M", "D", "MD", "YM"])
             return f'=DATEDIF({s1}, {s2}, "{unit}")'
@@ -1601,7 +1601,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for date function {fn}")
 
-    # -- Extra text function generator --------------------------------------
+
     def generate_text2_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained formula for one TEXT_EXTRA_FUNCTIONS entry. Only
         ARRAYTOTEXT needs a real range (everything else takes literal
@@ -1672,7 +1672,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for text function {fn}")
 
-    # -- Logic/information function generator --------------------------------
+
     def generate_logic_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained formula for one LOGIC_EXTRA_FUNCTIONS entry. Where
         an operand is just "some numeric expression", reuses
@@ -1705,15 +1705,15 @@ class ExcelFuzzGenerator:
             idx = random.randint(1, n)
             choices = ", ".join(expr() for _ in range(n))
             return f"=CHOOSE({idx}, {choices})"
-        # ISOMITTED is intentionally not listed in LOGIC_EXTRA_FUNCTIONS:
-        # Excel only accepts it inside LAMBDA, and this harness cannot author
-        # LAMBDA formulas into workbooks Excel reliably opens (see the
-        # LAMBDA_FUNCTIONS comment). Direct ISOMITTED(A1) is #VALUE! in Excel,
-        # while visi's supported subset is scoped to lambda parameter lookup.
+
+
+
+
+
 
         raise AssertionError(f"no generator wired up for logic function {fn}")
 
-    # -- Array/matrix function generator -------------------------------------
+
     def generate_ets_formula(self, fn):
         """One FORECAST.ETS-family call against the workbook's ETS block.
 
@@ -1731,7 +1731,7 @@ class ExcelFuzzGenerator:
         if fn == "FORECAST.ETS":
             return f"=FORECAST.ETS({target + random.randint(0, 1)}, {v}, {t}, {season})"
         if fn == "FORECAST.ETS.CONFINT":
-            # Signature puts confidence_level *before* seasonality.
+
             return f"=FORECAST.ETS.CONFINT({target}, {v}, {t}, 0.95, {season})"
         if fn.startswith("FORECAST.ETS.STAT"):
             stat = int(fn[-1])
@@ -1765,9 +1765,9 @@ class ExcelFuzzGenerator:
             return f"=INDEX(MUNIT({random.randint(1, 4)}), 1, 1)"
         if fn == "SEQUENCE":
             return f"=INDEX(SEQUENCE({random.randint(1, 4)}, {random.randint(1, 4)}, {random.randint(-5, 5)}, {random.randint(1, 3)}), 1, 1)"
-        # The FORECAST.ETS family is generated by generate_ets_formula
-        # instead -- it needs the dedicated regular-timeline block and its
-        # signatures differ from the plain regression functions here.
+
+
+
         if fn in ("LINEST", "LOGEST", "GROWTH", "TREND", "FORECAST", "FORECAST.LINEAR"):
             c2_off = 1 if span > 1 else 0
             ys = f"{col(0)}1:{col(0)}{value_rows}"
@@ -1783,7 +1783,7 @@ class ExcelFuzzGenerator:
 
         raise AssertionError(f"no generator wired up for array function {fn}")
 
-    # -- Conditional-aggregation function generator --------------------------
+
     def generate_conditional_formula(self, fn, value_rows, min_col, max_col):
         """Self-contained formula for one CONDITIONAL_AGG_FUNCTIONS entry."""
         span = max(1, max_col - min_col + 1)
@@ -1815,12 +1815,12 @@ class ExcelFuzzGenerator:
         if fn == "SUBTOTAL":
             return f"=SUBTOTAL({random.choice([1, 2, 4, 5, 9])}, {rng})"
         if fn == "AGGREGATE":
-            # Real Excel form is AGGREGATE(function_num, options, ref...).
+
             return f"=AGGREGATE({random.choice([1, 4, 5, 9])}, 6, {rng})"
 
         raise AssertionError(f"no generator wired up for conditional-aggregate function {fn}")
 
-    # -- Volatile function generator ------------------------------------------
+
     def generate_volatile_formula(self, fn):
         """RANDBETWEEN/RANDARRAY force min==max for a deterministic result;
         RAND/NOW/TODAY have no such knob so they're wrapped in a
@@ -1896,10 +1896,10 @@ class ExcelFuzzGenerator:
         rng = f"{col(0)}1:{col(0)}{value_rows}"
 
         if fn == "ROW":
-            # ROW() against a multi-row range spills an array in real
-            # Excel, same dynamic-array-automation risk noted for
-            # BYROW/BYCOL/MAKEARRAY/SCAN above -- INDEX pins it to a
-            # single scalar the same way ARRAY_FUNCTIONS does.
+
+
+
+
             return f"=INDEX(ROW({rng}), 1)"
         if fn == "ROWS":
             return f"=ROWS({rng})"
@@ -1920,24 +1920,24 @@ class ExcelFuzzGenerator:
         if fn == "SHEETS":
             return "=_xlfn.SHEETS()"
         if fn == "SHEET":
-            # With a real second sheet now in the workbook (see
-            # create_fuzz_workbook's cross-sheet block), this is no longer
-            # a trivially-always-1 check in either engine.
+
+
+
             return "=_xlfn.SHEET()"
         if fn == "INDIRECT":
             return f'=SUM(INDIRECT("{rng}"))'
         if fn == "OFFSET":
             return f"=SUM(OFFSET({cell}, 0, 0, {value_rows}, 1))"
         if fn == "CELL":
-            # Avoid "contents" here: the referenced input cell may be blank,
-            # and OOXML/openpyxl blank-vs-empty-string observability is already
-            # documented as unsuitable for random differential fuzzing.
+
+
+
             info_type = random.choice(["row", "col", "address"])
             return f'=CELL("{info_type}", {cell})'
         if fn == "INFO":
-            # `release` is intentionally excluded: it is the installed Excel
-            # version, so it is environment-dependent (for example, this Mac
-            # oracle reports 16.112 while visi returns its stable 16.0 stub).
+
+
+
             info_type = random.choice(["numfile", "system"])
             return f'=INFO("{info_type}")'
 
@@ -1993,15 +1993,15 @@ class ExcelFuzzGenerator:
         if fn == "SORTBY":
             return f"=INDEX({P}SORTBY({rng},{rng2},-1),1)"
         if fn == "FILTER":
-            # IFERROR must wrap the whole SUM, not FILTER directly: real
-            # Excel implicitly reduces a dynamic-array function nested
-            # inside a non-array-aware function like IFERROR to its
-            # top-left cell unless the formula is CSE-entered (the same
-            # root cause documented for TRANSPOSE above) -- confirmed by
-            # reproducing an apparent UNIQUE mismatch this exact way
-            # (excel=-47.171 i.e. just the first element, visi=-69.171
-            # the correct full-array sum) and showing it disappears once
-            # IFERROR moves outside SUM.
+
+
+
+
+
+
+
+
+
             return f"=IFERROR(SUM({P}FILTER({rng},{self._bool_range})),0)"
         if fn == "TRIMRANGE":
             return f"=SUM({P}TRIMRANGE({rng}))"
@@ -2038,14 +2038,14 @@ class ExcelFuzzGenerator:
         ws = wb.active
         ws.title = "Sheet1"
 
-        # --- Table block: columns 1..num_cols. Row 1 holds deterministic
-        # column headers ("A", "B", ...); visi has no concept of an Excel
-        # Table distinct from the worksheet itself, and on import always
-        # names each column by its plain spreadsheet letter
-        # (col_idx_to_letters) -- using that same scheme as the real header
-        # text means `Sheet1[A]` resolves to the same column in both visi
-        # (worksheet/column-name lookup) and Excel (Table lookup). Every
-        # other row is a plain random value -- never a formula.
+
+
+
+
+
+
+
+
         header_names = [self._col_name(c) for c in range(1, num_cols + 1)]
         for c, name in enumerate(header_names, start=1):
             ws.cell(row=1, column=c, value=name)
@@ -2064,13 +2064,13 @@ class ExcelFuzzGenerator:
         table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
         ws.add_table(table)
 
-        # --- Formula block: a second block of num_cols columns immediately
-        # to the right of the table. Top rows hold raw random values (for
-        # plain cell/range refs to point at); the rest hold generated
-        # formulas referencing earlier rows in this same block, optionally
-        # including structured references into the table block (see
-        # generate_formula / _random_structured_col_ref /
-        # _random_structured_header_ref).
+
+
+
+
+
+
+
         value_rows = max(2, num_rows // 2)
         min_col = num_cols + 1
         max_col = num_cols * 2
@@ -2090,30 +2090,30 @@ class ExcelFuzzGenerator:
                     if val is not None:
                         ws.cell(row=r, column=c, value=val)
 
-        # --- Financial data block: a small "cashflow" column, an aligned
-        # ascending "date" column (plain Excel serial numbers, since visi
-        # has no DATE() function to build one from parts), and a "schedule"
-        # column of small rates, all plain values (never formulas). These
-        # back the array-argument financial functions (NPV/IRR/MIRR/XNPV/
-        # XIRR/FVSCHEDULE) via real ranges, since visi's parser doesn't
-        # support `{...}` array literals the way generate_financial_formula
-        # falls back to when this block hasn't been laid out.
+
+
+
+
+
+
+
+
         fin_cash_col = max_col + 2
         fin_date_col = fin_cash_col + 1
         fin_schedule_col = fin_cash_col + 2
         fin_bool_col = fin_cash_col + 3
         fin_formula_col = fin_cash_col + 4
 
-        # A conventional investment profile: one negative outlay up front
-        # followed by positive returns that more than repay it. That gives
-        # exactly one sign change, so IRR/XIRR/MIRR are guaranteed a unique
-        # positive root.
+
+
+
+
 
         cash_rows = 6
         outlay = round(random.uniform(5000, 50000), 2)
         ws.cell(row=1, column=fin_cash_col, value=-outlay)
-        # Split a total strictly greater than the outlay across the
-        # remaining periods so the series always turns a profit.
+
+
         weights = [random.uniform(0.5, 1.5) for _ in range(cash_rows - 1)]
         total_return = outlay * random.uniform(1.05, 2.5)
         scale = total_return / sum(weights)
@@ -2129,13 +2129,13 @@ class ExcelFuzzGenerator:
         for r in range(1, schedule_rows + 1):
             ws.cell(row=r, column=fin_schedule_col, value=round(random.uniform(0.01, 0.15), 4))
 
-        # A dedicated column of genuine boolean literals (not a broadcast
-        # comparison -- this engine's comparison operators don't broadcast
-        # across a range, e.g. `A1:A5>10` yields a scalar, not an array,
-        # a separate, pre-existing, out-of-scope limitation) for FILTER's
-        # include_array, which real Excel requires to actually be boolean.
-        # Alternating rather than random so it's guaranteed to contain at
-        # least one TRUE and one FALSE regardless of value_rows.
+
+
+
+
+
+
+
         for r in range(1, value_rows + 1):
             ws.cell(row=r, column=fin_bool_col, value=(r % 2 == 0))
 
@@ -2146,37 +2146,37 @@ class ExcelFuzzGenerator:
         )
         self._bool_range = f"{self._col_name(fin_bool_col)}1:{self._col_name(fin_bool_col)}{value_rows}"
 
-        # financial_formula_rows is sized to len(FINANCIAL_FUNCTIONS) and the
-        # column cycles through the list deterministically (rather than
-        # random.choice) so a single fuzz iteration is guaranteed to
-        # exercise every financial function at least once, instead of
-        # leaving coverage to chance across many --iterations runs.
+
+
+
+
+
         financial_formula_rows = max(len(self.FINANCIAL_FUNCTIONS), num_rows)
         for r in range(1, financial_formula_rows + 1):
             fn = self.FINANCIAL_FUNCTIONS[(r - 1) % len(self.FINANCIAL_FUNCTIONS)]
             ws.cell(row=r, column=fin_formula_col, value=self.generate_financial_formula(fn))
 
-        # --- Bespoke-generator blocks: one column per category, each row
-        # cycling deterministically through that category's function list so
-        # every genuinely-implemented function (per docs/missing-excel-
-        # formulas.md) is exercised at least once per fuzz iteration. Laid
-        # out sequentially to the right of the financial block; each
-        # generator reaches back into the plain-value rows (1..value_rows)
-        # of the formula block, which are guaranteed never to contain a
-        # formula, so there's no risk of a dependency cycle regardless of
-        # which of these columns comes first.
-        #
-        # DETECTLANGUAGE, TRANSLATE, and PHONETIC are genuinely implemented
-        # in visi (not stubs -- see core/text.rs) but are deliberately left
-        # out of this differential harness: real Excel's versions call
-        # Microsoft's cloud translation/language-detection services, so
-        # their output depends on network access and service state that
-        # this environment doesn't control, and isn't comparable to visi's
-        # local implementation even when both succeed. LET has real
-        # variable-binding support in visi (see LetScope in sheet.rs) but
-        # is excluded from LOGIC_EXTRA_FUNCTIONS below for an unrelated,
-        # environment-specific reason -- see the comment on
-        # LOGIC_EXTRA_FUNCTIONS itself.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         next_col = fin_formula_col + 2
 
         def emit_block(fn_list, formula_for):
@@ -2194,28 +2194,28 @@ class ExcelFuzzGenerator:
         emit_block(self.LOGIC_EXTRA_FUNCTIONS, lambda fn: self.generate_logic_formula(fn, value_rows, min_col, max_col))
         emit_block(self.ARRAY_FUNCTIONS, lambda fn: self.generate_array_formula(fn, value_rows, min_col, max_col))
 
-        # --- ETS block: a regular timeline plus an exactly-modelled series.
-        # Both the trend and the seasonal offsets are whole numbers so the
-        # series is representable exactly in binary floating point, which
-        # keeps "the model fits perfectly" true to the last bit rather than
-        # only to within rounding.
+
+
+
+
+
         ets_time_col = next_col
         ets_value_col = next_col + 1
         next_col += 2
 
         ets_len = 16
-        # Half the time a pure trend (no seasonal term at all), half the
-        # time a trend plus an exactly repeating season. Both the slope and
-        # the offsets are whole numbers, so "the model fits this perfectly"
-        # holds to the last bit rather than only to within rounding -- which
-        # is what makes the forecast independent of the smoothing
-        # parameters, and therefore comparable across two implementations
-        # that optimize them differently.
+
+
+
+
+
+
+
         period = random.choice([0, 2, 4])
         base = random.randint(10, 200)
         slope = random.randint(1, 4)
         if period:
-            # Offsets sum to zero so they don't bias the trend.
+
             half = [random.randint(1, 12) for _ in range(period // 2)]
             offsets = half + [-x for x in half]
             random.shuffle(offsets)
@@ -2243,28 +2243,28 @@ class ExcelFuzzGenerator:
         emit_block(self.RANGE_INFO_FUNCTIONS, lambda fn: self.generate_range_info_formula(fn, value_rows, min_col, max_col))
         emit_block(self.ARRAY_RESHAPE_FUNCTIONS, lambda fn: self.generate_array_reshape_formula(fn, value_rows, min_col, max_col))
 
-        # DATABASE_FUNCTIONS needs its own per-call criteria cells (not
-        # just a formula), so it gets a dedicated column and a bespoke
-        # loop rather than the generic emit_block.
+
+
+
         db_formula_col = next_col
         db_crit_col = next_col + 1
         for i, fn in enumerate(self.DATABASE_FUNCTIONS):
             formula = self.generate_database_formula(fn, ws, db_crit_col, i)
             ws.cell(row=i + 1, column=db_formula_col, value=formula)
 
-        # --- Cross-sheet block: a real second sheet, so quoted sheet names
-        # with spaces (`'Data Sheet'!A1`) and WorkbookManager::evaluate()'s
-        # 3-pass cross-sheet propagation are actually exercised end-to-end.
-        #
-        # A strict one-directional chain (never a cycle, which neither
-        # engine is guaranteed to resolve the same way):
-        #   Sheet1 table body (plain values)
-        #     -> Sheet1!{x1_cell} (already-generated formula-block cell)
-        #     -> Sheet2!B1 (SUM over Sheet1's table body, plus x1_cell)
-        #     -> Sheet1!{cross_col}1 (references Sheet2!B1)
-        # so resolving the final cell genuinely requires Sheet1's own
-        # formula pass to complete, then Sheet2 to see it, then Sheet1
-        # again -- exactly the kind of chain the 3 fixed passes exist for.
+
+
+
+
+
+
+
+
+
+
+
+
+
         ws2 = wb.create_sheet("Data Sheet")
         for r in range(1, value_rows + 1):
             for c in range(1, num_cols + 1):
@@ -2279,12 +2279,12 @@ class ExcelFuzzGenerator:
         cross_sheet_col = db_crit_col + 1
         ws.cell(row=1, column=cross_sheet_col, value=f"='Data Sheet'!{self._col_name(num_cols + 1)}1*2")
 
-        # --- Reference/value-entropy block: deterministic formulas whose
-        # purpose is to make sure every iteration contains address and source
-        # value forms that pure random generation may only hit rarely. The
-        # operands are chosen from formula-free helper columns so the cells
-        # compare the targeted feature itself, not random type/error
-        # propagation.
+
+
+
+
+
+
         ref_entropy_col = cross_sheet_col + 1
         fcash = self._col_name(fin_cash_col)
         fdate = self._col_name(fin_date_col)
@@ -2321,11 +2321,11 @@ class ExcelFuzzGenerator:
         ws.cell(row=2, column=criteria_formula_col, value=f'=COUNTIF({crit_col}1:{crit_col}5,"<>")')
         ws.cell(row=3, column=criteria_formula_col, value=f'=COUNTIF({crit_col}1:{crit_col}5,"A~?pha")')
 
-        # Final pass: add the `_xlfn.` prefix every post-2007 function in
-        # NEEDS_XLFN_PREFIX needs to be recognized when the file is opened
-        # by real Excel (see _apply_xlfn_prefixes). Done once here, over
-        # every formula cell on every sheet, rather than in each
-        # individual generator method above.
+
+
+
+
+
         for sheet in wb.worksheets:
             for row in sheet.iter_rows():
                 for cell in row:
@@ -2335,14 +2335,14 @@ class ExcelFuzzGenerator:
         wb.save(file_path)
 
 
-# -----------------------------------------------------------------------------
-# 2. Execution Drivers (visi & Microsoft Excel)
-# -----------------------------------------------------------------------------
 
-# `VisiDriver` moved to visi_driver.py, which drives visi either through the
-# in-process `visi_core` bindings or through the CLI. Re-exported here because
-# reverse_engineer_financial.py imports it (and ExcelDriver, and
-# XLSXEvaluatedReader) from this module.
+
+
+
+
+
+
+
 from visi_driver import (  # noqa: E402,F401
     VisiDriver,
     add_backend_arg,
@@ -2366,17 +2366,17 @@ class ExcelDriver:
                 self.driver_type = "mock"
 
     def run(self, input_file, output_file):
-        # First copy input_file to output_file so Excel modifies output_file
+
         shutil.copyfile(input_file, output_file)
         abs_output = os.path.abspath(output_file)
 
         if self.driver_type == "mock":
-            # For testing the harness when Excel is not available
+
             print("[ExcelDriver Warning] Running in mock mode (Excel not invoked).")
             return
 
         elif self.driver_type == "applescript":
-            # macOS AppleScript Excel recalculation driver
+
             app_name = self.excel_path if self.excel_path else "Microsoft Excel"
             if app_name.endswith(".app"):
                 app_name = os.path.splitext(os.path.basename(app_name))[0]
@@ -2414,19 +2414,19 @@ class ExcelDriver:
                 raise RuntimeError(f"Excel AppleScript failed:\nSTDERR: {res.stderr}")
 
         elif self.driver_type == "win32com":
-            # Windows COM Excel driver
+
             try:
                 import win32com.client
             except ImportError:
                 raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
 
-            # COM automation against a fresh Excel.Application is occasionally
-            # flaky in a way that surfaces as unrelated-looking Python errors
-            # (e.g. "'bool' object is not callable" out of win32com's dynamic
-            # dispatch) rather than a COM error -- transient, not
-            # reproducible, and not an Excel/visi disagreement. Retry with a
-            # fresh Application instance, mirroring the AppleScript driver's
-            # retry loop above.
+
+
+
+
+
+
+
             last_err = None
             for attempt in range(5):
                 if attempt > 0:
@@ -2454,16 +2454,16 @@ class ExcelDriver:
                 raise last_err
 
         elif self.driver_type == "cli":
-            # Custom CLI executable driver specified by user
+
             cmd = [self.excel_path, abs_output]
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if res.returncode != 0:
                 raise RuntimeError(f"Excel CLI command failed:\nSTDERR: {res.stderr}")
 
 
-# -----------------------------------------------------------------------------
-# 3. OpenXML Evaluated Content Extractor & Evaluated Value Reader
-# -----------------------------------------------------------------------------
+
+
+
 
 class XLSXEvaluatedReader:
     """Parses raw OpenXML structure directly from .xlsx zip files to read cached evaluated cell values."""
@@ -2500,23 +2500,23 @@ class XLSXEvaluatedReader:
 
         try:
             with zipfile.ZipFile(io.BytesIO(data), 'r') as z:
-                # 1. Load shared strings table if present
+
                 shared_strings = []
                 if 'xl/sharedStrings.xml' in z.namelist():
                     with z.open('xl/sharedStrings.xml') as f:
                         tree = ET.parse(f)
                         root = tree.getroot()
                         for si in root.findall('.//main:si', NS):
-                            # String value can be direct <t> or nested in <r><t>
+
                             t_elems = si.findall('.//main:t', NS)
                             text = "".join(t.text or "" for t in t_elems)
                             shared_strings.append(text)
 
-                # 2. Iterate sheet XML files, keyed by the workbook's real
-                # worksheet names rather than by part filenames. The fuzzer
-                # deliberately exercises names like "Data Sheet"; comparing
-                # `sheet2.xml` to `sheet2.xml` would miss an exporter that
-                # renamed or mis-escaped a sheet while preserving part order.
+
+
+
+
+
                 sheet_names_by_part = XLSXEvaluatedReader._worksheet_names_by_part(z)
                 sheet_files = [name for name in z.namelist() if name.startswith('xl/worksheets/sheet') and name.endswith('.xml')]
                 for sheet_file in sorted(sheet_files):
@@ -2529,18 +2529,18 @@ class XLSXEvaluatedReader:
                         root = tree.getroot()
                         for cell in root.findall('.//main:c', NS):
                             ref = cell.attrib.get('r')
-                            cell_type = cell.attrib.get('t', 'n')  # default numeric
+                            cell_type = cell.attrib.get('t', 'n')
 
                             f_elem = cell.find('main:f', NS)
                             formula = f_elem.text if f_elem is not None else None
 
                             if cell_type == 'inlineStr':
-                                # Inline strings live in <is><t>...</t></is> (or
-                                # <is><r><t>...</t></r>...</is> for rich-text runs),
-                                # not <v> -- real Excel writes these for some string
-                                # cells instead of using the shared-strings table
-                                # (observed via fuzz_pivot.py's AppleScript/VBA
-                                # macro save path).
+
+
+
+
+
+
                                 is_elem = cell.find('main:is', NS)
                                 if is_elem is not None:
                                     t_elems = is_elem.findall('.//main:t', NS)
@@ -2600,9 +2600,9 @@ class XLSXEvaluatedReader:
 
     @staticmethod
     def _normalize_workbook_rel_target(target):
-        # Relationship targets in workbook.xml.rels are relative to
-        # xl/workbook.xml unless they are package-absolute (/xl/...). Use
-        # posix paths because these are zip member names, not host paths.
+
+
+
         if target.startswith('/'):
             normalized = posixpath.normpath(target.lstrip('/'))
         else:
@@ -2615,7 +2615,7 @@ class XLSXEvaluatedReader:
             return None
 
         if cell_type == 's':
-            # Shared string index
+
             try:
                 idx = int(raw_val)
                 if 0 <= idx < len(shared_strings):
@@ -2625,19 +2625,19 @@ class XLSXEvaluatedReader:
                 return raw_val
 
         elif cell_type == 'b':
-            # Boolean
+
             return raw_val == '1' or raw_val.lower() == 'true'
 
         elif cell_type == 'e':
-            # Error code (e.g. #DIV/0!, #VALUE!, #N/A, #REF!, #NUM!, #NAME?, #NULL!)
+
             return raw_val.upper()
 
         elif cell_type == 'str' or cell_type == 'inlineStr':
-            # Inline string
+
             return raw_val
 
         else:
-            # Numeric (int or float)
+
             try:
                 f_val = float(raw_val)
                 if f_val.is_integer():
@@ -2647,22 +2647,22 @@ class XLSXEvaluatedReader:
                 return raw_val
 
 
-# -----------------------------------------------------------------------------
-# 3b. Smoke mode (--driver mock)
-# -----------------------------------------------------------------------------
-#
-# The mock Excel driver copies the *unevaluated* source workbook and calls it
-# Excel's output. openpyxl writes no cached <v> for a formula cell, so every
-# formula cell reads as None on the "Excel" side -- 360 of 530 cells in a
-# default grid. Comparing against that isn't a weak oracle, it's a guaranteed
-# 100% mismatch.
-#
-# So mock does not get compared. What it is actually for -- and what
-# fuzz/README.md has always called it -- is a smoke test of the pipeline
-# (generate -> visi -> read -> report) on a machine with no Excel automation,
-# and a crash hunt over a large volume of generated formulas. Both work
-# without an oracle; neither works with a fake one, because the real signal is
-# invisible among the guaranteed noise.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 SMOKE_BANNER = (
     "[mock] No Excel: running as a pipeline smoke test. Output is checked for "
@@ -2685,37 +2685,37 @@ def smoke_check(items, what="cells"):
     return True, ""
 
 
-# -----------------------------------------------------------------------------
-# 4. Semantic Comparison Engine
-# -----------------------------------------------------------------------------
+
+
+
 
 class DifferentialComparator:
     """Compares evaluated cell contents between visi output and Excel output."""
 
     EXCEL_ERRORS = {"#DIV/0!", "#VALUE!", "#N/A", "#REF!", "#NUM!", "#NAME?", "#NULL!", "#CALC!", "#SPILL!"}
 
-    # Matches a floating-point literal as it appears embedded in text, e.g.
-    # inside CONCATENATE's output. Used to give text results the same
-    # last-digit tolerance numeric cells already get -- see
-    # `_numeric_text_equal`.
+
+
+
+
     _NUM_TOKEN_RE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?")
 
     def __init__(self, float_rel_tol=1e-7, float_abs_tol=1e-7, strict_error_class=False):
         self.float_rel_tol = float_rel_tol
         self.float_abs_tol = float_abs_tol
-        # When several sub-expressions of one formula each raise a
-        # *different* error, visi and Excel sometimes surface different
-        # ones -- which error wins depends on Excel's internal evaluation
-        # order and differs per operator and per function. That is a
-        # documented divergence ("docs/excel-discrepancies.md" section 12),
-        # and by default a disagreement where *both* engines errored is
-        # counted separately rather than as a failure.
-        #
-        # It is deliberately still counted and reported, not silently
-        # dropped: strict error-class comparison is what surfaced genuine
-        # bugs like TYPE(error) and ERROR.TYPE returning the wrong thing,
-        # LOG(n, 1) being #NUM! instead of #DIV/0!, and CHITEST's #N/A
-        # cases. Pass --strict-error-class to make them failures again.
+
+
+
+
+
+
+
+
+
+
+
+
+
         self.strict_error_class = strict_error_class
         self.error_class_only = 0
 
@@ -2740,7 +2740,7 @@ class DifferentialComparator:
         """Checks equality between two canonical cell types, honoring blank equivalence."""
         if t1 == t2:
             return True
-        # Blank / whitespace equivalence (e.g. None vs empty string)
+
         if (t1 == 'empty' and t2 == 'string' and isinstance(v2, str) and not v2.strip()) or \
            (t2 == 'empty' and t1 == 'string' and isinstance(v1, str) and not v1.strip()):
             return True
@@ -2758,14 +2758,14 @@ class DifferentialComparator:
             v_cell = visi_cells.get(key)
             e_cell = excel_cells.get(key)
 
-            # A cell that is absent altogether is compared with the same
-            # blank-equivalence rule `values_equal` applies to a cell that is
-            # present but empty -- otherwise the two paths disagree with each
-            # other. Excel keeps a whitespace-only source cell as an
-            # empty-string cell (`<t/>` in the shared strings) where visi
-            # writes no cell at all, and both mean "nothing here"; visi treats
-            # blank and empty string as the same value throughout, down to
-            # ISBLANK("") being TRUE. A genuinely missing *value* still fails.
+
+
+
+
+
+
+
+
             if v_cell is None and e_cell is not None:
                 e_val = e_cell['val']
                 e_type = self.canonical_type(e_cell.get('type'), e_val)
@@ -2839,7 +2839,7 @@ class DifferentialComparator:
             return None
         suffix = text[-1]
         body = text[:-1]
-        # Split on the last +/- that isn't an exponent sign.
+
         split_at = None
         for i in range(len(body) - 1, 0, -1):
             if body[i] in "+-" and body[i - 1] not in "eE":
@@ -2898,32 +2898,32 @@ class DifferentialComparator:
                 return True
             return False
 
-        # If both are numbers (float or int)
+
         if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
             return math.isclose(float(v1), float(v2), rel_tol=self.float_rel_tol, abs_tol=self.float_abs_tol)
 
-        # Numeric-looking text is still text. Do not coerce across the
-        # string/number boundary: Excel's value type is observable by
-        # arithmetic, type predicates, concatenation, and formatting.
-        # Check this before the final string fallback below, which exists for
-        # miscellaneous non-Excel scalar types rather than type coercion.
+
+
+
+
+
         if (isinstance(v1, str) and isinstance(v2, (int, float)) and not isinstance(v2, bool)) or \
            (isinstance(v2, str) and isinstance(v1, (int, float)) and not isinstance(v1, bool)):
             return False
 
-        # If both are error strings or text strings
+
         if isinstance(v1, str) and isinstance(v2, str):
             if v1.upper() in self.EXCEL_ERRORS or v2.upper() in self.EXCEL_ERRORS:
                 return v1.upper() == v2.upper()
             if v1 == v2:
                 return True
-            # The IM* family returns its result as *text* ("3+4i"), so a
-            # plain string comparison would flag a disagreement in the last
-            # displayed digit -- exactly the kind of float noise the
-            # numeric branch above already tolerates for ordinary numbers.
-            # Compare component-wise with the same tolerance instead, but
-            # only when both sides really are complex literals (and agree
-            # on the i/j suffix, which is meaningful and must match).
+
+
+
+
+
+
+
             c1 = self._parse_complex(v1)
             c2 = self._parse_complex(v2)
             if c1 is not None and c2 is not None:
@@ -2934,7 +2934,7 @@ class DifferentialComparator:
                 )
             return self._numeric_text_equal(v1, v2)
 
-        # Booleans vs strings/numbers (e.g. True vs 1, "TRUE" vs True, "FALSE" vs False)
+
         if isinstance(v1, bool) or isinstance(v2, bool):
             def to_b(v):
                 if isinstance(v, bool):
@@ -2949,9 +2949,9 @@ class DifferentialComparator:
         return str(v1) == str(v2)
 
 
-# -----------------------------------------------------------------------------
-# 5. CLI & Test Runner Orchestrator
-# -----------------------------------------------------------------------------
+
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Differential fuzzing test harness for visi vs Microsoft Excel.")
@@ -2983,8 +2983,8 @@ def main():
 
     generator = ExcelFuzzGenerator(seed=args.seed)
     visi_driver = VisiDriver(binary_path=args.visi_path, backend=args.backend)
-    # Only warn when the fallback was involuntary. Asking for --backend
-    # subprocess on purpose is not something to nag about.
+
+
     if args.backend == "auto" and visi_driver.backend != "bindings":
         print(bindings_hint(), file=sys.stderr)
     excel_driver = ExcelDriver(excel_path=args.excel_path, driver_type=args.driver)
@@ -3016,19 +3016,19 @@ def main():
         excel_out_xlsx = os.path.join(temp_dir, "excel_out.xlsx")
 
         try:
-            # 1. Generate source workbook
+
             iter_gen.create_fuzz_workbook(source_xlsx, num_rows=args.rows, num_cols=args.cols)
 
-            # 2. Evaluate with visi
+
             visi_bytes = visi_driver.run(source_xlsx, visi_out_xlsx)
 
-            # 3. Evaluate with Excel, if there is an Excel to evaluate with
+
             if not smoke_mode:
                 excel_driver.run(source_xlsx, excel_out_xlsx)
 
-            # 4. Compare evaluated cell contents. visi's output is parsed from
-            # the bytes it just wrote -- the same bytes now on disk in
-            # visi_out_xlsx, so this is a saved read, not a different oracle.
+
+
+
             visi_cells = XLSXEvaluatedReader.read_evaluated_cells_bytes(
                 visi_bytes, source=visi_out_xlsx
             )

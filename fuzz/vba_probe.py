@@ -58,7 +58,7 @@ EXCEL_APP = "Microsoft Excel"
 OSASCRIPT_TIMEOUT = 60
 
 
-# -- VBA sources ---------------------------------------------------------
+
 
 PROBE_BAS = '''Attribute VB_Name = "VisiProbe"
 Public Sub RunProbe()
@@ -77,10 +77,10 @@ Public Sub RunProbe()
 End Sub
 '''
 
-# `Harness` is the pattern a generated-VBA fuzzer must use verbatim: the
-# generated procedure is called from inside an `On Error GoTo`, so a runtime
-# error anywhere down the call stack returns as data instead of stalling the
-# automation bridge on a modal dialog.
+
+
+
+
 HARNESS_BAS = '''Attribute VB_Name = "VisiHarness"
 Public Function Harness(ByVal which As String) As String
     On Error GoTo Failed
@@ -114,7 +114,7 @@ Public Function TypeMismatch() As Variant
 End Function
 '''
 
-# Only reached with --demo-hang: no handler anywhere, so Excel goes modal.
+
 HANG_BAS = '''Attribute VB_Name = "VisiHang"
 Public Function Unhandled() As String
     Unhandled = CStr(CLng("not a number"))
@@ -122,7 +122,7 @@ End Function
 '''
 
 
-# -- helpers -------------------------------------------------------------
+
 
 def run_osascript(script, timeout=OSASCRIPT_TIMEOUT):
     """Returns (ok, output). ok=False with output='<timeout>' means Excel went
@@ -190,7 +190,7 @@ def visi_macro_add(visi, base, name, source, out):
         raise RuntimeError(f"visi macro add failed: {res.stderr.strip()}")
 
 
-# -- checks --------------------------------------------------------------
+
 
 def check_author_and_run(visi, workdir, results):
     """visi-authored module loads, runs, mutates cells, and the mutations
@@ -274,7 +274,7 @@ def demo_hang(visi, workdir, results):
                     f"untrapped error {'hung as expected' if out == '<timeout>' else f'gave {out!r}'}"))
 
 
-# -- main ----------------------------------------------------------------
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,

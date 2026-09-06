@@ -92,21 +92,21 @@ except ImportError:
     )
 
 
-# -----------------------------------------------------------------------------
-# 1. Generation
-# -----------------------------------------------------------------------------
 
-# Variable names chosen to avoid VBA's keywords entirely -- `name`, `date`,
-# `line`, `error` and friends are all keywords in some position.
+
+
+
+
+
 VAR_NAMES = ["va", "vb", "vc", "vd", "ve"]
 
-# Locals the host statements need, declared in every generated procedure.
-# Kept disjoint from VAR_NAMES and from the loop counters `vi`/`vn`: a name in
-# both lists is `Dim`'d twice, which is a **compile** error in Excel ("Duplicate
-# declaration in current scope") and therefore a hang rather than a failure --
-# and `visi macro check` cannot warn about it either, since Phase 0 resolves no
-# names. Found the hard way, on a modal dialog. The assertion below is the
-# actual fix; the rename alone would just wait to be undone.
+
+
+
+
+
+
+
 HOST_SHEET_VAR = "wsh"
 HOST_CELL_VAR = "vk"
 HOST_RANGE_VAR = "vq"
@@ -115,8 +115,8 @@ assert not set(_HOST_VARS) & set(VAR_NAMES + ["vi", "vn"]), (
     f"host locals {_HOST_VARS} collide with generated variables"
 )
 
-# Literals spanning every subtype boundary the Variant model has to get right:
-# the Integer/Long edge at 32767, the Long/Double edge, and the suffixes.
+
+
 NUM_LITERALS = [
     "0", "1", "2", "3", "7", "10", "-1", "-7", "255",
     "32767", "32768", "-32768", "100000", "2147483647",
@@ -131,14 +131,14 @@ ARITH_OPS = ["+", "-", "*", "/", "\\", "Mod", "^"]
 COMPARE_OPS = ["=", "<>", "<", ">", "<=", ">="]
 LOGICAL_OPS = ["And", "Or", "Xor", "Eqv", "Imp"]
 
-# One-argument intrinsics that are total enough to be worth generating.
-#
-# `Len` is absent on purpose. `Len(False)` -- Len applied to a *Boolean
-# literal* -- is a compile error in Excel, which surfaces as the modal-dialog
-# hang and poisons the whole batch. It is another instance of the Phase 0
-# boundary: a check that needs the argument's static type, which the parser
-# does not track. `Len` is still covered below, wrapped in `CStr` so its
-# argument is always a string.
+
+
+
+
+
+
+
+
 UNARY_FUNCS = [
     "CStr", "CInt", "CLng", "CDbl", "CSng", "CBool", "Abs", "Sgn", "Int",
     "Fix", "UCase", "LCase", "Trim", "TypeName", "IsNumeric",
@@ -146,11 +146,11 @@ UNARY_FUNCS = [
 ]
 
 
-# The data grid every case runs against, as `(row, col, source)` with 1-based
-# coordinates. Deliberately small and deliberately mixed: two numeric columns
-# to aggregate, a formula cell so a write can be observed to recalculate, a
-# text cell and a boolean so the "ranges skip these, direct arguments coerce
-# them" split is under test, and an empty cell.
+
+
+
+
+
 GRID_ROWS, GRID_COLS = 4, 6
 GRID = [
     (1, 1, "1"), (2, 1, "2"), (3, 1, "3"), (4, 1, "4"),
@@ -158,17 +158,17 @@ GRID = [
     (1, 3, "=A1*2"), (2, 3, "=A2+B2"),
     (1, 4, "hi"), (2, 4, True),
 ]
-# Columns E and F (5 and 6) are scratch: nothing starts there, so a generated
-# write has somewhere to go that no expectation depends on.
+
+
 SCRATCH_COLS = (5, 6)
 
-# Formulas a case may write into a cell. Fixed rather than generated: whether
-# the two engines agree on a *formula* is `fuzz_excel.py`'s question, and
-# mixing it in here would attribute its failures to the macro layer.
+
+
+
 WRITABLE_FORMULAS = ['"=A1+B1"', '"=SUM(A1:B2)"', '"=A1*3"', '"=COUNT(A1:B4)"']
 
-# Worksheet functions safe to call over the grid: every one is implemented by
-# both engines and none is non-deterministic.
+
+
 GRID_FUNCTIONS = ["Sum", "Count", "CountA", "Min", "Max", "Average"]
 
 
@@ -184,7 +184,7 @@ class VbaGenerator:
         self.rng = random.Random(seed)
         self.host_surface = host_surface
 
-    # ---- expressions ----------------------------------------------------
+
 
     def literal(self):
         bucket = self.rng.random()
@@ -222,9 +222,9 @@ class VbaGenerator:
             fn = self.rng.choice(UNARY_FUNCS)
             return f"{fn}({self.expr(depth - 1, vars_in_scope)})"
         if kind < 0.94:
-            # See UNARY_FUNCS: Len needs a string argument to stay compilable.
+
             return f"Len(CStr({self.expr(depth - 1, vars_in_scope)}))"
-        # Two-argument string intrinsics, which need a sane count argument.
+
         fn = self.rng.choice(["Left", "Right", "String", "Space", "InStr", "Mid"])
         if fn in ("Space",):
             return f"Space({self.rng.randint(0, 4)})"
@@ -236,7 +236,7 @@ class VbaGenerator:
             return f"Mid({self.expr(depth - 1, vars_in_scope)}, {self.rng.randint(1, 4)}, {self.rng.randint(0, 4)})"
         return f"{fn}({self.expr(depth - 1, vars_in_scope)}, {self.rng.randint(0, 4)})"
 
-    # ---- statements -----------------------------------------------------
+
 
     def statements(self, count, vars_in_scope, depth):
         out = []
@@ -248,10 +248,10 @@ class VbaGenerator:
         kind = self.rng.random()
         target = self.rng.choice(vars_in_scope)
 
-        # The thresholds below are the Phase 1 mix scaled to leave ~30% for
-        # the host statements at the end. Host coverage is the whole point of
-        # Phase 2, and at the 5% a naive "add one more branch" gives, a
-        # 300-case run generates barely a handful of them.
+
+
+
+
         if kind < 0.28:
             return [f"{target} = {self.expr(depth, vars_in_scope)}"]
 
@@ -265,8 +265,8 @@ class VbaGenerator:
             ]
 
         if kind < 0.49:
-            # Bounds are literal so the loop provably terminates; a generated
-            # expression could produce a limit that never ends.
+
+
             lo, hi = 1, self.rng.randint(1, 4)
             step = self.rng.choice(["", " Step 2", " Step -1"])
             if step == " Step -1":
@@ -300,9 +300,9 @@ class VbaGenerator:
             ]
 
         if kind < 0.70:
-            # A locally-trapped error, so `Err.Number` gets compared through
-            # the path a real macro uses rather than only through the outer
-            # harness.
+
+
+
             return [
                 "On Error Resume Next",
                 f"{target} = {self.expr(depth, vars_in_scope)}",
@@ -311,7 +311,7 @@ class VbaGenerator:
 
         return self.host_statement(target, vars_in_scope, depth)
 
-    # ---- the host object model ------------------------------------------
+
 
     def cell(self, scratch=False):
         """A literal `(row, col)` inside the grid, or in the scratch columns.
@@ -341,16 +341,16 @@ class VbaGenerator:
         srow, scol = self.cell(scratch=True)
 
         if kind < 0.22:
-            # A write, then the read that proves it landed -- and, when the
-            # target feeds a formula, that the formula recalculated.
+
+
             return [
                 f"{HOST_SHEET_VAR}.Cells({srow}, {scol}).Value = {self.expr(depth - 1, vars_in_scope)}",
                 f"{target} = {HOST_SHEET_VAR}.Cells({srow}, {scol}).Value",
             ]
 
         if kind < 0.34:
-            # Writing over the grid's own data, which the formula cells in
-            # column C read: this is the recalculation path.
+
+
             return [
                 f"{HOST_SHEET_VAR}.Cells({self.rng.randint(1, 2)}, 1).Value = {self.rng.choice(NUM_LITERALS)}",
                 f"{target} = {HOST_SHEET_VAR}.Range(\"C1\").Value",
@@ -375,9 +375,9 @@ class VbaGenerator:
             r2 = self.rng.randint(row, GRID_ROWS)
             c2 = self.rng.randint(col, GRID_COLS)
             rng = f'{HOST_SHEET_VAR}.Range("{self.a1(row, col)}:{self.a1(r2, c2)}")'
-            # Both call paths, since they part company on failure: the
-            # `WorksheetFunction` one raises where `Application` returns an
-            # error Variant.
+
+
+
             via = self.rng.choice(["Application.WorksheetFunction", "Application"])
             return [f"{target} = {via}.{fn}({rng})"]
 
@@ -474,10 +474,10 @@ class VbaGenerator:
 
         lines = [f"Private Function Gen{index}()"]
         lines.append("    Dim " + ", ".join(vars_in_scope) + ", vi, vn")
-        # Declared unconditionally: a `Dim` costs nothing and the alternative
-        # is deciding after the fact which host constructs the body happened
-        # to use, which is exactly the string-splicing fragility the typed
-        # generator exists to avoid.
+
+
+
+
         lines.append(
             f"    Dim {HOST_SHEET_VAR} As Worksheet, "
             f"{HOST_CELL_VAR} As Range, {HOST_RANGE_VAR} As Range"
@@ -491,15 +491,15 @@ class VbaGenerator:
         return "\n".join(lines)
 
 
-# The value-only wrapper.
-#
-# **Keep this self-contained.** `vba_expr_probe.py` and `vba_host_probe.py`
-# both import it and splice it into modules of their own, which define nothing
-# else -- so a call to a helper that lives only in *this* file compiles here
-# and is "Sub or Function not defined" there. That is a **compile** error, so
-# the symptom is a modal dialog and a hung `osascript`, not a failing test.
-# Learned by doing it: `GRID_HARNESS_TEMPLATE` below is what that change
-# should have been.
+
+
+
+
+
+
+
+
+
 HARNESS_TEMPLATE = """Public Function Harness{i}() As String
     On Error GoTo Failed
     Dim r
@@ -510,13 +510,13 @@ Failed:
     Harness{i} = "ERR|" & CStr(Err.Number)
 End Function"""
 
-# The wrapper this fuzzer uses, which additionally resets the data grid before
-# the case and serialises it afterwards. Depends on `GRID_HELPERS`, which
-# `build_module` puts in the same module.
-#
-# The grid is reported even when the case raised: writes made before the error
-# persist in Excel, which does not roll back, so discarding them here would be
-# comparing against a workbook neither engine has.
+
+
+
+
+
+
+
 GRID_HARNESS_TEMPLATE = """Public Function Harness{i}() As String
     On Error GoTo Failed
     ResetGrid
@@ -528,15 +528,15 @@ Failed:
     Harness{i} = "ERR|" & CStr(Err.Number) & "|" & GridState()
 End Function"""
 
-# `ResetGrid` runs before every case so the cases in a batch cannot set each
-# other up; `GridState` serialises the whole grid afterwards. Both are plain
-# VBA and run identically in both engines, which is the point -- the cell
-# comparison is then the same string comparison as the value comparison,
-# rather than a second mechanism that could itself be wrong.
-#
-# `CellText` exists because `CStr` is not total: `CStr(Null)` is error 94 and
-# `CStr` of a Variant array is error 13, and either would report as the
-# *case* failing rather than as one cell being unrenderable.
+
+
+
+
+
+
+
+
+
 GRID_HELPERS = """Public Sub ResetGrid()
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Worksheets("Data")
@@ -658,9 +658,9 @@ def build_workbook(path):
     wb.save(path)
 
 
-# -----------------------------------------------------------------------------
-# 2. The two engines
-# -----------------------------------------------------------------------------
+
+
+
 
 
 def visi_result(source, proc, workbook=None, harness=False):
@@ -695,21 +695,21 @@ def visi_result(source, proc, workbook=None, harness=False):
     except visi_core.VisiError as e:
         return f"SYNTAX|{type(e).__name__}: {e}"
     if value is None:
-        # CStr(Null) is itself error 94 in VBA, which is what the harness
-        # would have reported.
+
+
         return "ERR|94"
     if harness:
         return value
     return f"OK|{type_name}|{value}"
 
 
-# -----------------------------------------------------------------------------
-# 2b. Comparison
-# -----------------------------------------------------------------------------
 
-# Same tolerance `fuzz_excel.py`'s `DifferentialComparator` uses, and for the
-# same reason: the two engines do the same arithmetic in different orders and
-# the last bit or two of a Double is not a disagreement worth reporting.
+
+
+
+
+
+
 FLOAT_REL_TOL = 1e-7
 FLOAT_ABS_TOL = 1e-7
 
@@ -738,7 +738,7 @@ def fields_match(mine, theirs):
     for x, y in zip(a, b):
         if x == y:
             continue
-        # The grid field is itself a comma-separated list of `Type:Value`.
+
         xs, ys = x.split(","), y.split(",")
         if len(xs) != len(ys):
             return False
@@ -757,14 +757,14 @@ def fields_match(mine, theirs):
     return True
 
 
-# The child process `ExcelDriver._run_win32com_batch` launches (see that
-# method's docstring for why this has to be a separate process rather than
-# an in-process win32com call). `argv[1]` is the .xlsm path, `argv[2:]` are
-# the `Harness{i}` indices to run. Each result prints as `i=result`,
-# matching the AppleScript driver's own `i=result` line format so both
-# paths share one parser. `Application.Run` returns a function's value
-# directly -- no AppleScript-style string accumulation across calls is
-# needed, since each call here is its own subprocess round trip anyway.
+
+
+
+
+
+
+
+
 _WIN32COM_VBA_RUNNER = """
 import sys
 import win32com.client
@@ -889,11 +889,11 @@ class ExcelDriver:
                 try:
                     returncode, out = self._run_win32com_batch(xlsm, indices)
                 except subprocess.TimeoutExpired:
-                    # A hang here is a compile error in generated source
-                    # (Excel goes modal) or a wedged COM automation session --
-                    # the same two causes the AppleScript path's timeout
-                    # handles. Either way the batch is lost; restart and
-                    # retry once.
+
+
+
+
+
                     self.restart_windows()
                     if attempt == 0:
                         continue
@@ -907,8 +907,8 @@ class ExcelDriver:
             return {}
         if self.driver_type == "mock":
             return {}
-        # `linefeed`, not "\n": AppleScript string literals do not carry a
-        # newline escape.
+
+
         calls = "\n".join(
             f'    set acc to acc & "{i}=" & (run VB macro "Harness{i}") & linefeed'
             for i in indices
@@ -935,9 +935,9 @@ class ExcelDriver:
                     text=True, timeout=self.timeout,
                 )
             except subprocess.TimeoutExpired:
-                # A hang here is a compile error in generated source (Excel
-                # goes modal) or session degradation. Either way the batch is
-                # lost; restart and retry once.
+
+
+
                 self.restart()
                 if attempt == 0:
                     continue
@@ -948,10 +948,10 @@ class ExcelDriver:
                     if "=" in line:
                         k, _, v = line.partition("=")
                         if k.strip().isdigit():
-                            # Only the trailing CR is stripped. `.strip()`
-                            # here silently ate the padding on results like
-                            # `OK|String|  3  ` and reported a divergence that
-                            # was the harness's own doing.
+
+
+
+
                             out[int(k.strip())] = v.rstrip("\r")
                 return out
             self.restart()
@@ -1034,9 +1034,9 @@ def main():
                 excel = driver.run_batch(xlsm, indices)
 
             for i, _ in cases:
-                # `Harness{i}`, not `Gen{i}`: the harness is what resets the
-                # grid and serialises it, so running the inner procedure
-                # directly would compare a value against a value-plus-grid.
+
+
+
                 mine = visi_result(source, f"Harness{i}", workbook=base, harness=True)
                 theirs = excel.get(i)
                 if theirs is None:

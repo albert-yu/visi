@@ -70,7 +70,7 @@ def saved_failure_sources():
     )
 
 
-# --------------------------------------------------------------------- generator coverage
+
 
 
 def test_formula_text_function_dispatch_covers_listed_names():
@@ -132,7 +132,7 @@ def test_pivot_rich_shape_expands_source_schema(tmp_path):
     assert fields <= set(PivotFuzzGenerator.RICH_COL_NAMES)
 
 
-# --------------------------------------------------------------------- eval
+
 
 
 @requires_cli
@@ -183,7 +183,7 @@ def test_run_returns_the_bytes_it_wrote(tmp_path):
     ) == XLSXEvaluatedReader.read_evaluated_cells(out)
 
 
-# ------------------------------------------------------------------- charts
+
 
 
 @requires_cli
@@ -206,7 +206,7 @@ def test_chart_parity(seed, tmp_path):
     assert read_charts(cli_out) == read_charts(bnd_out)
 
 
-# ------------------------------------------------------------------- pivots
+
 
 
 @requires_cli
@@ -269,7 +269,7 @@ def test_empty_filter_selection_is_bindings_only(tmp_path):
     assert wb.pivots()[0]["filter_selections"]["Region"] is None
 
 
-# --------------------------------------------------------------- error text
+
 
 
 @requires_cli
@@ -298,7 +298,7 @@ def test_binding_error_text_matches_the_cli(tmp_path):
     assert str(exc.value) == cli_msg
 
 
-# ------------------------------------------------------------------- macros
+
 
 
 MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    Range("A1").Value = 1\nEnd Sub\n'
@@ -324,8 +324,8 @@ def test_macro_add_parity(kind, sheet, tmp_path):
     cli_out = str(tmp_path / "cli.xlsm")
     base = visi_core.Workbook()
     if sheet is not None:
-        # Both backends resolve the sheet by name, so take it from the
-        # workbook rather than assuming what an empty one calls its sheet.
+
+
         sheet = base.sheet_names[0]
     base.save(src)
     with open(bas, "w") as f:
@@ -381,9 +381,9 @@ def test_macro_list_parity(tmp_path):
     ]
 
 
-# `Range("A1")` unqualified is the active sheet, and `C1` reads back what the
-# formula in `B1` computed -- so this exercises a write, a recalculation and a
-# worksheet-function call in four lines.
+
+
+
 RUN_MACRO_SRC = (
     'Attribute VB_Name = "Runner"\n'
     "Public Function Go() As Variant\n"
@@ -475,8 +475,8 @@ def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_p
 
     reading = run("Peek")
     assert reading.returncode == 0, reading.stderr
-    # The "a macro ran" notice is not suppressible, and is on stderr so it
-    # cannot be confused with the value.
+
+
     assert "Running VBA procedure" in reading.stderr
 
     assert visi_core.Workbook.load(src).run_macro("Peek")[2] is False

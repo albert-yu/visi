@@ -48,8 +48,8 @@ except ImportError:
 
 from fuzz_vba import HARNESS_TEMPLATE, ExcelDriver
 
-# Idempotent so every case can open with it -- a batch shares one session and
-# a second `CreatePivotTable` with the same name is a run-time error.
+
+
 HELPERS = '''Public Sub EnsurePivot()
     Dim ws As Worksheet, pc As PivotCache, pt As PivotTable
     Set ws = ThisWorkbook.Sheets("Sheet1")
@@ -75,10 +75,10 @@ PREAMBLE = [
     "Dim v, s",
 ]
 
-# Each case runs in its own round trip: several mutate the filter, and a
-# batch would have them measure each other.
+
+
 CASES = [
-    # --- the objects
+
     "TypeName(ws.PivotTables)",
     "TypeName(ws.PivotTables(1))",
     'TypeName(ws.PivotTables("P1"))',
@@ -86,35 +86,35 @@ CASES = [
     "pt.Name",
     'TypeName(pt.PivotFields("Product"))',
     "CStr(pt.PivotFields.Count)",
-    # --- where the pivot sits
+
     "pt.TableRange1.Address",
     "pt.TableRange2.Address",
-    # --- CurrentPage, unfiltered
+
     'pt.PivotFields("Product").CurrentPage',
     'TypeName(pt.PivotFields("Product").CurrentPage)',
-    # --- a field that is not a page field
+
     'pt.PivotFields("Region").CurrentPage',
-    # --- orientation, as a way to tell the areas apart
+
     'CStr(pt.PivotFields("Product").Orientation)',
     'CStr(pt.PivotFields("Region").Orientation)',
     'CStr(pt.PivotFields("Amount").Orientation)',
-    # --- errors
+
     'ws.PivotTables("nope").Name',
     "ws.PivotTables(5).Name",
     'pt.PivotFields("nope").Orientation',
-    # --- setting CurrentPage, and whether the grid follows without a refresh
+
     'pt.PivotFields("Product").CurrentPage = "Widget" :: pt.PivotFields("Product").CurrentPage',
     'pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G5").Value)',
     'pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G1").Value)',
-    # ...and after an explicit refresh, to see whether it changes anything
+
     'pt.PivotFields("Product").CurrentPage = "Widget"\\npt.RefreshTable :: CStr(ws.Range("G5").Value)',
-    # --- setting it to a value that does not exist
+
     'pt.PivotFields("Product").CurrentPage = "Nonesuch" :: "no error"',
-    # --- clearing back to everything
+
     'pt.PivotFields("Product").CurrentPage = "Widget"\\npt.PivotFields("Product").CurrentPage = "(All)" :: pt.PivotFields("Product").CurrentPage & "/" & CStr(ws.Range("G5").Value)',
-    # --- what CurrentPage reads as under a multi-item selection
+
     'pt.PivotFields("Product").EnableMultiplePageItems = True\\npt.PivotFields("Product").PivotItems("Gadget").Visible = False :: pt.PivotFields("Product").CurrentPage',
-    # --- RefreshTable's return value
+
     "TypeName(pt.RefreshTable)",
     "CStr(pt.RefreshTable)",
 ]

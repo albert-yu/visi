@@ -33,14 +33,14 @@ try:
     import visi_core as _vc
 
     _IMPORT_ERROR = None
-except ImportError as exc:  # not built; the CLI backend still works
+except ImportError as exc:
     _vc = None
     _IMPORT_ERROR = exc
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The `visi` CLI has no timeout today, so a hang stalls a whole run forever.
-# Generous enough that a slow-but-progressing workbook is never cut off.
+
+
 CLI_TIMEOUT_SECONDS = 120
 
 
@@ -172,11 +172,11 @@ class VisiChartDriver(_BaseDriver):
             "Sheet1", add_config["chart_type"], range_str, title=add_config["title"] or None
         )
 
-        # `chart add -i` wrote the file and `chart list --json` reopened it.
-        # Keep that round trip: it is the only differential coverage of the
-        # chart OOXML writer/reader pair. The id has to be re-read afterwards
-        # because import re-derives it from the sheet name and the chart's
-        # position, so add_chart's return value is stale by now.
+
+
+
+
+
         wb = wb.roundtrip()
         chart_id = wb.charts()[0]["id"]
 
@@ -207,8 +207,8 @@ class VisiChartDriver(_BaseDriver):
             add_args += ["--title", add_config["title"]]
         self._cli("chart", add_args)
 
-        # `chart add` has no --json output of its own; look the new chart's id
-        # up via `chart list --json` (the only chart in the file).
+
+
         charts = json.loads(self._cli("chart", ["list", output_file, "--json"]))
         chart_id = charts[0]["id"]
 
@@ -265,9 +265,9 @@ class VisiPivotDriver(_BaseDriver):
                 grand_totals_row=config["grand_totals_row"],
                 grand_totals_col=config["grand_totals_col"],
             )
-        # One roundtrip per mutation, standing in for the file each `-i` CLI
-        # invocation writes and reopens. Dropping these would quietly
-        # stop exercising pivot_xlsx.rs's hand-rolled OOXML.
+
+
+
         wb = wb.roundtrip()
 
         for area, fields in (("row", config["row_fields"]), ("column", config["col_fields"])):
@@ -283,19 +283,19 @@ class VisiPivotDriver(_BaseDriver):
             column = config["filter_field"]["column"]
             wb.add_pivot_field(pivot_name, "filter", column)
             wb = wb.roundtrip()
-            # Deliberately the LAST mutation, with no roundtrip after it:
-            # PivotFilterField.selected_values is not reconstructed on import,
-            # so a round trip here would silently reset the filter to "all".
-            #
-            # The empty-list guard is defensive: PivotFuzzGenerator no longer
-            # emits an empty selection (it means "select nothing", which real
-            # Excel cannot represent -- see the comment beside `selected` in
-            # fuzz_pivot.py), but a hand-written config still can, and
-            # applying one would compare visi's empty grid against Excel's
-            # full one. Leave such a field unfiltered, as BuildFuzzPivot.bas
-            # and the CLI backend below both do. The engine's empty-selection
-            # behavior is covered directly, in
-            # test_empty_filter_selection_is_bindings_only.
+
+
+
+
+
+
+
+
+
+
+
+
+
             values = config["filter_field"]["values"]
             if values:
                 wb.set_pivot_filter(pivot_name, column, values)
@@ -347,7 +347,7 @@ class VisiPivotDriver(_BaseDriver):
                      "--column", config["filter_field"]["column"],
                      "--values", ",".join(values), "-i"],
                 )
-            # else: the config wants "select nothing", which this backend
-            # cannot express -- the CLI's `filter` verb takes a comma list or
-            # --clear, with no verb for an empty selection. Leave the field
-            # unfiltered, same as the bindings path and BuildFuzzPivot.bas.
+
+
+
+

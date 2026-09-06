@@ -52,20 +52,20 @@ import visi_core
 from fuzz_vba_parse import ExcelVerdictDriver, build_module, visi_verdict
 
 
-# Each entry is (label, snippet) or (label, snippet, sig, args). The
-# snippet is spliced into a dead `If False Then` branch inside `Gen`, so it
-# is compiled and never run -- see `fuzz_vba_parse.MODULE_TEMPLATE`. A
-# `Helper(Optional a, b, c)` is in scope; nothing else is declared, so every
-# other bare name is genuinely undeclared unless the snippet declares it.
-#
-# The four-element form gives `Gen` a parameter list, which is the only way
-# to ask Excel about anything a *parameter* does -- `sig` is spliced into
-# `Sub Gen(...)` and `args` into the `Gen` call in `Harness`, which has to
-# keep invoking it or the procedure is never compiled at all.
+
+
+
+
+
+
+
+
+
+
 CASES = [
-    # -- Undeclared names vs syntax defects. The hypothesis under test is
-    #    that each is a genuinely-undeclared name rather than some unrelated
-    #    syntax defect.
+
+
+
     ("undeclared:call-2-args", "x = arr(1, 2)"),
     ("undeclared:call-1-arg", "x = arr(1)"),
     ("undeclared:implicit-call-date", "d #1/1/2000#"),
@@ -75,10 +75,10 @@ CASES = [
     ("undeclared:redim-preserve", "ReDim Preserve arr(1 To 5)"),
     ("undeclared:leading-continuation", "Select Case x\nCase 1\n    _ y = 2\nEnd Select"),
 
-    # -- Follow-ups isolating the two rejections above that are NOT about
-    #    name resolution, established by the first round: `ReDim Preserve`
-    #    and a leading `_` continuation both reject with no undeclared call
-    #    in sight.
+
+
+
+
     ("redim:preserve-undeclared", "ReDim Preserve arr(1 To 5)"),
     ("redim:plain-undeclared", "ReDim arr(1 To 5)"),
     ("redim:preserve-after-dim", "Dim arr()\nReDim Preserve arr(1 To 5)"),
@@ -86,70 +86,70 @@ CASES = [
     ("continuation:leading-underscore", "_ y = 2"),
     ("continuation:trailing-underscore", "y = 1 + _\n    2"),
 
-    # -- A bare identifier used as a whole statement, with no arguments and
-    #    no parentheses. Left unchecked in the first pass on the grounds
-    #    that it had never been measured; a later fuzz run then found Excel
-    #    rejecting the undeclared case, so these settle it. The open
-    #    question is the *declared* one: `x` alone is still call syntax as
-    #    far as VBA is concerned, so a non-callable name may fail too.
+
+
+
+
+
+
     ("bare:undeclared", "x"),
     ("bare:declared-scalar", "Dim x As Long\nx"),
     ("bare:assigned-scalar", "x = 1\nx"),
     ("bare:declared-sub", "Helper"),
     ("bare:builtin-no-args", "Beep"),
 
-    # -- Declaring a name that already exists in the same procedure. VBA's
-    #    "Duplicate declaration in current scope". The interesting half is
-    #    whether an *implicitly* created variable (no `Dim`, just assigned)
-    #    counts as already-existing -- if it does, the order of the two
-    #    lines matters and a checker has to track it.
+
+
+
+
+
     ("dup:dim-twice", "Dim x As Long\nDim x As Long"),
     ("dup:assign-then-dim", "x = 1\nDim x As Long"),
     ("dup:dim-then-assign", "Dim x As Long\nx = 1"),
     ("dup:call-then-dim", "x = Helper(1)\nDim x As Long"),
 
-    # -- The other routes a name might take into procedure scope.
-    #    The parameter is the one that needed the four-element case form; the
-    #    rest are here because they are the same question and cost one round
-    #    trip each.
-    #    `dup:param-control` is the harness check: if a signature alone
-    #    breaks the wrapper, every other verdict in this group is worthless.
+
+
+
+
+
+
     ("dup:param-control", "y = x", "ByVal x As Long", " 1"),
     ("dup:param-then-dim", "Dim x As Long", "ByVal x As Long", " 1"),
     ("dup:for-counter-then-dim", "For x = 1 To 3\n    y = x\nNext x\nDim x As Long"),
     ("dup:foreach-elem-then-dim", "For Each x In rng\n    y = 1\nNext\nDim x As Long"),
-    # `As Object`, not `As Long`: a `Set` onto a non-object *declared* type
-    # is its own compile error, which would make a rejection unreadable.
+
+
     ("dup:set-then-dim", "Set x = New Collection\nDim x As Object"),
     ("dup:redim-then-dim", "ReDim arr(1 To 5)\nDim arr()"),
-    # The last four routes above without their trailing `Dim`, so a
-    # rejection can be pinned on the duplicate rather than on the route
-    # statement being unacceptable on its own -- `dup:param-control` is the
-    # parameter's, and `redim:plain-after-dim` is `ReDim`'s, being
-    # `dup:redim-then-dim`'s two lines the other way round.
+
+
+
+
+
     ("dup:for-counter-only", "For x = 1 To 3\n    y = x\nNext x"),
     ("dup:foreach-elem-only", "For Each x In rng\n    y = 1\nNext"),
     ("dup:set-only", "Set x = New Collection"),
 
-    # -- Controls. If one of these disagrees the probe itself is suspect,
-    #    not the engine.
+
+
     ("control:declared-array-index", "Dim arr(5)\nx = arr(1)"),
     ("control:declared-proc-call", "x = Helper(1)"),
     ("control:plain-assignment", "x = 1"),
 
-    # -- The built-in surface. A registry that omits any name Excel accepts
-    #    here turns a working macro into a `macro check` failure, which the
-    #    project's docs call the worse failure mode -- so these are measured,
-    #    not recalled.
+
+
+
+
     ("builtin:MsgBox", 'MsgBox "hi"'),
     ("builtin:Debug.Print", "Debug.Print 1"),
     ("builtin:Randomize", "Randomize 1"),
     ("builtin:Beep", "Beep"),
     ("builtin:Err.Raise", "Err.Raise 5"),
     ("builtin:Application.Run", 'Application.Run "Nope"'),
-    # Expression position, which is the broad surface: the registry has to
-    # carry every intrinsic that can be *called for a value*, not just the
-    # statement-shaped ones above.
+
+
+
     ("builtin:expr-MsgBox", 'x = MsgBox("hi")'),
     ("builtin:expr-Split", 'x = Split("a,b", ",")'),
     ("builtin:expr-Rnd", "x = Rnd()"),
@@ -159,13 +159,13 @@ CASES = [
     ("builtin:expr-Range", 'x = Range("A1")'),
     ("builtin:expr-Worksheets", "x = Worksheets(1)"),
 
-    # -- A `Print` output list. Not an argument list -- `;` is a
-    #    separator here and nowhere else in the grammar, and the item and
-    #    the separator are each independently optional. The last three are
-    #    the boundary: `;` does not generalize to other bare-argument
-    #    statements, and unqualified `Print` is a statement only before a
-    #    `#`. Every one measured; `core/vba/parser.rs`'s
-    #    `parse_print_output_list` is built from these answers.
+
+
+
+
+
+
+
     ("print:semicolon", 'Debug.Print "a"; 1'),
     ("print:semicolon-chain", 'Debug.Print "a"; "b"; 1'),
     ("print:trailing-semicolon", 'Debug.Print "a";'),
@@ -197,8 +197,8 @@ def probe(driver, case, workdir):
     xlsm = os.path.join(workdir, f"{safe}.xlsm")
     openpyxl.Workbook().save(base)
     wb = visi_core.Workbook.load(base)
-    # Verbatim, deliberately including source that does not parse -- an
-    # unparseable module is a legitimate thing to ask Excel about here.
+
+
     wb.add_macro("M", source)
     wb.save(xlsm)
     excel_ok, excel_detail = driver.verdict(xlsm)
@@ -226,7 +226,7 @@ def main():
         cases = [(f"expr:{i + 1}", e) for i, e in enumerate(args.expr)]
     else:
         cases = CASES
-    # (label, snippet) and (label, snippet, sig, args) both normalize to four.
+
     cases = [c if len(c) == 4 else (c[0], c[1], "", "") for c in cases]
     if args.sig or args.call_args:
         cases = [(c[0], c[1], args.sig, args.call_args) for c in cases]

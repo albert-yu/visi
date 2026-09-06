@@ -91,7 +91,7 @@ def compare_presaved_file(
     try:
         shutil.copyfile(file_path, source_xlsx)
 
-        # 1. Evaluate with visi
+
         visi_driver = VisiDriver(binary_path=visi_path, backend=backend)
         if backend == "auto" and visi_driver.backend != "bindings":
             print(bindings_hint(), file=sys.stderr)
@@ -100,13 +100,13 @@ def compare_presaved_file(
         visi_bytes = visi_driver.run(source_xlsx, visi_out_xlsx)
         visi_duration = time.time() - start_visi
 
-        # 2. Evaluate with Excel
+
         excel_driver = ExcelDriver(excel_path=excel_path, driver_type=driver_type)
         start_excel = time.time()
         excel_driver.run(source_xlsx, excel_out_xlsx)
         excel_duration = time.time() - start_excel
 
-        # 3. Read evaluated cells
+
         visi_cells = XLSXEvaluatedReader.read_evaluated_cells_bytes(
             visi_bytes, source=visi_out_xlsx
         )
@@ -119,7 +119,7 @@ def compare_presaved_file(
             visi_cells = {k: v for k, v in visi_cells.items() if k[1] == cell_filter}
             excel_cells = {k: v for k, v in excel_cells.items() if k[1] == cell_filter}
 
-        # 4. Compare cell values
+
         comparator = DifferentialComparator(strict_error_class=strict_error_class)
         is_match, mismatches = comparator.compare(visi_cells, excel_cells)
 

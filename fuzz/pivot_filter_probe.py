@@ -77,23 +77,23 @@ Public Sub Build()
 End Sub
 """
 
-# A pivot that *visi* wrote, opened and re-saved by Excel. This is the
-# check `AGENTS.md` asks for and never got: visi's pivot XML was validated
-# against openpyxl, which does not rebuild the cache, so an `<item x="N"/>`
-# index pointing at the wrong `sharedItems` entry looks fine there and only
-# misbehaves in Excel.
+
+
+
+
+
 VISI_VARIANT = "visi"
 
 VARIANTS = {
-    # Hide one of three items, leaving two selected.
+
     "multi": "    pf.EnableMultiplePageItems = True\n"
              '    pf.PivotItems("Gadget").Visible = False',
-    # The single-selection form, which is what `.CurrentPage` sets.
+
     "page": '    pf.CurrentPage = "Widget"',
 }
 
-# Parts worth seeing. The cache definition is where item *values* live; the
-# table part is where the selection is recorded against them.
+
+
 PARTS = ("xl/pivotCache/pivotCacheDefinition", "xl/pivotTables/pivotTable")
 
 

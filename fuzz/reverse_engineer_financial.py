@@ -102,22 +102,22 @@ def col_name(col_idx):
     return result
 
 
-# -----------------------------------------------------------------------------
-# Candidate Newton-Raphson algorithm variants
-# -----------------------------------------------------------------------------
-#
-# Each variant is a dict of knobs fed into the generic solver below. `deriv`
-# picks the closed-form TVM derivative (matching the formulajs/OpenOffice
-# lineage) vs. a central-difference numeric derivative (matching visi's
-# current `finance.rs::newton_raphson`, included as a baseline). `cap_error`
-# controls what happens when the iteration budget runs out without
-# converging: return `#NUM!` (`True`, what Excel's docs claim: "If IRR can't
-# find a result... #NUM! is returned") or return the last iterate anyway
-# (`False` -- what formulajs's own RATE actually does, despite its docstring
-# implying otherwise; worth testing since it's a real discrepancy between
-# documented and observed behavior in a widely-used reimplementation).
-# `retry_zero` mirrors visi's existing fallback: retry once from a 0.0 guess
-# if the caller's guess fails to converge.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 CANDIDATE_VARIANTS = [
     {"name": name, "deriv": deriv, "eps": eps, "max_iter": max_iter,
@@ -279,26 +279,26 @@ def candidate_xirr(values, days, guess, variant):
     return result
 
 
-# -----------------------------------------------------------------------------
-# Test case generation -- deliberately adversarial, targeting the
-# convergence boundary rather than "typical" well-behaved inputs.
-# -----------------------------------------------------------------------------
+
+
+
+
 
 GUESS_SWEEP = [-0.99, -0.9, -0.5, -0.2, -0.05, 0.0, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 20.0]
 
 MULTI_ROOT_CASHFLOWS = [
-    [-1000, 300, -200, 900, -100, 400],       # two sign flips -> plausibly 2 real roots
-    [-100, 500, -500, 500, -500, 500, -100],  # oscillating signs
-    [1000, -3000, 2500],                       # positive-first, still requires + and -
+    [-1000, 300, -200, 900, -100, 400],
+    [-100, 500, -500, 500, -500, 500, -100],
+    [1000, -3000, 2500],
     [-50, 200, -200, 200, -200, 200, -50],
-    [-100000, 39000, 30000, 21000, 37000],     # textbook IRR example (unique root region)
-    [-10, 21, -11],                             # classic Excel dual-root pathological case
+    [-100000, 39000, 30000, 21000, 37000],
+    [-10, 21, -11],
     [-1, 100, -100, 100, -100, 1],
 ]
 
 FLAT_NPV_CASHFLOWS = [
-    # Long near-flat streams: NPV(r) barely changes with r near the guess,
-    # so the derivative is tiny and Newton-Raphson can overshoot wildly.
+
+
     [-1000] + [10] * 40 + [600],
     [-5000] + [125] * 36,
 ]
@@ -320,9 +320,9 @@ def gen_irr_cases():
 
 def gen_rate_cases(rng):
     cases = []
-    # Push the implied per-period rate toward the -100% floor: pmt large
-    # relative to pv/nper (money "returned" per period approaches or
-    # exceeds what pv could sustain at any positive rate).
+
+
+
     boundary_configs = [
         (nper, pmt, pv, fv, typ)
         for nper in (4, 12, 36, 120)
@@ -336,7 +336,7 @@ def gen_rate_cases(rng):
         for guess in (-0.9, -0.5, -0.1, 0.0, 0.1, 0.5, 2.0):
             cases.append({"kind": "rate", "nper": nper, "pmt": pmt, "pv": pv,
                           "fv": fv, "type": typ, "guess": guess})
-    # A batch of realistic loans too, as a well-behaved-case control group.
+
     for _ in range(20):
         nper = rng.randint(6, 360)
         pv = round(rng.uniform(1000, 50000), 2)
@@ -351,16 +351,16 @@ def gen_rate_cases(rng):
 
 def gen_xirr_cases(rng):
     cases = []
-    base_date_serial = 44927  # 2023-01-01 in Excel's 1900 date system
+    base_date_serial = 44927
     for cf in MULTI_ROOT_CASHFLOWS:
-        # Irregular, non-uniform date gaps (including out-of-order dates,
-        # which XIRR explicitly permits per its docs).
+
+
         offsets = [0]
         for _ in range(len(cf) - 1):
             offsets.append(offsets[-1] + rng.randint(5, 400))
         if rng.random() < 0.5:
-            # shuffle interior dates to test out-of-order handling, keep
-            # offsets[0] == 0 as the anchor
+
+
             interior = offsets[1:]
             rng.shuffle(interior)
             offsets = [0] + interior
@@ -370,16 +370,16 @@ def gen_xirr_cases(rng):
     return cases
 
 
-# -----------------------------------------------------------------------------
-# Workbook construction
-# -----------------------------------------------------------------------------
+
+
+
 
 def build_workbook(irr_cases, rate_cases, xirr_cases, path):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
     ws = wb.create_sheet("IRR")
-    guess_col = 10  # column J; cashflow arrays here never exceed 8 entries
+    guess_col = 10
     for row, case in enumerate(irr_cases, start=1):
         values = case["values"]
         for i, v in enumerate(values):
@@ -403,7 +403,7 @@ def build_workbook(irr_cases, rate_cases, xirr_cases, path):
         case["_cell"] = ("RATE", f"G{row}")
 
     ws = wb.create_sheet("XIRR")
-    dates_offset = 10  # values never exceed 8 entries; dates start at col J
+    dates_offset = 10
     guess_col = 20
     for row, case in enumerate(xirr_cases, start=1):
         values = case["values"]
@@ -411,7 +411,7 @@ def build_workbook(irr_cases, rate_cases, xirr_cases, path):
         for i, v in enumerate(values):
             ws.cell(row=row, column=1 + i, value=float(v))
         for i, d in enumerate(dates):
-            # Excel serial date: write as a plain number, XIRR accepts serials.
+
             ws.cell(row=row, column=dates_offset + i, value=float(d))
         ws.cell(row=row, column=guess_col, value=float(case["guess"]))
         vlast = col_name(len(values))
@@ -426,9 +426,9 @@ def build_workbook(irr_cases, rate_cases, xirr_cases, path):
     wb.save(path)
 
 
-# -----------------------------------------------------------------------------
-# Comparison
-# -----------------------------------------------------------------------------
+
+
+
 
 def read_cell(cells, sheet_name_map, sheet, ref):
     internal_name = sheet_name_map.get(sheet, sheet)

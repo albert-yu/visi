@@ -12,7 +12,7 @@ Private Function One(ByVal i As Long) As String
     On Error GoTo Failed
     Dim v As Variant
     Select Case i
-        ' --- literal typing
+
         Case 1: v = 1
         Case 2: v = 100000
         Case 3: v = 1.5
@@ -33,7 +33,7 @@ Private Function One(ByVal i As Long) As String
         Case 18: v = 2147483648#
         Case 19: v = 1E5
         Case 20: v = 3000000000
-        ' --- arithmetic result types
+
         Case 21: v = 1 + 1
         Case 22: v = 32767 + 1
         Case 23: v = 2147483647 + 1
@@ -48,14 +48,14 @@ Private Function One(ByVal i As Long) As String
         Case 32: v = 2 ^ 2
         Case 33: v = 1.5 + 1
         Case 34: v = 100000 * 100000
-        ' --- string coercion
+
         Case 35: v = "1" + 1
         Case 36: v = "1" + "2"
         Case 37: v = "abc" + 1
         Case 38: v = 1 & 2
         Case 39: v = "1.5" * 2
         Case 40: v = "  3  " + 1
-        ' --- boolean
+
         Case 41: v = True + 1
         Case 42: v = CInt(True)
         Case 43: v = True And False
@@ -63,7 +63,7 @@ Private Function One(ByVal i As Long) As String
         Case 45: v = 5 And 3
         Case 46: v = Not 5
         Case 47: v = True + True
-        ' --- empty and null
+
         Case 48: v = Empty + 1
         Case 49: v = Empty & "a"
         Case 50: v = Null + 1
@@ -71,7 +71,7 @@ Private Function One(ByVal i As Long) As String
         Case 52: v = IsNull(Null + 1)
         Case 53: v = Empty = 0
         Case 54: v = Empty = ""
-        ' --- rounding and conversion
+
         Case 55: v = CLng(0.5)
         Case 56: v = CLng(1.5)
         Case 57: v = CLng(2.5)

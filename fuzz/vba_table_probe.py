@@ -60,20 +60,20 @@ PREAMBLE = [
 ]
 
 READ_CASES = [
-    # --- the objects
+
     "TypeName(ws.ListObjects)",
     "TypeName(ws.ListObjects(1))",
     'TypeName(ws.ListObjects("Sales"))',
     "CStr(ws.ListObjects.Count)",
     "ws.ListObjects(1).Name",
-    # --- the ranges. `Sales` is A1:C4 with a header row and no totals row.
+
     "ws.ListObjects(1).Range.Address",
     "ws.ListObjects(1).HeaderRowRange.Address",
     "ws.ListObjects(1).DataBodyRange.Address",
     "TypeName(ws.ListObjects(1).TotalsRowRange)",
     "CStr(ws.ListObjects(1).ShowTotals)",
     "CStr(ws.ListObjects(1).ShowHeaders)",
-    # --- columns
+
     "TypeName(ws.ListObjects(1).ListColumns)",
     "CStr(ws.ListObjects(1).ListColumns.Count)",
     "ws.ListObjects(1).ListColumns(1).Name",
@@ -82,47 +82,47 @@ READ_CASES = [
     "ws.ListObjects(1).ListColumns(3).DataBodyRange.Address",
     'ws.ListObjects(1).ListColumns("Amount").Range.Address',
     "CStr(ws.ListObjects(1).ListColumns(3).Index)",
-    # --- rows
+
     "TypeName(ws.ListObjects(1).ListRows)",
     "CStr(ws.ListObjects(1).ListRows.Count)",
     "ws.ListObjects(1).ListRows(1).Range.Address",
-    # --- how a table is reached from the workbook and from a range
+
     'TypeName(ws.Range("A2").ListObject)',
     'ws.Range("A2").ListObject.Name',
     'TypeName(ws.Range("G1").ListObject)',
-    # --- errors
+
     'ws.ListObjects("nope").Name',
     "ws.ListObjects(5).Name",
     "ws.ListObjects(1).ListColumns(9).Name",
-    # --- the formula that references the table, before any rename
+
     "ws.Range(\"E1\").Formula",
     "CStr(ws.Range(\"E1\").Value)",
 ]
 
 WRITE_CASES = [
-    # --- ListRows.Add: what happens to the extent, and where the new row is
+
     "Set lo = ws.ListObjects(1)\\nlo.ListRows.Add :: lo.Range.Address & \"|\" & CStr(lo.ListRows.Count)",
     "Set lo = ws.ListObjects(1)\\nSet v = lo.ListRows.Add :: TypeName(v)",
-    # --- renaming, and the cascade into formula text
+
     'ws.ListObjects(1).Name = "Revenue" :: ws.ListObjects(1).Name & "|" & ws.Range("E1").Formula',
-    # a name that is already taken workbook-wide
+
     'ws.ListObjects(1).Name = "Other" :: "no error"',
-    # --- renaming a column, and its cascade
+
     'ws.ListObjects(1).ListColumns(3).Name = "Total" :: ws.ListObjects(1).ListColumns(3).Name & "|" & ws.Range("E1").Formula',
-    # --- writing through the ranges
+
     'ws.ListObjects(1).DataBodyRange.Cells(1, 3).Value = 999 :: CStr(ws.Range("C2").Value)',
-    # --- ShowTotals, which changes the extent
+
     "Set lo = ws.ListObjects(1)\\nlo.ShowTotals = True :: lo.Range.Address & \"|\" & lo.TotalsRowRange.Address",
 ]
 
-# A table with zero data rows.
-#
-# The obvious fixture -- a table whose `ref` covers only its header row --
-# does **not** work: Excel treats that file as damaged and opens a modal
-# repair dialog, which hangs the bridge exactly as a compile error does
-# (measured, the hard way). So the fixture is a normal one-data-row table and
-# the row is deleted *from VBA*, which reaches the same state by a route
-# Excel itself produces.
+
+
+
+
+
+
+
+
 EMPTY_CASES = [
     "ws.ListObjects(1).ListRows(1).Delete :: CStr(ws.ListObjects.Count)",
     "ws.ListObjects(1).ListRows(1).Delete :: ws.ListObjects(1).Range.Address",
@@ -132,7 +132,7 @@ EMPTY_CASES = [
     "ws.ListObjects(1).ListRows(1).Delete :: CStr(ws.ListObjects(1).ListRows.Count)",
     "ws.ListObjects(1).ListRows(1).Delete :: CStr(ws.ListObjects(1).ListColumns.Count)",
     "ws.ListObjects(1).ListRows(1).Delete :: TypeName(ws.ListObjects(1).ListColumns(1).DataBodyRange)",
-    # and adding the first row back to an emptied table
+
     "ws.ListObjects(1).ListRows(1).Delete\\nSet lo = ws.ListObjects(1)\\nlo.ListRows.Add :: lo.Range.Address & \"|\" & lo.DataBodyRange.Address",
 ]
 
@@ -171,7 +171,7 @@ def build_workbook(path):
             ws.cell(row=r, column=c, value=v)
     ws.add_table(Table(displayName="Sales", ref="A1:C4"))
 
-    # A second table, purely so `Name = "Other"` is a real collision.
+
     ws["A8"], ws["B8"] = "Key", "Val"
     ws["A9"], ws["B9"] = "k", 1
     ws.add_table(Table(displayName="Other", ref="A8:B9"))
@@ -202,8 +202,8 @@ def run(driver, cases, build, batch, label):
     base = os.path.join(workdir, "base.xlsx")
     xlsm = os.path.join(workdir, "probe.xlsm")
     build(base)
-    # Re-read what we just wrote before handing it to Excel: an unopenable
-    # workbook is a modal repair dialog, which hangs the bridge.
+
+
     openpyxl.load_workbook(base)
     wbk = visi_core.Workbook.load(base)
     wbk.add_macro("T", build_module(parsed))
@@ -239,14 +239,14 @@ def main():
 
     driver = ExcelDriver(args.excel_path, args.driver, args.timeout)
     if args.empty:
-        # One case per round trip, forced: every case here deletes the
-        # table's only row, so two sharing a session would have the second
-        # one delete nothing and report error 9 rather than measuring
-        # anything. A round trip re-opens the workbook, which is the reset.
+
+
+
+
         run(driver, EMPTY_CASES, build_empty_workbook, 1, "zero data rows")
         return 0
-    # Writes go last and in one chunk: several read back what an earlier one
-    # did, and a batch boundary re-opens the workbook.
+
+
     run(driver, READ_CASES, build_workbook, args.batch, "reads")
     run(driver, WRITE_CASES, build_workbook, len(WRITE_CASES), "writes")
     return 0

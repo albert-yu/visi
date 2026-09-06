@@ -87,11 +87,11 @@ except ImportError:
     )
 
 
-# -----------------------------------------------------------------------------
-# 1. Generation
-# -----------------------------------------------------------------------------
 
-# Fragments that are valid VBA *statements*, safe to drop inside a dead branch.
+
+
+
+
 VALID_FRAGMENTS = [
     "Dim x As Long",
     "Dim s As String, t As Double",
@@ -129,8 +129,8 @@ VALID_FRAGMENTS = [
     "b = TypeOf o Is Worksheet",
 ]
 
-# Tokens a mutation can splice in. Most produce invalid source; a few do not,
-# which is the point -- the harness must not assume mutation implies invalid.
+
+
 MUTATION_TOKENS = [
     "Then", "End", "Next", "Loop", "Wend", "Case", "Else", "As", "To", "In",
     "=", "(", ")", ",", "&", "^", ".", ":", "\"", "#", "_", "Mod", "Not",
@@ -179,18 +179,18 @@ class VbaSourceGenerator:
         return " ".join(toks)
 
 
-# The module template. `Gen`'s body never runs -- see this file's docstring
-# for why the dead branch is load-bearing rather than decorative.
-#
-# `Helper` exists because of the first real disagreement this harness found.
-# `x = f(1, , 3)` -- an omitted middle argument -- parses fine and *is* valid
-# VBA, but Excel rejects it at compile time when it cannot resolve `f` to a
-# procedure with an `Optional` parameter in that position. That is a semantic
-# check requiring name resolution, which Phase 0 deliberately does not do (a
-# `Call` node cannot even tell a procedure call from an array index without a
-# symbol table). So the divergence is a boundary of what parse-only checking
-# can see, not a parser bug -- and declaring a real callee keeps the
-# omitted-argument syntax under test instead of dropping the coverage.
+
+
+
+
+
+
+
+
+
+
+
+
 MODULE_TEMPLATE = """Attribute VB_Name = "M"
 Private Function Helper(Optional a, Optional b, Optional c)
 End Function
@@ -232,9 +232,9 @@ def build_module(body, sig="", args=""):
     return MODULE_TEMPLATE.format(body=indented, sig=sig, args=args)
 
 
-# -----------------------------------------------------------------------------
-# 2. The two verdicts
-# -----------------------------------------------------------------------------
+
+
+
 
 
 def visi_verdict(source):
@@ -248,13 +248,13 @@ def visi_verdict(source):
         return False, f"{type(e).__name__}: {e}"
 
 
-# The child process `ExcelVerdictDriver._win32com_verdict` launches (see
-# that method's docstring for why an in-process win32com call can't be
-# timed out directly). `argv[1]` is the .xlsm path; prints the `Harness`
-# result ("OK" or "ERR|n") to stdout on success. A compile error leaves
-# Excel hung showing the modal dialog, so nothing is printed and the
-# process itself hangs -- observable only as the parent's subprocess
-# timeout firing, the exact same signal the AppleScript path reads.
+
+
+
+
+
+
+
 _WIN32COM_VERDICT_RUNNER = """
 import sys
 import win32com.client
@@ -392,17 +392,17 @@ class ExcelVerdictDriver:
                     text=True, timeout=self.timeout,
                 )
             except subprocess.TimeoutExpired:
-                # A hang is the compile-error signal -- but it is also what
-                # session degradation looks like,
-                # so confirm it survives a restart before believing it.
+
+
+
                 self.restart_excel()
                 if attempt == 0:
                     continue
                 return False, "compile error (Excel went modal and had to be killed)"
             if res.returncode == 0:
                 return True, res.stdout.strip()
-            # A non-timeout AppleScript failure this late is degradation, not
-            # a verdict; restart and try once more before giving up.
+
+
             self.restart_excel()
             if attempt == 0:
                 continue
@@ -410,9 +410,9 @@ class ExcelVerdictDriver:
         return None, "indeterminate"
 
 
-# -----------------------------------------------------------------------------
-# 3. Comparison
-# -----------------------------------------------------------------------------
+
+
+
 
 
 def classify(visi_ok, excel_ok):
@@ -498,10 +498,10 @@ def main():
                     cases.append((name, f.read(), False))
         return run_corpus(cases, args.corpus)
     else:
-        # Resolve the seed rather than passing None straight through:
-        # `random.Random(None)` seeds from entropy, which would make a
-        # failure found here impossible to reproduce -- the one thing a
-        # saved reproduction is for.
+
+
+
+
         seed = args.seed if args.seed is not None else random.randrange(1_000_000)
         gen = VbaSourceGenerator(seed)
         for i in range(1, args.iterations + 1):
@@ -512,9 +512,9 @@ def main():
     print("     visi vs. Microsoft Excel VBA Syntax Differential Fuzzer     ".center(69))
     print("=" * 69)
     print(f" Cases       : {len(cases)}")
-    # The seed goes in every saved failure's directory name. Without it two
-    # runs both save to `vba_parse_iter_7` and the second silently destroys
-    # the first's reproduction.
+
+
+
     run_tag = "" if args.corpus else f"_seed_{seed}"
     print(f" Source      : {args.corpus or f'generated (seed {seed})'}")
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")
@@ -537,8 +537,8 @@ def main():
                 xlsm = os.path.join(workdir, f"{label}.xlsm")
                 openpyxl.Workbook().save(base)
                 wb = visi_core.Workbook.load(base)
-                # `add_macro` writes source verbatim -- deliberately including
-                # source that does not parse, which is the whole point here.
+
+
                 wb.add_macro("M", source)
                 wb.save(xlsm)
                 excel_ok, excel_detail = driver.verdict(xlsm)

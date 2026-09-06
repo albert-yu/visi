@@ -103,7 +103,7 @@ LOCALE_FORMATTERS = {
 
 
 def random_date(rng):
-    # Keep days valid for every month and avoid pre-1900 edge cases.
+
     return dt.date(rng.randint(1995, 2035), rng.randint(1, 12), rng.randint(1, 28))
 
 
@@ -268,9 +268,9 @@ def main():
         try:
             rows, expected, displays = build_workbook(source_xlsx, rng, locale=locale)
 
-            # A visi-authored workbook is the exact baseline. Excel is allowed
-            # to canonicalize built-in/localized date format spellings on save,
-            # but a visi round-trip must preserve the format codes byte-for-byte.
+
+
+
             source_cells = inspect_workbook(source_xlsx, rows)
             expected = baseline_expected_formats(source_cells, expected)
             failures = compare_cells("source", source_cells, expected, displays)

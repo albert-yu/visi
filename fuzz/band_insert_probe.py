@@ -49,16 +49,16 @@ except ImportError:
 
 from fuzz_vba import HARNESS_TEMPLATE, ExcelDriver
 
-# The band is A:C and the insert point is row 2, i.e.
-# `ws.Range("A2:C2").Insert Shift:=xlDown`. Formulas live in H, which is
-# outside the band, so they neither move nor get overwritten.
+
+
+
 PREAMBLE = [
     "Dim ws As Worksheet",
     'Set ws = ThisWorkbook.Worksheets("Sheet1")',
     "Dim v, s",
 ]
 
-# (label, the formula put in H1, what to read back afterwards)
+
 CASES = [
     ("ref inside the band, below the insert", "=A5"),
     ("ref inside the band, above the insert", "=A1"),
@@ -124,7 +124,7 @@ def main():
     formula_w = max(len(f) for _, f in CASES)
     print('band = A:C, insert at row 2 (`ws.Range("A2:C2").Insert Shift:=xlDown`)\n')
     print(f"{'case':<{label_w}}  {'before':<{formula_w}}  after")
-    # One case per round trip: each changes the sheet's shape.
+
     for i, (label, formula) in enumerate(CASES, start=1):
         got = driver.run_batch(xlsm, [i])
         answer = got.get(i, "<nothing -- compile error>")

@@ -161,10 +161,10 @@ class StructuralFuzzGenerator:
         for ws in wb.worksheets:
             for r in range(1, ROWS + 1):
                 for c in range(1, COLS + 1):
-                    # Keep formulas on the first sheet. The rewrite compiler's
-                    # unqualified-reference representation is anchored there,
-                    # while explicit Data! references still exercise cross-sheet
-                    # structural edits.
+
+
+
+
                     if ws.title == "Sheet1" and self.rng.random() < 0.30:
                         ws.cell(r, c, self.formula(ws.title))
                     else:
@@ -353,13 +353,13 @@ def normalize_formula_text(formula, sheets=None):
 
     while i < n:
         if s[i] == '"':
-            # Double-quoted string literal: preserve exact characters and quotes
+
             start = i
             i += 1
             while i < n:
                 if s[i] == '"':
                     if i + 1 < n and s[i + 1] == '"':
-                        # Escaped quote `""` inside string literal
+
                         i += 2
                     else:
                         i += 1
@@ -368,16 +368,16 @@ def normalize_formula_text(formula, sheets=None):
                     i += 1
             parts.append(s[start:i])
         else:
-            # Non-string formula text: strip cosmetic whitespace, uppercase tokens,
-            # and normalize cross-sheet #REF! spellings.
+
+
             start = i
             while i < n and s[i] != '"':
                 i += 1
             chunk = "".join(s[start:i].split()).upper()
-            # Excel preserves the sheet prefix when a cross-sheet reference is deleted
-            # (`Data!#REF!`); visi serializes the same invalid reference as plain
-            # `#REF!`. They evaluate the same, and this harness is aimed at movement
-            # bugs rather than that cosmetic spelling difference.
+
+
+
+
             for sheet in sheets:
                 chunk = chunk.replace(f"'{sheet.upper()}'!#REF!", "#REF!")
                 chunk = chunk.replace(f"{sheet.upper()}!#REF!", "#REF!")
@@ -407,9 +407,9 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
     excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_path)
     comp = DifferentialComparator(strict_error_class=strict_error_class)
     ok, mismatches = comp.compare(visi_cells, excel_cells)
-    # After some structural edits, Excel occasionally saves rewritten formula
-    # text without a cached <v>. Formula text is this harness's primary signal;
-    # compare values only where the oracle actually wrote one.
+
+
+
     mismatches = [
         m for m in mismatches
         if not (m.get("excel") is None and m.get("formula"))

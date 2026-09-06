@@ -61,11 +61,11 @@ PREAMBLE = [
     "Dim r As Range, q As Range, s",
 ]
 
-# A1:A10 hold 1..10 and B1:B10 hold 101..110, so a tracked range can be asked
-# what it now *reads* as well as where it now points -- an address that looks
-# right over the wrong data would otherwise pass unnoticed.
+
+
+
 CASES = [
-    # --- the baseline: does tracking happen at all
+
     ('insert above a single cell',
      'Set r = ws.Range("A5") :: ws.Rows(1).Insert :: r.Address'),
     ('insert above a single cell, value',
@@ -73,7 +73,7 @@ CASES = [
     ('insert below a single cell',
      'Set r = ws.Range("A5") :: ws.Rows(9).Insert :: r.Address'),
 
-    # --- span growth, the rule that differs between "move" and "grow"
+
     ('insert at a span first row',
      'Set r = ws.Range("A5:A7") :: ws.Rows(5).Insert :: r.Address'),
     ('insert inside a span',
@@ -81,7 +81,7 @@ CASES = [
     ('insert below a span',
      'Set r = ws.Range("A5:A7") :: ws.Rows(8).Insert :: r.Address'),
 
-    # --- deletion, including the cases with no obvious right answer
+
     ('delete a row above a single cell',
      'Set r = ws.Range("A5") :: ws.Rows(1).Delete :: r.Address'),
     ('delete the single row a cell points at',
@@ -97,7 +97,7 @@ CASES = [
     ('delete every row of a span, value',
      'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: CStr(r.Cells(1, 1).Value)'),
 
-    # --- columns
+
     ('insert a column left of a cell',
      'Set r = ws.Range("C5") :: ws.Columns(1).Insert :: r.Address'),
     ('insert a column inside a span',
@@ -105,17 +105,17 @@ CASES = [
     ('delete the column a cell points at',
      'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: r.Address'),
 
-    # --- an edit somewhere else must not move it
+
     ('insert on another sheet',
      'Set r = ws.Range("A5") :: wb.Worksheets("Sheet2").Rows(1).Insert :: r.Address'),
 
-    # --- identity survives tracking, i.e. it is the same object that moved
+
     ('identity survives an edit',
      'Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: CStr(q Is r) & "/" & q.Address'),
     ('a copy taken before the edit tracks too',
      'Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: r.Address & "/" & q.Address'),
 
-    # --- the same edit spelled through a Range rather than through Rows()
+
     ('EntireRow.Insert',
      'Set r = ws.Range("A5") :: ws.Range("A1").EntireRow.Insert :: r.Address'),
     ('EntireColumn.Insert',
@@ -123,24 +123,24 @@ CASES = [
     ('EntireRow.Delete',
      'Set r = ws.Range("A5") :: ws.Range("A5").EntireRow.Delete :: r.Address'),
 
-    # --- what the edit expressions themselves are, for the surface we build
+
     ('Rows(n) address', 'ws.Rows(3).Address'),
     ('Columns(n) address', 'ws.Columns(3).Address'),
     ('Range EntireRow address', 'ws.Range("B5").EntireRow.Address'),
     ('Range EntireColumn address', 'ws.Range("B5").EntireColumn.Address'),
     ('Rows(n) TypeName', 'TypeName(ws.Rows(3))'),
-    # Inconclusive about tracking, and kept only so nobody re-derives it as
-    # evidence: a bare `.Insert` on a partial range lets Excel pick the shift
-    # direction from the range's shape, and for a tall narrow one it shifts
-    # *right*, so `A5` not moving says nothing about whether it would have
-    # tracked a downward shift.
+
+
+
+
+
     ('a partial-range Insert picks its own direction',
      'Set r = ws.Range("A5") :: ws.Range("A2:A3").Insert :: r.Address'),
 
-    # --- what a range whose cells were deleted actually raises.
-    # The bare `HARNESS_TEMPLATE` only reports `Err.Number`, and the numbers
-    # these come back with are not ones anybody should implement from; these
-    # cases trap inside the case and report the description too.
+
+
+
+
     ('dead range, Address err',
      'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
      's = r.Address\\n'
@@ -230,8 +230,8 @@ def main():
     label_width = min(max(len(label) for label, _ in selected), 44)
     expr_width = min(max(len(expr) for _, expr in selected), 62)
 
-    # One case per round trip: every case here changes the sheet's shape, so
-    # sharing a session would have them measure each other.
+
+
     for i, (label, expr) in enumerate(selected, start=1):
         got = driver.run_batch(xlsm, [i])
         if not got:

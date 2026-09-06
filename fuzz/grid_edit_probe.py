@@ -31,9 +31,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VISI = os.path.join(REPO, "target", "debug", "visi")
 OSASCRIPT_TIMEOUT = 60
 
-# Each case is: a starting grid, one structural edit, and the cells whose
-# formula text we compare afterwards. Addresses in `probe` are where the
-# formula lives *after* the edit.
+
+
+
 CASES = [
     {
         "name": "insert row above everything",
@@ -80,8 +80,8 @@ CASES = [
     },
     {
         "name": "delete a row above a range slides it up",
-        # The formula sits below the deleted row so it survives to be read;
-        # putting it in row 1 would delete the formula along with the row.
+
+
         "cells": {"A2": "1", "A3": "2", "A4": "3", "C6": "=SUM(A2:A4)"},
         "edit": ("delete_row", 1),
         "probe": ["C5"],
@@ -226,9 +226,9 @@ def excel_script(app, path, case):
     elif kind == "delete_row":
         edit = f'delete range (entire row of range "A{index}" of ews) shift shift up'
     elif kind == "insert_col":
-        # The horizontal constants are `shift to right` / `shift to left`, not
-        # `shift right` / `shift left` -- the short spellings parse as a
-        # parameter name and fail with a bare syntax error.
+
+
+
         edit = f'insert into range (entire column of range "{index}1" of ews) shift shift to right'
     else:
         edit = f'delete range (entire column of range "{index}1" of ews) shift shift to left'
