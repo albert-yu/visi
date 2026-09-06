@@ -101,7 +101,7 @@ pub fn parse_cell_ref(cell_str: &str) -> Result<(Option<String>, usize, usize), 
 
     for &c in &chars {
         if c == '$' {
-            continue; // Ignore absolute reference symbols like $A$1
+            continue;
         }
         if c.is_ascii_alphabetic() {
             if !digits.is_empty() {

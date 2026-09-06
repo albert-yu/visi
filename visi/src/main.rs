@@ -246,7 +246,7 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
             exit_with_error(e, EXIT_USAGE_ERROR);
         });
 
-    let mut updates: Vec<(usize, usize, usize, String)> = Vec::new(); // (sheet_idx, row, col, val)
+    let mut updates: Vec<(usize, usize, usize, String)> = Vec::new();
 
     for (cell_str, val_str) in args.cell.iter().zip(args.value.iter()) {
         let (s_name, row, col) = parse_cell_ref(cell_str).unwrap_or_else(|e| {
@@ -1094,9 +1094,6 @@ fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
         );
     }
 
-    // A1 notation is resolved here, at the CLI boundary: an explicit sheet
-    // prefix ("Sheet2!B3") wins over the --sheet flag, matching how `set`
-    // and `read` treat the same syntax.
     if let Some(cell_str) = &args.cell {
         let (specified_sheet, row, col) =
             parse_cell_ref(cell_str).unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
@@ -1618,13 +1615,6 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
             eprintln!("No VBA modules found in workbook.");
         }
 
-        // Resolved against the whole project, not module by module: Excel
-        // compiles a project, so a call into a sibling module is legal and
-        // must not be reported. `check_modules` is what knows the siblings;
-        // `VbaModule::check_syntax` cannot and so is deliberately weaker.
-        // `--partial` keeps that cross-module resolution and only stops an
-        // unresolvable name being reported -- a workbook can call into a
-        // referenced project, which nothing in the file records.
         let checked = wb
             .vba_project
             .as_ref()
@@ -1643,11 +1633,6 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
                     .iter()
                     .find(|(name, _)| name.eq_ignore_ascii_case(&m.name))
                     .map(|(_, r)| r.clone());
-                // A module `check_modules` did not cover should not be
-                // reachable -- it enumerates the same project `selected`
-                // came from -- but falling back to the weaker per-module
-                // check beats reporting a module as clean without having
-                // looked at it.
                 match result.unwrap_or_else(|| m.check_syntax()) {
                     Ok(syntax) => MacroCheckResult {
                         module: m.name.clone(),
@@ -1693,9 +1678,6 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     } else {
         for r in &results {
             match &r.error {
-                // Errors go to stderr so `--quiet` piping still surfaces
-                // them, and are formatted `module(line,column): message` --
-                // the shape editors already know how to jump to.
                 Some(e) => eprintln!("{e}"),
                 None if !quiet => println!(
                     "{}: OK ({} procedure{})",
@@ -1793,8 +1775,6 @@ fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
     );
 
     if is_vba_source_path(&args.file) {
-        // Source text with no workbook behind it. A write target makes no
-        // sense here and is refused rather than quietly ignored.
         if args.output.is_some() || args.in_place {
             exit_with_error(
                 "--output/--in-place need a workbook to write; running a .bas file has none",
@@ -1816,10 +1796,6 @@ fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
         .run_macro(args.module.as_deref(), &args.name, &arg_refs)
         .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
 
-    // A macro that changed the workbook and has nowhere to put it is an
-    // error, not a silent discard: the user asked for the writes, and
-    // throwing them away while printing a cheerful return value is the
-    // failure mode this whole feature is built to avoid.
     let save_path = if args.output.is_some() || args.in_place {
         let path = resolve_output_path(args.output.clone(), args.in_place, &args.file);
         require_xlsm_extension(&path);
@@ -1920,8 +1896,6 @@ fn handle_macro(args: MacroArgs, quiet: bool) {
                         .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
                     Some(wb.sheets[idx].id)
                 }
-                // ThisWorkbook isn't tied to a specific sheet (mirroring
-                // real Excel), so --sheet is optional for it alone.
                 (VbaModuleKind::Document, None) if add_args.name == "ThisWorkbook" => None,
                 (VbaModuleKind::Document, None) => {
                     exit_with_error("--kind document requires --sheet", EXIT_USAGE_ERROR)
