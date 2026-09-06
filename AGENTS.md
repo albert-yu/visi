@@ -107,68 +107,9 @@ Not everything in `core` is public. The modules implementing Excel's function li
 
 **When adding a public item, ask whether it belongs in that re-export list.** Anything reachable from `core`'s `pub use` is a semver commitment.
 
-`lib.rs` carries `#![warn(missing_docs)]`, so a new public item without a doc comment warns. Note the lint's blind spot: it fires on the item's *definition site*, so it says nothing about a `pub` item inside a `pub(crate)` module even when a `pub use` re-exports it into the public API. Sealing a module therefore silences the lint without actually shrinking the surface — check with `cargo doc` (and `-W unnameable_types`, which catches a type that stays reachable through a public field or variant but can no longer be named).
-
-Fallible public API returns `crate::Error` (`src/error.rs`), not `String`: an `#[non_exhaustive]` enum with `NotFound`/`AlreadyExists`/`NameTaken`/`InvalidName` carrying an `ObjectKind` so callers can branch without parsing text. Lower layers (Excel Table and pivot internals) still produce `String` and are wrapped in `Error::InvalidArgument` at the `workbook.rs` boundary — carve real variants out of it as those layers get typed. Formula-evaluation internals deliberately keep `Result<_, String>`, where the string is an Excel error code like `#VALUE!`, not a Rust error.
-
 ### Data model (`visi-core/src/core/engine/`)
 
 A `Sheet` is **column-oriented**: `columns: Vec<DataColumn>`, each with parallel per-row vectors:
-
-- `src: SharedVec<String>` — the raw user text (`"10"`, `"=SUM(A1:A2)"`, `"\"literal text\""`)
-- `data: ColumnData` — computed values, stored as a typed column (`Integer`/`Float` + validity `Bitmask`, or `Any(Vec<ResultData>)`). Writing a mismatched type auto-promotes `Integer → Float` or demotes to `Any`.
-- `compiled_src: SharedVec<CompiledFormula>` — cached compile output
-- `dirty_indices` — recompute queue
-
-Everything internal is **0-based `(row, col)`**; A1 notation exists only at the parser and CLI boundaries (`parser::col_idx_to_letters`, `visi/src/utils.rs`). `src`, `data`, `compiled_src`, and `styles` must stay the same length, and every column of a sheet must have the same number of rows (`Sheet::row_count` reads only the first and assumes the rest match).
-
-Those four vectors and `Sheet::columns` are `pub(crate)`; outside the crate they are reachable read-only through `DataColumn`'s accessors (`len`, `src`, `value`, `compiled`, `style`) and `Sheet::columns()`. **Change a column's length only through `DataColumn`'s paired operations** — `push_row`, `insert_row`, `remove_row`, `drain_rows`, `resize_rows`, `rebuild_after_load` — which touch all four vectors together. Hand-maintaining them is what let `extend` and `delete` silently skip `styles`, which made a row added by `extend` unstylable and shifted every style below a deleted range onto the wrong row. `dirty_indices` is deliberately *not* part of the invariant: it is a recompute queue `commit` drains, and the paired operations rebase it for you.
-
-`ResultData` is the value type (`None`/`Boolean`/`Integer`/`Float`/`String`/`List`/`Dict`/`Error`). `result_data::format_excel_number` reproduces Excel's 15-significant-digit display rules — change it only with fuzz evidence.
-
-### Dates are numbers with a format (`core/date.rs`)
-
-There is deliberately **no date value type**. As in Excel, a date cell holds a plain numeric serial and the notation it was typed in lives on the cell, as `CellStyle::num_format` (an Excel format code like `m/d/yy`). So `6/22/26` is `Float(46195)` — `ISNUMBER` is true, `SUM` counts it, every numeric path works untouched — and only rendering consults the format. A `ResultData::Date` variant was considered and rejected: the ~200 sites that match on `Float` all have catch-all arms, so any missed one would silently treat a date as non-numeric.
-
-- `commit` recognizes a literal via `date::parse_date` and records `DateFormat::to_format_code()`.
-- `Sheet::get_display_string` is the **only** place that renders a serial back to a date — show values through it, not by formatting `ResultData` directly.
-- `Sheet::inherited_date_format` gives `=A1+1` its operand's format. The rule keys off the *operator*, not the dependency count, because those come apart: `=YEAR(A1)` reads one date cell and returns a year. Only a bare cell ref and `+`/`-` with exactly one date side inherit; `=A1-A2` (a day count) and `=SUM(...)` deliberately do not.
-- `date::render_date_code` is shared with `TEXT()` so there is one date formatter. It scans token *runs* in one pass — successive string replacement corrupts month names, since `December` contains an `m` and `May` a `y`.
-- A format code cannot carry month-name casing, so `22-JUN-2026` round-trips through `format_date` but comes back title-cased through a worksheet — matching Excel. Zero-padding of a numeric month/day is likewise not recorded (`06/22/2026` → `6/22/2026`).
-- Text that merely looks like a date must be quoted to stay text (`xlsx::text_cell_src` does this for imported string cells).
-
-### Formula pipeline
-
-Formula text goes through **two distinct representations**, which is the single most important thing to know before touching `parser.rs`:
-
-1. `compile_formula(src, &sheets)` → `CompiledFormula`: splits text into `FormulaPart`s where every reference is stored by **`sheet_id` / `col_id` (u64), not by name**. This is what makes sheet/table/column renames non-destructive.
-2. `serialize_formula(&compiled, &sheets)` → A1 text again, rendered with the *current* names.
-3. `parse_excel_formula(text)` → `Expr` AST (via `lex_eval`).
-4. `Sheet::evaluate_ast` / `evaluate_function` walk the AST and return `(ResultData, Vec<Dependency>)`.
-
-`Sheet::commit()` runs all four per dirty cell — compile, re-serialize, then evaluate the re-serialized string. Non-formula cells (no leading `=`) are parsed as literals right there in `commit`, which is why importing text that *looks* numeric requires quoting (see `xlsx::text_cell_src`).
-
-### Recalculation and dependencies
-
-`Sheet::commit(context)` is a BFS over a dirty queue, maintaining both directions of the dependency graph (`dependencies: Dependency → dependents`, `dependencies_rev: cell → its providers`). `Dependency` distinguishes `Local`/`LocalColumn` from `Remote`/`RemoteColumn` (cross-sheet, keyed by sheet *name*).
-
-**`commit` only propagates local dependencies.** Cross-sheet propagation is handled a level up by `WorkbookManager::evaluate()`, which marks every sheet dirty and runs **3 fixed passes** over all sheets, rebuilding a `Context` (name → `&Sheet`) for each target sheet via `split_at_mut`. Deep cross-sheet chains can therefore need more passes than exist. Circular references are bounded by `max_ops` inside `commit`, not detected properly.
-
-Cross-sheet evaluation always needs a `Context`; without one, remote refs error out.
-
-### Structural edits (`visi-core/src/core/grid_edit.rs`)
-
-Inserting or deleting a row/column does not just move cells — every formula in the **whole workbook** has to be rewritten so its references follow, or `=A3` keeps pointing at row 3 after the value it meant slid to row 4. `WorkbookManager::{insert,delete}_{row,col}` go through `apply_grid_edit`, which is deliberately **three phases**:
-
-1. compile every formula *before* the edit (compiling needs the grid the text was written against),
-2. apply the edit, and move `ExcelTable` extents and `PivotSource::Range`/destination coordinates with it,
-3. serialize the shifted formulas back to text *after* the edit, at wherever each formula's own cell moved to.
-
-Phase 3 cannot be folded into phase 1: a whole-column reference is held by `col_id` and renders as the column's *current* letter, so serializing `=SUM(B:B)` before a column is inserted to its left writes `B:B` into a cell where `B` now names a different column — and `src` is what the next recompile reads, so the wrong text wins.
-
-The shift rules were **measured against real Excel** via `fuzz/grid_edit_probe.py` (15 cases, all agreeing), not taken from documentation. The counterintuitive ones: **`$` does not pin a reference against a structural edit** (`$A$3` shifts exactly as `A3` does); inserting at a range's *first* row moves the range while inserting one row lower grows it; deleting part of a range shrinks it but deleting all of it is `#REF!`; and `#REF!` replaces the *reference*, not the formula (`=A3+1` becomes `=#REF!+1`). Re-run the probe rather than "fixing" one from memory.
-
-`shift_span` takes a real index — the whole-column sentinel (`end_row: usize::MAX`, what `A:C` compiles to) must be screened out first or `end + 1` overflows. `parser::lex_eval` grew an `EvalToken::Error` over the closed `EXCEL_ERROR_CODES` set for this, since a formula could not previously hold a literal `#REF!` at all.
 
 ### Excel Tables vs sheets (naming trap)
 
@@ -177,62 +118,6 @@ A `Sheet` is informally called a "table" throughout this codebase (`Sheet::new` 
 Structured references (`Sales[Amount]`, `[@Amount]`, `Table[#Headers]`) resolve in `evaluate_ast`'s `Expr::StructuredRef` arm: first look for a real `ExcelTable` by name (this sheet, then any sheet in the `Context`), and only if none exists fall back to the legacy behavior of treating the leading name as a *sheet* name with the whole sheet as an implicit table. Both paths must keep working.
 
 Table names are unique **workbook-wide** (enforced in `WorkbookManager`), and lookups are case-insensitive. Renaming a table or a table column cascades into formula *text* across the whole workbook via `parser::rewrite_structured_table_reference` (called from `WorkbookManager::rewrite_table_references`, then re-evaluated) — mirroring Excel. `parser::render_structured_ref_text` is shared by `serialize_formula` and the rename rewriter so the canonical bracket syntax stays in sync between them.
-
-### Pivot tables (`visi-core/src/core/pivot.rs`, `pivot_xlsx.rs`)
-
-A `PivotTable` is workbook-level (like `Chart`), not sheet-scoped like `ExcelTable`, since its source and destination ranges can live on different sheets; `WorkbookManager.pivot_tables: Vec<PivotTable>` holds them. `PivotSource` is either an `ExcelTable` name (re-resolved by name on every refresh, so table renames/resizes are picked up automatically) or a raw sheet range.
-
-`pivot::compute_pivot(sheets, &pivot)` is a pure function: reads source rows, applies `filter_fields`, groups nested `row_fields`/`col_fields` (with per-field subtotal toggles and grand totals), aggregates `value_fields` (`Sum`/`Count`/`CountNumbers`/`Average`/`Max`/`Min`), and returns a `PivotGrid` — display-ready header/body rows plus the underlying `row_axis`/`col_axis` (`PivotAxisItem`s) that the xlsx writer needs to reconstruct native `rowItems`/`colItems`. `WorkbookManager::refresh_pivot_table` (`visi/src/engine.rs`) is the only thing that writes the grid into cells, as literal values via `set_cell`/`ensure_capacity` — **like Excel, nothing recomputes a pivot table automatically**; every CRUD op (`add_pivot_field`, `remove_pivot_field`, `set_pivot_filter`) explicitly calls refresh afterward.
-
-**The emitted pivot XML is now verified against real Excel** (`fuzz/pivot_filter_probe.py --variant visi`), which the openpyxl-only check could not do — openpyxl never resolves an `<item x="N"/>` against `<sharedItems>`, so two fatal defects read as fine there and made every visi-written pivot **fail to open in Excel**: `<sharedItems/>` was emitted empty while items indexed into it, and a page field lacked the trailing `<item t="default"/>` "(All)" entry. Both fixed. Two orderings are load-bearing and easy to conflate — `<sharedItems>` is in **first-seen** order, a field's `<items>` are in **sorted display** order and their `x` indexes the former, and `rowItems`/`colItems` `<x v="N"/>` indexes the *items-list position*. Re-run the probe after any change here; CI cannot.
-
-Neither xlsx library used here has pivot table support: calamine doesn't expose `xl/pivotCache/*` or `xl/pivotTables/*`, and rust_xlsxwriter has no writer for them at all. `pivot_xlsx.rs` hand-rolls both directions:
-
-- **Export** (`inject_pivot_tables`) post-processes the zip `export_xlsx_data` already produced — rust_xlsxwriter has no hook for extra parts — by re-opening it with the `zip` crate, editing `[Content_Types].xml` / `xl/workbook.xml` (`<pivotCaches>`) / `xl/_rels/workbook.xml.rels` / the destination worksheet's `.rels`, and writing new `pivotCacheDefinition`/`pivotCacheRecords`/`pivotTable` parts, then rewriting the whole zip. `rowItems`/`colItems` encode Excel's leading-field repeat suppression (`<i r="N">` = "the first N fields are unchanged from the previous row") plus `t="default"`/`t="grand"` subtotal/grand-total markers — get this wrong and Excel still opens the file (`refreshOnLoad="1"` lets it silently rebuild the cache) but may misrender the grid. Verified against `openpyxl` (a strict independent OOXML reader) rather than real Excel, since driving Excel via AppleScript needs a one-time interactive automation-permission grant this environment couldn't complete — re-verify with the `fuzz/` Excel driver or manually in Excel before trusting further pivot XML changes.
-- **Import** (`import_pivot_tables`) reconstructs each `PivotTable`'s source/destination/row/col/value fields from that XML, including per-field subtotal toggles (recovered from whether the field's `<item t="default"/>` placeholder is present) — this is not just fidelity, it's load-bearing: the CLI is a fresh process per invocation, so a pivot table definition only survives `pivot add-field` in a later command because it round-trips through this xlsx parsing. **Filter selections now round-trip too**, resolved through the cache's `<sharedItems>` to plain value strings rather than kept as indices — the indices are trusted only against the cache definition in the same file, which is self-consistent by construction. Two cases still cannot survive, because the format has nowhere to put them: a selection covering *every* value is indistinguishable from no filter (and is a no-op anyway), and a filter on a column that is also a row/column field is lost, since a pivot field carries one `axis` — a config Excel cannot express either.
-
-### VBA (`visi-core/src/core/vba/`)
-
-Two layers that share a directory but not much else:
-
-- **Storage** (`mod.rs`, plus `ovba.rs`/`vba_xlsx.rs`/`vba_synth.rs` outside it) — `VbaProject`/`VbaModule` and the `vbaProject.bin` round trip. Workbook-level like `Chart`, not sheet-scoped. Read those files' own doc comments before touching them; the p-code prefix and MODULECOOKIE handling are both load-bearing in ways that are not guessable.
-- **Syntax** (`lexer.rs`, `ast.rs`, `parser.rs`) — Phase 0 of `docs/vba-macro-support.md`. Parses only: no name resolution, no types, no evaluation, which is why a `Call` node cannot distinguish a procedure call from an array index.
-- **Execution** (`value.rs`, `interp.rs`, `builtins.rs`) — Phase 1. A tree-walking interpreter over the AST. Driven by `visi macro run`, which is opt-in per invocation and never implicit in `eval`.
-- **Host object model** (`host.rs`) — Phase 2. Binds the interpreter to a `WorkbookManager` so a macro can read and write cells, walk sheets, and call `Application.WorksheetFunction`. Anything **outside** its allow-list still raises 438 naming what it was, rather than being skipped — the refusal is the feature, and widening the list is a decision. `core::run_macro` (source text, no workbook) and `WorkbookManager::run_macro` (workbook-bound) are the two entry points; only the latter can mutate anything, and `visi macro run` demands `--output`/`--in-place` when it does.
-
-Things that will bite:
-
-- **VBA's operator precedence differs from the formula language's and was pinned against real Excel**, not documentation. `^` is **left**-associative (`2 ^ 3 ^ 2` = 64, not 512) and binds tighter than unary minus (`-2 ^ 2` = -4); `Eqv` binds tighter than `Imp`, `Xor` tighter than `Eqv`, `Not` looser than comparison. The table and its confirming cases are at the top of `parser.rs`, each with a unit test naming the Excel result. Do not "fix" one of these from memory.
-- **Keywords are not reserved.** The lexer emits every one as a plain `Ident` and the parser matches case-insensitively, because VBA's keyword set is contextual — `Name`, `Line`, `Get`, and `Width` are all statements in one position and ordinary property names in another. The `Stmt::Opaque` guards in `parser.rs` are narrow for exactly this reason.
-- **Excel compiles VBA lazily, per invoked procedure.** Nothing short of calling a procedure compiles it — not a probe in the same module, not a reference from a dead branch. This is why `fuzz/fuzz_vba_parse.py` wraps generated source in `If False Then ... End If` inside the procedure it calls, and why there is no way to ask Excel whether an arbitrary module compiles without also running something.
-- A **compile** error in Excel hangs the AppleScript bridge and, unlike a runtime error, is *not* catchable by an `On Error` wrapper.
-- **An object is a handle, not a pointer.** `ObjRef` holds ids and never borrows the workbook, which is what lets the interpreter hold `&mut WorkbookManager` for a whole run. `Is` compares an identity *token*, not the coordinates: `ws.Range("A1") Is ws.Range("A1")` is **False** in Excel (each call builds a fresh object) while `ws Is wb.Worksheets(1)` is True (worksheets are cached). Measured; the obvious tuple comparison is wrong.
-- **A `Range` tracks structural edits, so its coordinates live in `Host::ranges`, not in the `ObjRef`.** `Set r = ws.Range("A5")` then `ws.Rows(1).Insert` leaves `r` reading `$A$6` *and* still holding what was in `A5` — and a copy of `r` taken **before** the edit moves too, which is what forced interning over a by-value `Range`. The geometry turned out to be exactly `core::grid_edit`'s, case for case, so `Rows.Insert` and a formula's range reference share `shift_span` rather than two hand-written rules. A range whose every cell is deleted becomes `RangeState::Dead`: **not** `Nothing`, still `TypeName` `"Range"`, but every member access raises. All measured with `fuzz/vba_range_tracking_probe.py`; the one deliberate divergence is the error *number* (Excel for Mac's is not reproducible run to run — see `docs/excel-discrepancies.md` #16).
-- **`Interior.Color` / `Font.Color` are a BGR `Long`, so `&HFF0000` is blue.** `CellStyle` stores `"#RRGGBB"`; `core::vba::color` is the only place that swaps. Verified from *both* sides — `fuzz/vba_style_probe.py --paint` has Excel save a workbook and reads the real ARGB back with openpyxl, because the VBA channel alone cannot catch a consistent-but-wrong convention (both engines would round-trip the same wrong `Long`). `RGB()` clamps components over 255 and raises error 5 on a negative one.
-- **`ColorIndex` is a nearest-colour match, not a lookup.** The 56-slot palette in `color.rs` was read out of Excel by `--palette`, and an off-palette fill reports the *nearest* slot (`RGB(250,10,10)` → 3), not `xlNone`. Guessing `xlNone` here was wrong and the measurement caught it. An *unfilled* cell is `xlNone`; a cell with no font colour is slot 1.
-- **Over a range whose cells disagree, every style property reads `Null` except `Interior.Color`, which reads `0`.** Excel's own asymmetry, measured. `style_fold` takes the mixed-value as a parameter rather than inferring it, since 0 is also a legitimate uniform answer (black).
-- **`CellStyle::font_size` is an `f64`** because Excel's `Font.Size` reports as a `Double` and `10.5` round-trips.
-- **`ListRows.Add` is not a row insert.** It is Excel's *Insert cells, shift down* over the table's own columns: measured, adding a row to a table at `A1:C4` moves `A8` to `A9` but leaves `E2` alone. `Sheet::insert_cells_shift_down` / `delete_cells_shift_up` are that operation, and `GridEdit`'s `band` carries it into the formula rewrite — where the rule is **a reference moves iff its columns lie entirely inside the band**, so a range straddling the edge (`=SUM(A5:E5)`) does not move at all. Measured with `fuzz/band_insert_probe.py`.
-- **`ListObject.Name = "X"` routes through `WorkbookManager::rename_table`, not a field write.** Measured: Excel rewrites `=SUM(Sales[Amount])` to `=SUM(Revenue[Amount])`. Same for `ListColumn.Name`. A name already taken is **1004**, while every *lookup* failure (`ListObjects("nope")`, an out-of-range index) is **9** — easy to conflate, both measured.
-- **A table with zero data rows keeps its extent.** `ExcelTable::has_insert_row` models Excel's `insertRow="1"`: deleting the last data row leaves `ref` at `A1:C2` while `DataBodyRange` becomes `Nothing` and `ListRows.Count` 0, so the flag is the only thing separating that from one blank data row. Use `data_row_count()`, not `data_end_row() - data_start_row()`, which underflows. This is issue #11's shape.
-- **Every pivot failure is 1004**, where the `ListObjects` collection uses **9** for the same shape of mistake. Both measured; easy to conflate.
-- **Assigning `PivotField.CurrentPage` re-renders the grid immediately**, with no `RefreshTable` — a deliberate exception to "nothing recomputes a pivot implicitly", because a macro can observe the difference. Measured.
-- **`CurrentPage` reads `(All)` unless *exactly one* item is selected**, including when several are — it only ever reflects a single selection. Reading it on a non-page field raises, and setting a value the field does not have raises rather than blanking the grid.
-- **Single- vs multi-select page mode is observable and is now modelled** (`PivotFilterField::multiple_selection`, Excel's `multipleItemSelectionAllowed`). With one item chosen, multi-select shows `(Multiple Items)` in the page cell while single-select shows the **item's own name**; `CurrentPage` is what puts a field into single-select. Both measured, and the two contradict each other unless you know which mode you're in.
-- **`Insert`/`Delete` are refused on a partial range.** Excel accepts one and picks the shift direction from the range's shape — measured, `Range("A2:A3").Insert` shifts *right*, not down. Guessing silently moves a macro's data sideways, so only a whole-row or whole-column band is accepted.
-- **A plain `=` reads an object's default member and `Set` does not**, and the parser cannot tell them apart. Everything wanting a scalar goes through `Interpreter::scalar`; `Set`, `Is`, `TypeName`, a `With` subject and a user procedure's arguments deliberately skip it. Getting this wrong does not raise — it silently produces the wrong kind of value.
-- **A write marks the workbook stale; the next read that could observe it recalculates.** Excel recalculates per assignment and it is observable (`A1 = 5` then reading a `D1` holding `=A1*2`), but `WorkbookManager::evaluate` is three passes over every sheet, so doing it literally would be unaffordable in a write loop. Same behaviour, one recalculation per run of consecutive writes.
-- **`Application.WorksheetFunction.X` raises where `Application.X` returns.** A failing `WorksheetFunction.VLookup` is a trappable 1004; `Application.VLookup` returns an error `Variant` that `IsError` detects. Two call paths, one implementation — `Sheet::call_worksheet_function`, a `pub(crate)` entry onto `evaluate_function`. 
-- **Every `Variant` rule in `value.rs` was measured against real Excel**, not taken from documentation, and each cites the `fuzz/vba_variant_probe.bas` case it came from. Re-measure rather than "correcting" one from memory — a careful hand-probe already got one backwards. **Overflow promotes at runtime but not between literals**: `32767 + 1` written with two literals is error 6, but `a = 32767 : a + 1` is the `Long` 32768. `value::ArithMode` carries which applies. Also non-obvious: `"1" + 1` is a `Double` but `"1" + "2"` is a `String`; `7.6 \ 2` is `4` and typed `Long`; every conversion is banker's rounding; `CStr(-0.0)` is `"-0"`; and `""` is *not* a zero (`"" = 0` is error 13) while `Empty` is.
-
-### xlsx I/O (`visi-core/src/core/xlsx.rs`)
-
-Import uses **calamine**, export uses **rust_xlsxwriter** — two different libraries with different models, so round-tripping is asymmetric and worth checking after changes.
-
-- Export writes each formula with its **cached result** (`Formula::set_result`), so Excel/openpyxl/the fuzzer can read values without recalculating. Dropping this breaks the differential harness.
-- Table header/totals flags aren't exposed by calamine, so `read_table_row_flags` parses `xl/tables/table*.xml` out of the zip directly.
-- Charts are parsed by walking the drawing/chart rels and XML by hand with `quick-xml`.
-- Worksheet names get truncated to 31 chars and de-duplicated on export; `orig_to_assigned_name` maps original → assigned so table definitions reattach to the right sheet.
 
 ### CLI conventions (`visi/`)
 
