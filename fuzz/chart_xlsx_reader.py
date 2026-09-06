@@ -20,12 +20,9 @@ or as an importable module:
     from chart_xlsx_reader import read_charts
 """
 
-import sys
 import json
+import sys
 
-# openpyxl represents both Bar and Column charts as `BarChart` -- the
-# distinction lives in `BarChart.type` ("col" vs "bar"), mirroring visi's own
-# `<c:barDir val="col"|"bar">` disambiguation in `parse_chart_xml`.
 _CLASS_TO_TYPE = {
     "LineChart": "Line",
     "PieChart": "Pie",
@@ -95,21 +92,17 @@ def read_charts(xlsx_path):
     for ws in wb.worksheets:
         for chart in ws._charts:
             series = chart.series[0] if chart.series else None
-            # ScatterChart series expose `.xVal`/`.yVal` instead of the
-            # `.cat`/`.val` every other chart type uses -- fall back to
-            # those so scatter charts still report a category/value range.
+
             cat_range = None
             val_range = None
             if series is not None:
-                cat_range = _series_range(getattr(series, "cat", None)) or _series_range(
-                    getattr(series, "xVal", None)
-                )
-                val_range = _series_range(getattr(series, "val", None)) or _series_range(
-                    getattr(series, "yVal", None)
-                )
-            # PieChart (and some others) have no x_axis/y_axis at all --
-            # unlike a plain attribute holding None, accessing the name
-            # itself raises AttributeError, so this must use getattr.
+                cat_range = _series_range(
+                    getattr(series, "cat", None)
+                ) or _series_range(getattr(series, "xVal", None))
+                val_range = _series_range(
+                    getattr(series, "val", None)
+                ) or _series_range(getattr(series, "yVal", None))
+
             x_axis = getattr(chart, "x_axis", None)
             y_axis = getattr(chart, "y_axis", None)
             out.append(

@@ -44,24 +44,25 @@ and dumped as JSON under `fuzz_results/financial_reverse_engineering/`.
 """
 
 import argparse
-import itertools
 import json
 import math
 import os
 import random
 import sys
 import time
+import xml.etree.ElementTree as ET
+import zipfile
 
 import openpyxl
-import zipfile
-import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fuzz_excel import ExcelDriver, VisiDriver, XLSXEvaluatedReader  # noqa: E402
+from fuzz_excel import ExcelDriver, VisiDriver, XLSXEvaluatedReader
 
-NS = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-      "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-      "rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+NS = {
+    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+}
 
 
 def map_sheet_names(xlsx_path):
@@ -89,6 +90,7 @@ def map_sheet_names(xlsx_path):
             mapping[name] = basename
     return mapping
 
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
@@ -102,27 +104,17 @@ def col_name(col_idx):
     return result
 
 
-# -----------------------------------------------------------------------------
-# Candidate Newton-Raphson algorithm variants
-# -----------------------------------------------------------------------------
-#
-# Each variant is a dict of knobs fed into the generic solver below. `deriv`
-# picks the closed-form TVM derivative (matching the formulajs/OpenOffice
-# lineage) vs. a central-difference numeric derivative (matching visi's
-# current `finance.rs::newton_raphson`, included as a baseline). `cap_error`
-# controls what happens when the iteration budget runs out without
-# converging: return `#NUM!` (`True`, what Excel's docs claim: "If IRR can't
-# find a result... #NUM! is returned") or return the last iterate anyway
-# (`False` -- what formulajs's own RATE actually does, despite its docstring
-# implying otherwise; worth testing since it's a real discrepancy between
-# documented and observed behavior in a widely-used reimplementation).
-# `retry_zero` mirrors visi's existing fallback: retry once from a 0.0 guess
-# if the caller's guess fails to converge.
-
 CANDIDATE_VARIANTS = [
-    {"name": name, "deriv": deriv, "eps": eps, "max_iter": max_iter,
-     "cap_error": cap_error, "retry_zero": retry_zero,
-     "step_halving": step_halving, "max_step": max_step}
+    {
+        "name": name,
+        "deriv": deriv,
+        "eps": eps,
+        "max_iter": max_iter,
+        "cap_error": cap_error,
+        "retry_zero": retry_zero,
+        "step_halving": step_halving,
+        "max_step": max_step,
+    }
     for deriv in ("closed", "numeric")
     for eps in (1e-6, 1e-7, 1e-10)
     for max_iter in (20, 50, 100, 200)
@@ -130,7 +122,9 @@ CANDIDATE_VARIANTS = [
     for retry_zero in (False, True)
     for step_halving in (False, True)
     for max_step in (None, 1.0)
-    for name in [f"{deriv}/eps={eps:g}/iter={max_iter}/cap={cap_error}/retry0={retry_zero}/halve={step_halving}/ms={max_step}"]
+    for name in [
+        f"{deriv}/eps={eps:g}/iter={max_iter}/cap={cap_error}/retry0={retry_zero}/halve={step_halving}/ms={max_step}"
+    ]
 ]
 
 
@@ -268,7 +262,9 @@ def candidate_xirr(values, days, guess, variant):
     def fprime_closed(r):
         rr = -0.999999999 if r <= -1.0 else r
         base = 1.0 + rr
-        return sum(-fracs[i] * values[i] / (base ** (fracs[i] + 1)) for i in range(1, n))
+        return sum(
+            -fracs[i] * values[i] / (base ** (fracs[i] + 1)) for i in range(1, n)
+        )
 
     def fprime_numeric(r):
         return _numeric_deriv(f, r)
@@ -279,26 +275,34 @@ def candidate_xirr(values, days, guess, variant):
     return result
 
 
-# -----------------------------------------------------------------------------
-# Test case generation -- deliberately adversarial, targeting the
-# convergence boundary rather than "typical" well-behaved inputs.
-# -----------------------------------------------------------------------------
-
-GUESS_SWEEP = [-0.99, -0.9, -0.5, -0.2, -0.05, 0.0, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 20.0]
+GUESS_SWEEP = [
+    -0.99,
+    -0.9,
+    -0.5,
+    -0.2,
+    -0.05,
+    0.0,
+    0.05,
+    0.1,
+    0.3,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    20.0,
+]
 
 MULTI_ROOT_CASHFLOWS = [
-    [-1000, 300, -200, 900, -100, 400],       # two sign flips -> plausibly 2 real roots
-    [-100, 500, -500, 500, -500, 500, -100],  # oscillating signs
-    [1000, -3000, 2500],                       # positive-first, still requires + and -
+    [-1000, 300, -200, 900, -100, 400],
+    [-100, 500, -500, 500, -500, 500, -100],
+    [1000, -3000, 2500],
     [-50, 200, -200, 200, -200, 200, -50],
-    [-100000, 39000, 30000, 21000, 37000],     # textbook IRR example (unique root region)
-    [-10, 21, -11],                             # classic Excel dual-root pathological case
+    [-100000, 39000, 30000, 21000, 37000],
+    [-10, 21, -11],
     [-1, 100, -100, 100, -100, 1],
 ]
 
 FLAT_NPV_CASHFLOWS = [
-    # Long near-flat streams: NPV(r) barely changes with r near the guess,
-    # so the derivative is tiny and Newton-Raphson can overshoot wildly.
     [-1000] + [10] * 40 + [600],
     [-5000] + [125] * 36,
 ]
@@ -320,9 +324,7 @@ def gen_irr_cases():
 
 def gen_rate_cases(rng):
     cases = []
-    # Push the implied per-period rate toward the -100% floor: pmt large
-    # relative to pv/nper (money "returned" per period approaches or
-    # exceeds what pv could sustain at any positive rate).
+
     boundary_configs = [
         (nper, pmt, pv, fv, typ)
         for nper in (4, 12, 36, 120)
@@ -334,9 +336,18 @@ def gen_rate_cases(rng):
     rng.shuffle(boundary_configs)
     for nper, pmt, pv, fv, typ in boundary_configs[:40]:
         for guess in (-0.9, -0.5, -0.1, 0.0, 0.1, 0.5, 2.0):
-            cases.append({"kind": "rate", "nper": nper, "pmt": pmt, "pv": pv,
-                          "fv": fv, "type": typ, "guess": guess})
-    # A batch of realistic loans too, as a well-behaved-case control group.
+            cases.append(
+                {
+                    "kind": "rate",
+                    "nper": nper,
+                    "pmt": pmt,
+                    "pv": pv,
+                    "fv": fv,
+                    "type": typ,
+                    "guess": guess,
+                }
+            )
+
     for _ in range(20):
         nper = rng.randint(6, 360)
         pv = round(rng.uniform(1000, 50000), 2)
@@ -344,23 +355,28 @@ def gen_rate_cases(rng):
         pmt = -round(pv * rate_true / (1 - (1 + rate_true) ** -nper), 2)
         typ = rng.choice([0, 1])
         for guess in (0.1, 0.0, -0.05):
-            cases.append({"kind": "rate", "nper": nper, "pmt": pmt, "pv": pv,
-                          "fv": 0, "type": typ, "guess": guess})
+            cases.append(
+                {
+                    "kind": "rate",
+                    "nper": nper,
+                    "pmt": pmt,
+                    "pv": pv,
+                    "fv": 0,
+                    "type": typ,
+                    "guess": guess,
+                }
+            )
     return cases
 
 
 def gen_xirr_cases(rng):
     cases = []
-    base_date_serial = 44927  # 2023-01-01 in Excel's 1900 date system
+    base_date_serial = 44927
     for cf in MULTI_ROOT_CASHFLOWS:
-        # Irregular, non-uniform date gaps (including out-of-order dates,
-        # which XIRR explicitly permits per its docs).
         offsets = [0]
         for _ in range(len(cf) - 1):
             offsets.append(offsets[-1] + rng.randint(5, 400))
         if rng.random() < 0.5:
-            # shuffle interior dates to test out-of-order handling, keep
-            # offsets[0] == 0 as the anchor
             interior = offsets[1:]
             rng.shuffle(interior)
             offsets = [0] + interior
@@ -370,16 +386,12 @@ def gen_xirr_cases(rng):
     return cases
 
 
-# -----------------------------------------------------------------------------
-# Workbook construction
-# -----------------------------------------------------------------------------
-
 def build_workbook(irr_cases, rate_cases, xirr_cases, path):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
     ws = wb.create_sheet("IRR")
-    guess_col = 10  # column J; cashflow arrays here never exceed 8 entries
+    guess_col = 10
     for row, case in enumerate(irr_cases, start=1):
         values = case["values"]
         for i, v in enumerate(values):
@@ -387,8 +399,11 @@ def build_workbook(irr_cases, rate_cases, xirr_cases, path):
         ws.cell(row=row, column=guess_col, value=float(case["guess"]))
         last_col = col_name(len(values))
         formula_col = guess_col + 1
-        ws.cell(row=row, column=formula_col,
-                 value=f"=IRR(A{row}:{last_col}{row},{col_name(guess_col)}{row})")
+        ws.cell(
+            row=row,
+            column=formula_col,
+            value=f"=IRR(A{row}:{last_col}{row},{col_name(guess_col)}{row})",
+        )
         case["_cell"] = ("IRR", f"{col_name(formula_col)}{row}")
 
     ws = wb.create_sheet("RATE")
@@ -399,11 +414,13 @@ def build_workbook(irr_cases, rate_cases, xirr_cases, path):
         ws.cell(row=row, column=4, value=float(case["fv"]))
         ws.cell(row=row, column=5, value=float(case["type"]))
         ws.cell(row=row, column=6, value=float(case["guess"]))
-        ws.cell(row=row, column=7, value=f"=RATE(A{row},B{row},C{row},D{row},E{row},F{row})")
+        ws.cell(
+            row=row, column=7, value=f"=RATE(A{row},B{row},C{row},D{row},E{row},F{row})"
+        )
         case["_cell"] = ("RATE", f"G{row}")
 
     ws = wb.create_sheet("XIRR")
-    dates_offset = 10  # values never exceed 8 entries; dates start at col J
+    dates_offset = 10
     guess_col = 20
     for row, case in enumerate(xirr_cases, start=1):
         values = case["values"]
@@ -411,24 +428,24 @@ def build_workbook(irr_cases, rate_cases, xirr_cases, path):
         for i, v in enumerate(values):
             ws.cell(row=row, column=1 + i, value=float(v))
         for i, d in enumerate(dates):
-            # Excel serial date: write as a plain number, XIRR accepts serials.
             ws.cell(row=row, column=dates_offset + i, value=float(d))
         ws.cell(row=row, column=guess_col, value=float(case["guess"]))
         vlast = col_name(len(values))
         dlast = col_name(dates_offset + len(dates) - 1)
         formula_col = guess_col + 1
-        ws.cell(row=row, column=formula_col,
-                 value=(f"=XIRR(A{row}:{vlast}{row},"
-                        f"{col_name(dates_offset)}{row}:{dlast}{row},"
-                        f"{col_name(guess_col)}{row})"))
+        ws.cell(
+            row=row,
+            column=formula_col,
+            value=(
+                f"=XIRR(A{row}:{vlast}{row},"
+                f"{col_name(dates_offset)}{row}:{dlast}{row},"
+                f"{col_name(guess_col)}{row})"
+            ),
+        )
         case["_cell"] = ("XIRR", f"{col_name(formula_col)}{row}")
 
     wb.save(path)
 
-
-# -----------------------------------------------------------------------------
-# Comparison
-# -----------------------------------------------------------------------------
 
 def read_cell(cells, sheet_name_map, sheet, ref):
     internal_name = sheet_name_map.get(sheet, sheet)
@@ -462,8 +479,15 @@ def run_candidates(case):
         if case["kind"] == "irr":
             r = candidate_irr(case["values"], case["guess"], variant)
         elif case["kind"] == "rate":
-            r = candidate_rate(case["nper"], case["pmt"], case["pv"], case["fv"],
-                                case["type"], case["guess"], variant)
+            r = candidate_rate(
+                case["nper"],
+                case["pmt"],
+                case["pv"],
+                case["fv"],
+                case["type"],
+                case["guess"],
+                variant,
+            )
         else:
             d0 = case["dates"][0]
             days = [d - d0 for d in case["dates"]]
@@ -473,14 +497,35 @@ def run_candidates(case):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto"
+    )
     parser.add_argument("--excel-path", default=None)
-    parser.add_argument("--binary", default=os.path.join(PROJECT_ROOT, "target", "release", "visi"))
+    parser.add_argument(
+        "--binary", default=os.path.join(PROJECT_ROOT, "target", "release", "visi")
+    )
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--out-dir", default=os.path.join(PROJECT_ROOT, "fuzz_results", "financial_reverse_engineering"))
-    parser.add_argument("--top", type=int, default=8, help="how many top candidate variants to print per function")
-    parser.add_argument("--mismatches", type=int, default=15, help="how many Excel-vs-visi mismatches to print per function")
+    parser.add_argument(
+        "--out-dir",
+        default=os.path.join(
+            PROJECT_ROOT, "fuzz_results", "financial_reverse_engineering"
+        ),
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=8,
+        help="how many top candidate variants to print per function",
+    )
+    parser.add_argument(
+        "--mismatches",
+        type=int,
+        default=15,
+        help="how many Excel-vs-visi mismatches to print per function",
+    )
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -490,7 +535,9 @@ def main():
     rate_cases = gen_rate_cases(rng)
     xirr_cases = gen_xirr_cases(rng)
     all_cases = irr_cases + rate_cases + xirr_cases
-    print(f"Generated {len(irr_cases)} IRR, {len(rate_cases)} RATE, {len(xirr_cases)} XIRR cases.")
+    print(
+        f"Generated {len(irr_cases)} IRR, {len(rate_cases)} RATE, {len(xirr_cases)} XIRR cases."
+    )
 
     source_path = os.path.join(args.out_dir, "source.xlsx")
     excel_out_path = os.path.join(args.out_dir, "excel_out.xlsx")
@@ -508,7 +555,9 @@ def main():
     excel_cells = {}
     excel_sheet_map = {}
     if args.driver != "mock":
-        print("Evaluating with real Excel (this opens/recalculates/saves via AppleScript or COM)...")
+        print(
+            "Evaluating with real Excel (this opens/recalculates/saves via AppleScript or COM)..."
+        )
         excel = ExcelDriver(excel_path=args.excel_path, driver_type=args.driver)
         t0 = time.time()
         excel.run(source_path, excel_out_path)
@@ -516,13 +565,19 @@ def main():
         excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_out_path)
         excel_sheet_map = map_sheet_names(excel_out_path)
     else:
-        print("Mock mode: skipping real Excel, only scoring visi + candidates against each other's presence.")
+        print(
+            "Mock mode: skipping real Excel, only scoring visi + candidates against each other's presence."
+        )
 
-    print("Computing candidate variants for every case (this is pure Python, may take a bit)...")
+    print(
+        "Computing candidate variants for every case (this is pure Python, may take a bit)..."
+    )
     for case in all_cases:
         sheet, ref = case["_cell"]
         case["visi"] = read_cell(visi_cells, visi_sheet_map, sheet, ref)
-        case["excel"] = read_cell(excel_cells, excel_sheet_map, sheet, ref) if excel_cells else None
+        case["excel"] = (
+            read_cell(excel_cells, excel_sheet_map, sheet, ref) if excel_cells else None
+        )
         case["candidates"] = run_candidates(case)
 
     report = {"seed": args.seed, "have_excel": bool(excel_cells), "cases": []}
@@ -537,36 +592,52 @@ def main():
     print(f"Full per-case report written to {report_path}")
 
     if not excel_cells:
-        print("\nNo Excel ground truth collected (mock mode) -- skipping scoring against Excel.")
-        print("Re-run with --excel-path \"/Applications/Microsoft Excel.app\" for the real comparison.")
+        print(
+            "\nNo Excel ground truth collected (mock mode) -- skipping scoring against Excel."
+        )
+        print(
+            'Re-run with --excel-path "/Applications/Microsoft Excel.app" for the real comparison.'
+        )
         return
 
     for kind, cases in (("IRR", irr_cases), ("RATE", rate_cases), ("XIRR", xirr_cases)):
         print(f"\n{'=' * 78}\n{kind}: {len(cases)} cases\n{'=' * 78}")
 
         visi_matches = sum(1 for c in cases if values_close(c["visi"], c["excel"]))
-        print(f"visi (current finance.rs) agrees with Excel on {visi_matches}/{len(cases)} "
-              f"({100 * visi_matches / len(cases):.1f}%)")
+        print(
+            f"visi (current finance.rs) agrees with Excel on {visi_matches}/{len(cases)} "
+            f"({100 * visi_matches / len(cases):.1f}%)"
+        )
 
         scored = []
         for variant in CANDIDATE_VARIANTS:
-            matches = sum(1 for c in cases if values_close(c["candidates"][variant["name"]], c["excel"]))
+            matches = sum(
+                1
+                for c in cases
+                if values_close(c["candidates"][variant["name"]], c["excel"])
+            )
             scored.append((matches, variant["name"]))
         scored.sort(key=lambda t: -t[0])
 
         print(f"\nTop {args.top} candidate variants by agreement with Excel:")
         for matches, name in scored[: args.top]:
-            print(f"  {matches:4d}/{len(cases)} ({100 * matches / len(cases):5.1f}%)  {name}")
+            print(
+                f"  {matches:4d}/{len(cases)} ({100 * matches / len(cases):5.1f}%)  {name}"
+            )
 
-        best_matches, best_name = scored[0]
-        print(f"\nWorst mismatches for best candidate ({best_name}) -- Excel vs. that candidate:")
+        _best_matches, best_name = scored[0]
+        print(
+            f"\nWorst mismatches for best candidate ({best_name}) -- Excel vs. that candidate:"
+        )
         shown = 0
         for c in cases:
             cand_val = c["candidates"][best_name]
             if not values_close(cand_val, c["excel"]) and shown < args.mismatches:
                 shown += 1
                 desc = {k: v for k, v in c.items() if k not in ("candidates", "visi")}
-                print(f"  excel={c['excel']!r:>14}  candidate={cand_val!r:>14}  visi={c['visi']!r:>10}  {desc}")
+                print(
+                    f"  excel={c['excel']!r:>14}  candidate={cand_val!r:>14}  visi={c['visi']!r:>10}  {desc}"
+                )
 
     print(f"\nDone. Inspect {report_path} for the full per-case, per-variant data.")
 

@@ -33,14 +33,13 @@ try:
     import visi_core as _vc
 
     _IMPORT_ERROR = None
-except ImportError as exc:  # not built; the CLI backend still works
+except ImportError as exc:
     _vc = None
     _IMPORT_ERROR = exc
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The `visi` CLI has no timeout today, so a hang stalls a whole run forever.
-# Generous enough that a slow-but-progressing workbook is never cut off.
+
 CLI_TIMEOUT_SECONDS = 120
 
 
@@ -118,10 +117,10 @@ class _BaseDriver:
         cmd = [self.binary_path, subcommand] + args
         res = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=CLI_TIMEOUT_SECONDS,
+            check=False,
         )
         if res.returncode != 0:
             raise RuntimeError(
@@ -169,14 +168,12 @@ class VisiChartDriver(_BaseDriver):
 
         wb = _vc.Workbook.load(source_file)
         wb.add_chart(
-            "Sheet1", add_config["chart_type"], range_str, title=add_config["title"] or None
+            "Sheet1",
+            add_config["chart_type"],
+            range_str,
+            title=add_config["title"] or None,
         )
 
-        # `chart add -i` wrote the file and `chart list --json` reopened it.
-        # Keep that round trip: it is the only differential coverage of the
-        # chart OOXML writer/reader pair. The id has to be re-read afterwards
-        # because import re-derives it from the sheet name and the chart's
-        # position, so add_chart's return value is stale by now.
         wb = wb.roundtrip()
         chart_id = wb.charts()[0]["id"]
 
@@ -197,25 +194,30 @@ class VisiChartDriver(_BaseDriver):
         shutil.copyfile(source_file, output_file)
 
         add_args = [
-            "add", output_file,
-            "--sheet", "Sheet1",
-            "--chart-type", add_config["chart_type"],
-            "--range", range_str,
+            "add",
+            output_file,
+            "--sheet",
+            "Sheet1",
+            "--chart-type",
+            add_config["chart_type"],
+            "--range",
+            range_str,
             "-i",
         ]
         if add_config["title"]:
             add_args += ["--title", add_config["title"]]
         self._cli("chart", add_args)
 
-        # `chart add` has no --json output of its own; look the new chart's id
-        # up via `chart list --json` (the only chart in the file).
         charts = json.loads(self._cli("chart", ["list", output_file, "--json"]))
         chart_id = charts[0]["id"]
 
         edit_args = [
-            "edit", output_file,
-            "--id", str(chart_id),
-            "--chart-type", edit_config["chart_type"],
+            "edit",
+            output_file,
+            "--id",
+            str(chart_id),
+            "--chart-type",
+            edit_config["chart_type"],
             "-i",
         ]
         if edit_config["title"]:
@@ -230,7 +232,9 @@ class VisiChartDriver(_BaseDriver):
             edit_args += ["--ylabel", edit_config["ylabel"]]
         else:
             edit_args.append("--clear-ylabel")
-        edit_args.append("--show-legend" if edit_config["show_legend"] else "--hide-legend")
+        edit_args.append(
+            "--show-legend" if edit_config["show_legend"] else "--hide-legend"
+        )
         self._cli("chart", edit_args)
 
 
@@ -242,7 +246,9 @@ class VisiPivotDriver(_BaseDriver):
         col) equivalent for the bindings path. Both come from the caller so
         that neither this module nor the bindings needs an A1 parser."""
         if self.backend == "subprocess":
-            return self._run_cli(source_file, config, output_file, pivot_name, dest_cell)
+            return self._run_cli(
+                source_file, config, output_file, pivot_name, dest_cell
+            )
 
         dest_row, dest_col = dest_rc
         wb = _vc.Workbook.load(source_file)
@@ -260,19 +266,26 @@ class VisiPivotDriver(_BaseDriver):
             sr, sc, er, ec = config["source_bounds"]
             wb.add_pivot_from_range(
                 pivot_name,
-                start_row=sr, start_col=sc, end_row=er, end_col=ec,
-                dest_row=dest_row, dest_col=dest_col,
+                start_row=sr,
+                start_col=sc,
+                end_row=er,
+                end_col=ec,
+                dest_row=dest_row,
+                dest_col=dest_col,
                 grand_totals_row=config["grand_totals_row"],
                 grand_totals_col=config["grand_totals_col"],
             )
-        # One roundtrip per mutation, standing in for the file each `-i` CLI
-        # invocation writes and reopens. Dropping these would quietly
-        # stop exercising pivot_xlsx.rs's hand-rolled OOXML.
+
         wb = wb.roundtrip()
 
-        for area, fields in (("row", config["row_fields"]), ("column", config["col_fields"])):
+        for area, fields in (
+            ("row", config["row_fields"]),
+            ("column", config["col_fields"]),
+        ):
             for f in fields:
-                wb.add_pivot_field(pivot_name, area, f["column"], subtotal=f["subtotal"])
+                wb.add_pivot_field(
+                    pivot_name, area, f["column"], subtotal=f["subtotal"]
+                )
                 wb = wb.roundtrip()
 
         for f in config["value_fields"]:
@@ -283,19 +296,7 @@ class VisiPivotDriver(_BaseDriver):
             column = config["filter_field"]["column"]
             wb.add_pivot_field(pivot_name, "filter", column)
             wb = wb.roundtrip()
-            # Deliberately the LAST mutation, with no roundtrip after it:
-            # PivotFilterField.selected_values is not reconstructed on import,
-            # so a round trip here would silently reset the filter to "all".
-            #
-            # The empty-list guard is defensive: PivotFuzzGenerator no longer
-            # emits an empty selection (it means "select nothing", which real
-            # Excel cannot represent -- see the comment beside `selected` in
-            # fuzz_pivot.py), but a hand-written config still can, and
-            # applying one would compare visi's empty grid against Excel's
-            # full one. Leave such a field unfiltered, as BuildFuzzPivot.bas
-            # and the CLI backend below both do. The engine's empty-selection
-            # behavior is covered directly, in
-            # test_empty_filter_selection_is_bindings_only.
+
             values = config["filter_field"]["values"]
             if values:
                 wb.set_pivot_filter(pivot_name, column, values)
@@ -305,7 +306,15 @@ class VisiPivotDriver(_BaseDriver):
     def _run_cli(self, source_file, config, output_file, pivot_name, dest_cell):
         shutil.copyfile(source_file, output_file)
 
-        create_args = ["create", output_file, "--name", pivot_name, "--dest", dest_cell, "-i"]
+        create_args = [
+            "create",
+            output_file,
+            "--name",
+            pivot_name,
+            "--dest",
+            dest_cell,
+            "-i",
+        ]
         if config["table_name"]:
             create_args += ["--source-table", config["table_name"]]
         else:
@@ -316,11 +325,21 @@ class VisiPivotDriver(_BaseDriver):
             create_args.append("--no-grand-totals-col")
         self._cli("pivot", create_args)
 
-        for area, fields in (("row", config["row_fields"]), ("column", config["col_fields"])):
+        for area, fields in (
+            ("row", config["row_fields"]),
+            ("column", config["col_fields"]),
+        ):
             for f in fields:
                 args = [
-                    "add-field", output_file, "--name", pivot_name,
-                    "--area", area, "--column", f["column"], "-i",
+                    "add-field",
+                    output_file,
+                    "--name",
+                    pivot_name,
+                    "--area",
+                    area,
+                    "--column",
+                    f["column"],
+                    "-i",
                 ]
                 if not f["subtotal"]:
                     args.append("--no-subtotal")
@@ -329,25 +348,49 @@ class VisiPivotDriver(_BaseDriver):
         for f in config["value_fields"]:
             self._cli(
                 "pivot",
-                ["add-field", output_file, "--name", pivot_name, "--area", "value",
-                 "--column", f["column"], "--agg", f["agg"], "-i"],
+                [
+                    "add-field",
+                    output_file,
+                    "--name",
+                    pivot_name,
+                    "--area",
+                    "value",
+                    "--column",
+                    f["column"],
+                    "--agg",
+                    f["agg"],
+                    "-i",
+                ],
             )
 
         if config["filter_field"]:
             self._cli(
                 "pivot",
-                ["add-field", output_file, "--name", pivot_name, "--area", "filter",
-                 "--column", config["filter_field"]["column"], "-i"],
+                [
+                    "add-field",
+                    output_file,
+                    "--name",
+                    pivot_name,
+                    "--area",
+                    "filter",
+                    "--column",
+                    config["filter_field"]["column"],
+                    "-i",
+                ],
             )
             values = config["filter_field"]["values"]
             if values:
                 self._cli(
                     "pivot",
-                    ["filter", output_file, "--name", pivot_name,
-                     "--column", config["filter_field"]["column"],
-                     "--values", ",".join(values), "-i"],
+                    [
+                        "filter",
+                        output_file,
+                        "--name",
+                        pivot_name,
+                        "--column",
+                        config["filter_field"]["column"],
+                        "--values",
+                        ",".join(values),
+                        "-i",
+                    ],
                 )
-            # else: the config wants "select nothing", which this backend
-            # cannot express -- the CLI's `filter` verb takes a comma list or
-            # --clear, with no verb for an empty selection. Leave the field
-            # unfiltered, same as the bindings path and BuildFuzzPivot.bas.

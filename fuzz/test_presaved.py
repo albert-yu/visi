@@ -1,11 +1,15 @@
-import glob
 import os
 import sys
+
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fuzz_presaved import DEFAULT_PRESAVED_DIR, compare_presaved_file, find_presaved_files
+from fuzz_presaved import (
+    DEFAULT_PRESAVED_DIR,
+    compare_presaved_file,
+    find_presaved_files,
+)
 from visi_driver import bindings_available
 
 pytestmark = pytest.mark.skipif(
@@ -22,7 +26,9 @@ PRESAVED_FILES = find_presaved_files(DEFAULT_PRESAVED_DIR)
     ids=[os.path.basename(p) for p in PRESAVED_FILES],
 )
 def test_presaved_file_matches_excel_or_mock(file_path):
-    driver = "applescript" if os.path.exists("/Applications/Microsoft Excel.app") else "mock"
+    driver = (
+        "applescript" if os.path.exists("/Applications/Microsoft Excel.app") else "mock"
+    )
     is_match, mismatches, stats = compare_presaved_file(
         file_path=file_path,
         driver_type=driver,

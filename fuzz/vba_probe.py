@@ -52,15 +52,15 @@ import tempfile
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 EXCEL_APP = "Microsoft Excel"
 OSASCRIPT_TIMEOUT = 60
 
 
-# -- VBA sources ---------------------------------------------------------
-
-PROBE_BAS = '''Attribute VB_Name = "VisiProbe"
+PROBE_BAS = """Attribute VB_Name = "VisiProbe"
 Public Sub RunProbe()
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Worksheets("Sheet1")
@@ -75,13 +75,10 @@ Public Sub RunProbe()
     ws.Range("C3").Value = ws.Range("A1").Value + ws.Range("A2").Value
     ThisWorkbook.Save
 End Sub
-'''
+"""
 
-# `Harness` is the pattern a generated-VBA fuzzer must use verbatim: the
-# generated procedure is called from inside an `On Error GoTo`, so a runtime
-# error anywhere down the call stack returns as data instead of stalling the
-# automation bridge on a modal dialog.
-HARNESS_BAS = '''Attribute VB_Name = "VisiHarness"
+
+HARNESS_BAS = """Attribute VB_Name = "VisiHarness"
 Public Function Harness(ByVal which As String) As String
     On Error GoTo Failed
     Dim r As Variant
@@ -112,17 +109,15 @@ End Function
 Public Function TypeMismatch() As Variant
     TypeMismatch = CLng("not a number")
 End Function
-'''
+"""
 
-# Only reached with --demo-hang: no handler anywhere, so Excel goes modal.
-HANG_BAS = '''Attribute VB_Name = "VisiHang"
+
+HANG_BAS = """Attribute VB_Name = "VisiHang"
 Public Function Unhandled() As String
     Unhandled = CStr(CLng("not a number"))
 End Function
-'''
+"""
 
-
-# -- helpers -------------------------------------------------------------
 
 def run_osascript(script, timeout=OSASCRIPT_TIMEOUT):
     """Returns (ok, output). ok=False with output='<timeout>' means Excel went
@@ -130,8 +125,10 @@ def run_osascript(script, timeout=OSASCRIPT_TIMEOUT):
     try:
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return False, "<timeout>"
@@ -144,28 +141,45 @@ def restart_excel():
     """SIGKILL by PID, not `killall` alone -- Excel can intercept SIGTERM to
     run its own quit handshake and stay listed as running (see
     fuzz_pivot.py::_restart_excel)."""
-    subprocess.run(["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["sleep", "1"])
-    pgrep = subprocess.run(["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True)
+    subprocess.run(
+        ["killall", EXCEL_APP],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    subprocess.run(["sleep", "1"], check=False)
+    pgrep = subprocess.run(
+        ["pgrep", "-x", EXCEL_APP],
+        stdout=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
     for pid in pgrep.stdout.split():
-        subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["sleep", "1"])
+        subprocess.run(
+            ["kill", "-9", pid],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    subprocess.run(["sleep", "1"], check=False)
 
 
 def excel_script(path, body):
-    return "\n".join([
-        f'tell application "{EXCEL_APP}"',
-        "    set display alerts to false",
-        "    try",
-        "        close workbooks saving no",
-        "    end try",
-        f'    open POSIX file "{path}"',
-        "    set wb to active workbook",
-        body,
-        "    close wb saving no",
-        "    return theResult",
-        "end tell",
-    ])
+    return "\n".join(
+        [
+            f'tell application "{EXCEL_APP}"',
+            "    set display alerts to false",
+            "    try",
+            "        close workbooks saving no",
+            "    end try",
+            f'    open POSIX file "{path}"',
+            "    set wb to active workbook",
+            body,
+            "    close wb saving no",
+            "    return theResult",
+            "end tell",
+        ]
+    )
 
 
 def make_base_workbook(path):
@@ -182,15 +196,27 @@ def visi_macro_add(visi, base, name, source, out):
     with open(bas, "w") as f:
         f.write(source)
     res = subprocess.run(
-        [visi, "macro", "add", base, "--name", name, "--kind", "standard",
-         "--source-file", bas, "--output", out],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            visi,
+            "macro",
+            "add",
+            base,
+            "--name",
+            name,
+            "--kind",
+            "standard",
+            "--source-file",
+            bas,
+            "--output",
+            out,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if res.returncode != 0:
         raise RuntimeError(f"visi macro add failed: {res.stderr.strip()}")
 
-
-# -- checks --------------------------------------------------------------
 
 def check_author_and_run(visi, workdir, results):
     """visi-authored module loads, runs, mutates cells, and the mutations
@@ -200,8 +226,9 @@ def check_author_and_run(visi, workdir, results):
     make_base_workbook(base)
     visi_macro_add(visi, base, "VisiProbe", PROBE_BAS, xlsm)
 
-    ok, out = run_osascript(excel_script(
-        xlsm, '    run VB macro "RunProbe"\n    set theResult to "ran"'))
+    ok, out = run_osascript(
+        excel_script(xlsm, '    run VB macro "RunProbe"\n    set theResult to "ran"')
+    )
     if not ok:
         results.append(("author-and-run", False, f"AppleScript failed: {out}"))
         return
@@ -214,13 +241,24 @@ def check_author_and_run(visi, workdir, results):
         results.append(("author-and-run", False, f"cells {got!r} != {want!r}"))
         return
 
-    listing = subprocess.run([visi, "macro", "list", xlsm],
-                            stdout=subprocess.PIPE, text=True).stdout
+    listing = subprocess.run(
+        [visi, "macro", "list", xlsm],
+        stdout=subprocess.PIPE,
+        text=True,
+        check=False,
+    ).stdout
     if "VisiProbe" not in listing:
-        results.append(("author-and-run", False,
-                        "visi no longer lists the module after Excel saved the file"))
+        results.append(
+            (
+                "author-and-run",
+                False,
+                "visi no longer lists the module after Excel saved the file",
+            )
+        )
         return
-    results.append(("author-and-run", True, f"C1:C3 = {got!r}; module survives Excel's save"))
+    results.append(
+        ("author-and-run", True, f"C1:C3 = {got!r}; module survives Excel's save")
+    )
 
 
 def check_macro_behaviours(visi, workdir, results):
@@ -232,12 +270,7 @@ def check_macro_behaviours(visi, workdir, results):
     make_base_workbook(base)
     visi_macro_add(visi, base, "VisiHarness", HARNESS_BAS, xlsm)
 
-    body = "\n".join([
-        '    set r1 to run VB macro "Harness" arg1 "double"',
-        '    set r2 to run VB macro "Harness" arg1 "divzero"',
-        '    set r3 to run VB macro "Harness" arg1 "typemismatch"',
-        '    set theResult to r1 & " ;; " & r2 & " ;; " & r3',
-    ])
+    body = '    set r1 to run VB macro "Harness" arg1 "double"\n    set r2 to run VB macro "Harness" arg1 "divzero"\n    set r3 to run VB macro "Harness" arg1 "typemismatch"\n    set theResult to r1 & " ;; " & r2 & " ;; " & r3'
     ok, out = run_osascript(excel_script(xlsm, body))
     if not ok:
         for name in ("return-value", "trapped-error", "wrapper"):
@@ -251,12 +284,27 @@ def check_macro_behaviours(visi, workdir, results):
         return
     r1, r2, r3 = parts
 
-    results.append(("return-value", r1 == "OK|Double|42",
-                    f"run VB macro returned {r1!r} (want 'OK|Double|42')"))
-    results.append(("trapped-error", r2.startswith("ERR|11|"),
-                    f"1/0 under On Error returned {r2!r} (want 'ERR|11|...')"))
-    results.append(("wrapper", r3.startswith("ERR|13|"),
-                    f"error inside a called proc returned {r3!r} (want 'ERR|13|...')"))
+    results.append(
+        (
+            "return-value",
+            r1 == "OK|Double|42",
+            f"run VB macro returned {r1!r} (want 'OK|Double|42')",
+        )
+    )
+    results.append(
+        (
+            "trapped-error",
+            r2.startswith("ERR|11|"),
+            f"1/0 under On Error returned {r2!r} (want 'ERR|11|...')",
+        )
+    )
+    results.append(
+        (
+            "wrapper",
+            r3.startswith("ERR|13|"),
+            f"error inside a called proc returned {r3!r} (want 'ERR|13|...')",
+        )
+    )
 
 
 def demo_hang(visi, workdir, results):
@@ -267,29 +315,41 @@ def demo_hang(visi, workdir, results):
     visi_macro_add(visi, base, "VisiHang", HANG_BAS, xlsm)
 
     print(f"  (stalling up to {OSASCRIPT_TIMEOUT}s on purpose...)", flush=True)
-    ok, out = run_osascript(excel_script(
-        xlsm, '    set theResult to run VB macro "Unhandled"'))
+    ok, out = run_osascript(
+        excel_script(xlsm, '    set theResult to run VB macro "Unhandled"')
+    )
     restart_excel()
-    results.append(("untrapped-error-hangs", (not ok) and out == "<timeout>",
-                    f"untrapped error {'hung as expected' if out == '<timeout>' else f'gave {out!r}'}"))
+    results.append(
+        (
+            "untrapped-error-hangs",
+            (not ok) and out == "<timeout>",
+            f"untrapped error {'hung as expected' if out == '<timeout>' else f'gave {out!r}'}",
+        )
+    )
 
-
-# -- main ----------------------------------------------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--visi", default="target/release/visi", help="path to the visi binary")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--visi", default="target/release/visi", help="path to the visi binary"
+    )
     ap.add_argument("--keep", action="store_true", help="keep the generated workbooks")
-    ap.add_argument("--demo-hang", action="store_true",
-                    help="also reproduce the untrapped-error hang (stalls, then restarts Excel)")
+    ap.add_argument(
+        "--demo-hang",
+        action="store_true",
+        help="also reproduce the untrapped-error hang (stalls, then restarts Excel)",
+    )
     args = ap.parse_args()
 
     if sys.platform != "darwin":
         sys.exit("This probe drives Excel through AppleScript and is macOS-only.")
     visi = shutil.which(args.visi) or os.path.abspath(args.visi)
     if not os.path.exists(visi):
-        sys.exit(f"visi binary not found at {args.visi!r} -- build it with `cargo build --release`")
+        sys.exit(
+            f"visi binary not found at {args.visi!r} -- build it with `cargo build --release`"
+        )
 
     workdir = tempfile.mkdtemp(prefix="vba_probe_")
     results = []
@@ -311,10 +371,14 @@ def main():
         failed += 0 if ok else 1
     print()
     if failed:
-        print(f"{failed} of {len(results)} checks failed -- the VBA fuzz plan's assumptions "
-              f"no longer hold; see docs/vba-macro-support.md")
+        print(
+            f"{failed} of {len(results)} checks failed -- the VBA fuzz plan's assumptions "
+            f"no longer hold; see docs/vba-macro-support.md"
+        )
     else:
-        print(f"all {len(results)} checks passed -- Excel runs visi-authored macros end to end")
+        print(
+            f"all {len(results)} checks passed -- Excel runs visi-authored macros end to end"
+        )
     return 1 if failed else 0
 
 

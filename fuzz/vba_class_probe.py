@@ -10,8 +10,8 @@ Probes and verifies:
 5. `TypeOf ... Is` and `TypeName(...)` verification for user-defined classes.
 """
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -19,14 +19,14 @@ try:
     import visi_core
 except ImportError:
     sys.exit(
-        "the visi_core bindings are required: "
-        "maturin develop -m visi-python/Cargo.toml"
+        "the visi_core bindings are required: maturin develop -m visi-python/Cargo.toml"
     )
+
 
 def test_class_properties_and_methods():
     print("Testing Class properties and methods...")
     wb = visi_core.Workbook()
-    
+
     person_cls = """Attribute VB_Name = "Person"
 Private m_name As String
 Private m_age As Long
@@ -64,15 +64,16 @@ End Function
 
     wb.add_macro("Person", person_cls, kind="class")
     wb.add_macro("Main", main_mod, kind="standard")
-    
-    type_name, val, mutated = wb.run_macro("RunTest", module="Main")
+
+    _type_name, val, _mutated = wb.run_macro("RunTest", module="Main")
     assert val == "Bob is 30|Person|True|True", f"Unexpected result: {val}"
     print("  ✓ Class properties and methods passed")
+
 
 def test_auto_new_and_lifecycle():
     print("Testing Dim As New and Class_Initialize / Terminate...")
     wb = visi_core.Workbook()
-    
+
     counter_cls = """Attribute VB_Name = "Counter"
 Public Count As Long
 Private Sub Class_Initialize()
@@ -97,15 +98,16 @@ End Function
 
     wb.add_macro("Counter", counter_cls, kind="class")
     wb.add_macro("Main", main_mod, kind="standard")
-    
-    type_name, val, mutated = wb.run_macro("TestLifecycle", module="Main")
+
+    _type_name, val, _mutated = wb.run_macro("TestLifecycle", module="Main")
     assert val == "10|10", f"Unexpected result: {val}"
     print("  ✓ Dim As New and lifecycle passed")
+
 
 def test_default_member():
     print("Testing default member dispatch (VB_UserMemId = 0)...")
     wb = visi_core.Workbook()
-    
+
     vector_cls = """Attribute VB_Name = "Vector"
 Private m_items(10) As Long
 
@@ -125,10 +127,11 @@ End Function
 
     wb.add_macro("Vector", vector_cls, kind="class")
     wb.add_macro("Main", main_mod, kind="standard")
-    
-    type_name, val, mutated = wb.run_macro("TestDefault", module="Main")
+
+    _type_name, val, _mutated = wb.run_macro("TestDefault", module="Main")
     assert val == "40", f"Unexpected result: {val}"
     print("  ✓ Default member dispatch passed")
+
 
 if __name__ == "__main__":
     test_class_properties_and_methods()

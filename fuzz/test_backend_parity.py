@@ -60,17 +60,17 @@ def _cli_binary_exists():
 
 
 requires_cli = pytest.mark.skipif(
-    not _cli_binary_exists(), reason="no compiled visi binary; run `cargo build --release`"
+    not _cli_binary_exists(),
+    reason="no compiled visi binary; run `cargo build --release`",
 )
 
 
 def saved_failure_sources():
     return sorted(
-        glob.glob(os.path.join(PROJECT_ROOT, "fuzz_results", "failures", "*", "source.xlsx"))
+        glob.glob(
+            os.path.join(PROJECT_ROOT, "fuzz_results", "failures", "*", "source.xlsx")
+        )
     )
-
-
-# --------------------------------------------------------------------- generator coverage
 
 
 def test_formula_text_function_dispatch_covers_listed_names():
@@ -116,6 +116,7 @@ def test_chart_rich_shape_writes_dates_blanks_and_extra_columns(tmp_path):
     src = str(tmp_path / "chart.xlsx")
     ChartFuzzGenerator(seed=98, shape="rich").generate(src, num_rows=12)
     import openpyxl
+
     wb = openpyxl.load_workbook(src)
     ws = wb["Sheet1"]
     assert ws.max_column >= 4
@@ -125,14 +126,16 @@ def test_chart_rich_shape_writes_dates_blanks_and_extra_columns(tmp_path):
 
 def test_pivot_rich_shape_expands_source_schema(tmp_path):
     src = str(tmp_path / "pivot.xlsx")
-    config = PivotFuzzGenerator(seed=98, shape="rich").generate(src, num_rows=10, use_table=True)
+    config = PivotFuzzGenerator(seed=98, shape="rich").generate(
+        src, num_rows=10, use_table=True
+    )
     assert config["source_range"].startswith("A1:I")
     assert config["source_bounds"] == (0, 0, 10, 8)
-    fields = {f["column"] for f in config["row_fields"] + config["col_fields"] + config["value_fields"]}
+    fields = {
+        f["column"]
+        for f in config["row_fields"] + config["col_fields"] + config["value_fields"]
+    }
     assert fields <= set(PivotFuzzGenerator.RICH_COL_NAMES)
-
-
-# --------------------------------------------------------------------- eval
 
 
 @requires_cli
@@ -166,7 +169,9 @@ def _assert_eval_parity(src, tmp_path):
         for key in cli_cells
         if cli_cells[key]["val"] != bnd_cells[key]["val"]
     }
-    assert not mismatches, f"{len(mismatches)} value mismatch(es): {list(mismatches.items())[:5]}"
+    assert not mismatches, (
+        f"{len(mismatches)} value mismatch(es): {list(mismatches.items())[:5]}"
+    )
 
 
 def test_run_returns_the_bytes_it_wrote(tmp_path):
@@ -181,9 +186,6 @@ def test_run_returns_the_bytes_it_wrote(tmp_path):
     assert XLSXEvaluatedReader.read_evaluated_cells_bytes(
         data
     ) == XLSXEvaluatedReader.read_evaluated_cells(out)
-
-
-# ------------------------------------------------------------------- charts
 
 
 @requires_cli
@@ -206,15 +208,14 @@ def test_chart_parity(seed, tmp_path):
     assert read_charts(cli_out) == read_charts(bnd_out)
 
 
-# ------------------------------------------------------------------- pivots
-
-
 @requires_cli
 @pytest.mark.parametrize("seed", range(10))
 @pytest.mark.parametrize("use_table", [False, True])
 def test_pivot_parity(seed, use_table, tmp_path):
     src = str(tmp_path / "source.xlsx")
-    config = PivotFuzzGenerator(seed=seed).generate(src, num_rows=8, use_table=use_table)
+    config = PivotFuzzGenerator(seed=seed).generate(
+        src, num_rows=8, use_table=use_table
+    )
 
     cli_out = str(tmp_path / "cli.xlsx")
     bnd_out = str(tmp_path / "bnd.xlsx")
@@ -269,16 +270,12 @@ def test_empty_filter_selection_is_bindings_only(tmp_path):
     assert wb.pivots()[0]["filter_selections"]["Region"] is None
 
 
-# --------------------------------------------------------------- error text
-
-
 @requires_cli
 def test_binding_error_text_matches_the_cli(tmp_path):
     """str(exc) must equal the CLI's stderr minus its "Error: " prefix."""
     import subprocess
 
     import visi_core
-
     from visi_driver import resolve_visi_binary
 
     src = str(tmp_path / "source.xlsx")
@@ -289,16 +286,13 @@ def test_binding_error_text_matches_the_cli(tmp_path):
 
     res = subprocess.run(
         [resolve_visi_binary(None), "pivot", "refresh", src, "--name", "no-such-pivot"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode != 0
     cli_msg = res.stderr.strip().removeprefix("Error: ")
     assert str(exc.value) == cli_msg
-
-
-# ------------------------------------------------------------------- macros
 
 
 MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    Range("A1").Value = 1\nEnd Sub\n'
@@ -316,7 +310,6 @@ def test_macro_add_parity(kind, sheet, tmp_path):
     import subprocess
 
     import visi_core
-
     from visi_driver import resolve_visi_binary
 
     src = str(tmp_path / "source.xlsx")
@@ -324,18 +317,29 @@ def test_macro_add_parity(kind, sheet, tmp_path):
     cli_out = str(tmp_path / "cli.xlsm")
     base = visi_core.Workbook()
     if sheet is not None:
-        # Both backends resolve the sheet by name, so take it from the
-        # workbook rather than assuming what an empty one calls its sheet.
         sheet = base.sheet_names[0]
     base.save(src)
     with open(bas, "w") as f:
         f.write(MACRO_SRC)
 
-    cmd = [resolve_visi_binary(None), "macro", "add", src, "--name", "Mod1",
-           "--kind", kind, "--source-file", bas, "--output", cli_out, "--quiet"]
+    cmd = [
+        resolve_visi_binary(None),
+        "macro",
+        "add",
+        src,
+        "--name",
+        "Mod1",
+        "--kind",
+        kind,
+        "--source-file",
+        bas,
+        "--output",
+        cli_out,
+        "--quiet",
+    ]
     if sheet is not None:
         cmd += ["--sheet", sheet]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert res.returncode == 0, res.stderr
 
     wb = visi_core.Workbook.load(src)
@@ -359,18 +363,21 @@ def test_macro_list_parity(tmp_path):
     import subprocess
 
     import visi_core
-
     from visi_driver import resolve_visi_binary
 
     path = str(tmp_path / "book.xlsm")
     wb = visi_core.Workbook()
     wb.add_macro("Mod1", MACRO_SRC)
-    wb.add_macro("ThisWorkbook", 'Attribute VB_Name = "ThisWorkbook"\n', kind="document")
+    wb.add_macro(
+        "ThisWorkbook", 'Attribute VB_Name = "ThisWorkbook"\n', kind="document"
+    )
     wb.save(path)
 
     res = subprocess.run(
         [resolve_visi_binary(None), "macro", "list", path, "--json"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert res.returncode == 0, res.stderr
     cli = json.loads(res.stdout)
@@ -381,9 +388,6 @@ def test_macro_list_parity(tmp_path):
     ]
 
 
-# `Range("A1")` unqualified is the active sheet, and `C1` reads back what the
-# formula in `B1` computed -- so this exercises a write, a recalculation and a
-# worksheet-function call in four lines.
 RUN_MACRO_SRC = (
     'Attribute VB_Name = "Runner"\n'
     "Public Function Go() As Variant\n"
@@ -411,7 +415,6 @@ def test_macro_run_parity(tmp_path):
     import subprocess
 
     import visi_core
-
     from visi_driver import resolve_visi_binary
 
     src = str(tmp_path / "source.xlsm")
@@ -423,9 +426,20 @@ def test_macro_run_parity(tmp_path):
     base.save(src)
 
     res = subprocess.run(
-        [resolve_visi_binary(None), "macro", "run", src, "--name", "Go",
-         "--output", cli_out, "--json"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            resolve_visi_binary(None),
+            "macro",
+            "run",
+            src,
+            "--name",
+            "Go",
+            "--output",
+            cli_out,
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert res.returncode == 0, res.stderr
     cli = json.loads(res.stdout)
@@ -455,7 +469,6 @@ def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_p
     import subprocess
 
     import visi_core
-
     from visi_driver import resolve_visi_binary
 
     src = str(tmp_path / "source.xlsm")
@@ -466,7 +479,9 @@ def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_p
     def run(proc):
         return subprocess.run(
             [resolve_visi_binary(None), "macro", "run", src, "--name", proc],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
     mutating = run("Go")
@@ -475,8 +490,7 @@ def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_p
 
     reading = run("Peek")
     assert reading.returncode == 0, reading.stderr
-    # The "a macro ran" notice is not suppressible, and is on stderr so it
-    # cannot be confused with the value.
+
     assert "Running VBA procedure" in reading.stderr
 
     assert visi_core.Workbook.load(src).run_macro("Peek")[2] is False

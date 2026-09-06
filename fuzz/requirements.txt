@@ -5,3 +5,5 @@ openpyxl>=3.1.0
 maturin>=1.7
 # fuzz/test_backend_parity.py and visi-python/tests/
 pytest>=8.0
+# Added by an LLM agent: Python formatter/linter used for the fuzz harness and bindings tests.
+ruff>=0.8

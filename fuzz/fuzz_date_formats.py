@@ -20,7 +20,6 @@ import datetime as dt
 import os
 import random
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -35,9 +34,22 @@ except ImportError as exc:  # pragma: no cover - exercised by humans without bin
         "  source fuzz/venv/bin/activate && maturin develop -m visi-python/Cargo.toml --release"
     ) from exc
 
-from fuzz_excel import ExcelDriver  # noqa: E402
+from fuzz_excel import ExcelDriver
 
-MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+MONTH_ABBR = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
 
 
 def col_name(idx):
@@ -103,7 +115,7 @@ LOCALE_FORMATTERS = {
 
 
 def random_date(rng):
-    # Keep days valid for every month and avoid pre-1900 edge cases.
+
     return dt.date(rng.randint(1995, 2035), rng.randint(1, 12), rng.randint(1, 28))
 
 
@@ -134,10 +146,7 @@ def build_workbook(path, rng, locale="en-US"):
         expected[(row, 5)] = {"kind": "text", "text": literal}
 
     wb.evaluate()
-    expected_displays = {
-        rc: wb.get_display(rc[0], rc[1])
-        for rc in expected
-    }
+    expected_displays = {rc: wb.get_display(rc[0], rc[1]) for rc in expected}
     wb.save(path)
     return rows, expected, expected_displays
 
@@ -190,19 +199,26 @@ def compare_cells(
                         f"{label} {cell_ref(rc)}: expected date format {want['format']!r}, got {fmt!r}"
                     )
             elif not is_date_format(fmt):
-                failures.append(f"{label} {cell_ref(rc)}: expected a date format, got {fmt!r}")
+                failures.append(
+                    f"{label} {cell_ref(rc)}: expected a date format, got {fmt!r}"
+                )
         else:
             if is_date_format(fmt):
-                failures.append(f"{label} {cell_ref(rc)}: expected no date format, got {fmt!r}")
-
-        if want["kind"] == "text":
-            if got["data_type"] != "s" or got["value"] != want["text"]:
                 failures.append(
-                    f"{label} {cell_ref(rc)}: expected text {want['text']!r}, "
-                    f"got type={got['data_type']!r} value={got['value']!r}"
+                    f"{label} {cell_ref(rc)}: expected no date format, got {fmt!r}"
                 )
 
-        if (want["kind"] != "date" or compare_date_display) and got["display"] != expected_displays[rc]:
+        if want["kind"] == "text" and (
+            got["data_type"] != "s" or got["value"] != want["text"]
+        ):
+            failures.append(
+                f"{label} {cell_ref(rc)}: expected text {want['text']!r}, "
+                f"got type={got['data_type']!r} value={got['value']!r}"
+            )
+
+        if (want["kind"] != "date" or compare_date_display) and got[
+            "display"
+        ] != expected_displays[rc]:
             failures.append(
                 f"{label} {cell_ref(rc)}: expected display {expected_displays[rc]!r}, "
                 f"got {got['display']!r}"
@@ -223,12 +239,22 @@ def copy_failure_artifacts(dest, *paths):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fuzz date number formats and display strings in xlsx output.")
+    parser = argparse.ArgumentParser(
+        description="Fuzz date number formats and display strings in xlsx output."
+    )
     parser.add_argument("--excel-path", help="Path to Microsoft Excel app/binary.")
-    parser.add_argument("--driver", choices=["auto", "applescript", "win32com", "cli", "mock"], default="auto")
+    parser.add_argument(
+        "--driver",
+        choices=["auto", "applescript", "win32com", "cli", "mock"],
+        default="auto",
+    )
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--locale", choices=["en-US", "en-GB", "de-DE"], help="Spreadsheet locale to fuzz.")
+    parser.add_argument(
+        "--locale",
+        choices=["en-US", "en-GB", "de-DE"],
+        help="Spreadsheet locale to fuzz.",
+    )
     parser.add_argument("--output-dir", default="./fuzz_results")
     args = parser.parse_args()
 
@@ -247,7 +273,9 @@ def main():
     if args.locale:
         print(f" Locale      : {args.locale}")
     if smoke_mode:
-        print(" Mock mode: Excel round-trip is skipped; only visi source/round-trip is checked.")
+        print(
+            " Mock mode: Excel round-trip is skipped; only visi source/round-trip is checked."
+        )
     print("=====================================================================\n")
 
     passed = 0
@@ -257,7 +285,9 @@ def main():
     locales = [args.locale] if args.locale else ["en-US", "en-GB", "de-DE"]
 
     for i in range(1, args.iterations + 1):
-        iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1_000_000)
+        iter_seed = (
+            (args.seed + i) if args.seed is not None else random.randint(1, 1_000_000)
+        )
         rng = random.Random(iter_seed)
         locale = rng.choice(locales)
         temp_dir = tempfile.mkdtemp(prefix=f"date_fmt_fuzz_{i}_")
@@ -268,9 +298,6 @@ def main():
         try:
             rows, expected, displays = build_workbook(source_xlsx, rng, locale=locale)
 
-            # A visi-authored workbook is the exact baseline. Excel is allowed
-            # to canonicalize built-in/localized date format spellings on save,
-            # but a visi round-trip must preserve the format codes byte-for-byte.
             source_cells = inspect_workbook(source_xlsx, rows)
             expected = baseline_expected_formats(source_cells, expected)
             failures = compare_cells("source", source_cells, expected, displays)
@@ -278,27 +305,42 @@ def main():
             visi_roundtrip = visi_core.Workbook.load(source_xlsx)
             visi_roundtrip.evaluate()
             visi_roundtrip.save(visi_out_xlsx)
-            failures.extend(compare_cells("visi", inspect_workbook(visi_out_xlsx, rows), expected, displays))
+            failures.extend(
+                compare_cells(
+                    "visi", inspect_workbook(visi_out_xlsx, rows), expected, displays
+                )
+            )
 
             if not smoke_mode:
                 excel_driver.run(source_xlsx, excel_out_xlsx)
-                failures.extend(compare_cells(
-                    "excel",
-                    inspect_workbook(excel_out_xlsx, rows),
-                    expected,
-                    displays,
-                    exact_date_format=False,
-                    compare_date_display=False,
-                ))
+                failures.extend(
+                    compare_cells(
+                        "excel",
+                        inspect_workbook(excel_out_xlsx, rows),
+                        expected,
+                        displays,
+                        exact_date_format=False,
+                        compare_date_display=False,
+                    )
+                )
 
             if failures:
                 failed += 1
                 fail_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
-                copy_failure_artifacts(fail_dir, source_xlsx, visi_out_xlsx, None if smoke_mode else excel_out_xlsx)
-                with open(os.path.join(fail_dir, "failure.txt"), "w", encoding="utf-8") as f:
+                copy_failure_artifacts(
+                    fail_dir,
+                    source_xlsx,
+                    visi_out_xlsx,
+                    None if smoke_mode else excel_out_xlsx,
+                )
+                with open(
+                    os.path.join(fail_dir, "failure.txt"), "w", encoding="utf-8"
+                ) as f:
                     f.write("\n".join(failures))
                     f.write("\n")
-                print(f" Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                print(
+                    f" Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})"
+                )
                 for line in failures[:10]:
                     print(f"   - {line}")
                 if len(failures) > 10:
@@ -306,12 +348,21 @@ def main():
                 print(f"   artifacts: {fail_dir}")
             else:
                 passed += 1
-                print(f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed})")
+                print(
+                    f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed})"
+                )
         except Exception as exc:  # noqa: BLE001 - fuzz harness should preserve artifacts
             failed += 1
             fail_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
-            copy_failure_artifacts(fail_dir, source_xlsx, visi_out_xlsx, None if smoke_mode else excel_out_xlsx)
-            with open(os.path.join(fail_dir, "exception.txt"), "w", encoding="utf-8") as f:
+            copy_failure_artifacts(
+                fail_dir,
+                source_xlsx,
+                visi_out_xlsx,
+                None if smoke_mode else excel_out_xlsx,
+            )
+            with open(
+                os.path.join(fail_dir, "exception.txt"), "w", encoding="utf-8"
+            ) as f:
                 f.write(repr(exc))
                 f.write("\n")
             print(f" Iteration {i:3d}/{args.iterations} [ERROR] (Seed: {iter_seed})")

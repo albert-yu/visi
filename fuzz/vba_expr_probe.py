@@ -45,7 +45,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -57,9 +59,6 @@ except ImportError:
 
 from fuzz_vba import HARNESS_TEMPLATE, ExcelDriver, visi_result
 
-# Matches the fuzzer's generated procedures, so a probe can paste in a
-# statement from a failing case unchanged. `n` is a Null holder, since a Null
-# literal is not foldable and several rules turn on that.
 PREAMBLE = ["Dim va, vb, vc, vd, ve, vi, vn, a, b, c, n", "n = Null"]
 
 
@@ -80,7 +79,9 @@ def build_module(cases):
     parts = ['Attribute VB_Name = "P"']
     for i, (setup, expr) in enumerate(cases, start=1):
         body = "\n".join(f"    {s}" for s in PREAMBLE + setup)
-        parts.append(f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function")
+        parts.append(
+            f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function"
+        )
         parts.append(HARNESS_TEMPLATE.format(i=i))
     return "\n\n".join(parts) + "\n"
 
@@ -89,7 +90,11 @@ def read_cases(path):
     out = []
     with open(path) as f:
         for line in f:
-            line = line.split("#", 1)[0].strip() if line.lstrip().startswith("#") else line.strip()
+            line = (
+                line.split("#", 1)[0].strip()
+                if line.lstrip().startswith("#")
+                else line.strip()
+            )
             if line:
                 out.append(line)
     return out
@@ -99,8 +104,13 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("-e", "--expr", action="append", default=[],
-                    help="A case, `expr` or `setup :: expr`. Repeatable.")
+    ap.add_argument(
+        "-e",
+        "--expr",
+        action="append",
+        default=[],
+        help="A case, `expr` or `setup :: expr`. Repeatable.",
+    )
     ap.add_argument("-f", "--file", help="File of cases, one per line; # comments.")
     ap.add_argument("--excel-path")
     ap.add_argument("--driver", choices=["auto", "applescript", "mock"], default="auto")
@@ -125,8 +135,10 @@ def main():
             wb.save(xlsm)
             excel = driver.run_batch(xlsm, list(range(1, len(cases) + 1)))
         if not excel:
-            print("Excel returned nothing: a case is probably a compile error.\n",
-                  file=sys.stderr)
+            print(
+                "Excel returned nothing: a case is probably a compile error.\n",
+                file=sys.stderr,
+            )
 
     width = max(len(c) for c in raw)
     print(f"{'case'.ljust(width)}  {'visi'.ljust(24)}  excel")
