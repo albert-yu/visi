@@ -117,10 +117,10 @@ class _BaseDriver:
         cmd = [self.binary_path, subcommand] + args
         res = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=CLI_TIMEOUT_SECONDS,
+            check=False,
         )
         if res.returncode != 0:
             raise RuntimeError(

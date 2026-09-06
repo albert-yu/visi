@@ -385,8 +385,10 @@ class VbaGenerator:
 
         if kind < 0.78:
             return [
-                f"{target} = Application.WorksheetFunction.{self.rng.choice(GRID_FUNCTIONS)}"
-                f"({self.rng.choice(NUM_LITERALS)}, {self.rng.choice(NUM_LITERALS)})"
+                (
+                    f"{target} = Application.WorksheetFunction.{self.rng.choice(GRID_FUNCTIONS)}"
+                    f"({self.rng.choice(NUM_LITERALS)}, {self.rng.choice(NUM_LITERALS)})"
+                )
             ]
 
         if kind < 0.86:
@@ -806,23 +808,31 @@ class ExcelDriver:
         """
         self.restarts += 1
         subprocess.run(
-            ["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ["killall", EXCEL_APP],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(1.0)
         pgrep = subprocess.run(
-            ["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True
+            ["pgrep", "-x", EXCEL_APP],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=False,
         )
         for pid in pgrep.stdout.split():
             subprocess.run(
                 ["kill", "-9", pid],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
         time.sleep(1.0)
         subprocess.run(
             ["open", "-a", EXCEL_APP],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(4.0)
 
@@ -837,6 +847,7 @@ class ExcelDriver:
             ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(1.0)
 
@@ -860,10 +871,10 @@ class ExcelDriver:
         indices_args = [str(i) for i in indices]
         res = subprocess.run(
             [sys.executable, "-u", "-c", _WIN32COM_VBA_RUNNER, xlsm, *indices_args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=self.timeout,
+            check=False,
         )
         out = {}
         for line in res.stdout.splitlines():
@@ -918,10 +929,10 @@ class ExcelDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", script],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     text=True,
                     timeout=self.timeout,
+                    check=False,
                 )
             except subprocess.TimeoutExpired:
                 self.restart()

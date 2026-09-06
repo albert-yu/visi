@@ -325,23 +325,31 @@ class ExcelVerdictDriver:
         fuzz_pivot.py::_restart_excel, where this was first needed)."""
         self.restarts += 1
         subprocess.run(
-            ["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ["killall", EXCEL_APP],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(1.0)
         pgrep = subprocess.run(
-            ["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True
+            ["pgrep", "-x", EXCEL_APP],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=False,
         )
         for pid in pgrep.stdout.split():
             subprocess.run(
                 ["kill", "-9", pid],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
         time.sleep(1.0)
         subprocess.run(
             ["open", "-a", EXCEL_APP],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(4.0)
 
@@ -354,6 +362,7 @@ class ExcelVerdictDriver:
             ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(1.0)
 
@@ -378,10 +387,10 @@ class ExcelVerdictDriver:
                 _WIN32COM_VERDICT_RUNNER,
                 os.path.abspath(xlsm_path),
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=self.timeout,
+            check=False,
         )
 
     def verdict(self, xlsm_path):
@@ -413,10 +422,10 @@ class ExcelVerdictDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", self.script(os.path.abspath(xlsm_path))],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     text=True,
                     timeout=self.timeout,
+                    check=False,
                 )
             except subprocess.TimeoutExpired:
                 self.restart_excel()

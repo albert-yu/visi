@@ -125,10 +125,10 @@ def run_osascript(script, timeout=OSASCRIPT_TIMEOUT):
     try:
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return False, "<timeout>"
@@ -142,17 +142,26 @@ def restart_excel():
     run its own quit handshake and stay listed as running (see
     fuzz_pivot.py::_restart_excel)."""
     subprocess.run(
-        ["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ["killall", EXCEL_APP],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
     )
-    subprocess.run(["sleep", "1"])
+    subprocess.run(["sleep", "1"], check=False)
     pgrep = subprocess.run(
-        ["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True
+        ["pgrep", "-x", EXCEL_APP],
+        stdout=subprocess.PIPE,
+        text=True,
+        check=False,
     )
     for pid in pgrep.stdout.split():
         subprocess.run(
-            ["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ["kill", "-9", pid],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
         )
-    subprocess.run(["sleep", "1"])
+    subprocess.run(["sleep", "1"], check=False)
 
 
 def excel_script(path, body):
@@ -201,9 +210,9 @@ def visi_macro_add(visi, base, name, source, out):
             "--output",
             out,
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        check=False,
     )
     if res.returncode != 0:
         raise RuntimeError(f"visi macro add failed: {res.stderr.strip()}")
@@ -233,7 +242,10 @@ def check_author_and_run(visi, workdir, results):
         return
 
     listing = subprocess.run(
-        [visi, "macro", "list", xlsm], stdout=subprocess.PIPE, text=True
+        [visi, "macro", "list", xlsm],
+        stdout=subprocess.PIPE,
+        text=True,
+        check=False,
     ).stdout
     if "VisiProbe" not in listing:
         results.append(
@@ -258,14 +270,7 @@ def check_macro_behaviours(visi, workdir, results):
     make_base_workbook(base)
     visi_macro_add(visi, base, "VisiHarness", HARNESS_BAS, xlsm)
 
-    body = "\n".join(
-        [
-            '    set r1 to run VB macro "Harness" arg1 "double"',
-            '    set r2 to run VB macro "Harness" arg1 "divzero"',
-            '    set r3 to run VB macro "Harness" arg1 "typemismatch"',
-            '    set theResult to r1 & " ;; " & r2 & " ;; " & r3',
-        ]
-    )
+    body = '    set r1 to run VB macro "Harness" arg1 "double"\n    set r2 to run VB macro "Harness" arg1 "divzero"\n    set r3 to run VB macro "Harness" arg1 "typemismatch"\n    set theResult to r1 & " ;; " & r2 & " ;; " & r3'
     ok, out = run_osascript(excel_script(xlsm, body))
     if not ok:
         for name in ("return-value", "trapped-error", "wrapper"):

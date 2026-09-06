@@ -313,7 +313,7 @@ def _pivot_source():
 
 
 def test_pivot_from_range_and_fields():
-    wb, name, last = _pivot_source()
+    wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
     )
@@ -329,7 +329,7 @@ def test_pivot_from_range_and_fields():
 
 def test_no_subtotal_is_applied():
     """Mirrors the CLI's post-add mutation; without it --no-subtotal is a no-op."""
-    wb, name, last = _pivot_source()
+    wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
     )
@@ -343,7 +343,7 @@ def test_no_subtotal_is_applied():
 
 def test_subtotal_survives_a_roundtrip():
     """Contradicts pivot_xlsx.rs's stale module doc; the importer does read it."""
-    wb, name, last = _pivot_source()
+    wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
     )
@@ -360,7 +360,7 @@ def test_empty_filter_selection_is_expressible():
     None means "no filter"; [] means "nothing selected". The CLI only has the
     former (--clear) and a non-empty comma list.
     """
-    wb, name, last = _pivot_source()
+    wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
     )
@@ -384,7 +384,7 @@ def test_filter_selection_survives_a_roundtrip():
     This used not to hold -- the selection reset to "all" on import, so the
     filter had to be the last mutation before saving. It round-trips now.
     """
-    wb, name, last = _pivot_source()
+    wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
     )
@@ -402,14 +402,14 @@ def test_a_filter_selecting_everything_reads_back_as_no_filter():
 
     Harmless: an all-inclusive filter and no filter produce the same grid.
     """
-    wb, name, last = _pivot_source()
+    wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
     )
     wb.add_pivot_field("P", "row", "Product")
     wb.add_pivot_field("P", "value", "Amount", agg="sum")
     wb.add_pivot_field("P", "filter", "Region")
-    every = wb.pivots()[0]
+    wb.pivots()[0]
     wb.set_pivot_filter("P", "Region", ["East", "West"])
 
     assert wb.roundtrip().pivots()[0]["filter_selections"]["Region"] is None

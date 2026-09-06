@@ -57,14 +57,14 @@ def find_presaved_files(path: str) -> list[str]:
 
 def compare_presaved_file(
     file_path: str,
-    excel_path: str = None,
+    excel_path: str | None = None,
     driver_type: str = "auto",
     backend: str = "auto",
-    visi_path: str = None,
-    output_dir: str = None,
+    visi_path: str | None = None,
+    output_dir: str | None = None,
     strict_error_class: bool = False,
-    sheet_filter: str = None,
-    cell_filter: str = None,
+    sheet_filter: str | None = None,
+    cell_filter: str | None = None,
     verbose: bool = False,
 ) -> tuple[bool, list[dict], dict]:
     """
@@ -216,7 +216,7 @@ def main():
                 cell_filter=args.cell,
                 verbose=args.verbose,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
             print(f"[ERROR] {e}")
             overall_passed = False
             continue

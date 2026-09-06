@@ -139,16 +139,17 @@ def run_and_save(driver, xlsm, out_path, macro="Build"):
     try:
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=driver.timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         subprocess.run(
             ["killall", "Microsoft Excel"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         raise RuntimeError("Excel did not respond; killed it")
     if res.returncode != 0:
@@ -191,16 +192,17 @@ def can_excel_open(driver, path, timeout=60):
     try:
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         subprocess.run(
             ["killall", "Microsoft Excel"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         return False, "timed out -- a modal dialog, most likely a repair prompt"
     if res.returncode != 0:

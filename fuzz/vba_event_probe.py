@@ -45,7 +45,7 @@ End Sub
     wb.add_macro("Sheet1", sheet1_src, kind="document", sheet="Sheet1")
     wb.add_macro("Main", main_src, kind="standard")
 
-    type_name, val, mutated = wb.run_macro("MutateCell", module="Main")
+    _type_name, _val, mutated = wb.run_macro("MutateCell", module="Main")
     assert mutated, "Expected workbook to be mutated"
 
     val_a1 = wb.get_display(0, 0, sheet="Sheet1")
@@ -84,7 +84,7 @@ End Function
     wb.add_macro("Clock", emitter_cls, kind="class")
     wb.add_macro("Main", listener_mod, kind="standard")
 
-    type_name, val, mutated = wb.run_macro("TestClock", module="Main")
+    _type_name, val, _mutated = wb.run_macro("TestClock", module="Main")
     assert val == "Ticked:42", f"Expected Ticked:42, got {val}"
     print("  ✓ Custom events with WithEvents passed")
 
@@ -108,7 +108,7 @@ End Sub
     wb.add_macro("ThisWorkbook", this_wb_src, kind="document")
     wb.add_macro("Module1", mod1_src, kind="standard")
 
-    type_name, val, mutated = wb.run_open_events()
+    _type_name, _val, mutated = wb.run_open_events()
     assert mutated, "Expected workbook to be mutated by open events"
 
     val_a1 = wb.get_display(0, 0, sheet="Sheet1")

@@ -208,12 +208,13 @@ def compare_cells(
                     f"{label} {cell_ref(rc)}: expected no date format, got {fmt!r}"
                 )
 
-        if want["kind"] == "text":
-            if got["data_type"] != "s" or got["value"] != want["text"]:
-                failures.append(
-                    f"{label} {cell_ref(rc)}: expected text {want['text']!r}, "
-                    f"got type={got['data_type']!r} value={got['value']!r}"
-                )
+        if want["kind"] == "text" and (
+            got["data_type"] != "s" or got["value"] != want["text"]
+        ):
+            failures.append(
+                f"{label} {cell_ref(rc)}: expected text {want['text']!r}, "
+                f"got type={got['data_type']!r} value={got['value']!r}"
+            )
 
         if (want["kind"] != "date" or compare_date_display) and got[
             "display"

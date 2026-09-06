@@ -625,7 +625,7 @@ def main():
                 f"  {matches:4d}/{len(cases)} ({100 * matches / len(cases):5.1f}%)  {name}"
             )
 
-        best_matches, best_name = scored[0]
+        _best_matches, best_name = scored[0]
         print(
             f"\nWorst mismatches for best candidate ({best_name}) -- Excel vs. that candidate:"
         )

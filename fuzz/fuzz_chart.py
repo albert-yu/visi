@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import ClassVar
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chart_xlsx_reader import read_charts
@@ -68,12 +69,12 @@ class ChartFuzzGenerator:
     is compared.
     """
 
-    CHART_TYPES = ["column", "bar", "line", "pie", "scatter", "area"]
+    CHART_TYPES: ClassVar = ["column", "bar", "line", "pie", "scatter", "area"]
 
-    AXIS_LABEL_TYPES = ["column", "bar", "line", "scatter"]
+    AXIS_LABEL_TYPES: ClassVar = ["column", "bar", "line", "scatter"]
 
-    TITLES = ["Sales", "Revenue by Region", "Q3 Results", None]
-    AXIS_LABELS = ["Category", "Amount", "Units", None]
+    TITLES: ClassVar = ["Sales", "Revenue by Region", "Q3 Results", None]
+    AXIS_LABELS: ClassVar = ["Category", "Amount", "Units", None]
 
     def __init__(self, seed=None, shape="basic"):
         if seed is not None:
@@ -210,7 +211,7 @@ class ExcelChartDriver:
         else:
             raise RuntimeError(f"Unsupported chart driver type: {self.driver_type}")
 
-    GALLERY_NAMES = {
+    GALLERY_NAMES: ClassVar = {
         "column": "column clustered",
         "bar": "bar clustered",
         "line": "line chart",
@@ -286,10 +287,10 @@ class ExcelChartDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", script],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     text=True,
                     timeout=20,
+                    check=False,
                 )
                 if res.returncode == 0:
                     break
@@ -298,6 +299,7 @@ class ExcelChartDriver:
                     ["killall", "Microsoft Excel"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    check=False,
                 )
                 time.sleep(1.0)
         if res is not None and res.returncode != 0:
@@ -305,7 +307,7 @@ class ExcelChartDriver:
                 f"Excel chart AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}"
             )
 
-    WIN32COM_CHART_TYPE = {
+    WIN32COM_CHART_TYPE: ClassVar = {
         "column": "xlColumnClustered",
         "bar": "xlBarClustered",
         "line": "xlLine",
@@ -332,6 +334,7 @@ class ExcelChartDriver:
                     ["taskkill", "/F", "/IM", "EXCEL.EXE"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    check=False,
                 )
                 time.sleep(1.0)
 
@@ -367,7 +370,7 @@ class ExcelChartDriver:
                 wb.Close()
                 last_err = None
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
                 last_err = e
             finally:
                 excel.Quit()
@@ -567,7 +570,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(

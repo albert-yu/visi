@@ -178,7 +178,7 @@ CASES = [
 
 
 def run(cmd):
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{res.stderr}")
     return res.stdout
@@ -280,16 +280,17 @@ def excel_edit(app, case, path):
     try:
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=OSASCRIPT_TIMEOUT,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         subprocess.run(
             ["killall", "Microsoft Excel"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         raise RuntimeError("Excel did not respond; killed it")
     if res.returncode != 0:

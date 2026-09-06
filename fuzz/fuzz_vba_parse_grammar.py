@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from typing import ClassVar
 
 import openpyxl
 
@@ -48,8 +49,8 @@ class ModuleSource:
 class VbaGrammarGenerator:
     """Produces small, valid VBA projects from grammar-shaped pieces."""
 
-    SCALAR_TYPES = ["Long", "String", "Double", "Boolean", "Variant"]
-    CONTEXTUAL_NAMES = ["Name", "Line", "Get", "Width", "Value", "Item"]
+    SCALAR_TYPES: ClassVar = ["Long", "String", "Double", "Boolean", "Variant"]
+    CONTEXTUAL_NAMES: ClassVar = ["Name", "Line", "Get", "Width", "Value", "Item"]
 
     def __init__(self, seed=None):
         self.rng = random.Random(seed)
@@ -222,7 +223,7 @@ End Function
 
 
 class VbaProjectMutator:
-    TOKENS = ["End", "Then", "Property", "As", "(", ")", ",", "_", "#", '"']
+    TOKENS: ClassVar = ["End", "Then", "Property", "As", "(", ")", ",", "_", "#", '"']
 
     def __init__(self, rng):
         self.rng = rng
@@ -273,10 +274,10 @@ def visi_project_verdict(modules, path, visi_binary):
     xlsm = write_project(path, modules)
     res = subprocess.run(
         [visi_binary, "macro", "check", xlsm, "--json", "--quiet"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     if res.returncode != 0:
         return (

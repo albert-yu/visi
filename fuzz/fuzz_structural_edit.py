@@ -59,10 +59,10 @@ def col_name(idx):
 def run(cmd):
     res = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         timeout=CLI_TIMEOUT_SECONDS,
+        check=False,
     )
     if res.returncode != 0:
         raise RuntimeError(
@@ -268,6 +268,7 @@ class ExcelStructuralDriver:
                     ["taskkill", "/F", "/IM", "EXCEL.EXE"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    check=False,
                 )
                 time.sleep(1.0)
             excel = win32com.client.Dispatch("Excel.Application")
@@ -290,7 +291,7 @@ class ExcelStructuralDriver:
                 wb.Close(False)
                 last_err = None
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
                 last_err = exc
             finally:
                 excel.Quit()
@@ -336,10 +337,10 @@ class ExcelStructuralDriver:
         '''
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         )
         if res.returncode != 0:
             raise RuntimeError(f"Excel AppleScript failed:\nSTDERR: {res.stderr}")
@@ -418,7 +419,7 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
     visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_path)
     excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_path)
     comp = DifferentialComparator(strict_error_class=strict_error_class)
-    ok, mismatches = comp.compare(visi_cells, excel_cells)
+    _ok, mismatches = comp.compare(visi_cells, excel_cells)
 
     mismatches = [
         m for m in mismatches if not (m.get("excel") is None and m.get("formula"))
@@ -494,9 +495,9 @@ def main():
                     if excel.inner.driver_type == "mock"
                     else formula_mismatches(visi_out, excel_out)
                 )
-                values_ok, v_mismatches, error_class_only = (True, [], 0)
+                _values_ok, v_mismatches, error_class_only = (True, [], 0)
                 if excel.inner.driver_type != "mock":
-                    values_ok, v_mismatches, error_class_only = compare_values(
+                    _values_ok, v_mismatches, error_class_only = compare_values(
                         visi_out, excel_out, args.strict_error_class
                     )
                 tolerated += error_class_only
@@ -513,7 +514,7 @@ def main():
                         )
                 else:
                     print(f" Iteration {i:3d}/{len(seeds)} [PASSED] (Seed: {seed})")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
                 failed += 1
                 fail_dir = save_failure(td, args.output_dir, i, seed)
                 print(f" Iteration {i:3d}/{len(seeds)} [ERROR] (Seed: {seed})")

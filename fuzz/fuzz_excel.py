@@ -26,6 +26,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from typing import ClassVar
 
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -36,7 +37,7 @@ NS = {
 class ExcelFuzzGenerator:
     """Generates random data grids and formula trees for Excel compatibility testing."""
 
-    FUNCTIONS_SINGLE_NUM = [
+    FUNCTIONS_SINGLE_NUM: ClassVar = [
         "ABS",
         "INT",
         "SQRT",
@@ -88,7 +89,7 @@ class ExcelFuzzGenerator:
         "ERFC",
         "ERFC.PRECISE",
     ]
-    FUNCTIONS_MULTI_NUM = [
+    FUNCTIONS_MULTI_NUM: ClassVar = [
         "SUM",
         "AVERAGE",
         "MIN",
@@ -125,7 +126,7 @@ class ExcelFuzzGenerator:
         "STDEV",
         "STDEVP",
     ]
-    FUNCTIONS_STAT_BIVARIATE = [
+    FUNCTIONS_STAT_BIVARIATE: ClassVar = [
         "CORREL",
         "PEARSON",
         "SLOPE",
@@ -142,9 +143,16 @@ class ExcelFuzzGenerator:
         "SUMXMY2",
     ]
 
-    FUNCTIONS_TWO_NUM = ["ATAN2", "LOG", "MOD", "POWER", "QUOTIENT", "PERCENTOF"]
-    FUNCTIONS_LOGIC = ["IF", "AND", "OR", "NOT"]
-    FUNCTIONS_TEXT = [
+    FUNCTIONS_TWO_NUM: ClassVar = [
+        "ATAN2",
+        "LOG",
+        "MOD",
+        "POWER",
+        "QUOTIENT",
+        "PERCENTOF",
+    ]
+    FUNCTIONS_LOGIC: ClassVar = ["IF", "AND", "OR", "NOT"]
+    FUNCTIONS_TEXT: ClassVar = [
         "CONCATENATE",
         "LEFT",
         "RIGHT",
@@ -172,7 +180,7 @@ class ExcelFuzzGenerator:
         "UNICODE",
     ]
 
-    DATE_FUNCTIONS = [
+    DATE_FUNCTIONS: ClassVar = [
         "DATE",
         "DAY",
         "DAYS",
@@ -197,7 +205,7 @@ class ExcelFuzzGenerator:
         "WORKDAY",
         "WORKDAY.INTL",
     ]
-    ENGINEERING_FUNCTIONS = [
+    ENGINEERING_FUNCTIONS: ClassVar = [
         "BIN2DEC",
         "DEC2BIN",
         "DEC2HEX",
@@ -260,7 +268,7 @@ class ExcelFuzzGenerator:
         "MROUND",
     ]
 
-    LOGIC_EXTRA_FUNCTIONS = [
+    LOGIC_EXTRA_FUNCTIONS: ClassVar = [
         "ISEVEN",
         "ISODD",
         "ISLOGICAL",
@@ -278,7 +286,7 @@ class ExcelFuzzGenerator:
         "CHOOSE",
     ]
 
-    DISTRIBUTION_FUNCTIONS = [
+    DISTRIBUTION_FUNCTIONS: ClassVar = [
         "BETA.DIST",
         "BETADIST",
         "BETA.INV",
@@ -358,9 +366,9 @@ class ExcelFuzzGenerator:
         "TRIMMEAN",
         "MODE.MULT",
     ]
-    LOOKUP_FUNCTIONS = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
+    LOOKUP_FUNCTIONS: ClassVar = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
 
-    TEXT_EXTRA_FUNCTIONS = [
+    TEXT_EXTRA_FUNCTIONS: ClassVar = [
         "PROPER",
         "TRIM",
         "CHAR",
@@ -389,7 +397,7 @@ class ExcelFuzzGenerator:
         "ARRAYTOTEXT",
     ]
 
-    ARRAY_FUNCTIONS = [
+    ARRAY_FUNCTIONS: ClassVar = [
         "MDETERM",
         "MINVERSE",
         "MMULT",
@@ -404,7 +412,7 @@ class ExcelFuzzGenerator:
         "SERIESSUM",
     ]
 
-    ETS_FUNCTIONS = [
+    ETS_FUNCTIONS: ClassVar = [
         "FORECAST.ETS",
         "FORECAST.ETS.CONFINT",
         "FORECAST.ETS.STAT4",
@@ -413,7 +421,7 @@ class ExcelFuzzGenerator:
         "FORECAST.ETS.STAT7",
         "FORECAST.ETS.STAT8",
     ]
-    CONDITIONAL_AGG_FUNCTIONS = [
+    CONDITIONAL_AGG_FUNCTIONS: ClassVar = [
         "AVERAGEIF",
         "AVERAGEIFS",
         "COUNTIF",
@@ -426,8 +434,8 @@ class ExcelFuzzGenerator:
         "AGGREGATE",
     ]
 
-    VOLATILE_FUNCTIONS = ["RAND", "RANDBETWEEN", "RANDARRAY", "NOW", "TODAY"]
-    DATABASE_FUNCTIONS = [
+    VOLATILE_FUNCTIONS: ClassVar = ["RAND", "RANDBETWEEN", "RANDARRAY", "NOW", "TODAY"]
+    DATABASE_FUNCTIONS: ClassVar = [
         "DSUM",
         "DAVERAGE",
         "DCOUNT",
@@ -442,9 +450,9 @@ class ExcelFuzzGenerator:
         "DVARP",
     ]
 
-    LAMBDA_FUNCTIONS = []
+    LAMBDA_FUNCTIONS: ClassVar = []
 
-    RANGE_INFO_FUNCTIONS = [
+    RANGE_INFO_FUNCTIONS: ClassVar = [
         "ROW",
         "ROWS",
         "COLUMN",
@@ -462,7 +470,7 @@ class ExcelFuzzGenerator:
         "INFO",
     ]
 
-    ARRAY_RESHAPE_FUNCTIONS = [
+    ARRAY_RESHAPE_FUNCTIONS: ClassVar = [
         "HSTACK",
         "VSTACK",
         "CHOOSEROWS",
@@ -482,7 +490,7 @@ class ExcelFuzzGenerator:
         "XMATCH",
     ]
 
-    FINANCIAL_FUNCTIONS = [
+    FINANCIAL_FUNCTIONS: ClassVar = [
         "PV",
         "FV",
         "PMT",
@@ -2562,10 +2570,10 @@ class ExcelDriver:
                 try:
                     res = subprocess.run(
                         ["osascript", "-e", script],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        capture_output=True,
                         text=True,
                         timeout=15,
+                        check=False,
                     )
                     if res.returncode == 0:
                         break
@@ -2574,6 +2582,7 @@ class ExcelDriver:
                         ["killall", "Microsoft Excel"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        check=False,
                     )
                     time.sleep(1.0)
             if res is not None and res.returncode != 0:
@@ -2594,6 +2603,7 @@ class ExcelDriver:
                         ["taskkill", "/F", "/IM", "EXCEL.EXE"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        check=False,
                     )
                     time.sleep(1.0)
                 excel = win32com.client.Dispatch("Excel.Application")
@@ -2606,7 +2616,7 @@ class ExcelDriver:
                     wb.Close()
                     last_err = None
                     break
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
                     last_err = e
                 finally:
                     excel.Quit()
@@ -2616,7 +2626,10 @@ class ExcelDriver:
         elif self.driver_type == "cli":
             cmd = [self.excel_path, abs_output]
             res = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
             )
             if res.returncode != 0:
                 raise RuntimeError(f"Excel CLI command failed:\nSTDERR: {res.stderr}")
@@ -2713,7 +2726,7 @@ class XLSXEvaluatedReader:
                                 "formula": formula,
                                 "val": normalized_val,
                             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
             print(f"Warning: Failed to read OpenXML from {source}: {e}")
 
         return results
@@ -2821,7 +2834,7 @@ def smoke_check(items, what="cells"):
 class DifferentialComparator:
     """Compares evaluated cell contents between visi output and Excel output."""
 
-    EXCEL_ERRORS = {
+    EXCEL_ERRORS: ClassVar = {
         "#DIV/0!",
         "#VALUE!",
         "#N/A",
@@ -2868,13 +2881,16 @@ class DifferentialComparator:
         if t1 == t2:
             return True
 
-        if (
-            t1 == "empty" and t2 == "string" and isinstance(v2, str) and not v2.strip()
-        ) or (
-            t2 == "empty" and t1 == "string" and isinstance(v1, str) and not v1.strip()
-        ):
-            return True
-        return False
+        return bool(
+            t1 == "empty"
+            and t2 == "string"
+            and isinstance(v2, str)
+            and not v2.strip()
+            or t2 == "empty"
+            and t1 == "string"
+            and isinstance(v1, str)
+            and not v1.strip()
+        )
 
     def compare(self, visi_cells, excel_cells):
         """
@@ -3036,11 +3052,14 @@ class DifferentialComparator:
         if v1 is None and v2 is None:
             return True
         if v1 is None or v2 is None:
-            if (v1 is None and isinstance(v2, str) and not v2.strip()) or (
-                v2 is None and isinstance(v1, str) and not v1.strip()
-            ):
-                return True
-            return False
+            return bool(
+                v1 is None
+                and isinstance(v2, str)
+                and not v2.strip()
+                or v2 is None
+                and isinstance(v1, str)
+                and not v1.strip()
+            )
 
         if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
             return math.isclose(
@@ -3149,7 +3168,7 @@ def main():
     failures_dir = os.path.join(args.output_dir, "failures")
     os.makedirs(failures_dir, exist_ok=True)
 
-    generator = ExcelFuzzGenerator(seed=args.seed)
+    ExcelFuzzGenerator(seed=args.seed)
     visi_driver = VisiDriver(binary_path=args.visi_path, backend=args.backend)
 
     if args.backend == "auto" and visi_driver.backend != "bindings":
@@ -3245,7 +3264,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(

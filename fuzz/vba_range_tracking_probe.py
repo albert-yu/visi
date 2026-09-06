@@ -164,17 +164,21 @@ CASES = [
     ),
     (
         "dead range, Address err",
-        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
-        "s = r.Address\\n"
-        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-        "On Error GoTo 0 :: s",
+        (
+            'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
+            "s = r.Address\\n"
+            's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+            "On Error GoTo 0 :: s"
+        ),
     ),
     (
         "dead range, Value err",
-        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
-        "s = CStr(r.Value)\\n"
-        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-        "On Error GoTo 0 :: s",
+        (
+            'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
+            "s = CStr(r.Value)\\n"
+            's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+            "On Error GoTo 0 :: s"
+        ),
     ),
     (
         "dead range, is it Nothing",
@@ -186,17 +190,21 @@ CASES = [
     ),
     (
         "dead span, Address err",
-        'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: On Error Resume Next\\n'
-        "s = r.Address\\n"
-        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-        "On Error GoTo 0 :: s",
+        (
+            'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: On Error Resume Next\\n'
+            "s = r.Address\\n"
+            's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+            "On Error GoTo 0 :: s"
+        ),
     ),
     (
         "dead column range, Address err",
-        'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: On Error Resume Next\\n'
-        "s = r.Address\\n"
-        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-        "On Error GoTo 0 :: s",
+        (
+            'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: On Error Resume Next\\n'
+            "s = r.Address\\n"
+            's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+            "On Error GoTo 0 :: s"
+        ),
     ),
 ]
 

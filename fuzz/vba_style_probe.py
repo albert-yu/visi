@@ -195,10 +195,10 @@ def run_and_save(driver, xlsm, out_path):
     try:
         res = subprocess.run(
             ["osascript", "-e", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=driver.timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         driver.restart()

@@ -65,7 +65,7 @@ End Function
     wb.add_macro("Person", person_cls, kind="class")
     wb.add_macro("Main", main_mod, kind="standard")
 
-    type_name, val, mutated = wb.run_macro("RunTest", module="Main")
+    _type_name, val, _mutated = wb.run_macro("RunTest", module="Main")
     assert val == "Bob is 30|Person|True|True", f"Unexpected result: {val}"
     print("  ✓ Class properties and methods passed")
 
@@ -99,7 +99,7 @@ End Function
     wb.add_macro("Counter", counter_cls, kind="class")
     wb.add_macro("Main", main_mod, kind="standard")
 
-    type_name, val, mutated = wb.run_macro("TestLifecycle", module="Main")
+    _type_name, val, _mutated = wb.run_macro("TestLifecycle", module="Main")
     assert val == "10|10", f"Unexpected result: {val}"
     print("  ✓ Dim As New and lifecycle passed")
 
@@ -128,7 +128,7 @@ End Function
     wb.add_macro("Vector", vector_cls, kind="class")
     wb.add_macro("Main", main_mod, kind="standard")
 
-    type_name, val, mutated = wb.run_macro("TestDefault", module="Main")
+    _type_name, val, _mutated = wb.run_macro("TestDefault", module="Main")
     assert val == "40", f"Unexpected result: {val}"
     print("  ✓ Default member dispatch passed")
 

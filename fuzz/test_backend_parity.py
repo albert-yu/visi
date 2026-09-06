@@ -286,9 +286,9 @@ def test_binding_error_text_matches_the_cli(tmp_path):
 
     res = subprocess.run(
         [resolve_visi_binary(None), "pivot", "refresh", src, "--name", "no-such-pivot"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode != 0
     cli_msg = res.stderr.strip().removeprefix("Error: ")
@@ -339,7 +339,7 @@ def test_macro_add_parity(kind, sheet, tmp_path):
     ]
     if sheet is not None:
         cmd += ["--sheet", sheet]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert res.returncode == 0, res.stderr
 
     wb = visi_core.Workbook.load(src)
@@ -375,9 +375,9 @@ def test_macro_list_parity(tmp_path):
 
     res = subprocess.run(
         [resolve_visi_binary(None), "macro", "list", path, "--json"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, res.stderr
     cli = json.loads(res.stdout)
@@ -437,9 +437,9 @@ def test_macro_run_parity(tmp_path):
             cli_out,
             "--json",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, res.stderr
     cli = json.loads(res.stdout)
@@ -479,9 +479,9 @@ def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_p
     def run(proc):
         return subprocess.run(
             [resolve_visi_binary(None), "macro", "run", src, "--name", proc],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
+            check=False,
         )
 
     mutating = run("Go")

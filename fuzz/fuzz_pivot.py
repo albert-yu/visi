@@ -64,6 +64,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import ClassVar
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fuzz_excel import (
@@ -86,8 +87,8 @@ class PivotFuzzGenerator:
     logic at all.
     """
 
-    BASIC_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
-    RICH_COL_NAMES = [
+    BASIC_COL_NAMES: ClassVar = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
+    RICH_COL_NAMES: ClassVar = [
         "Cat",
         "Mixed",
         "NumStr",
@@ -99,14 +100,14 @@ class PivotFuzzGenerator:
         "Amount2",
     ]
     COL_NAMES = BASIC_COL_NAMES
-    CATEGORICAL_COLS = [0, 1, 2]
-    NUMERIC_COLS = [3, 4]
-    FILTERABLE_COLS = [0, 1, 2, 5]
+    CATEGORICAL_COLS: ClassVar = [0, 1, 2]
+    NUMERIC_COLS: ClassVar = [3, 4]
+    FILTERABLE_COLS: ClassVar = [0, 1, 2, 5]
 
-    CATEGORIES = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+    CATEGORIES: ClassVar = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
 
-    CASE_VARIANTS = ["East", "east", "WEST", "west", "North"]
-    AGGREGATIONS = ["sum", "count", "count-numbers", "average", "max", "min"]
+    CASE_VARIANTS: ClassVar = ["East", "east", "WEST", "west", "North"]
+    AGGREGATIONS: ClassVar = ["sum", "count", "count-numbers", "average", "max", "min"]
 
     def __init__(self, seed=None, shape="basic"):
         if seed is not None:
@@ -438,9 +439,9 @@ class ExcelPivotDriver:
                     "--output",
                     MACRO_TEMPLATE_PATH,
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
+                check=False,
             )
         if res.returncode != 0:
             raise RuntimeError(
@@ -560,16 +561,21 @@ class ExcelPivotDriver:
             ["killall", "Microsoft Excel"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(1.0)
         pgrep = subprocess.run(
-            ["pgrep", "-x", "Microsoft Excel"], stdout=subprocess.PIPE, text=True
+            ["pgrep", "-x", "Microsoft Excel"],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=False,
         )
         for pid in pgrep.stdout.split():
             subprocess.run(
                 ["kill", "-9", pid],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
         if pgrep.stdout.strip():
             time.sleep(1.0)
@@ -577,6 +583,7 @@ class ExcelPivotDriver:
             ["open", "-a", "Microsoft Excel"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
         )
         time.sleep(4.0)
 
@@ -588,10 +595,10 @@ class ExcelPivotDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", script],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     text=True,
                     timeout=20,
+                    check=False,
                 )
                 if res.returncode == 0:
                     break
@@ -606,8 +613,7 @@ class ExcelPivotDriver:
 
     def _run_win32com(self, abs_output, config, dest_cell=DEST_CELL):
         try:
-            import win32com.client
-            from win32com.client import constants as c
+            __import__("win32com.client")
         except ImportError:
             raise RuntimeError(
                 "pywin32 (win32com) is required for Excel automation on Windows."
@@ -620,13 +626,14 @@ class ExcelPivotDriver:
                     ["taskkill", "/F", "/IM", "EXCEL.EXE"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    check=False,
                 )
                 time.sleep(1.0)
             try:
                 self._run_win32com_once(abs_output, config, dest_cell)
                 last_err = None
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
                 last_err = e
         if last_err is not None:
             raise last_err
@@ -856,7 +863,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(
