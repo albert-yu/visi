@@ -20,11 +20,8 @@ or as an importable module:
     from chart_xlsx_reader import read_charts
 """
 
-import sys
 import json
-
-
-
+import sys
 
 _CLASS_TO_TYPE = {
     "LineChart": "Line",
@@ -96,19 +93,15 @@ def read_charts(xlsx_path):
         for chart in ws._charts:
             series = chart.series[0] if chart.series else None
 
-
-
             cat_range = None
             val_range = None
             if series is not None:
-                cat_range = _series_range(getattr(series, "cat", None)) or _series_range(
-                    getattr(series, "xVal", None)
-                )
-                val_range = _series_range(getattr(series, "val", None)) or _series_range(
-                    getattr(series, "yVal", None)
-                )
-
-
+                cat_range = _series_range(
+                    getattr(series, "cat", None)
+                ) or _series_range(getattr(series, "xVal", None))
+                val_range = _series_range(
+                    getattr(series, "val", None)
+                ) or _series_range(getattr(series, "yVal", None))
 
             x_axis = getattr(chart, "x_axis", None)
             y_axis = getattr(chart, "y_axis", None)

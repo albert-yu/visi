@@ -48,24 +48,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import openpyxl
 import visi_core
-
 from fuzz_vba_parse import ExcelVerdictDriver, build_module, visi_verdict
 
-
-
-
-
-
-
-
-
-
-
-
 CASES = [
-
-
-
     ("undeclared:call-2-args", "x = arr(1, 2)"),
     ("undeclared:call-1-arg", "x = arr(1)"),
     ("undeclared:implicit-call-date", "d #1/1/2000#"),
@@ -73,83 +58,43 @@ CASES = [
     ("undeclared:for-each-in", "For Each c In rng\n    x = 1\nNext"),
     ("undeclared:bare-operand", "x = a _\n    + b"),
     ("undeclared:redim-preserve", "ReDim Preserve arr(1 To 5)"),
-    ("undeclared:leading-continuation", "Select Case x\nCase 1\n    _ y = 2\nEnd Select"),
-
-
-
-
-
+    (
+        "undeclared:leading-continuation",
+        "Select Case x\nCase 1\n    _ y = 2\nEnd Select",
+    ),
     ("redim:preserve-undeclared", "ReDim Preserve arr(1 To 5)"),
     ("redim:plain-undeclared", "ReDim arr(1 To 5)"),
     ("redim:preserve-after-dim", "Dim arr()\nReDim Preserve arr(1 To 5)"),
     ("redim:plain-after-dim", "Dim arr()\nReDim arr(1 To 5)"),
     ("continuation:leading-underscore", "_ y = 2"),
     ("continuation:trailing-underscore", "y = 1 + _\n    2"),
-
-
-
-
-
-
-
     ("bare:undeclared", "x"),
     ("bare:declared-scalar", "Dim x As Long\nx"),
     ("bare:assigned-scalar", "x = 1\nx"),
     ("bare:declared-sub", "Helper"),
     ("bare:builtin-no-args", "Beep"),
-
-
-
-
-
-
     ("dup:dim-twice", "Dim x As Long\nDim x As Long"),
     ("dup:assign-then-dim", "x = 1\nDim x As Long"),
     ("dup:dim-then-assign", "Dim x As Long\nx = 1"),
     ("dup:call-then-dim", "x = Helper(1)\nDim x As Long"),
-
-
-
-
-
-
-
     ("dup:param-control", "y = x", "ByVal x As Long", " 1"),
     ("dup:param-then-dim", "Dim x As Long", "ByVal x As Long", " 1"),
     ("dup:for-counter-then-dim", "For x = 1 To 3\n    y = x\nNext x\nDim x As Long"),
     ("dup:foreach-elem-then-dim", "For Each x In rng\n    y = 1\nNext\nDim x As Long"),
-
-
     ("dup:set-then-dim", "Set x = New Collection\nDim x As Object"),
     ("dup:redim-then-dim", "ReDim arr(1 To 5)\nDim arr()"),
-
-
-
-
-
     ("dup:for-counter-only", "For x = 1 To 3\n    y = x\nNext x"),
     ("dup:foreach-elem-only", "For Each x In rng\n    y = 1\nNext"),
     ("dup:set-only", "Set x = New Collection"),
-
-
-
     ("control:declared-array-index", "Dim arr(5)\nx = arr(1)"),
     ("control:declared-proc-call", "x = Helper(1)"),
     ("control:plain-assignment", "x = 1"),
-
-
-
-
-
     ("builtin:MsgBox", 'MsgBox "hi"'),
     ("builtin:Debug.Print", "Debug.Print 1"),
     ("builtin:Randomize", "Randomize 1"),
     ("builtin:Beep", "Beep"),
     ("builtin:Err.Raise", "Err.Raise 5"),
     ("builtin:Application.Run", 'Application.Run "Nope"'),
-
-
-
     ("builtin:expr-MsgBox", 'x = MsgBox("hi")'),
     ("builtin:expr-Split", 'x = Split("a,b", ",")'),
     ("builtin:expr-Rnd", "x = Rnd()"),
@@ -158,14 +103,6 @@ CASES = [
     ("builtin:expr-CreateObject", 'x = CreateObject("Scripting.Dictionary")'),
     ("builtin:expr-Range", 'x = Range("A1")'),
     ("builtin:expr-Worksheets", "x = Worksheets(1)"),
-
-
-
-
-
-
-
-
     ("print:semicolon", 'Debug.Print "a"; 1'),
     ("print:semicolon-chain", 'Debug.Print "a"; "b"; 1'),
     ("print:trailing-semicolon", 'Debug.Print "a";'),
@@ -198,7 +135,6 @@ def probe(driver, case, workdir):
     openpyxl.Workbook().save(base)
     wb = visi_core.Workbook.load(base)
 
-
     wb.add_macro("M", source)
     wb.save(xlsm)
     excel_ok, excel_detail = driver.verdict(xlsm)
@@ -206,18 +142,33 @@ def probe(driver, case, workdir):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-e", "--expr", action="append", default=[],
-                    help="an ad-hoc snippet to probe (repeatable); replaces the built-in list")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "-e",
+        "--expr",
+        action="append",
+        default=[],
+        help="an ad-hoc snippet to probe (repeatable); replaces the built-in list",
+    )
     ap.add_argument("--only", help="run only cases whose label contains this substring")
-    ap.add_argument("--sig", default="",
-                    help="parameter list for the Gen wrapper, e.g. 'ByVal x As Long'; "
-                         "applies to every case that runs")
-    ap.add_argument("--call-args", default="", dest="call_args",
-                    help="arguments Harness passes to Gen, leading space included, e.g. ' 1'")
+    ap.add_argument(
+        "--sig",
+        default="",
+        help="parameter list for the Gen wrapper, e.g. 'ByVal x As Long'; "
+        "applies to every case that runs",
+    )
+    ap.add_argument(
+        "--call-args",
+        default="",
+        dest="call_args",
+        help="arguments Harness passes to Gen, leading space included, e.g. ' 1'",
+    )
     ap.add_argument("--list", action="store_true", help="print the cases and exit")
-    ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
+    ap.add_argument(
+        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto"
+    )
     ap.add_argument("--excel-path")
     ap.add_argument("--timeout", type=int, default=15)
     args = ap.parse_args()
@@ -249,7 +200,9 @@ def main():
     print("=" * 72)
     print(" VBA compile probe -- what does Excel's compiler accept?")
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")
-    print(f" Timeout     : {args.timeout}s (a hang is how Excel reports a compile error)")
+    print(
+        f" Timeout     : {args.timeout}s (a hang is how Excel reports a compile error)"
+    )
     print(f" Cases       : {len(cases)}")
     if driver.driver_type == "mock":
         print(" MOCK DRIVER -- visi's parser runs, Excel is not consulted.")
@@ -279,7 +232,9 @@ def main():
         shutil.rmtree(workdir, ignore_errors=True)
 
     print("=" * 72)
-    print(f" {len(cases) - disagreed}/{len(cases)} agreed ({driver.restarts} Excel restarts)")
+    print(
+        f" {len(cases) - disagreed}/{len(cases)} agreed ({driver.restarts} Excel restarts)"
+    )
     print("=" * 72)
     return 0
 

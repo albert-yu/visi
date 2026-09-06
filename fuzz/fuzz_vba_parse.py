@@ -76,7 +76,9 @@ EXCEL_APP = "Microsoft Excel"
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -87,18 +89,13 @@ except ImportError:
     )
 
 
-
-
-
-
-
 VALID_FRAGMENTS = [
     "Dim x As Long",
     "Dim s As String, t As Double",
     "x = 1 + 2 * 3",
     "x = -2 ^ 2",
     "x = 2 ^ 3 ^ 2",
-    "s = \"a\" & \"b\" & CStr(1)",
+    's = "a" & "b" & CStr(1)',
     "x = 10 \\ 3 Mod 2",
     "b = Not 1 = 0 And True",
     "b = True Xor False Eqv True Imp False",
@@ -119,7 +116,7 @@ VALID_FRAGMENTS = [
     "ReDim Preserve arr(1 To 5)",
     "Erase arr",
     "On Error Resume Next",
-    "x = ws.Range(\"A1\").Value",
+    'x = ws.Range("A1").Value',
     "x = rs!Field",
     "d = #1/1/2000#",
     "x = &HFF + &O17 + 1.5e-3",
@@ -130,11 +127,35 @@ VALID_FRAGMENTS = [
 ]
 
 
-
 MUTATION_TOKENS = [
-    "Then", "End", "Next", "Loop", "Wend", "Case", "Else", "As", "To", "In",
-    "=", "(", ")", ",", "&", "^", ".", ":", "\"", "#", "_", "Mod", "Not",
-    "Dim", "Sub", "Function", "1", "x",
+    "Then",
+    "End",
+    "Next",
+    "Loop",
+    "Wend",
+    "Case",
+    "Else",
+    "As",
+    "To",
+    "In",
+    "=",
+    "(",
+    ")",
+    ",",
+    "&",
+    "^",
+    ".",
+    ":",
+    '"',
+    "#",
+    "_",
+    "Mod",
+    "Not",
+    "Dim",
+    "Sub",
+    "Function",
+    "1",
+    "x",
 ]
 
 
@@ -152,7 +173,9 @@ class VbaSourceGenerator:
         self.rng = random.Random(seed)
 
     def body(self, mutate):
-        lines = [self.rng.choice(VALID_FRAGMENTS) for _ in range(self.rng.randint(1, 4))]
+        lines = [
+            self.rng.choice(VALID_FRAGMENTS) for _ in range(self.rng.randint(1, 4))
+        ]
         src = "\n".join(lines)
         if mutate:
             src = self.mutate(src)
@@ -177,18 +200,6 @@ class VbaSourceGenerator:
         elif kind == "truncate":
             toks = toks[: max(1, i)]
         return " ".join(toks)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 MODULE_TEMPLATE = """Attribute VB_Name = "M"
@@ -232,11 +243,6 @@ def build_module(body, sig="", args=""):
     return MODULE_TEMPLATE.format(body=indented, sig=sig, args=args)
 
 
-
-
-
-
-
 def visi_verdict(source):
     """(accepted, detail) from visi's parser."""
     try:
@@ -246,13 +252,6 @@ def visi_verdict(source):
         return False, str(e)
     except visi_core.VisiError as e:
         return False, f"{type(e).__name__}: {e}"
-
-
-
-
-
-
-
 
 
 _WIN32COM_VERDICT_RUNNER = """
@@ -304,32 +303,46 @@ class ExcelVerdictDriver:
         return name
 
     def script(self, path):
-        return "\n".join([
-            f'tell application "{self.app_name()}"',
-            "    set display alerts to false",
-            "    try",
-            "        close workbooks saving no",
-            "    end try",
-            f'    open POSIX file "{path}"',
-            "    set wb to active workbook",
-            '    set r to run VB macro "Harness"',
-            "    close wb saving no",
-            "    return r",
-            "end tell",
-        ])
+        return "\n".join(
+            [
+                f'tell application "{self.app_name()}"',
+                "    set display alerts to false",
+                "    try",
+                "        close workbooks saving no",
+                "    end try",
+                f'    open POSIX file "{path}"',
+                "    set wb to active workbook",
+                '    set r to run VB macro "Harness"',
+                "    close wb saving no",
+                "    return r",
+                "end tell",
+            ]
+        )
 
     def restart_excel(self):
         """SIGKILL by PID -- `killall` alone can leave Excel running, since it
         may intercept SIGTERM to run its own quit handshake (see
         fuzz_pivot.py::_restart_excel, where this was first needed)."""
         self.restarts += 1
-        subprocess.run(["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         time.sleep(1.0)
-        pgrep = subprocess.run(["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True)
+        pgrep = subprocess.run(
+            ["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True
+        )
         for pid in pgrep.stdout.split():
-            subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["kill", "-9", pid],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         time.sleep(1.0)
-        subprocess.run(["open", "-a", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["open", "-a", EXCEL_APP],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(4.0)
 
     def restart_windows(self):
@@ -339,7 +352,8 @@ class ExcelVerdictDriver:
         self.restarts += 1
         subprocess.run(
             ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         time.sleep(1.0)
 
@@ -357,8 +371,16 @@ class ExcelVerdictDriver:
         under a hung Excel.
         """
         return subprocess.run(
-            [sys.executable, "-u", "-c", _WIN32COM_VERDICT_RUNNER, os.path.abspath(xlsm_path)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                _WIN32COM_VERDICT_RUNNER,
+                os.path.abspath(xlsm_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
             timeout=self.timeout,
         )
 
@@ -375,7 +397,10 @@ class ExcelVerdictDriver:
                     self.restart_windows()
                     if attempt == 0:
                         continue
-                    return False, "compile error (Excel went modal and had to be killed)"
+                    return (
+                        False,
+                        "compile error (Excel went modal and had to be killed)",
+                    )
                 if res.returncode == 0:
                     return True, res.stdout.strip()
                 self.restart_windows()
@@ -388,13 +413,12 @@ class ExcelVerdictDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", self.script(os.path.abspath(xlsm_path))],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, timeout=self.timeout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=self.timeout,
                 )
             except subprocess.TimeoutExpired:
-
-
-
                 self.restart_excel()
                 if attempt == 0:
                     continue
@@ -402,17 +426,11 @@ class ExcelVerdictDriver:
             if res.returncode == 0:
                 return True, res.stdout.strip()
 
-
             self.restart_excel()
             if attempt == 0:
                 continue
             return None, f"AppleScript error: {res.stderr.strip()}"
         return None, "indeterminate"
-
-
-
-
-
 
 
 def classify(visi_ok, excel_ok):
@@ -439,7 +457,9 @@ def run_corpus(cases, path):
     did not write.
     """
     print("=" * 69)
-    print("        visi VBA parser: real-world corpus regression check       ".center(69))
+    print(
+        "        visi VBA parser: real-world corpus regression check       ".center(69)
+    )
     print("=" * 69)
     print(f" Corpus : {path} ({len(cases)} files)")
     print(" Excel  : not consulted -- see --corpus help and finding 2")
@@ -449,8 +469,10 @@ def run_corpus(cases, path):
     for name, source, _ in cases:
         ok, detail = visi_verdict(source)
         procs = len(visi_core.check_syntax(source)) if ok else 0
-        print(f" {name:<24} [{'OK' if ok else 'REJECTED'}]"
-              f"{f' ({procs} procedure{"" if procs == 1 else "s"})' if ok else ''}")
+        print(
+            f" {name:<24} [{'OK' if ok else 'REJECTED'}]"
+            f"{f' ({procs} procedure{"" if procs == 1 else "s"})' if ok else ''}"
+        )
         if not ok:
             print(f"   {detail}")
             failed += 1
@@ -465,24 +487,34 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--excel-path", help="Path to Microsoft Excel binary or application bundle.")
-    ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
+    ap.add_argument(
+        "--excel-path", help="Path to Microsoft Excel binary or application bundle."
+    )
+    ap.add_argument(
+        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto"
+    )
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument(
-        "--mutation-rate", type=float, default=0.5,
+        "--mutation-rate",
+        type=float,
+        default=0.5,
         help="Fraction of iterations that get a mutation applied (default 0.5). "
-             "Mutated cases are usually invalid, and invalid cases are the slow ones.",
+        "Mutated cases are usually invalid, and invalid cases are the slow ones.",
     )
     ap.add_argument(
         "--corpus",
         help="Instead of generating, run visi's parser over every .bas file in this "
-             "directory and require it to accept all of them -- a regression check "
-             "against real-world VBA. Excel is NOT consulted: getting its verdict "
-             "means invoking a procedure, and invoking one runs it (see finding 2).",
+        "directory and require it to accept all of them -- a regression check "
+        "against real-world VBA. Excel is NOT consulted: getting its verdict "
+        "means invoking a procedure, and invoking one runs it (see finding 2).",
     )
-    ap.add_argument("--timeout", type=int, default=15,
-                    help="Seconds to wait before calling a hang a compile error (default 15).")
+    ap.add_argument(
+        "--timeout",
+        type=int,
+        default=15,
+        help="Seconds to wait before calling a hang a compile error (default 15).",
+    )
     ap.add_argument("--output-dir", default="./fuzz_results")
     args = ap.parse_args()
 
@@ -498,10 +530,6 @@ def main():
                     cases.append((name, f.read(), False))
         return run_corpus(cases, args.corpus)
     else:
-
-
-
-
         seed = args.seed if args.seed is not None else random.randrange(1_000_000)
         gen = VbaSourceGenerator(seed)
         for i in range(1, args.iterations + 1):
@@ -509,18 +537,22 @@ def main():
             cases.append((f"iter_{i}", build_module(gen.body(mutate)), mutate))
 
     print("=" * 69)
-    print("     visi vs. Microsoft Excel VBA Syntax Differential Fuzzer     ".center(69))
+    print(
+        "     visi vs. Microsoft Excel VBA Syntax Differential Fuzzer     ".center(69)
+    )
     print("=" * 69)
     print(f" Cases       : {len(cases)}")
-
-
 
     run_tag = "" if args.corpus else f"_seed_{seed}"
     print(f" Source      : {args.corpus or f'generated (seed {seed})'}")
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")
-    print(f" Timeout     : {args.timeout}s (a hang is how Excel reports a compile error)")
+    print(
+        f" Timeout     : {args.timeout}s (a hang is how Excel reports a compile error)"
+    )
     if driver.driver_type == "mock":
-        print(" MOCK DRIVER -- parser runs, Excel is not consulted, nothing is compared.")
+        print(
+            " MOCK DRIVER -- parser runs, Excel is not consulted, nothing is compared."
+        )
     print("=" * 69 + "\n")
 
     tally = {"PASSED": 0, "FALSE_POSITIVE": 0, "FALSE_NEGATIVE": 0, "SKIPPED": 0}
@@ -538,7 +570,6 @@ def main():
                 openpyxl.Workbook().save(base)
                 wb = visi_core.Workbook.load(base)
 
-
                 wb.add_macro("M", source)
                 wb.save(xlsm)
                 excel_ok, excel_detail = driver.verdict(xlsm)
@@ -547,8 +578,10 @@ def main():
             tally[result] += 1
 
             flag = " (mutated)" if mutated else ""
-            print(f" {label:<12} [{result}]{flag} visi={'accept' if visi_ok else 'reject'}"
-                  f" excel={'accept' if excel_ok else 'reject' if excel_ok is False else 'n/a'}")
+            print(
+                f" {label:<12} [{result}]{flag} visi={'accept' if visi_ok else 'reject'}"
+                f" excel={'accept' if excel_ok else 'reject' if excel_ok is False else 'n/a'}"
+            )
             if result in VERDICT_BLURB:
                 print(f"   {VERDICT_BLURB[result]}")
                 print(f"   visi : {visi_detail or 'accepted'}")
@@ -558,7 +591,9 @@ def main():
                 with open(os.path.join(out, "source.bas"), "w") as f:
                     f.write(source)
                 with open(os.path.join(out, "verdicts.txt"), "w") as f:
-                    f.write(f"result: {result}\nvisi: {visi_detail or 'accepted'}\nexcel: {excel_detail}\n")
+                    f.write(
+                        f"result: {result}\nvisi: {visi_detail or 'accepted'}\nexcel: {excel_detail}\n"
+                    )
                 print(f"   saved: {out}")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -567,7 +602,9 @@ def main():
     print("\n" + "=" * 69)
     print(f" Completed in {elapsed:.1f}s ({driver.restarts} Excel restarts)")
     print(f" Agreed         : {tally['PASSED']}/{len(cases)}")
-    print(f" False positives: {tally['FALSE_POSITIVE']}  (visi rejects, Excel compiles)")
+    print(
+        f" False positives: {tally['FALSE_POSITIVE']}  (visi rejects, Excel compiles)"
+    )
     print(f" False negatives: {tally['FALSE_NEGATIVE']}  (visi accepts, Excel refuses)")
     if tally["SKIPPED"]:
         print(f" Skipped        : {tally['SKIPPED']}")

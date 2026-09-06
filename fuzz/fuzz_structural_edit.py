@@ -29,7 +29,6 @@ import time
 from dataclasses import dataclass
 
 import openpyxl
-
 from fuzz_excel import DifferentialComparator, ExcelDriver, XLSXEvaluatedReader
 from visi_driver import CLI_TIMEOUT_SECONDS
 
@@ -123,17 +122,19 @@ class StructuralFuzzGenerator:
 
     def formula(self, current_sheet):
         other = "Data" if current_sheet == "Sheet1" else "Sheet1"
-        style = self.rng.choice([
-            "ref",
-            "abs_ref",
-            "sum_range",
-            "sum_whole",
-            "binary",
-            "cross_ref",
-            "cross_range",
-            "cross_whole",
-            "concat_literal",
-        ])
+        style = self.rng.choice(
+            [
+                "ref",
+                "abs_ref",
+                "sum_range",
+                "sum_whole",
+                "binary",
+                "cross_ref",
+                "cross_range",
+                "cross_whole",
+                "concat_literal",
+            ]
+        )
         if style == "ref":
             return f"={self.cell_ref(abs_ok=False)}"
         if style == "abs_ref":
@@ -161,10 +162,6 @@ class StructuralFuzzGenerator:
         for ws in wb.worksheets:
             for r in range(1, ROWS + 1):
                 for c in range(1, COLS + 1):
-
-
-
-
                     if ws.title == "Sheet1" and self.rng.random() < 0.30:
                         ws.cell(r, c, self.formula(ws.title))
                     else:
@@ -195,7 +192,9 @@ class VisiStructuralDriver:
     def __init__(self, binary_path=None):
         self.binary_path = self._resolve_binary(binary_path)
         if not self.binary_path or not os.path.exists(self.binary_path):
-            raise RuntimeError("visi binary not found; run cargo build or pass --visi-path")
+            raise RuntimeError(
+                "visi binary not found; run cargo build or pass --visi-path"
+            )
 
     def _resolve_binary(self, binary_path):
         if binary_path and os.path.exists(binary_path):
@@ -215,18 +214,20 @@ class VisiStructuralDriver:
             axis = "row" if "row" in edit.kind else "col"
             verb = "insert" if edit.kind.startswith("insert") else "delete"
             idx = str(edit.index if axis == "row" else col_name(edit.index))
-            run([
-                self.binary_path,
-                axis,
-                verb,
-                output,
-                "--sheet",
-                edit.sheet,
-                "--index",
-                idx,
-                "--in-place",
-                "--quiet",
-            ])
+            run(
+                [
+                    self.binary_path,
+                    axis,
+                    verb,
+                    output,
+                    "--sheet",
+                    edit.sheet,
+                    "--index",
+                    idx,
+                    "--in-place",
+                    "--quiet",
+                ]
+            )
 
 
 class ExcelStructuralDriver:
@@ -240,24 +241,34 @@ class ExcelStructuralDriver:
         shutil.copyfile(source, output)
         abs_output = os.path.abspath(output)
         if self.inner.driver_type == "mock":
-            print("[ExcelStructuralDriver Warning] Running in mock mode (Excel not invoked).")
+            print(
+                "[ExcelStructuralDriver Warning] Running in mock mode (Excel not invoked)."
+            )
             return
         if self.inner.driver_type == "win32com":
             self._run_win32com(abs_output, edits)
         elif self.inner.driver_type == "applescript":
             self._run_applescript(abs_output, edits)
         else:
-            raise RuntimeError(f"driver {self.inner.driver_type!r} is not supported for structural edits")
+            raise RuntimeError(
+                f"driver {self.inner.driver_type!r} is not supported for structural edits"
+            )
 
     def _run_win32com(self, path, edits):
         try:
             import win32com.client
         except ImportError:
-            raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
+            raise RuntimeError(
+                "pywin32 (win32com) is required for Excel automation on Windows."
+            )
         last_err = None
         for attempt in range(5):
             if attempt > 0:
-                subprocess.run(["taskkill", "/F", "/IM", "EXCEL.EXE"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "EXCEL.EXE"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 time.sleep(1.0)
             excel = win32com.client.Dispatch("Excel.Application")
             excel.Visible = False
@@ -323,7 +334,13 @@ class ExcelStructuralDriver:
             end try
         end tell
         '''
-        res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+        )
         if res.returncode != 0:
             raise RuntimeError(f"Excel AppleScript failed:\nSTDERR: {res.stderr}")
 
@@ -353,13 +370,11 @@ def normalize_formula_text(formula, sheets=None):
 
     while i < n:
         if s[i] == '"':
-
             start = i
             i += 1
             while i < n:
                 if s[i] == '"':
                     if i + 1 < n and s[i + 1] == '"':
-
                         i += 2
                     else:
                         i += 1
@@ -368,15 +383,10 @@ def normalize_formula_text(formula, sheets=None):
                     i += 1
             parts.append(s[start:i])
         else:
-
-
             start = i
             while i < n and s[i] != '"':
                 i += 1
             chunk = "".join(s[start:i].split()).upper()
-
-
-
 
             for sheet in sheets:
                 chunk = chunk.replace(f"'{sheet.upper()}'!#REF!", "#REF!")
@@ -392,13 +402,15 @@ def formula_mismatches(visi_path, excel_path):
     mismatches = []
     for key in sorted(set(vf) | set(ef)):
         if normalize_formula_text(vf.get(key)) != normalize_formula_text(ef.get(key)):
-            mismatches.append({
-                "key": key,
-                "reason": "Formula text mismatch",
-                "visi": vf.get(key),
-                "excel": ef.get(key),
-                "formula": vf.get(key) or ef.get(key),
-            })
+            mismatches.append(
+                {
+                    "key": key,
+                    "reason": "Formula text mismatch",
+                    "visi": vf.get(key),
+                    "excel": ef.get(key),
+                    "formula": vf.get(key) or ef.get(key),
+                }
+            )
     return mismatches
 
 
@@ -408,17 +420,16 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
     comp = DifferentialComparator(strict_error_class=strict_error_class)
     ok, mismatches = comp.compare(visi_cells, excel_cells)
 
-
-
     mismatches = [
-        m for m in mismatches
-        if not (m.get("excel") is None and m.get("formula"))
+        m for m in mismatches if not (m.get("excel") is None and m.get("formula"))
     ]
     return not mismatches, mismatches, comp.error_class_only
 
 
 def save_failure(work_dir, output_dir, iteration, seed):
-    fail_dir = os.path.join(output_dir, "failures", f"structural_fail_iter_{iteration}_seed_{seed}")
+    fail_dir = os.path.join(
+        output_dir, "failures", f"structural_fail_iter_{iteration}_seed_{seed}"
+    )
     os.makedirs(fail_dir, exist_ok=True)
     for name in ["source.xlsx", "visi_out.xlsx", "excel_out.xlsx", "edits.txt"]:
         src = os.path.join(work_dir, name)
@@ -428,10 +439,16 @@ def save_failure(work_dir, output_dir, iteration, seed):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--iterations", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=None, help="Run one deterministic iteration seed")
-    parser.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Run one deterministic iteration seed"
+    )
+    parser.add_argument(
+        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto"
+    )
     parser.add_argument("--excel-path", default=None)
     parser.add_argument("--visi-path", default=None)
     parser.add_argument("--output-dir", default="fuzz_results")
@@ -453,7 +470,11 @@ def main():
 
     failed = 0
     tolerated = 0
-    seeds = [args.seed] if args.seed is not None else [random.randint(1, 1_000_000) for _ in range(args.iterations)]
+    seeds = (
+        [args.seed]
+        if args.seed is not None
+        else [random.randint(1, 1_000_000) for _ in range(args.iterations)]
+    )
     for i, seed in enumerate(seeds, 1):
         with tempfile.TemporaryDirectory() as td:
             source = os.path.join(td, "source.xlsx")
@@ -464,15 +485,20 @@ def main():
             gen.workbook(source)
             edits = gen.edits()
             with open(edits_txt, "w", encoding="utf-8") as f:
-                for edit in edits:
-                    f.write(edit.label() + "\n")
+                f.writelines(edit.label() + "\n" for edit in edits)
             try:
                 visi.run(source, edits, visi_out)
                 excel.run(source, edits, excel_out)
-                f_mismatches = [] if excel.inner.driver_type == "mock" else formula_mismatches(visi_out, excel_out)
+                f_mismatches = (
+                    []
+                    if excel.inner.driver_type == "mock"
+                    else formula_mismatches(visi_out, excel_out)
+                )
                 values_ok, v_mismatches, error_class_only = (True, [], 0)
                 if excel.inner.driver_type != "mock":
-                    values_ok, v_mismatches, error_class_only = compare_values(visi_out, excel_out, args.strict_error_class)
+                    values_ok, v_mismatches, error_class_only = compare_values(
+                        visi_out, excel_out, args.strict_error_class
+                    )
                 tolerated += error_class_only
                 mismatches = f_mismatches + v_mismatches
                 if mismatches:
@@ -482,7 +508,9 @@ def main():
                     print(f"   Edits: {', '.join(e.label() for e in edits)}")
                     print(f"   Artifacts: {fail_dir}")
                     for m in mismatches[:10]:
-                        print(f"   - {m['reason']} at {m['key']}: visi={m['visi']} | Excel={m['excel']} (Formula: {m.get('formula')})")
+                        print(
+                            f"   - {m['reason']} at {m['key']}: visi={m['visi']} | Excel={m['excel']} (Formula: {m.get('formula')})"
+                        )
                 else:
                     print(f" Iteration {i:3d}/{len(seeds)} [PASSED] (Seed: {seed})")
             except Exception as exc:

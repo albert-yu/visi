@@ -66,17 +66,12 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fuzz_excel import (  # noqa: E402
+from fuzz_excel import (
     SMOKE_BANNER,
     DifferentialComparator,
     XLSXEvaluatedReader,
     smoke_check,
 )
-
-
-
-
-
 
 
 class PivotFuzzGenerator:
@@ -92,14 +87,23 @@ class PivotFuzzGenerator:
     """
 
     BASIC_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
-    RICH_COL_NAMES = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag", "DateBucket", "Segment", "Amount2"]
+    RICH_COL_NAMES = [
+        "Cat",
+        "Mixed",
+        "NumStr",
+        "Amount",
+        "Rate",
+        "Flag",
+        "DateBucket",
+        "Segment",
+        "Amount2",
+    ]
     COL_NAMES = BASIC_COL_NAMES
     CATEGORICAL_COLS = [0, 1, 2]
     NUMERIC_COLS = [3, 4]
     FILTERABLE_COLS = [0, 1, 2, 5]
 
     CATEGORIES = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
-
 
     CASE_VARIANTS = ["East", "east", "WEST", "west", "North"]
     AGGREGATIONS = ["sum", "count", "count-numbers", "average", "max", "min"]
@@ -110,8 +114,6 @@ class PivotFuzzGenerator:
         self.shape = shape
         if shape == "rich":
             self.COL_NAMES = self.RICH_COL_NAMES
-
-
 
             self.CATEGORICAL_COLS = [0, 1, 2]
             self.NUMERIC_COLS = [3, 4]
@@ -155,25 +157,6 @@ class PivotFuzzGenerator:
         for c, name in enumerate(self.COL_NAMES, start=1):
             ws.cell(row=1, column=c, value=name)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         canonical_casing = {}
 
         def canonicalize(value):
@@ -204,11 +187,21 @@ class PivotFuzzGenerator:
             distinct[5].add("TRUE" if flag else "FALSE")
 
             if self.shape == "rich":
-                date_bucket = random.choice(["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4", "(blank)"])
+                date_bucket = random.choice(
+                    ["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4", "(blank)"]
+                )
                 segment = random.choice(["Retail", "Enterprise", "Online", "Partner"])
-                ws.cell(row=r, column=7, value=None if date_bucket == "(blank)" else date_bucket)
+                ws.cell(
+                    row=r,
+                    column=7,
+                    value=None if date_bucket == "(blank)" else date_bucket,
+                )
                 ws.cell(row=r, column=8, value=segment)
-                ws.cell(row=r, column=9, value=random.randint(0, 500) if random.random() > 0.15 else None)
+                ws.cell(
+                    row=r,
+                    column=9,
+                    value=random.randint(0, 500) if random.random() > 0.15 else None,
+                )
 
         last_col = len(self.COL_NAMES)
         source_range = f"A1:{chr(ord('A') + last_col - 1)}{num_rows + 1}"
@@ -216,7 +209,9 @@ class PivotFuzzGenerator:
         if use_table:
             table_name = "FuzzTable"
             table = Table(displayName=table_name, ref=source_range)
-            table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium9", showRowStripes=True
+            )
             ws.add_table(table)
 
         wb.save(source_path)
@@ -229,10 +224,12 @@ class PivotFuzzGenerator:
         col_cols, pool = pool[:n_col], pool[n_col:]
 
         row_fields = [
-            {"column": self.COL_NAMES[i], "subtotal": random.random() < 0.7} for i in row_cols
+            {"column": self.COL_NAMES[i], "subtotal": random.random() < 0.7}
+            for i in row_cols
         ]
         col_fields = [
-            {"column": self.COL_NAMES[i], "subtotal": random.random() < 0.7} for i in col_cols
+            {"column": self.COL_NAMES[i], "subtotal": random.random() < 0.7}
+            for i in col_cols
         ]
 
         n_value = random.randint(1, 2)
@@ -249,16 +246,6 @@ class PivotFuzzGenerator:
             fcol = random.choice(self.FILTERABLE_COLS)
             values = sorted(distinct[fcol])
 
-
-
-
-
-
-
-
-
-
-
             selected = [v for v in values if random.random() < 0.5]
             if not selected:
                 selected = [random.choice(values)]
@@ -266,11 +253,6 @@ class PivotFuzzGenerator:
 
         return {
             "source_range": source_range,
-
-
-
-
-
             "source_bounds": (0, 0, num_rows, last_col - 1),
             "table_name": table_name,
             "row_fields": row_fields,
@@ -282,27 +264,17 @@ class PivotFuzzGenerator:
         }
 
 
-
-
-
-
 PIVOT_NAME = "FuzzPivot"
 DEST_CELL = "H1"
 DEST_RC = (0, 7)
 
 
-
-
-
-MACRO_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pivot_macro_template.xlsm")
-MACRO_SOURCE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BuildFuzzPivot.bas")
-
-
-
-
-
-
-
+MACRO_TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "pivot_macro_template.xlsm"
+)
+MACRO_SOURCE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "BuildFuzzPivot.bas"
+)
 
 
 AGG_TO_WIN32COM_FUNCTION = {
@@ -315,9 +287,7 @@ AGG_TO_WIN32COM_FUNCTION = {
 }
 
 
-
-
-from visi_driver import (  # noqa: E402,F401
+from visi_driver import (
     VisiPivotDriver,
     add_backend_arg,
     bindings_hint,
@@ -359,7 +329,6 @@ class ExcelPivotDriver:
     def __init__(self, excel_path=None, driver_type="auto", visi_path=None):
         self.excel_path = excel_path
 
-
         self.visi_path = visi_path
         self.driver_type = driver_type
         if driver_type == "auto":
@@ -373,13 +342,11 @@ class ExcelPivotDriver:
     def run(self, source_file, config, output_file, dest_cell=DEST_CELL):
         if self.driver_type == "mock":
             shutil.copyfile(source_file, output_file)
-            print("[ExcelPivotDriver Warning] Running in mock mode (Excel not invoked).")
+            print(
+                "[ExcelPivotDriver Warning] Running in mock mode (Excel not invoked)."
+            )
             return
         elif self.driver_type == "applescript":
-
-
-
-
             macro_file = os.path.splitext(output_file)[0] + ".xlsm"
             self._prepare_macro_workbook(source_file, config, macro_file)
             self._run_applescript_macro(os.path.abspath(macro_file), config, dest_cell)
@@ -389,8 +356,6 @@ class ExcelPivotDriver:
             self._run_win32com(os.path.abspath(output_file), config, dest_cell)
         else:
             raise RuntimeError(f"Unsupported pivot driver type: {self.driver_type}")
-
-
 
     def _applescript_str(self, s):
         escaped = s.replace("\\", "\\\\").replace('"', '\\"')
@@ -411,23 +376,24 @@ class ExcelPivotDriver:
         xlsx writer.
         """
         if not os.path.exists(MACRO_SOURCE_PATH):
-            raise RuntimeError(f"Missing {MACRO_SOURCE_PATH} -- it should be checked in.")
-        if (os.path.exists(MACRO_TEMPLATE_PATH)
-                and os.path.getmtime(MACRO_TEMPLATE_PATH) >= os.path.getmtime(MACRO_SOURCE_PATH)):
+            raise RuntimeError(
+                f"Missing {MACRO_SOURCE_PATH} -- it should be checked in."
+            )
+        if os.path.exists(MACRO_TEMPLATE_PATH) and os.path.getmtime(
+            MACRO_TEMPLATE_PATH
+        ) >= os.path.getmtime(MACRO_SOURCE_PATH):
             return
 
         with open(MACRO_SOURCE_PATH) as f:
             source = f.read()
 
-
-
-
-
         via = self._build_macro_template_via_bindings(source)
         if via is None:
             via = self._build_macro_template_via_cli()
-        print(f"[ExcelPivotDriver] Built {os.path.basename(MACRO_TEMPLATE_PATH)} from "
-              f"{os.path.basename(MACRO_SOURCE_PATH)} via {via}.")
+        print(
+            f"[ExcelPivotDriver] Built {os.path.basename(MACRO_TEMPLATE_PATH)} from "
+            f"{os.path.basename(MACRO_SOURCE_PATH)} via {via}."
+        )
 
     def _build_macro_template_via_bindings(self, source):
         """Returns a description of what it used, or None if unavailable."""
@@ -458,10 +424,23 @@ class ExcelPivotDriver:
             wb.active.title = "Sheet1"
             wb.save(base)
             res = subprocess.run(
-                [visi, "macro", "add", base, "--name", "Module1",
-                 "--kind", "standard", "--source-file", MACRO_SOURCE_PATH,
-                 "--output", MACRO_TEMPLATE_PATH],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                [
+                    visi,
+                    "macro",
+                    "add",
+                    base,
+                    "--name",
+                    "Module1",
+                    "--kind",
+                    "standard",
+                    "--source-file",
+                    MACRO_SOURCE_PATH,
+                    "--output",
+                    MACRO_TEMPLATE_PATH,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
         if res.returncode != 0:
             raise RuntimeError(
@@ -487,22 +466,12 @@ class ExcelPivotDriver:
 
         if config["table_name"]:
             table = Table(displayName=config["table_name"], ref=config["source_range"])
-            table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium9", showRowStripes=True
+            )
             macro_ws.add_table(table)
 
         macro_wb.save(macro_file)
-
-
-
-
-
-
-
-
-
-
-
-
 
         if macro_wb.vba_archive is not None:
             macro_wb.vba_archive.close()
@@ -513,35 +482,40 @@ class ExcelPivotDriver:
             app_name = os.path.splitext(os.path.basename(app_name))[0]
 
         row_fields_csv = ";".join(
-            f'{f["column"]}:{"1" if f["subtotal"] else "0"}' for f in config["row_fields"]
+            f"{f['column']}:{'1' if f['subtotal'] else '0'}"
+            for f in config["row_fields"]
         )
         col_fields_csv = ";".join(
-            f'{f["column"]}:{"1" if f["subtotal"] else "0"}' for f in config["col_fields"]
+            f"{f['column']}:{'1' if f['subtotal'] else '0'}"
+            for f in config["col_fields"]
         )
-        value_fields_csv = ";".join(f'{f["column"]}:{f["agg"]}' for f in config["value_fields"])
+        value_fields_csv = ";".join(
+            f"{f['column']}:{f['agg']}" for f in config["value_fields"]
+        )
         if config["filter_field"]:
-            filter_spec = config["filter_field"]["column"] + "|" + ",".join(config["filter_field"]["values"])
+            filter_spec = (
+                config["filter_field"]["column"]
+                + "|"
+                + ",".join(config["filter_field"]["values"])
+            )
         else:
             filter_spec = ""
         source_is_table = "1" if config["table_name"] else "0"
-        source_ref = config["table_name"] if config["table_name"] else config["source_range"]
-
-
-
-
-
+        source_ref = (
+            config["table_name"] if config["table_name"] else config["source_range"]
+        )
 
         run_macro_line = (
             f'        run VB macro "BuildFuzzPivot" '
-            f'arg1 {self._applescript_str(row_fields_csv)} '
-            f'arg2 {self._applescript_str(col_fields_csv)} '
-            f'arg3 {self._applescript_str(value_fields_csv)} '
-            f'arg4 {self._applescript_str(filter_spec)} '
-            f'arg5 {self._applescript_str(dest_cell)} '
-            f'arg6 {self._applescript_str("1" if config["grand_totals_row"] else "0")} '
-            f'arg7 {self._applescript_str("1" if config["grand_totals_col"] else "0")} '
-            f'arg8 {self._applescript_str(source_is_table)} '
-            f'arg9 {self._applescript_str(source_ref)}'
+            f"arg1 {self._applescript_str(row_fields_csv)} "
+            f"arg2 {self._applescript_str(col_fields_csv)} "
+            f"arg3 {self._applescript_str(value_fields_csv)} "
+            f"arg4 {self._applescript_str(filter_spec)} "
+            f"arg5 {self._applescript_str(dest_cell)} "
+            f"arg6 {self._applescript_str('1' if config['grand_totals_row'] else '0')} "
+            f"arg7 {self._applescript_str('1' if config['grand_totals_col'] else '0')} "
+            f"arg8 {self._applescript_str(source_is_table)} "
+            f"arg9 {self._applescript_str(source_ref)}"
         )
 
         lines = [
@@ -582,14 +556,28 @@ class ExcelPivotDriver:
         run its own quit handshake), so this escalates to SIGKILL by PID
         before relaunching.
         """
-        subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["killall", "Microsoft Excel"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(1.0)
-        pgrep = subprocess.run(["pgrep", "-x", "Microsoft Excel"], stdout=subprocess.PIPE, text=True)
+        pgrep = subprocess.run(
+            ["pgrep", "-x", "Microsoft Excel"], stdout=subprocess.PIPE, text=True
+        )
         for pid in pgrep.stdout.split():
-            subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["kill", "-9", pid],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         if pgrep.stdout.strip():
             time.sleep(1.0)
-        subprocess.run(["open", "-a", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["open", "-a", "Microsoft Excel"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(4.0)
 
     def _run_applescript_macro(self, abs_output, config, dest_cell=DEST_CELL):
@@ -600,38 +588,30 @@ class ExcelPivotDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", script],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=20,
                 )
                 if res.returncode == 0:
                     break
-
-
-
 
                 self._restart_excel()
             except subprocess.TimeoutExpired:
                 self._restart_excel()
         if res is not None and res.returncode != 0:
-            raise RuntimeError(f"Excel pivot AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}")
-
-
+            raise RuntimeError(
+                f"Excel pivot AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}"
+            )
 
     def _run_win32com(self, abs_output, config, dest_cell=DEST_CELL):
         try:
             import win32com.client
             from win32com.client import constants as c
         except ImportError:
-            raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
-
-
-
-
-
-
-
-
-
-
+            raise RuntimeError(
+                "pywin32 (win32com) is required for Excel automation on Windows."
+            )
 
         last_err = None
         for attempt in range(5):
@@ -655,10 +635,6 @@ class ExcelPivotDriver:
         import win32com.client
         from win32com.client import constants as c
 
-
-
-
-
         excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
@@ -671,25 +647,9 @@ class ExcelPivotDriver:
                 src_range = ws.Range(config["source_range"])
 
             pc = wb.PivotCaches().Create(SourceType=c.xlDatabase, SourceData=src_range)
-            pt = pc.CreatePivotTable(TableDestination=ws.Range(dest_cell), TableName=PIVOT_NAME)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            pt = pc.CreatePivotTable(
+                TableDestination=ws.Range(dest_cell), TableName=PIVOT_NAME
+            )
 
             for f in config["row_fields"]:
                 pf = pt.PivotFields(f["column"])
@@ -698,11 +658,6 @@ class ExcelPivotDriver:
                 pf.LayoutSubtotalLocation = c.xlAtBottom
                 pf.RepeatLabels = False
                 if not f["subtotal"]:
-
-
-
-
-
                     subtotals = [False] * 12
                     pf.Subtotals = subtotals
             for f in config["col_fields"]:
@@ -717,10 +672,6 @@ class ExcelPivotDriver:
             for f in config["value_fields"]:
                 pf = pt.PivotFields(f["column"])
 
-
-
-
-
                 fn = getattr(c, AGG_TO_WIN32COM_FUNCTION[f["agg"]])
                 pt.AddDataField(pf, Function=fn)
             if config["filter_field"]:
@@ -729,23 +680,12 @@ class ExcelPivotDriver:
                 pf = pt.PivotFields(col)
                 pf.Orientation = c.xlPageField
 
-
-
-
-
-
-
-
-
                 if values:
                     for item in pf.PivotItems():
                         item.Visible = item.Name in values
 
             pt.MergeLabels = False
             pt.HasAutoFormat = False
-
-
-
 
             pt.ColumnGrand = config["grand_totals_row"]
             pt.RowGrand = config["grand_totals_col"]
@@ -756,34 +696,51 @@ class ExcelPivotDriver:
             excel.Quit()
 
 
-
-
-
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Differential fuzzing test harness for visi vs Microsoft Excel pivot tables."
     )
-    parser.add_argument("--excel-path", help="Path to Microsoft Excel binary or application bundle.")
     parser.add_argument(
-        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto",
+        "--excel-path", help="Path to Microsoft Excel binary or application bundle."
+    )
+    parser.add_argument(
+        "--driver",
+        choices=["auto", "applescript", "win32com", "mock"],
+        default="auto",
         help="Excel execution driver.",
     )
-    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary (used by the subprocess backend).")
-    add_backend_arg(parser)
-    parser.add_argument("--iterations", type=int, default=10, help="Number of fuzz iterations to run.")
-    parser.add_argument("--rows", type=int, default=30, help="Max source data rows per iteration.")
     parser.add_argument(
-        "--source-mode", choices=["table", "range", "both"], default="both",
+        "--visi-path",
+        default="./target/release/visi",
+        help="Path to compiled visi binary (used by the subprocess backend).",
+    )
+    add_backend_arg(parser)
+    parser.add_argument(
+        "--iterations", type=int, default=10, help="Number of fuzz iterations to run."
+    )
+    parser.add_argument(
+        "--rows", type=int, default=30, help="Max source data rows per iteration."
+    )
+    parser.add_argument(
+        "--source-mode",
+        choices=["table", "range", "both"],
+        default="both",
         help="Whether the pivot source is an Excel Table, a raw range, or alternate between both.",
     )
     parser.add_argument(
-        "--shape", choices=["basic", "rich"], default="basic",
+        "--shape",
+        choices=["basic", "rich"],
+        default="basic",
         help="Input shape profile. 'rich' adds more categorical/filter/value fields and blanks.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible fuzzing.")
-    parser.add_argument("--output-dir", default="./fuzz_results", help="Directory to store test outputs and failure artifacts.")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Random seed for reproducible fuzzing."
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./fuzz_results",
+        help="Directory to store test outputs and failure artifacts.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -793,8 +750,9 @@ def main():
     visi_driver = VisiPivotDriver(binary_path=args.visi_path, backend=args.backend)
     if args.backend == "auto" and visi_driver.backend != "bindings":
         print(bindings_hint(), file=sys.stderr)
-    excel_driver = ExcelPivotDriver(excel_path=args.excel_path, driver_type=args.driver,
-                                    visi_path=args.visi_path)
+    excel_driver = ExcelPivotDriver(
+        excel_path=args.excel_path, driver_type=args.driver, visi_path=args.visi_path
+    )
     comparator = DifferentialComparator()
     smoke_mode = excel_driver.driver_type == "mock"
 
@@ -816,7 +774,9 @@ def main():
     start_time = time.time()
 
     for i in range(1, args.iterations + 1):
-        iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
+        iter_seed = (
+            (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
+        )
         generator = PivotFuzzGenerator(seed=iter_seed, shape=args.shape)
 
         temp_dir = tempfile.mkdtemp(prefix=f"fuzz_pivot_iter_{i}_")
@@ -833,13 +793,19 @@ def main():
             else:
                 use_table = i % 2 == 0
 
-            config = generator.generate(source_xlsx, num_rows=num_rows, use_table=use_table)
+            config = generator.generate(
+                source_xlsx, num_rows=num_rows, use_table=use_table
+            )
 
             dest_cell = "L1" if args.shape == "rich" else DEST_CELL
             dest_rc = (0, 11) if args.shape == "rich" else DEST_RC
-            visi_driver.run(source_xlsx, config, visi_out_xlsx, PIVOT_NAME, dest_cell, dest_rc)
+            visi_driver.run(
+                source_xlsx, config, visi_out_xlsx, PIVOT_NAME, dest_cell, dest_rc
+            )
             if not smoke_mode:
-                excel_driver.run(source_xlsx, config, excel_out_xlsx, dest_cell=dest_cell)
+                excel_driver.run(
+                    source_xlsx, config, excel_out_xlsx, dest_cell=dest_cell
+                )
 
             visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_out_xlsx)
 
@@ -853,7 +819,9 @@ def main():
                     )
                 else:
                     failed_count += 1
-                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(
+                        f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})"
+                    )
                     print(f"   {reason}")
                     fail_case_dir = os.path.join(
                         failures_dir, f"pivot_smoke_iter_{i}_seed_{iter_seed}"
@@ -868,22 +836,32 @@ def main():
 
             if is_match:
                 passed_count += 1
-                print(f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed}, rows: {num_rows}, table: {use_table})")
+                print(
+                    f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed}, rows: {num_rows}, table: {use_table})"
+                )
             else:
                 failed_count += 1
-                print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                print(
+                    f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})"
+                )
                 print(f"   Found {len(mismatches)} cell mismatch(es):")
                 for m in mismatches[:5]:
-                    print(f"   - Cell {m['key'][1]} on {m['key'][0]}: visi={m['visi']} | Excel={m['excel']}")
+                    print(
+                        f"   - Cell {m['key'][1]} on {m['key'][0]}: visi={m['visi']} | Excel={m['excel']}"
+                    )
 
-                fail_case_dir = os.path.join(failures_dir, f"pivot_fail_iter_{i}_seed_{iter_seed}")
+                fail_case_dir = os.path.join(
+                    failures_dir, f"pivot_fail_iter_{i}_seed_{iter_seed}"
+                )
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
         except Exception as err:
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
-            fail_case_dir = os.path.join(failures_dir, f"pivot_error_iter_{i}_seed_{iter_seed}")
+            fail_case_dir = os.path.join(
+                failures_dir, f"pivot_error_iter_{i}_seed_{iter_seed}"
+            )
             if os.path.exists(temp_dir):
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
 

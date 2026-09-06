@@ -32,13 +32,17 @@ VISI = os.path.join(REPO, "target", "debug", "visi")
 OSASCRIPT_TIMEOUT = 60
 
 
-
-
 CASES = [
     {
         "name": "insert row above everything",
-        "cells": {"A1": "1", "A2": "2", "A3": "3",
-                  "C1": "=A3", "C2": "=SUM(A1:A3)", "C3": "=$A$3*10"},
+        "cells": {
+            "A1": "1",
+            "A2": "2",
+            "A3": "3",
+            "C1": "=A3",
+            "C2": "=SUM(A1:A3)",
+            "C3": "=$A$3*10",
+        },
         "edit": ("insert_row", 1),
         "probe": ["C2", "C3", "C4"],
     },
@@ -80,8 +84,6 @@ CASES = [
     },
     {
         "name": "delete a row above a range slides it up",
-
-
         "cells": {"A2": "1", "A3": "2", "A4": "3", "C6": "=SUM(A2:A4)"},
         "edit": ("delete_row", 1),
         "probe": ["C5"],
@@ -94,22 +96,25 @@ CASES = [
     },
     {
         "name": "insert column shifts column references",
-        "cells": {"A1": "1", "B1": "2", "C1": "3",
-                  "E1": "=C1", "E2": "=SUM(A1:C1)"},
+        "cells": {"A1": "1", "B1": "2", "C1": "3", "E1": "=C1", "E2": "=SUM(A1:C1)"},
         "edit": ("insert_col", "B"),
         "probe": ["F1", "F2"],
     },
     {
         "name": "delete the column a reference names",
-        "cells": {"A1": "1", "B1": "2", "C1": "3",
-                  "E1": "=B1", "E2": "=SUM(A1:C1)"},
+        "cells": {"A1": "1", "B1": "2", "C1": "3", "E1": "=B1", "E2": "=SUM(A1:C1)"},
         "edit": ("delete_col", "B"),
         "probe": ["D1", "D2"],
     },
     {
         "name": "a whole-column reference under a column insert",
-        "cells": {"A1": "1", "B1": "2", "C1": "3",
-                  "E1": "=SUM(B:B)", "E2": "=SUM(A:C)"},
+        "cells": {
+            "A1": "1",
+            "B1": "2",
+            "C1": "3",
+            "E1": "=SUM(B:B)",
+            "E2": "=SUM(A:C)",
+        },
         "edit": ("insert_col", "A"),
         "probe": ["F1", "F2"],
     },
@@ -134,15 +139,19 @@ CASES = [
     },
     {
         "name": "a whole-row reference under a row insert",
-        "cells": {"A1": "1", "A2": "2", "A3": "3",
-                  "E1": "=SUM(2:2)", "E2": "=SUM(1:3)"},
+        "cells": {
+            "A1": "1",
+            "A2": "2",
+            "A3": "3",
+            "E1": "=SUM(2:2)",
+            "E2": "=SUM(1:3)",
+        },
         "edit": ("insert_row", 1),
         "probe": ["E2", "E3"],
     },
     {
         "name": "a whole-row reference under a column insert",
-        "cells": {"A1": "1", "A2": "2",
-                  "E1": "=SUM(2:2)", "E2": "=SUM(1:3)"},
+        "cells": {"A1": "1", "A2": "2", "E1": "=SUM(2:2)", "E2": "=SUM(1:3)"},
         "edit": ("insert_col", "A"),
         "probe": ["F1", "F2"],
     },
@@ -194,9 +203,15 @@ def visi_edit(case, path):
     """Applies the case's edit with visi, and reads back the probed formulas."""
     kind, index = case["edit"][0], case["edit"][1]
     sheet = case["edit"][2] if len(case["edit"]) > 2 else None
-    noun, verb = ("row", "insert") if kind == "insert_row" else \
-                 ("row", "delete") if kind == "delete_row" else \
-                 ("col", "insert") if kind == "insert_col" else ("col", "delete")
+    noun, verb = (
+        ("row", "insert")
+        if kind == "insert_row"
+        else ("row", "delete")
+        if kind == "delete_row"
+        else ("col", "insert")
+        if kind == "insert_col"
+        else ("col", "delete")
+    )
     cmd = [VISI, noun, verb, path, "-x", str(index), "-i", "-q"]
     if sheet:
         cmd += ["-s", sheet]
@@ -207,6 +222,7 @@ def visi_edit(case, path):
 def read_formulas(path, addrs):
     """The raw source of each address, straight out of the saved file."""
     import openpyxl
+
     wb = openpyxl.load_workbook(path)
     ws = wb.worksheets[0]
     out = []
@@ -226,9 +242,6 @@ def excel_script(app, path, case):
     elif kind == "delete_row":
         edit = f'delete range (entire row of range "A{index}" of ews) shift shift up'
     elif kind == "insert_col":
-
-
-
         edit = f'insert into range (entire column of range "{index}1" of ews) shift shift to right'
     else:
         edit = f'delete range (entire column of range "{index}1" of ews) shift shift to left'
@@ -265,11 +278,19 @@ def excel_script(app, path, case):
 def excel_edit(app, case, path):
     script = excel_script(app, os.path.abspath(path), case)
     try:
-        res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, timeout=OSASCRIPT_TIMEOUT)
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT,
+        )
     except subprocess.TimeoutExpired:
-        subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["killall", "Microsoft Excel"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         raise RuntimeError("Excel did not respond; killed it")
     if res.returncode != 0:
         raise RuntimeError(f"AppleScript failed: {res.stderr.strip()}")
@@ -277,10 +298,13 @@ def excel_edit(app, case, path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--excel-path", default="Microsoft Excel")
-    ap.add_argument("-k", "--filter", default="", help="only cases whose name contains this")
+    ap.add_argument(
+        "-k", "--filter", default="", help="only cases whose name contains this"
+    )
     args = ap.parse_args()
 
     app = args.excel_path

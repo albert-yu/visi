@@ -81,7 +81,9 @@ EXCEL_APP = "Microsoft Excel"
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -92,19 +94,7 @@ except ImportError:
     )
 
 
-
-
-
-
-
-
 VAR_NAMES = ["va", "vb", "vc", "vd", "ve"]
-
-
-
-
-
-
 
 
 HOST_SHEET_VAR = "wsh"
@@ -116,12 +106,33 @@ assert not set(_HOST_VARS) & set(VAR_NAMES + ["vi", "vn"]), (
 )
 
 
-
 NUM_LITERALS = [
-    "0", "1", "2", "3", "7", "10", "-1", "-7", "255",
-    "32767", "32768", "-32768", "100000", "2147483647",
-    "1.5", "-2.5", "0.1", "3.75", "1E3", "0.0001",
-    "1&", "1%", "2!", "3#", "&HFF", "&O17",
+    "0",
+    "1",
+    "2",
+    "3",
+    "7",
+    "10",
+    "-1",
+    "-7",
+    "255",
+    "32767",
+    "32768",
+    "-32768",
+    "100000",
+    "2147483647",
+    "1.5",
+    "-2.5",
+    "0.1",
+    "3.75",
+    "1E3",
+    "0.0001",
+    "1&",
+    "1%",
+    "2!",
+    "3#",
+    "&HFF",
+    "&O17",
 ]
 STR_LITERALS = ['""', '"a"', '"abc"', '"1"', '"12"', '"1.5"', '"  3  "', '"Z"']
 BOOL_LITERALS = ["True", "False"]
@@ -132,41 +143,50 @@ COMPARE_OPS = ["=", "<>", "<", ">", "<=", ">="]
 LOGICAL_OPS = ["And", "Or", "Xor", "Eqv", "Imp"]
 
 
-
-
-
-
-
-
-
 UNARY_FUNCS = [
-    "CStr", "CInt", "CLng", "CDbl", "CSng", "CBool", "Abs", "Sgn", "Int",
-    "Fix", "UCase", "LCase", "Trim", "TypeName", "IsNumeric",
-    "IsEmpty", "IsNull", "Val", "StrReverse",
+    "CStr",
+    "CInt",
+    "CLng",
+    "CDbl",
+    "CSng",
+    "CBool",
+    "Abs",
+    "Sgn",
+    "Int",
+    "Fix",
+    "UCase",
+    "LCase",
+    "Trim",
+    "TypeName",
+    "IsNumeric",
+    "IsEmpty",
+    "IsNull",
+    "Val",
+    "StrReverse",
 ]
-
-
-
-
-
 
 
 GRID_ROWS, GRID_COLS = 4, 6
 GRID = [
-    (1, 1, "1"), (2, 1, "2"), (3, 1, "3"), (4, 1, "4"),
-    (1, 2, "10"), (2, 2, "20"), (3, 2, "30"), (4, 2, "40"),
-    (1, 3, "=A1*2"), (2, 3, "=A2+B2"),
-    (1, 4, "hi"), (2, 4, True),
+    (1, 1, "1"),
+    (2, 1, "2"),
+    (3, 1, "3"),
+    (4, 1, "4"),
+    (1, 2, "10"),
+    (2, 2, "20"),
+    (3, 2, "30"),
+    (4, 2, "40"),
+    (1, 3, "=A1*2"),
+    (2, 3, "=A2+B2"),
+    (1, 4, "hi"),
+    (2, 4, True),
 ]
 
 
 SCRATCH_COLS = (5, 6)
 
 
-
-
 WRITABLE_FORMULAS = ['"=A1+B1"', '"=SUM(A1:B2)"', '"=A1*3"', '"=COUNT(A1:B4)"']
-
 
 
 GRID_FUNCTIONS = ["Sum", "Count", "CountA", "Min", "Max", "Average"]
@@ -183,8 +203,6 @@ class VbaGenerator:
     def __init__(self, seed=None, host_surface="basic"):
         self.rng = random.Random(seed)
         self.host_surface = host_surface
-
-
 
     def literal(self):
         bucket = self.rng.random()
@@ -222,7 +240,6 @@ class VbaGenerator:
             fn = self.rng.choice(UNARY_FUNCS)
             return f"{fn}({self.expr(depth - 1, vars_in_scope)})"
         if kind < 0.94:
-
             return f"Len(CStr({self.expr(depth - 1, vars_in_scope)}))"
 
         fn = self.rng.choice(["Left", "Right", "String", "Space", "InStr", "Mid"])
@@ -236,8 +253,6 @@ class VbaGenerator:
             return f"Mid({self.expr(depth - 1, vars_in_scope)}, {self.rng.randint(1, 4)}, {self.rng.randint(0, 4)})"
         return f"{fn}({self.expr(depth - 1, vars_in_scope)}, {self.rng.randint(0, 4)})"
 
-
-
     def statements(self, count, vars_in_scope, depth):
         out = []
         for _ in range(count):
@@ -247,10 +262,6 @@ class VbaGenerator:
     def statement(self, vars_in_scope, depth):
         kind = self.rng.random()
         target = self.rng.choice(vars_in_scope)
-
-
-
-
 
         if kind < 0.28:
             return [f"{target} = {self.expr(depth, vars_in_scope)}"]
@@ -265,8 +276,6 @@ class VbaGenerator:
             ]
 
         if kind < 0.49:
-
-
             lo, hi = 1, self.rng.randint(1, 4)
             step = self.rng.choice(["", " Step 2", " Step -1"])
             if step == " Step -1":
@@ -300,9 +309,6 @@ class VbaGenerator:
             ]
 
         if kind < 0.70:
-
-
-
             return [
                 "On Error Resume Next",
                 f"{target} = {self.expr(depth, vars_in_scope)}",
@@ -311,8 +317,6 @@ class VbaGenerator:
 
         return self.host_statement(target, vars_in_scope, depth)
 
-
-
     def cell(self, scratch=False):
         """A literal `(row, col)` inside the grid, or in the scratch columns.
 
@@ -320,7 +324,9 @@ class VbaGenerator:
         coordinate makes for a boring case.
         """
         row = self.rng.randint(1, GRID_ROWS)
-        col = self.rng.choice(SCRATCH_COLS) if scratch else self.rng.randint(1, GRID_COLS)
+        col = (
+            self.rng.choice(SCRATCH_COLS) if scratch else self.rng.randint(1, GRID_COLS)
+        )
         return row, col
 
     def a1(self, row, col):
@@ -341,26 +347,24 @@ class VbaGenerator:
         srow, scol = self.cell(scratch=True)
 
         if kind < 0.22:
-
-
             return [
                 f"{HOST_SHEET_VAR}.Cells({srow}, {scol}).Value = {self.expr(depth - 1, vars_in_scope)}",
                 f"{target} = {HOST_SHEET_VAR}.Cells({srow}, {scol}).Value",
             ]
 
         if kind < 0.34:
-
-
             return [
                 f"{HOST_SHEET_VAR}.Cells({self.rng.randint(1, 2)}, 1).Value = {self.rng.choice(NUM_LITERALS)}",
-                f"{target} = {HOST_SHEET_VAR}.Range(\"C1\").Value",
+                f'{target} = {HOST_SHEET_VAR}.Range("C1").Value',
             ]
 
         if kind < 0.44:
             return [f"{target} = {HOST_SHEET_VAR}.Cells({row}, {col}).Value"]
 
         if kind < 0.52:
-            prop = self.rng.choice(["Value2", "Formula", "Text", "Address", "Row", "Column"])
+            prop = self.rng.choice(
+                ["Value2", "Formula", "Text", "Address", "Row", "Column"]
+            )
             return [f"{target} = {HOST_SHEET_VAR}.Cells({row}, {col}).{prop}"]
 
         if kind < 0.60:
@@ -376,20 +380,20 @@ class VbaGenerator:
             c2 = self.rng.randint(col, GRID_COLS)
             rng = f'{HOST_SHEET_VAR}.Range("{self.a1(row, col)}:{self.a1(r2, c2)}")'
 
-
-
             via = self.rng.choice(["Application.WorksheetFunction", "Application"])
             return [f"{target} = {via}.{fn}({rng})"]
 
         if kind < 0.78:
-            return [f"{target} = Application.WorksheetFunction.{self.rng.choice(GRID_FUNCTIONS)}"
-                    f"({self.rng.choice(NUM_LITERALS)}, {self.rng.choice(NUM_LITERALS)})"]
+            return [
+                f"{target} = Application.WorksheetFunction.{self.rng.choice(GRID_FUNCTIONS)}"
+                f"({self.rng.choice(NUM_LITERALS)}, {self.rng.choice(NUM_LITERALS)})"
+            ]
 
         if kind < 0.86:
             r2 = self.rng.randint(row, GRID_ROWS)
             return [
                 f'For Each {HOST_CELL_VAR} In {HOST_SHEET_VAR}.Range("{self.a1(row, col)}:{self.a1(r2, col)}")',
-                f"    {target} = {HOST_CELL_VAR}.Address & \"/\" & {target}",
+                f'    {target} = {HOST_CELL_VAR}.Address & "/" & {target}',
                 f"Next {HOST_CELL_VAR}",
             ]
 
@@ -403,13 +407,13 @@ class VbaGenerator:
             dr, dc = self.rng.randint(0, 1), self.rng.randint(0, 1)
             return [
                 f'With {HOST_SHEET_VAR}.Range("{self.a1(row, col)}")',
-                f"    {target} = .Offset({dr}, {dc}).Address & \"/\" & CStr(.Value)",
+                f'    {target} = .Offset({dr}, {dc}).Address & "/" & CStr(.Value)',
                 "End With",
             ]
 
         return [
-            f"Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range(\"{self.a1(row, col)}\")",
-            f"{target} = CStr({HOST_RANGE_VAR} Is {HOST_SHEET_VAR}.Range(\"{self.a1(row, col)}\")) & \"/\" & TypeName({HOST_RANGE_VAR})",
+            f'Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range("{self.a1(row, col)}")',
+            f'{target} = CStr({HOST_RANGE_VAR} Is {HOST_SHEET_VAR}.Range("{self.a1(row, col)}")) & "/" & TypeName({HOST_RANGE_VAR})',
         ]
 
     def extended_host_statement(self, target, vars_in_scope, depth):
@@ -427,7 +431,14 @@ class VbaGenerator:
         r0, r1 = sorted((row, srow))
         c0, c1 = sorted((col, scol))
         if kind < 0.25:
-            color = self.rng.choice(["RGB(255, 0, 0)", "RGB(0, 255, 0)", "RGB(0, 0, 255)", "RGB(250, 10, 10)"])
+            color = self.rng.choice(
+                [
+                    "RGB(255, 0, 0)",
+                    "RGB(0, 255, 0)",
+                    "RGB(0, 0, 255)",
+                    "RGB(250, 10, 10)",
+                ]
+            )
             target_obj = self.rng.choice(["Interior", "Font"])
             prop = self.rng.choice(["Color", "ColorIndex"])
             if prop == "ColorIndex":
@@ -436,7 +447,7 @@ class VbaGenerator:
                 value = color
             return [
                 f'{HOST_SHEET_VAR}.Range("{self.a1(r0, c0)}:{self.a1(r1, c1)}").{target_obj}.{prop} = {value}',
-                f'{target} = {HOST_SHEET_VAR}.Cells({row}, {col}).{target_obj}.{prop}',
+                f"{target} = {HOST_SHEET_VAR}.Cells({row}, {col}).{target_obj}.{prop}",
             ]
 
         if kind < 0.50:
@@ -445,12 +456,19 @@ class VbaGenerator:
             addr = self.a1(row, col)
             return [
                 f'Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range("{addr}")',
-                f'{HOST_SHEET_VAR}.{axis}({at}).Insert',
+                f"{HOST_SHEET_VAR}.{axis}({at}).Insert",
                 f'{target} = {HOST_RANGE_VAR}.Address(False, False) & "/" & TypeName({HOST_RANGE_VAR})',
             ]
 
         if kind < 0.76:
-            member = self.rng.choice(["Name", "ListRows.Count", "ListColumns.Count", "DataBodyRange.Address(False, False)"])
+            member = self.rng.choice(
+                [
+                    "Name",
+                    "ListRows.Count",
+                    "ListColumns.Count",
+                    "DataBodyRange.Address(False, False)",
+                ]
+            )
             return [f'{target} = {HOST_SHEET_VAR}.ListObjects("Sales").{member}']
 
         if kind < 0.90:
@@ -475,9 +493,6 @@ class VbaGenerator:
         lines = [f"Private Function Gen{index}()"]
         lines.append("    Dim " + ", ".join(vars_in_scope) + ", vi, vn")
 
-
-
-
         lines.append(
             f"    Dim {HOST_SHEET_VAR} As Worksheet, "
             f"{HOST_CELL_VAR} As Range, {HOST_RANGE_VAR} As Range"
@@ -491,15 +506,6 @@ class VbaGenerator:
         return "\n".join(lines)
 
 
-
-
-
-
-
-
-
-
-
 HARNESS_TEMPLATE = """Public Function Harness{i}() As String
     On Error GoTo Failed
     Dim r
@@ -509,12 +515,6 @@ HARNESS_TEMPLATE = """Public Function Harness{i}() As String
 Failed:
     Harness{i} = "ERR|" & CStr(Err.Number)
 End Function"""
-
-
-
-
-
-
 
 
 GRID_HARNESS_TEMPLATE = """Public Function Harness{i}() As String
@@ -527,14 +527,6 @@ GRID_HARNESS_TEMPLATE = """Public Function Harness{i}() As String
 Failed:
     Harness{i} = "ERR|" & CStr(Err.Number) & "|" & GridState()
 End Function"""
-
-
-
-
-
-
-
-
 
 
 GRID_HELPERS = """Public Sub ResetGrid()
@@ -572,14 +564,15 @@ def grid_helpers():
         elif isinstance(value, str) and value.startswith("="):
             writes.append(f'    ws.Cells({row}, {col}).Formula = "{value}"')
             continue
-        elif isinstance(value, str) and not value.lstrip("-").replace(".", "", 1).isdigit():
+        elif (
+            isinstance(value, str)
+            and not value.lstrip("-").replace(".", "", 1).isdigit()
+        ):
             literal = f'"{value}"'
         else:
             literal = str(value)
         writes.append(f"    ws.Cells({row}, {col}).Value = {literal}")
-    return GRID_HELPERS.format(
-        writes="\n".join(writes), rows=GRID_ROWS, cols=GRID_COLS
-    )
+    return GRID_HELPERS.format(writes="\n".join(writes), rows=GRID_ROWS, cols=GRID_COLS)
 
 
 def check_no_duplicate_dims(source):
@@ -602,7 +595,9 @@ def check_no_duplicate_dims(source):
     for line in source.splitlines():
         stripped = line.strip()
         lowered = stripped.lower()
-        if lowered.startswith(("private function", "public function", "private sub", "public sub")):
+        if lowered.startswith(
+            ("private function", "public function", "private sub", "public sub")
+        ):
             proc, declared = stripped, set()
         elif lowered.startswith("dim "):
             for part in stripped[4:].split(","):
@@ -651,16 +646,14 @@ def build_workbook(path):
             ws.cell(r, c, value)
     table = openpyxl.worksheet.table.Table(displayName="Sales", ref="H1:J4")
     table.tableStyleInfo = openpyxl.worksheet.table.TableStyleInfo(
-        name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
-        showRowStripes=True, showColumnStripes=False,
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
     )
     ws.add_table(table)
     wb.save(path)
-
-
-
-
-
 
 
 def visi_result(source, proc, workbook=None, harness=False):
@@ -695,19 +688,10 @@ def visi_result(source, proc, workbook=None, harness=False):
     except visi_core.VisiError as e:
         return f"SYNTAX|{type(e).__name__}: {e}"
     if value is None:
-
-
         return "ERR|94"
     if harness:
         return value
     return f"OK|{type_name}|{value}"
-
-
-
-
-
-
-
 
 
 FLOAT_REL_TOL = 1e-7
@@ -755,14 +739,6 @@ def fields_match(mine, theirs):
             if not math.isclose(xn, yn, rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL):
                 return False
     return True
-
-
-
-
-
-
-
-
 
 
 _WIN32COM_VBA_RUNNER = """
@@ -829,13 +805,25 @@ class ExcelDriver:
         chance to wear out.
         """
         self.restarts += 1
-        subprocess.run(["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["killall", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         time.sleep(1.0)
-        pgrep = subprocess.run(["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True)
+        pgrep = subprocess.run(
+            ["pgrep", "-x", EXCEL_APP], stdout=subprocess.PIPE, text=True
+        )
         for pid in pgrep.stdout.split():
-            subprocess.run(["kill", "-9", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["kill", "-9", pid],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         time.sleep(1.0)
-        subprocess.run(["open", "-a", EXCEL_APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["open", "-a", EXCEL_APP],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(4.0)
 
     def restart_windows(self):
@@ -847,7 +835,8 @@ class ExcelDriver:
         self.restarts += 1
         subprocess.run(
             ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         time.sleep(1.0)
 
@@ -871,7 +860,9 @@ class ExcelDriver:
         indices_args = [str(i) for i in indices]
         res = subprocess.run(
             [sys.executable, "-u", "-c", _WIN32COM_VBA_RUNNER, xlsm, *indices_args],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
             timeout=self.timeout,
         )
         out = {}
@@ -889,11 +880,6 @@ class ExcelDriver:
                 try:
                     returncode, out = self._run_win32com_batch(xlsm, indices)
                 except subprocess.TimeoutExpired:
-
-
-
-
-
                     self.restart_windows()
                     if attempt == 0:
                         continue
@@ -908,36 +894,36 @@ class ExcelDriver:
         if self.driver_type == "mock":
             return {}
 
-
         calls = "\n".join(
             f'    set acc to acc & "{i}=" & (run VB macro "Harness{i}") & linefeed'
             for i in indices
         )
-        script = "\n".join([
-            f'tell application "{self.app_name()}"',
-            "    set display alerts to false",
-            "    try",
-            "        close workbooks saving no",
-            "    end try",
-            f'    open POSIX file "{os.path.abspath(xlsm)}"',
-            "    set wb to active workbook",
-            '    set acc to ""',
-            calls,
-            "    close wb saving no",
-            "    return acc",
-            "end tell",
-        ])
+        script = "\n".join(
+            [
+                f'tell application "{self.app_name()}"',
+                "    set display alerts to false",
+                "    try",
+                "        close workbooks saving no",
+                "    end try",
+                f'    open POSIX file "{os.path.abspath(xlsm)}"',
+                "    set wb to active workbook",
+                '    set acc to ""',
+                calls,
+                "    close wb saving no",
+                "    return acc",
+                "end tell",
+            ]
+        )
         for attempt in range(2):
             try:
                 res = subprocess.run(
                     ["osascript", "-e", script],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, timeout=self.timeout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=self.timeout,
                 )
             except subprocess.TimeoutExpired:
-
-
-
                 self.restart()
                 if attempt == 0:
                     continue
@@ -948,10 +934,6 @@ class ExcelDriver:
                     if "=" in line:
                         k, _, v = line.partition("=")
                         if k.strip().isdigit():
-
-
-
-
                             out[int(k.strip())] = v.rstrip("\r")
                 return out
             self.restart()
@@ -966,15 +948,25 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--excel-path")
-    ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
+    ap.add_argument(
+        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto"
+    )
     ap.add_argument("--iterations", type=int, default=20)
-    ap.add_argument("--batch", type=int, default=None,
-                    help="Cases per Excel round trip (default: 20 for basic, 1 for extended). The round trip dominates cost.")
+    ap.add_argument(
+        "--batch",
+        type=int,
+        default=None,
+        help="Cases per Excel round trip (default: 20 for basic, 1 for extended). The round trip dominates cost.",
+    )
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--timeout", type=int, default=60)
-    ap.add_argument("--restart-every", type=int, default=4,
-                    help="Restart Excel every N batches, before its automation "
-                         "bridge degrades (0 to only restart on failure).")
+    ap.add_argument(
+        "--restart-every",
+        type=int,
+        default=4,
+        help="Restart Excel every N batches, before its automation "
+        "bridge degrades (0 to only restart on failure).",
+    )
     ap.add_argument("--output-dir", default="./fuzz_results")
     ap.add_argument(
         "--host-surface",
@@ -992,7 +984,9 @@ def main():
     os.makedirs(failures_dir, exist_ok=True)
 
     print("=" * 69)
-    print("    visi vs. Microsoft Excel VBA Execution Differential Fuzzer    ".center(69))
+    print(
+        "    visi vs. Microsoft Excel VBA Execution Differential Fuzzer    ".center(69)
+    )
     print("=" * 69)
     print(f" Cases       : {args.iterations} in batches of {args.batch}")
     print(f" Host surface: {args.host_surface}")
@@ -1018,7 +1012,9 @@ def main():
                 else:
                     driver.restart()
             n = min(args.batch, args.iterations - batch_start)
-            cases = [(batch_start + i + 1, gen.module(batch_start + i + 1)) for i in range(n)]
+            cases = [
+                (batch_start + i + 1, gen.module(batch_start + i + 1)) for i in range(n)
+            ]
             source = build_module(cases)
             indices = [i for i, _ in cases]
 
@@ -1034,9 +1030,6 @@ def main():
                 excel = driver.run_batch(xlsm, indices)
 
             for i, _ in cases:
-
-
-
                 mine = visi_result(source, f"Harness{i}", workbook=base, harness=True)
                 theirs = excel.get(i)
                 if theirs is None:
@@ -1061,7 +1054,9 @@ def main():
 
     total = passed + failed
     print("\n" + "=" * 69)
-    print(f" Completed in {time.time() - start:.1f}s ({driver.restarts} Excel restarts)")
+    print(
+        f" Completed in {time.time() - start:.1f}s ({driver.restarts} Excel restarts)"
+    )
     print(f" Agreed   : {passed}/{total}" if total else " Agreed   : n/a")
     print(f" Mismatch : {failed}")
     if skipped:

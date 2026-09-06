@@ -42,7 +42,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -62,109 +64,140 @@ PREAMBLE = [
 ]
 
 
-
-
 CASES = [
-
-    ('insert above a single cell',
-     'Set r = ws.Range("A5") :: ws.Rows(1).Insert :: r.Address'),
-    ('insert above a single cell, value',
-     'Set r = ws.Range("A5") :: ws.Rows(1).Insert :: CStr(r.Value)'),
-    ('insert below a single cell',
-     'Set r = ws.Range("A5") :: ws.Rows(9).Insert :: r.Address'),
-
-
-    ('insert at a span first row',
-     'Set r = ws.Range("A5:A7") :: ws.Rows(5).Insert :: r.Address'),
-    ('insert inside a span',
-     'Set r = ws.Range("A5:A7") :: ws.Rows(6).Insert :: r.Address'),
-    ('insert below a span',
-     'Set r = ws.Range("A5:A7") :: ws.Rows(8).Insert :: r.Address'),
-
-
-    ('delete a row above a single cell',
-     'Set r = ws.Range("A5") :: ws.Rows(1).Delete :: r.Address'),
-    ('delete the single row a cell points at',
-     'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: r.Address'),
-    ('delete the single row a cell points at, value',
-     'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: CStr(r.Value)'),
-    ('delete a row inside a span',
-     'Set r = ws.Range("A5:A7") :: ws.Rows(6).Delete :: r.Address'),
-    ('delete a span first row',
-     'Set r = ws.Range("A5:A7") :: ws.Rows(5).Delete :: r.Address'),
-    ('delete every row of a span',
-     'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: r.Address'),
-    ('delete every row of a span, value',
-     'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: CStr(r.Cells(1, 1).Value)'),
-
-
-    ('insert a column left of a cell',
-     'Set r = ws.Range("C5") :: ws.Columns(1).Insert :: r.Address'),
-    ('insert a column inside a span',
-     'Set r = ws.Range("A5:C5") :: ws.Columns(2).Insert :: r.Address'),
-    ('delete the column a cell points at',
-     'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: r.Address'),
-
-
-    ('insert on another sheet',
-     'Set r = ws.Range("A5") :: wb.Worksheets("Sheet2").Rows(1).Insert :: r.Address'),
-
-
-    ('identity survives an edit',
-     'Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: CStr(q Is r) & "/" & q.Address'),
-    ('a copy taken before the edit tracks too',
-     'Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: r.Address & "/" & q.Address'),
-
-
-    ('EntireRow.Insert',
-     'Set r = ws.Range("A5") :: ws.Range("A1").EntireRow.Insert :: r.Address'),
-    ('EntireColumn.Insert',
-     'Set r = ws.Range("C5") :: ws.Range("A1").EntireColumn.Insert :: r.Address'),
-    ('EntireRow.Delete',
-     'Set r = ws.Range("A5") :: ws.Range("A5").EntireRow.Delete :: r.Address'),
-
-
-    ('Rows(n) address', 'ws.Rows(3).Address'),
-    ('Columns(n) address', 'ws.Columns(3).Address'),
-    ('Range EntireRow address', 'ws.Range("B5").EntireRow.Address'),
-    ('Range EntireColumn address', 'ws.Range("B5").EntireColumn.Address'),
-    ('Rows(n) TypeName', 'TypeName(ws.Rows(3))'),
-
-
-
-
-
-    ('a partial-range Insert picks its own direction',
-     'Set r = ws.Range("A5") :: ws.Range("A2:A3").Insert :: r.Address'),
-
-
-
-
-
-    ('dead range, Address err',
-     'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
-     's = r.Address\\n'
-     's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-     'On Error GoTo 0 :: s'),
-    ('dead range, Value err',
-     'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
-     's = CStr(r.Value)\\n'
-     's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-     'On Error GoTo 0 :: s'),
-    ('dead range, is it Nothing',
-     'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: CStr(r Is Nothing)'),
-    ('dead range, TypeName',
-     'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: TypeName(r)'),
-    ('dead span, Address err',
-     'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: On Error Resume Next\\n'
-     's = r.Address\\n'
-     's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-     'On Error GoTo 0 :: s'),
-    ('dead column range, Address err',
-     'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: On Error Resume Next\\n'
-     's = r.Address\\n'
-     's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
-     'On Error GoTo 0 :: s'),
+    (
+        "insert above a single cell",
+        'Set r = ws.Range("A5") :: ws.Rows(1).Insert :: r.Address',
+    ),
+    (
+        "insert above a single cell, value",
+        'Set r = ws.Range("A5") :: ws.Rows(1).Insert :: CStr(r.Value)',
+    ),
+    (
+        "insert below a single cell",
+        'Set r = ws.Range("A5") :: ws.Rows(9).Insert :: r.Address',
+    ),
+    (
+        "insert at a span first row",
+        'Set r = ws.Range("A5:A7") :: ws.Rows(5).Insert :: r.Address',
+    ),
+    (
+        "insert inside a span",
+        'Set r = ws.Range("A5:A7") :: ws.Rows(6).Insert :: r.Address',
+    ),
+    (
+        "insert below a span",
+        'Set r = ws.Range("A5:A7") :: ws.Rows(8).Insert :: r.Address',
+    ),
+    (
+        "delete a row above a single cell",
+        'Set r = ws.Range("A5") :: ws.Rows(1).Delete :: r.Address',
+    ),
+    (
+        "delete the single row a cell points at",
+        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: r.Address',
+    ),
+    (
+        "delete the single row a cell points at, value",
+        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: CStr(r.Value)',
+    ),
+    (
+        "delete a row inside a span",
+        'Set r = ws.Range("A5:A7") :: ws.Rows(6).Delete :: r.Address',
+    ),
+    (
+        "delete a span first row",
+        'Set r = ws.Range("A5:A7") :: ws.Rows(5).Delete :: r.Address',
+    ),
+    (
+        "delete every row of a span",
+        'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: r.Address',
+    ),
+    (
+        "delete every row of a span, value",
+        'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: CStr(r.Cells(1, 1).Value)',
+    ),
+    (
+        "insert a column left of a cell",
+        'Set r = ws.Range("C5") :: ws.Columns(1).Insert :: r.Address',
+    ),
+    (
+        "insert a column inside a span",
+        'Set r = ws.Range("A5:C5") :: ws.Columns(2).Insert :: r.Address',
+    ),
+    (
+        "delete the column a cell points at",
+        'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: r.Address',
+    ),
+    (
+        "insert on another sheet",
+        'Set r = ws.Range("A5") :: wb.Worksheets("Sheet2").Rows(1).Insert :: r.Address',
+    ),
+    (
+        "identity survives an edit",
+        'Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: CStr(q Is r) & "/" & q.Address',
+    ),
+    (
+        "a copy taken before the edit tracks too",
+        'Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: r.Address & "/" & q.Address',
+    ),
+    (
+        "EntireRow.Insert",
+        'Set r = ws.Range("A5") :: ws.Range("A1").EntireRow.Insert :: r.Address',
+    ),
+    (
+        "EntireColumn.Insert",
+        'Set r = ws.Range("C5") :: ws.Range("A1").EntireColumn.Insert :: r.Address',
+    ),
+    (
+        "EntireRow.Delete",
+        'Set r = ws.Range("A5") :: ws.Range("A5").EntireRow.Delete :: r.Address',
+    ),
+    ("Rows(n) address", "ws.Rows(3).Address"),
+    ("Columns(n) address", "ws.Columns(3).Address"),
+    ("Range EntireRow address", 'ws.Range("B5").EntireRow.Address'),
+    ("Range EntireColumn address", 'ws.Range("B5").EntireColumn.Address'),
+    ("Rows(n) TypeName", "TypeName(ws.Rows(3))"),
+    (
+        "a partial-range Insert picks its own direction",
+        'Set r = ws.Range("A5") :: ws.Range("A2:A3").Insert :: r.Address',
+    ),
+    (
+        "dead range, Address err",
+        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
+        "s = r.Address\\n"
+        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+        "On Error GoTo 0 :: s",
+    ),
+    (
+        "dead range, Value err",
+        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: On Error Resume Next\\n'
+        "s = CStr(r.Value)\\n"
+        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+        "On Error GoTo 0 :: s",
+    ),
+    (
+        "dead range, is it Nothing",
+        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: CStr(r Is Nothing)',
+    ),
+    (
+        "dead range, TypeName",
+        'Set r = ws.Range("A5") :: ws.Rows(5).Delete :: TypeName(r)',
+    ),
+    (
+        "dead span, Address err",
+        'Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: On Error Resume Next\\n'
+        "s = r.Address\\n"
+        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+        "On Error GoTo 0 :: s",
+    ),
+    (
+        "dead column range, Address err",
+        'Set r = ws.Range("C5") :: ws.Columns(3).Delete :: On Error Resume Next\\n'
+        "s = r.Address\\n"
+        's = "[" & CStr(Err.Number) & "] " & Err.Description\\n'
+        "On Error GoTo 0 :: s",
+    ),
 ]
 
 
@@ -179,7 +212,9 @@ def build_module(cases):
     parts = ['Attribute VB_Name = "R"']
     for i, (setup, expr) in enumerate(cases, start=1):
         body = "\n".join(f"    {s}" for s in PREAMBLE + setup)
-        parts.append(f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function")
+        parts.append(
+            f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function"
+        )
         parts.append(HARNESS_TEMPLATE.format(i=i))
     return "\n\n".join(parts) + "\n"
 
@@ -208,7 +243,9 @@ def main():
     ap.add_argument("--excel-path")
     ap.add_argument("--driver", choices=["auto", "applescript", "mock"], default="auto")
     ap.add_argument("--timeout", type=int, default=180)
-    ap.add_argument("-k", "--filter", default="", help="only cases whose label contains this")
+    ap.add_argument(
+        "-k", "--filter", default="", help="only cases whose label contains this"
+    )
     ap.add_argument("--keep", action="store_true", help="Keep the generated .xlsm")
     args = ap.parse_args()
 
@@ -229,8 +266,6 @@ def main():
 
     label_width = min(max(len(label) for label, _ in selected), 44)
     expr_width = min(max(len(expr) for _, expr in selected), 62)
-
-
 
     for i, (label, expr) in enumerate(selected, start=1):
         got = driver.run_batch(xlsm, [i])

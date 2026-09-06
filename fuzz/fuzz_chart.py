@@ -36,7 +36,6 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import random
 import shutil
@@ -46,12 +45,8 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from chart_xlsx_reader import read_charts  # noqa: E402
-from fuzz_excel import SMOKE_BANNER, smoke_check  # noqa: E402
-
-
-
-
+from chart_xlsx_reader import read_charts
+from fuzz_excel import SMOKE_BANNER, smoke_check
 
 
 class ChartFuzzGenerator:
@@ -75,14 +70,6 @@ class ChartFuzzGenerator:
 
     CHART_TYPES = ["column", "bar", "line", "pie", "scatter", "area"]
 
-
-
-
-
-
-
-
-    
     AXIS_LABEL_TYPES = ["column", "bar", "line", "scatter"]
 
     TITLES = ["Sales", "Revenue by Region", "Q3 Results", None]
@@ -110,6 +97,7 @@ class ChartFuzzGenerator:
         `(range_str, add_config, edit_config)`.
         """
         import datetime
+
         import openpyxl
 
         wb = openpyxl.Workbook()
@@ -121,7 +109,11 @@ class ChartFuzzGenerator:
             use_date = self.shape == "rich" and random.random() < 0.45
             if use_date:
                 saw_date = True
-                ws.cell(row=i, column=1, value=datetime.date(2026, 1, 1) + datetime.timedelta(days=i * 7))
+                ws.cell(
+                    row=i,
+                    column=1,
+                    value=datetime.date(2026, 1, 1) + datetime.timedelta(days=i * 7),
+                )
                 ws.cell(row=i, column=1).number_format = "m/d/yy"
             else:
                 ws.cell(row=i, column=1, value=f"Cat{i}")
@@ -132,12 +124,16 @@ class ChartFuzzGenerator:
             else:
                 ws.cell(row=i, column=2, value=random.randint(1, 1000))
             if self.shape == "rich":
-
-
-
-                
-                ws.cell(row=i, column=3, value=random.randint(-250, 250) if random.random() > 0.15 else None)
-                ws.cell(row=i, column=4, value=random.choice(["North", "South", "East", "West", None]))
+                ws.cell(
+                    row=i,
+                    column=3,
+                    value=random.randint(-250, 250) if random.random() > 0.15 else None,
+                )
+                ws.cell(
+                    row=i,
+                    column=4,
+                    value=random.choice(["North", "South", "East", "West", None]),
+                )
         if self.shape == "rich":
             if not saw_date:
                 ws.cell(row=1, column=1, value=datetime.date(2026, 1, 1))
@@ -149,22 +145,17 @@ class ChartFuzzGenerator:
         range_str = f"Sheet1!A1:B{num_rows}"
         add_config = self._random_config()
 
-
-        
         other_types = [t for t in self.CHART_TYPES if t != add_config["chart_type"]]
-        edit_type = random.choice(other_types) if random.random() < 0.7 else add_config["chart_type"]
+        edit_type = (
+            random.choice(other_types)
+            if random.random() < 0.7
+            else add_config["chart_type"]
+        )
         edit_config = self._random_config(chart_type=edit_type)
         return range_str, add_config, edit_config
 
 
-
-
-
-
-
-
-
-from visi_driver import (  # noqa: E402,F401
+from visi_driver import (
     VisiChartDriver,
     add_backend_arg,
     bindings_hint,
@@ -208,7 +199,9 @@ class ExcelChartDriver:
         abs_output = os.path.abspath(output_file)
 
         if self.driver_type == "mock":
-            print("[ExcelChartDriver Warning] Running in mock mode (Excel not invoked).")
+            print(
+                "[ExcelChartDriver Warning] Running in mock mode (Excel not invoked)."
+            )
             return
         elif self.driver_type == "applescript":
             self._run_applescript(abs_output, range_str, edit_config)
@@ -216,8 +209,6 @@ class ExcelChartDriver:
             self._run_win32com(abs_output, range_str, edit_config)
         else:
             raise RuntimeError(f"Unsupported chart driver type: {self.driver_type}")
-
-    
 
     GALLERY_NAMES = {
         "column": "column clustered",
@@ -239,22 +230,27 @@ class ExcelChartDriver:
 
         gallery = self.GALLERY_NAMES[config["chart_type"]]
 
-        
         cell_range = range_str.split("!", 1)[1]
 
-        wizard_parts = [f'source (range {self._applescript_str(cell_range)} of ws)', f"gallery {gallery}"]
-        wizard_parts.append(f'has legend {"true" if config["show_legend"] else "false"}')
+        wizard_parts = [
+            f"source (range {self._applescript_str(cell_range)} of ws)",
+            f"gallery {gallery}",
+        ]
+        wizard_parts.append(
+            f"has legend {'true' if config['show_legend'] else 'false'}"
+        )
         if config["title"]:
-            wizard_parts.append(f'title {self._applescript_str(config["title"])}')
+            wizard_parts.append(f"title {self._applescript_str(config['title'])}")
 
-
-
-        
         if config["chart_type"] != "pie":
             if config["xlabel"]:
-                wizard_parts.append(f'category title {self._applescript_str(config["xlabel"])}')
+                wizard_parts.append(
+                    f"category title {self._applescript_str(config['xlabel'])}"
+                )
             if config["ylabel"]:
-                wizard_parts.append(f'value title {self._applescript_str(config["ylabel"])}')
+                wizard_parts.append(
+                    f"value title {self._applescript_str(config['ylabel'])}"
+                )
 
         lines = [
             f'tell application "{app_name}"',
@@ -290,17 +286,24 @@ class ExcelChartDriver:
             try:
                 res = subprocess.run(
                     ["osascript", "-e", script],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=20,
                 )
                 if res.returncode == 0:
                     break
             except subprocess.TimeoutExpired:
-                subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["killall", "Microsoft Excel"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 time.sleep(1.0)
         if res is not None and res.returncode != 0:
-            raise RuntimeError(f"Excel chart AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}")
-
-    
+            raise RuntimeError(
+                f"Excel chart AppleScript failed:\nSTDERR: {res.stderr}\nScript:\n{script}"
+            )
 
     WIN32COM_CHART_TYPE = {
         "column": "xlColumnClustered",
@@ -316,20 +319,12 @@ class ExcelChartDriver:
             import win32com.client
             from win32com.client import constants as c
         except ImportError:
-            raise RuntimeError("pywin32 (win32com) is required for Excel automation on Windows.")
+            raise RuntimeError(
+                "pywin32 (win32com) is required for Excel automation on Windows."
+            )
 
         cell_range = range_str.split("!", 1)[1]
 
-
-
-
-
-
-
-
-
-
-        
         last_err = None
         for attempt in range(5):
             if attempt > 0:
@@ -340,10 +335,6 @@ class ExcelChartDriver:
                 )
                 time.sleep(1.0)
 
-
-
-
-            
             excel = win32com.client.gencache.EnsureDispatch("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
@@ -353,7 +344,9 @@ class ExcelChartDriver:
                 co = ws.ChartObjects().Add(Left=200, Top=0, Width=300, Height=200)
                 chart = co.Chart
                 chart.SetSourceData(Source=ws.Range(cell_range))
-                chart.ChartType = getattr(c, self.WIN32COM_CHART_TYPE[config["chart_type"]])
+                chart.ChartType = getattr(
+                    c, self.WIN32COM_CHART_TYPE[config["chart_type"]]
+                )
                 chart.HasLegend = config["show_legend"]
                 if config["title"]:
                     chart.HasTitle = True
@@ -361,7 +354,6 @@ class ExcelChartDriver:
                 else:
                     chart.HasTitle = False
 
-                
                 if config["chart_type"] != "pie":
                     if config["xlabel"]:
                         cat_axis = chart.Axes(c.xlCategory)
@@ -381,11 +373,6 @@ class ExcelChartDriver:
                 excel.Quit()
         if last_err is not None:
             raise last_err
-
-
-
-
-
 
 
 class ChartComparator:
@@ -420,11 +407,13 @@ class ChartComparator:
         mismatches = []
 
         if len(visi_charts) != 1 or len(excel_charts) != 1:
-            mismatches.append({
-                "field": "chart_count",
-                "visi": len(visi_charts),
-                "excel": len(excel_charts),
-            })
+            mismatches.append(
+                {
+                    "field": "chart_count",
+                    "visi": len(visi_charts),
+                    "excel": len(excel_charts),
+                }
+            )
             return False, mismatches
 
         v = visi_charts[0]
@@ -444,30 +433,45 @@ class ChartComparator:
         return len(mismatches) == 0, mismatches
 
 
-
-
-
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Differential fuzzing test harness for visi vs Microsoft Excel charts."
     )
-    parser.add_argument("--excel-path", help="Path to Microsoft Excel binary or application bundle.")
     parser.add_argument(
-        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto",
+        "--excel-path", help="Path to Microsoft Excel binary or application bundle."
+    )
+    parser.add_argument(
+        "--driver",
+        choices=["auto", "applescript", "win32com", "mock"],
+        default="auto",
         help="Excel execution driver.",
     )
-    parser.add_argument("--visi-path", default="./target/release/visi", help="Path to compiled visi binary (used by the subprocess backend).")
-    add_backend_arg(parser)
-    parser.add_argument("--iterations", type=int, default=10, help="Number of fuzz iterations to run.")
-    parser.add_argument("--rows", type=int, default=8, help="Max source data rows per iteration.")
     parser.add_argument(
-        "--shape", choices=["basic", "rich"], default="basic",
+        "--visi-path",
+        default="./target/release/visi",
+        help="Path to compiled visi binary (used by the subprocess backend).",
+    )
+    add_backend_arg(parser)
+    parser.add_argument(
+        "--iterations", type=int, default=10, help="Number of fuzz iterations to run."
+    )
+    parser.add_argument(
+        "--rows", type=int, default=8, help="Max source data rows per iteration."
+    )
+    parser.add_argument(
+        "--shape",
+        choices=["basic", "rich"],
+        default="basic",
         help="Input shape profile. 'rich' adds blank/missing values, date categories and extra source columns.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible fuzzing.")
-    parser.add_argument("--output-dir", default="./fuzz_results", help="Directory to store test outputs and failure artifacts.")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Random seed for reproducible fuzzing."
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./fuzz_results",
+        help="Directory to store test outputs and failure artifacts.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -498,7 +502,9 @@ def main():
     start_time = time.time()
 
     for i in range(1, args.iterations + 1):
-        iter_seed = (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
+        iter_seed = (
+            (args.seed + i) if args.seed is not None else random.randint(1, 1000000)
+        )
         generator = ChartFuzzGenerator(seed=iter_seed, shape=args.shape)
 
         temp_dir = tempfile.mkdtemp(prefix=f"fuzz_chart_iter_{i}_")
@@ -508,9 +514,13 @@ def main():
 
         try:
             num_rows = random.randint(2, max(2, args.rows))
-            range_str, add_config, edit_config = generator.generate(source_xlsx, num_rows=num_rows)
+            range_str, add_config, edit_config = generator.generate(
+                source_xlsx, num_rows=num_rows
+            )
 
-            visi_driver.run(source_xlsx, range_str, add_config, edit_config, visi_out_xlsx)
+            visi_driver.run(
+                source_xlsx, range_str, add_config, edit_config, visi_out_xlsx
+            )
 
             if smoke_mode:
                 ok, reason = smoke_check(read_charts(visi_out_xlsx), what="charts")
@@ -522,7 +532,9 @@ def main():
                     )
                 else:
                     failed_count += 1
-                    print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                    print(
+                        f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})"
+                    )
                     print(f"   {reason}")
                     fail_case_dir = os.path.join(
                         failures_dir, f"chart_smoke_iter_{i}_seed_{iter_seed}"
@@ -537,22 +549,30 @@ def main():
 
             if is_match:
                 passed_count += 1
-                print(f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed}, type: {edit_config['chart_type']})")
+                print(
+                    f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed}, type: {edit_config['chart_type']})"
+                )
             else:
                 failed_count += 1
-                print(f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})")
+                print(
+                    f"\n Iteration {i:3d}/{args.iterations} [FAILED] (Seed: {iter_seed})"
+                )
                 print(f"   Found {len(mismatches)} field mismatch(es):")
                 for m in mismatches[:5]:
                     print(f"   - {m['field']}: visi={m['visi']} | Excel={m['excel']}")
 
-                fail_case_dir = os.path.join(failures_dir, f"chart_fail_iter_{i}_seed_{iter_seed}")
+                fail_case_dir = os.path.join(
+                    failures_dir, f"chart_fail_iter_{i}_seed_{iter_seed}"
+                )
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
         except Exception as err:
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
-            fail_case_dir = os.path.join(failures_dir, f"chart_error_iter_{i}_seed_{iter_seed}")
+            fail_case_dir = os.path.join(
+                failures_dir, f"chart_error_iter_{i}_seed_{iter_seed}"
+            )
             if os.path.exists(temp_dir):
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
 

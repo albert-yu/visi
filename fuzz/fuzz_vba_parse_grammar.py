@@ -123,8 +123,8 @@ class VbaGrammarGenerator:
                 "    Dim arr() As Variant",
                 "    x = 1 _",
                 "        + 2",
-                "    text = \"a\" & _",
-                "        \"b\"",
+                '    text = "a" & _',
+                '        "b"',
                 f"    GoSub {sub_label}",
                 f"    If x > 0 Then GoTo {label}",
                 f"{sub_label}:",
@@ -140,7 +140,7 @@ class VbaGrammarGenerator:
 
     def standard_module(self):
         prop_name = "Answer"
-        source = f'''Attribute VB_Name = "GrammarM"
+        source = f"""Attribute VB_Name = "GrammarM"
 {self.declarations()}
 
 Private Sub TakesOptional(Optional first, Optional second, Optional third)
@@ -160,15 +160,12 @@ End Property
 
 Public Property Let {prop_name}(ByVal v As Long)
 End Property
-'''
+"""
         return ModuleSource("GrammarM", "standard", source)
 
     def class_module(self):
 
-
-
-
-        source = '''Attribute VB_Name = "GrammarC"
+        source = """Attribute VB_Name = "GrammarC"
 Option Explicit
 Public Event Changed(ByVal value As Long)
 Private currentValue As Long
@@ -185,7 +182,7 @@ End Property
 Public Sub Touch(Optional ByVal amount As Long = 1)
     currentValue = currentValue + amount
 End Sub
-'''
+"""
         return ModuleSource("GrammarC", "class", source)
 
     def harness_module(self, include_class):
@@ -197,7 +194,7 @@ End Sub
         c.Value = Answer
         c.Touch amount:=2
 """
-        source = f'''Attribute VB_Name = "HarnessM"
+        source = f"""Attribute VB_Name = "HarnessM"
 Option Explicit
 
 Public Function Harness() As String
@@ -213,7 +210,7 @@ Public Function Harness() As String
 Failed:
     Harness = "ERR|" & CStr(Err.Number)
 End Function
-'''
+"""
         return ModuleSource("HarnessM", "standard", source)
 
     def project(self, include_class=False):
@@ -282,7 +279,10 @@ def visi_project_verdict(modules, path, visi_binary):
         timeout=30,
     )
     if res.returncode != 0:
-        return False, f"visi macro check failed: {res.stderr.strip() or res.stdout.strip()}"
+        return (
+            False,
+            f"visi macro check failed: {res.stderr.strip() or res.stdout.strip()}",
+        )
     checked = json.loads(res.stdout)
     errors = [f"{m['module']}: {m['error']}" for m in checked if m.get("error")]
     return (not errors, "; ".join(errors))
@@ -302,14 +302,22 @@ def save_failure(failures_dir, label, seed, modules, result, visi_detail, excel_
         with open(os.path.join(out, f"{module.name}.bas"), "w", encoding="utf-8") as f:
             f.write(module.source)
     with open(os.path.join(out, "verdicts.txt"), "w", encoding="utf-8") as f:
-        f.write(f"result: {result}\nvisi: {visi_detail or 'accepted'}\nexcel: {excel_detail}\n")
+        f.write(
+            f"result: {result}\nvisi: {visi_detail or 'accepted'}\nexcel: {excel_detail}\n"
+        )
     return out
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--excel-path", help="Path to Microsoft Excel binary or application bundle.")
-    ap.add_argument("--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--excel-path", help="Path to Microsoft Excel binary or application bundle."
+    )
+    ap.add_argument(
+        "--driver", choices=["auto", "applescript", "win32com", "mock"], default="auto"
+    )
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--mutation-rate", type=float, default=0.0)
@@ -320,7 +328,11 @@ def main():
     )
     ap.add_argument("--timeout", type=int, default=15)
     ap.add_argument("--output-dir", default="./fuzz_results")
-    ap.add_argument("--visi-path", default=None, help="Path to the visi CLI binary for project syntax checks.")
+    ap.add_argument(
+        "--visi-path",
+        default=None,
+        help="Path to the visi CLI binary for project syntax checks.",
+    )
     args = ap.parse_args()
 
     seed = args.seed if args.seed is not None else random.randrange(1_000_000)
@@ -342,7 +354,9 @@ def main():
     print(f" Excel driver: {driver.driver_type} ({args.excel_path or 'default'})")
     print(f" Timeout     : {args.timeout}s")
     if driver.driver_type == "mock":
-        print(" MOCK DRIVER -- parser runs, Excel is not consulted, nothing is compared.")
+        print(
+            " MOCK DRIVER -- parser runs, Excel is not consulted, nothing is compared."
+        )
     print("=" * 69 + "\n")
 
     tally = {"PASSED": 0, "FALSE_POSITIVE": 0, "FALSE_NEGATIVE": 0, "SKIPPED": 0}
@@ -364,10 +378,20 @@ def main():
             result = classify(visi_ok, excel_ok)
             tally[result] += 1
             flag = " (mutated)" if mutated else ""
-            print(f" iter_{i:<7} [{result}]{flag} visi={'accept' if visi_ok else 'reject'} "
-                  f"excel={'accept' if excel_ok else 'reject' if excel_ok is False else 'n/a'}")
+            print(
+                f" iter_{i:<7} [{result}]{flag} visi={'accept' if visi_ok else 'reject'} "
+                f"excel={'accept' if excel_ok else 'reject' if excel_ok is False else 'n/a'}"
+            )
             if result in ("FALSE_POSITIVE", "FALSE_NEGATIVE"):
-                out = save_failure(failures_dir, f"iter_{i}", seed, modules, result, visi_detail, excel_detail)
+                out = save_failure(
+                    failures_dir,
+                    f"iter_{i}",
+                    seed,
+                    modules,
+                    result,
+                    visi_detail,
+                    excel_detail,
+                )
                 print(f"   visi : {visi_detail or 'accepted'}")
                 print(f"   excel: {excel_detail}")
                 print(f"   saved: {out}")
@@ -378,7 +402,9 @@ def main():
     print("\n" + "=" * 69)
     print(f" Completed in {elapsed:.1f}s ({driver.restarts} Excel restarts)")
     print(f" Agreed         : {tally['PASSED']}/{args.iterations}")
-    print(f" False positives: {tally['FALSE_POSITIVE']}  (visi rejects, Excel compiles)")
+    print(
+        f" False positives: {tally['FALSE_POSITIVE']}  (visi rejects, Excel compiles)"
+    )
     print(f" False negatives: {tally['FALSE_NEGATIVE']}  (visi accepts, Excel refuses)")
     if tally["SKIPPED"]:
         print(f" Skipped        : {tally['SKIPPED']}")

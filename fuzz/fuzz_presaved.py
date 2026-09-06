@@ -91,7 +91,6 @@ def compare_presaved_file(
     try:
         shutil.copyfile(file_path, source_xlsx)
 
-
         visi_driver = VisiDriver(binary_path=visi_path, backend=backend)
         if backend == "auto" and visi_driver.backend != "bindings":
             print(bindings_hint(), file=sys.stderr)
@@ -100,12 +99,10 @@ def compare_presaved_file(
         visi_bytes = visi_driver.run(source_xlsx, visi_out_xlsx)
         visi_duration = time.time() - start_visi
 
-
         excel_driver = ExcelDriver(excel_path=excel_path, driver_type=driver_type)
         start_excel = time.time()
         excel_driver.run(source_xlsx, excel_out_xlsx)
         excel_duration = time.time() - start_excel
-
 
         visi_cells = XLSXEvaluatedReader.read_evaluated_cells_bytes(
             visi_bytes, source=visi_out_xlsx
@@ -118,7 +115,6 @@ def compare_presaved_file(
         if cell_filter:
             visi_cells = {k: v for k, v in visi_cells.items() if k[1] == cell_filter}
             excel_cells = {k: v for k, v in excel_cells.items() if k[1] == cell_filter}
-
 
         comparator = DifferentialComparator(strict_error_class=strict_error_class)
         is_match, mismatches = comparator.compare(visi_cells, excel_cells)
@@ -176,8 +172,12 @@ def main():
         action="store_true",
         help="Flag error class mismatches as failures",
     )
-    parser.add_argument("--sheet", default=None, help="Compare only the specified sheet name")
-    parser.add_argument("--cell", default=None, help="Compare only the specified cell (e.g. B9)")
+    parser.add_argument(
+        "--sheet", default=None, help="Compare only the specified sheet name"
+    )
+    parser.add_argument(
+        "--cell", default=None, help="Compare only the specified cell (e.g. B9)"
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -223,19 +223,19 @@ def main():
 
         if is_match:
             print(
-                f"[OK] ({stats["total_cells"]} cells matched, "
-                f"visi: {stats["visi_duration_sec"]:.3f}s, excel: {stats["excel_duration_sec"]:.3f}s)"
+                f"[OK] ({stats['total_cells']} cells matched, "
+                f"visi: {stats['visi_duration_sec']:.3f}s, excel: {stats['excel_duration_sec']:.3f}s)"
             )
         else:
             overall_passed = False
             print(f"[FAILED] ({len(mismatches)} mismatch(es))")
             for m_idx, m in enumerate(mismatches[:20], 1):
                 sheet, cell = m["key"]
-                formula = f" (Formula: ={m["formula"]})" if m.get("formula") else ""
+                formula = f" (Formula: ={m['formula']})" if m.get("formula") else ""
                 print(f"    {m_idx:2d}. Sheet: {sheet!r} Cell: {cell}{formula}")
-                print(f"        visi : {m["visi"]!r}")
-                print(f"        Excel: {m["excel"]!r}")
-                print(f"        Diff : {m["reason"]}")
+                print(f"        visi : {m['visi']!r}")
+                print(f"        Excel: {m['excel']!r}")
+                print(f"        Diff : {m['reason']}")
             if len(mismatches) > 20:
                 print(f"    ... and {len(mismatches) - 20} more mismatches.")
 

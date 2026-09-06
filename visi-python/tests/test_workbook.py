@@ -480,7 +480,7 @@ def test_rename_set_source_and_remove():
     wb.rename_macro("Mod1", "Renamed")
     assert wb.macros()[0]["name"] == "Renamed"
 
-    wb.set_macro_source("Renamed", "Attribute VB_Name = \"Renamed\"\n")
+    wb.set_macro_source("Renamed", 'Attribute VB_Name = "Renamed"\n')
     assert wb.macros()[0]["source_lines"] == 1
 
     wb.remove_macro("Renamed")
@@ -525,4 +525,3 @@ def test_locale_support():
     wb_de.set_cell(0, 0, "22.06.2026")
     wb_de.evaluate()
     assert wb_de.get_cell(0, 0) == 46195.0
-

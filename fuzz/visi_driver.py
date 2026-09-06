@@ -40,7 +40,6 @@ except ImportError as exc:
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-
 CLI_TIMEOUT_SECONDS = 120
 
 
@@ -169,13 +168,11 @@ class VisiChartDriver(_BaseDriver):
 
         wb = _vc.Workbook.load(source_file)
         wb.add_chart(
-            "Sheet1", add_config["chart_type"], range_str, title=add_config["title"] or None
+            "Sheet1",
+            add_config["chart_type"],
+            range_str,
+            title=add_config["title"] or None,
         )
-
-
-
-
-
 
         wb = wb.roundtrip()
         chart_id = wb.charts()[0]["id"]
@@ -197,25 +194,30 @@ class VisiChartDriver(_BaseDriver):
         shutil.copyfile(source_file, output_file)
 
         add_args = [
-            "add", output_file,
-            "--sheet", "Sheet1",
-            "--chart-type", add_config["chart_type"],
-            "--range", range_str,
+            "add",
+            output_file,
+            "--sheet",
+            "Sheet1",
+            "--chart-type",
+            add_config["chart_type"],
+            "--range",
+            range_str,
             "-i",
         ]
         if add_config["title"]:
             add_args += ["--title", add_config["title"]]
         self._cli("chart", add_args)
 
-
-
         charts = json.loads(self._cli("chart", ["list", output_file, "--json"]))
         chart_id = charts[0]["id"]
 
         edit_args = [
-            "edit", output_file,
-            "--id", str(chart_id),
-            "--chart-type", edit_config["chart_type"],
+            "edit",
+            output_file,
+            "--id",
+            str(chart_id),
+            "--chart-type",
+            edit_config["chart_type"],
             "-i",
         ]
         if edit_config["title"]:
@@ -230,7 +232,9 @@ class VisiChartDriver(_BaseDriver):
             edit_args += ["--ylabel", edit_config["ylabel"]]
         else:
             edit_args.append("--clear-ylabel")
-        edit_args.append("--show-legend" if edit_config["show_legend"] else "--hide-legend")
+        edit_args.append(
+            "--show-legend" if edit_config["show_legend"] else "--hide-legend"
+        )
         self._cli("chart", edit_args)
 
 
@@ -242,7 +246,9 @@ class VisiPivotDriver(_BaseDriver):
         col) equivalent for the bindings path. Both come from the caller so
         that neither this module nor the bindings needs an A1 parser."""
         if self.backend == "subprocess":
-            return self._run_cli(source_file, config, output_file, pivot_name, dest_cell)
+            return self._run_cli(
+                source_file, config, output_file, pivot_name, dest_cell
+            )
 
         dest_row, dest_col = dest_rc
         wb = _vc.Workbook.load(source_file)
@@ -260,19 +266,26 @@ class VisiPivotDriver(_BaseDriver):
             sr, sc, er, ec = config["source_bounds"]
             wb.add_pivot_from_range(
                 pivot_name,
-                start_row=sr, start_col=sc, end_row=er, end_col=ec,
-                dest_row=dest_row, dest_col=dest_col,
+                start_row=sr,
+                start_col=sc,
+                end_row=er,
+                end_col=ec,
+                dest_row=dest_row,
+                dest_col=dest_col,
                 grand_totals_row=config["grand_totals_row"],
                 grand_totals_col=config["grand_totals_col"],
             )
 
-
-
         wb = wb.roundtrip()
 
-        for area, fields in (("row", config["row_fields"]), ("column", config["col_fields"])):
+        for area, fields in (
+            ("row", config["row_fields"]),
+            ("column", config["col_fields"]),
+        ):
             for f in fields:
-                wb.add_pivot_field(pivot_name, area, f["column"], subtotal=f["subtotal"])
+                wb.add_pivot_field(
+                    pivot_name, area, f["column"], subtotal=f["subtotal"]
+                )
                 wb = wb.roundtrip()
 
         for f in config["value_fields"]:
@@ -284,18 +297,6 @@ class VisiPivotDriver(_BaseDriver):
             wb.add_pivot_field(pivot_name, "filter", column)
             wb = wb.roundtrip()
 
-
-
-
-
-
-
-
-
-
-
-
-
             values = config["filter_field"]["values"]
             if values:
                 wb.set_pivot_filter(pivot_name, column, values)
@@ -305,7 +306,15 @@ class VisiPivotDriver(_BaseDriver):
     def _run_cli(self, source_file, config, output_file, pivot_name, dest_cell):
         shutil.copyfile(source_file, output_file)
 
-        create_args = ["create", output_file, "--name", pivot_name, "--dest", dest_cell, "-i"]
+        create_args = [
+            "create",
+            output_file,
+            "--name",
+            pivot_name,
+            "--dest",
+            dest_cell,
+            "-i",
+        ]
         if config["table_name"]:
             create_args += ["--source-table", config["table_name"]]
         else:
@@ -316,11 +325,21 @@ class VisiPivotDriver(_BaseDriver):
             create_args.append("--no-grand-totals-col")
         self._cli("pivot", create_args)
 
-        for area, fields in (("row", config["row_fields"]), ("column", config["col_fields"])):
+        for area, fields in (
+            ("row", config["row_fields"]),
+            ("column", config["col_fields"]),
+        ):
             for f in fields:
                 args = [
-                    "add-field", output_file, "--name", pivot_name,
-                    "--area", area, "--column", f["column"], "-i",
+                    "add-field",
+                    output_file,
+                    "--name",
+                    pivot_name,
+                    "--area",
+                    area,
+                    "--column",
+                    f["column"],
+                    "-i",
                 ]
                 if not f["subtotal"]:
                     args.append("--no-subtotal")
@@ -329,25 +348,49 @@ class VisiPivotDriver(_BaseDriver):
         for f in config["value_fields"]:
             self._cli(
                 "pivot",
-                ["add-field", output_file, "--name", pivot_name, "--area", "value",
-                 "--column", f["column"], "--agg", f["agg"], "-i"],
+                [
+                    "add-field",
+                    output_file,
+                    "--name",
+                    pivot_name,
+                    "--area",
+                    "value",
+                    "--column",
+                    f["column"],
+                    "--agg",
+                    f["agg"],
+                    "-i",
+                ],
             )
 
         if config["filter_field"]:
             self._cli(
                 "pivot",
-                ["add-field", output_file, "--name", pivot_name, "--area", "filter",
-                 "--column", config["filter_field"]["column"], "-i"],
+                [
+                    "add-field",
+                    output_file,
+                    "--name",
+                    pivot_name,
+                    "--area",
+                    "filter",
+                    "--column",
+                    config["filter_field"]["column"],
+                    "-i",
+                ],
             )
             values = config["filter_field"]["values"]
             if values:
                 self._cli(
                     "pivot",
-                    ["filter", output_file, "--name", pivot_name,
-                     "--column", config["filter_field"]["column"],
-                     "--values", ",".join(values), "-i"],
+                    [
+                        "filter",
+                        output_file,
+                        "--name",
+                        pivot_name,
+                        "--column",
+                        config["filter_field"]["column"],
+                        "--values",
+                        ",".join(values),
+                        "-i",
+                    ],
                 )
-
-
-
-

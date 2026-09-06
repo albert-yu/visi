@@ -36,7 +36,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -48,9 +50,7 @@ except ImportError:
 
 from fuzz_vba import HARNESS_TEMPLATE, ExcelDriver
 
-
-
-HELPERS = '''Public Sub EnsurePivot()
+HELPERS = """Public Sub EnsurePivot()
     Dim ws As Worksheet, pc As PivotCache, pt As PivotTable
     Set ws = ThisWorkbook.Sheets("Sheet1")
     On Error Resume Next
@@ -65,7 +65,7 @@ HELPERS = '''Public Sub EnsurePivot()
         .Function = xlSum
     End With
     pt.PivotFields("Product").Orientation = xlPageField
-End Sub'''
+End Sub"""
 
 PREAMBLE = [
     "Dim ws As Worksheet, pt As PivotTable, pf As PivotField",
@@ -76,9 +76,7 @@ PREAMBLE = [
 ]
 
 
-
 CASES = [
-
     "TypeName(ws.PivotTables)",
     "TypeName(ws.PivotTables(1))",
     'TypeName(ws.PivotTables("P1"))',
@@ -86,35 +84,24 @@ CASES = [
     "pt.Name",
     'TypeName(pt.PivotFields("Product"))',
     "CStr(pt.PivotFields.Count)",
-
     "pt.TableRange1.Address",
     "pt.TableRange2.Address",
-
     'pt.PivotFields("Product").CurrentPage',
     'TypeName(pt.PivotFields("Product").CurrentPage)',
-
     'pt.PivotFields("Region").CurrentPage',
-
     'CStr(pt.PivotFields("Product").Orientation)',
     'CStr(pt.PivotFields("Region").Orientation)',
     'CStr(pt.PivotFields("Amount").Orientation)',
-
     'ws.PivotTables("nope").Name',
     "ws.PivotTables(5).Name",
     'pt.PivotFields("nope").Orientation',
-
     'pt.PivotFields("Product").CurrentPage = "Widget" :: pt.PivotFields("Product").CurrentPage',
     'pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G5").Value)',
     'pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G1").Value)',
-
     'pt.PivotFields("Product").CurrentPage = "Widget"\\npt.RefreshTable :: CStr(ws.Range("G5").Value)',
-
     'pt.PivotFields("Product").CurrentPage = "Nonesuch" :: "no error"',
-
     'pt.PivotFields("Product").CurrentPage = "Widget"\\npt.PivotFields("Product").CurrentPage = "(All)" :: pt.PivotFields("Product").CurrentPage & "/" & CStr(ws.Range("G5").Value)',
-
     'pt.PivotFields("Product").EnableMultiplePageItems = True\\npt.PivotFields("Product").PivotItems("Gadget").Visible = False :: pt.PivotFields("Product").CurrentPage',
-
     "TypeName(pt.RefreshTable)",
     "CStr(pt.RefreshTable)",
 ]
@@ -131,7 +118,9 @@ def build_module(cases):
     parts = ['Attribute VB_Name = "V"', HELPERS]
     for i, (setup, expr) in enumerate(cases, start=1):
         body = "\n".join(f"    {s}" for s in PREAMBLE + setup)
-        parts.append(f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function")
+        parts.append(
+            f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function"
+        )
         parts.append(HARNESS_TEMPLATE.format(i=i))
     return "\n\n".join(parts) + "\n"
 

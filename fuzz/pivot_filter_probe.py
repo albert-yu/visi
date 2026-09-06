@@ -48,7 +48,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -78,20 +80,13 @@ End Sub
 """
 
 
-
-
-
-
 VISI_VARIANT = "visi"
 
 VARIANTS = {
-
     "multi": "    pf.EnableMultiplePageItems = True\n"
-             '    pf.PivotItems("Gadget").Visible = False',
-
+    '    pf.PivotItems("Gadget").Visible = False',
     "page": '    pf.CurrentPage = "Widget"',
 }
-
 
 
 PARTS = ("xl/pivotCache/pivotCacheDefinition", "xl/pivotTables/pivotTable")
@@ -125,26 +120,36 @@ def run_and_save(driver, xlsm, out_path, macro="Build"):
     than anything to do with the workbook (see `fuzz_pivot.py`).
     """
     run_line = [f'    run VB macro "{macro}"'] if macro else []
-    script = "\n".join([
-        f'tell application "{driver.app_name()}"',
-        "    set display alerts to false",
-        "    try",
-        "        close workbooks saving no",
-        "    end try",
-        f'    open POSIX file "{os.path.abspath(xlsm)}"',
-        "    set wb to active workbook",
-        *run_line,
-        f'    save wb in POSIX file "{os.path.abspath(out_path)}"',
-        "    close wb saving no",
-        '    return "ok"',
-        "end tell",
-    ])
+    script = "\n".join(
+        [
+            f'tell application "{driver.app_name()}"',
+            "    set display alerts to false",
+            "    try",
+            "        close workbooks saving no",
+            "    end try",
+            f'    open POSIX file "{os.path.abspath(xlsm)}"',
+            "    set wb to active workbook",
+            *run_line,
+            f'    save wb in POSIX file "{os.path.abspath(out_path)}"',
+            "    close wb saving no",
+            '    return "ok"',
+            "end tell",
+        ]
+    )
     try:
-        res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, timeout=driver.timeout)
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=driver.timeout,
+        )
     except subprocess.TimeoutExpired:
-        subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["killall", "Microsoft Excel"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         raise RuntimeError("Excel did not respond; killed it")
     if res.returncode != 0:
         raise RuntimeError(f"AppleScript failed: {res.stderr.strip()}")
@@ -169,24 +174,34 @@ def can_excel_open(driver, path, timeout=60):
     *repair* a file it considers damaged -- which is indistinguishable from a
     hang over the AppleScript bridge, so it is reported as its own outcome.
     """
-    script = "\n".join([
-        f'tell application "{driver.app_name()}"',
-        "    set display alerts to false",
-        "    try",
-        "        close workbooks saving no",
-        "    end try",
-        f'    open POSIX file "{os.path.abspath(path)}"',
-        "    set n to name of active workbook",
-        "    close active workbook saving no",
-        "    return n",
-        "end tell",
-    ])
+    script = "\n".join(
+        [
+            f'tell application "{driver.app_name()}"',
+            "    set display alerts to false",
+            "    try",
+            "        close workbooks saving no",
+            "    end try",
+            f'    open POSIX file "{os.path.abspath(path)}"',
+            "    set n to name of active workbook",
+            "    close active workbook saving no",
+            "    return n",
+            "end tell",
+        ]
+    )
     try:
-        res = subprocess.run(["osascript", "-e", script], stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, timeout=timeout)
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired:
-        subprocess.run(["killall", "Microsoft Excel"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["killall", "Microsoft Excel"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         return False, "timed out -- a modal dialog, most likely a repair prompt"
     if res.returncode != 0:
         return False, res.stderr.strip().split(": ")[-1]
@@ -214,9 +229,19 @@ def visi_written(driver, full):
     visi_core.Workbook.load(base).save(nopivot)
 
     wbk = visi_core.Workbook.load(base)
-    wbk.add_pivot_from_range(name="P1", source_sheet=None, start_row=0, start_col=0,
-                             end_row=6, end_col=2, dest_sheet=None, dest_row=0,
-                             dest_col=5, grand_totals_row=True, grand_totals_col=True)
+    wbk.add_pivot_from_range(
+        name="P1",
+        source_sheet=None,
+        start_row=0,
+        start_col=0,
+        end_row=6,
+        end_col=2,
+        dest_sheet=None,
+        dest_row=0,
+        dest_col=5,
+        grand_totals_row=True,
+        grand_totals_col=True,
+    )
     wbk.add_pivot_field("P1", "row", "Region")
     wbk.add_pivot_field("P1", "value", "Amount", agg="sum")
     wbk.add_pivot_field("P1", "filter", "Product")
@@ -244,10 +269,24 @@ def visi_written(driver, full):
                     continue
                 xml = z.read(name).decode()
                 print(f"\n--- {name} ---")
-                print(xml if full else pretty(xml, {
-                    "cacheField", "sharedItems", "s", "n",
-                    "pivotField", "item", "items", "pageField", "pageFields",
-                }))
+                print(
+                    xml
+                    if full
+                    else pretty(
+                        xml,
+                        {
+                            "cacheField",
+                            "sharedItems",
+                            "s",
+                            "n",
+                            "pivotField",
+                            "item",
+                            "items",
+                            "pageField",
+                            "pageFields",
+                        },
+                    )
+                )
     return 1 if failures else 0
 
 
@@ -258,8 +297,9 @@ def main():
     ap.add_argument("--excel-path")
     ap.add_argument("--driver", choices=["auto", "applescript", "mock"], default="auto")
     ap.add_argument("--timeout", type=int, default=180)
-    ap.add_argument("--variant", choices=sorted(VARIANTS) + [VISI_VARIANT],
-                    help="only this variant")
+    ap.add_argument(
+        "--variant", choices=sorted(VARIANTS) + [VISI_VARIANT], help="only this variant"
+    )
     ap.add_argument("--full", action="store_true", help="dump the parts verbatim")
     args = ap.parse_args()
 
@@ -294,10 +334,24 @@ def main():
                 if args.full:
                     print(xml)
                 else:
-                    print(pretty(xml, {
-                        "cacheField", "sharedItems", "s", "n", "b", "m",
-                        "pivotField", "item", "items", "pageField", "pageFields",
-                    }))
+                    print(
+                        pretty(
+                            xml,
+                            {
+                                "cacheField",
+                                "sharedItems",
+                                "s",
+                                "n",
+                                "b",
+                                "m",
+                                "pivotField",
+                                "item",
+                                "items",
+                                "pageField",
+                                "pageFields",
+                            },
+                        )
+                    )
     return 0
 
 

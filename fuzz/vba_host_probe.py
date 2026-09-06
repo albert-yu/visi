@@ -41,7 +41,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import openpyxl
 except ImportError:
-    sys.exit("openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt")
+    sys.exit(
+        "openpyxl is required: source fuzz/venv/bin/activate && pip install -r fuzz/requirements.txt"
+    )
 
 try:
     import visi_core
@@ -53,7 +55,6 @@ except ImportError:
 
 from fuzz_vba import HARNESS_TEMPLATE, ExcelDriver
 
-
 PREAMBLE = [
     "Dim ws As Worksheet, wb As Workbook",
     "Set wb = ThisWorkbook",
@@ -62,9 +63,7 @@ PREAMBLE = [
 ]
 
 
-
 READ_CASES = [
-
     "TypeName(wb)",
     "TypeName(ws)",
     'TypeName(ws.Range("A1"))',
@@ -72,7 +71,6 @@ READ_CASES = [
     "TypeName(ws.Cells)",
     "TypeName(wb.Worksheets)",
     "TypeName(wb.Sheets)",
-
     'ws.Range("A1").Address',
     'ws.Range("A1:B2").Address',
     'ws.Range("A1").Address(False, False)',
@@ -82,18 +80,16 @@ READ_CASES = [
     "TypeName(ws.Cells.Count)",
     'ws.Range("A1").Row & "," & ws.Range("B2").Column',
     'ws.Range("B2:C4").Row & "," & ws.Range("B2:C4").Column',
-    'ws.Cells(2, 3).Address',
+    "ws.Cells(2, 3).Address",
     'ws.Range("A1", "B2").Address',
-    'ws.Range(ws.Cells(1, 1), ws.Cells(2, 2)).Address',
+    "ws.Range(ws.Cells(1, 1), ws.Cells(2, 2)).Address",
     'ws.Range("B2").Offset(1, 1).Address',
     'ws.Range("B2").Offset(-1, 0).Address',
     'ws.Range("A1").Offset(-1, 0).Address',
     'ws.Range("A1:B2").Resize(3, 1).Address',
     'ws.Range("A1").Resize(0, 1).Address',
-
     'For Each c In ws.Range("A1:B2")\\n s = s & c.Address(False, False) & " "\\nNext :: s',
-    "For Each c In wb.Worksheets\\n s = s & c.Name & \" \"\\nNext :: s",
-
+    'For Each c In wb.Worksheets\\n s = s & c.Name & " "\\nNext :: s',
     'TypeName(ws.Range("A1").Value)',
     'CStr(ws.Range("A1").Value)',
     'TypeName(ws.Range("C1").Value)',
@@ -118,27 +114,18 @@ READ_CASES = [
     'CStr(ws.Range("E2").Value)',
     'ws.Range("E2").Formula',
     'ws.Range("C1").NumberFormat',
-
-
     'ws.Range("C3").NumberFormat',
     'ws.Range("C3").Text',
-
-
     'TypeName(ws.Range("F1").Value)',
     'CStr(CLng(ws.Range("F1").Value))',
     'ws.Range("F1").Text',
     'CStr(IsError(ws.Range("F1").Value))',
     'ws.Range("F1").Formula',
     'CStr(Application.WorksheetFunction.Sum(ws.Range("F1")))',
-
     'Range("A1").Address & "/" & Cells(2, 2).Address',
-    'ws.Cells.Address',
-    'TypeName(wb.Worksheets(1))',
+    "ws.Cells.Address",
+    "TypeName(wb.Worksheets(1))",
     'wb.Worksheets("Sheet1").Range("B3").Address',
-
-
-
-
     'v = ws.Range("A1:A3").Value :: "[" & TypeName(v) & "]"',
     'v = ws.Range("A1:A3").Value2 :: "[" & TypeName(v) & "]"',
     'v = ws.Range("A1:A3").Value :: CStr(Application.WorksheetFunction.Sum(v))',
@@ -148,17 +135,10 @@ READ_CASES = [
     'v = ws.Range("A1:A3") :: TypeName(v)',
     'v = ws.Range("A1:B2").Value :: CStr(v)',
     'v = ws.Range("A1").Value :: TypeName(v)',
-
     'ws.Range("nope!!").Address',
     'ws.Range("").Address',
     'wb.Worksheets("nope").Name',
-    'wb.Worksheets(5).Name',
-
-
-
-
-
-
+    "wb.Worksheets(5).Name",
     "Dim r As Range :: TypeName(r)",
     "Dim r As Range :: CStr(r Is Nothing)",
     'CStr(ws.Range("A1") Is ws.Range("A1"))',
@@ -166,9 +146,7 @@ READ_CASES = [
     "CStr(ws Is wb.Worksheets(2))",
     'CStr(ws.Range("A1") Is ws.Range("A2"))',
     "CStr(ws Is Nothing)",
-
     'With ws.Range("A2")\\n s = CStr(.Value) & "/" & .Address\\nEnd With :: s',
-
     'CStr(Application.WorksheetFunction.Sum(ws.Range("A1:A3")))',
     'TypeName(Application.WorksheetFunction.Sum(ws.Range("A1:A3")))',
     'CStr(Application.WorksheetFunction.Sum(ws.Range("A1:E3")))',
@@ -185,38 +163,31 @@ READ_CASES = [
     'v = Application.VLookup("zzz", ws.Range("A1:B3"), 2, False) :: CStr(CLng(v))',
     'CStr(Application.Sum(ws.Range("A1:A3")))',
     'CStr(Application.WorksheetFunction.Sum(ws.Range("A1"), 5))',
-
-
-    'CStr(CVErr(2042))',
-    'TypeName(CVErr(2042))',
-    'CStr(IsError(CVErr(2042)))',
+    "CStr(CVErr(2042))",
+    "TypeName(CVErr(2042))",
+    "CStr(IsError(CVErr(2042)))",
     'v = CVErr(2042) :: CStr(v & "")',
-    'v = CVErr(2042) :: CStr(v + 1)',
-    'v = CVErr(2042) :: CStr(v = 1)',
+    "v = CVErr(2042) :: CStr(v + 1)",
+    "v = CVErr(2042) :: CStr(v = 1)",
     'v = ws.Range("F1").Value :: CStr(v + 1)',
-    'CStr(#6/22/2026#)',
-    'TypeName(#6/22/2026#)',
-    'CStr(#6/22/2026 12:00:00 PM#)',
-    'CStr(CDate(0.5))',
-    'CStr(CDate(46195))',
-    'TypeName(#6/22/2026# + 1)',
-    'CStr(#6/22/2026# + 1)',
-    'CStr(#6/22/2026# - #6/21/2026#)',
-
-
-    "Dim r As Range :: Set r = ws.Range(\"A1\") :: CStr(r Is r)",
-    "Dim r As Range, q As Range :: Set r = ws.Range(\"A1\") :: Set q = r :: CStr(q Is r)",
+    "CStr(#6/22/2026#)",
+    "TypeName(#6/22/2026#)",
+    "CStr(#6/22/2026 12:00:00 PM#)",
+    "CStr(CDate(0.5))",
+    "CStr(CDate(46195))",
+    "TypeName(#6/22/2026# + 1)",
+    "CStr(#6/22/2026# + 1)",
+    "CStr(#6/22/2026# - #6/21/2026#)",
+    'Dim r As Range :: Set r = ws.Range("A1") :: CStr(r Is r)',
+    'Dim r As Range, q As Range :: Set r = ws.Range("A1") :: Set q = r :: CStr(q Is r)',
     'Dim r As Range :: Set r = ws.Range("A1") :: CStr(r Is ws.Range("A1"))',
-
     'CStr(Application.WorksheetFunction.Sum(ws.Range("A1"), "x"))',
     'TypeName(Application.WorksheetFunction.Sum(ws.Range("A1:A3"), 1))',
-
     "wb.Name",
     "wb.Worksheets(1).Name",
     "CStr(wb.Worksheets.Count)",
     'CStr(wb.Worksheets("SHEET1").Name)',
 ]
-
 
 
 WRITE_CASES = [
@@ -247,7 +218,9 @@ def build_module(cases):
     parts = ['Attribute VB_Name = "H"']
     for i, (setup, expr) in enumerate(cases, start=1):
         body = "\n".join(f"    {s}" for s in PREAMBLE + setup)
-        parts.append(f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function")
+        parts.append(
+            f"Private Function Gen{i}()\n{body}\n    Gen{i} = {expr}\nEnd Function"
+        )
         parts.append(HARNESS_TEMPLATE.format(i=i))
     return "\n\n".join(parts) + "\n"
 
@@ -287,9 +260,13 @@ def main():
     ap.add_argument("--excel-path")
     ap.add_argument("--driver", choices=["auto", "applescript", "mock"], default="auto")
     ap.add_argument("--timeout", type=int, default=180)
-    ap.add_argument("--batch", type=int, default=12,
-                    help="Read cases per Excel round trip. Small on purpose: a "
-                         "compile error costs the whole batch.")
+    ap.add_argument(
+        "--batch",
+        type=int,
+        default=12,
+        help="Read cases per Excel round trip. Small on purpose: a "
+        "compile error costs the whole batch.",
+    )
     ap.add_argument("--keep", action="store_true", help="Keep the generated .xlsm")
     args = ap.parse_args()
 
@@ -309,22 +286,23 @@ def main():
 
     results = {}
 
-
-
-
     reads = list(range(1, len(READ_CASES) + 1))
     writes = list(range(len(READ_CASES) + 1, len(cases) + 1))
     for start in range(0, len(reads), args.batch):
-        chunk = reads[start:start + args.batch]
+        chunk = reads[start : start + args.batch]
         got = driver.run_batch(xlsm, chunk)
         if not got:
-            print(f"cases {chunk[0]}-{chunk[-1]}: Excel returned nothing "
-                  "(a compile error in one of them).", file=sys.stderr)
+            print(
+                f"cases {chunk[0]}-{chunk[-1]}: Excel returned nothing "
+                "(a compile error in one of them).",
+                file=sys.stderr,
+            )
         results.update(got)
     got = driver.run_batch(xlsm, writes)
     if not got:
-        print(f"cases {writes[0]}-{writes[-1]}: Excel returned nothing.",
-              file=sys.stderr)
+        print(
+            f"cases {writes[0]}-{writes[-1]}: Excel returned nothing.", file=sys.stderr
+        )
     results.update(got)
 
     width = min(max(len(c) for c in CASES), 78)

@@ -75,7 +75,7 @@ def test_evaluated_reader_keys_cells_by_actual_sheet_name():
     cells = XLSXEvaluatedReader.read_evaluated_cells_bytes(buf.getvalue())
 
     assert cells[("Summary", "A1")]["val"] == "ok"
-    assert cells[("Data & \"Sheet\"", "B2")]["val"] == 42
+    assert cells[('Data & "Sheet"', "B2")]["val"] == 42
     assert ("sheet1", "A1") not in cells
     assert ("sheet2", "B2") not in cells
 
@@ -92,31 +92,51 @@ def test_structural_formula_normalization_preserves_string_literal_whitespace():
 
 
 def test_structural_formula_normalization_preserves_string_literal_casing():
-    assert normalize_formula_text('="abc" & A1') != normalize_formula_text('="ABC" & A1')
+    assert normalize_formula_text('="abc" & A1') != normalize_formula_text(
+        '="ABC" & A1'
+    )
     assert normalize_formula_text('=SUM(a1:a2) & "abc"') == '=SUM(A1:A2)&"abc"'
 
 
 def test_structural_formula_normalization_handles_escaped_quotes_and_ref_errors():
-    assert normalize_formula_text('="He said ""hello world""!" & B2') == '="He said ""hello world""!"&B2'
-    assert normalize_formula_text('="He said ""hello world""!" & B2') == normalize_formula_text('="He said ""hello world""!"   &  b2')
+    assert (
+        normalize_formula_text('="He said ""hello world""!" & B2')
+        == '="He said ""hello world""!"&B2'
+    )
+    assert normalize_formula_text(
+        '="He said ""hello world""!" & B2'
+    ) == normalize_formula_text('="He said ""hello world""!"   &  b2')
     assert normalize_formula_text('=""') == '=""'
     assert normalize_formula_text('=""""') == '=""""'
     assert normalize_formula_text(None) is None
 
-
-    assert normalize_formula_text('=Data!#REF! + 1') == '=#REF!+1'
-    assert normalize_formula_text('=\'Data\'!#REF! + 1') == '=#REF!+1'
+    assert normalize_formula_text("=Data!#REF! + 1") == "=#REF!+1"
+    assert normalize_formula_text("='Data'!#REF! + 1") == "=#REF!+1"
     assert normalize_formula_text('="Data!#REF!"') == '="Data!#REF!"'
 
 
 def test_cell_types_equal_for_string_variants():
     comparator = DifferentialComparator()
 
-    for t in ('s', 'str', 'inlineStr'):
-        assert comparator.canonical_type(t, "hello") == 'string'
+    for t in ("s", "str", "inlineStr"):
+        assert comparator.canonical_type(t, "hello") == "string"
 
-    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 's', 'val': 'hello'}}
-    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'inlineStr', 'val': 'hello'}}
+    v_cells = {
+        ("Sheet1", "A1"): {
+            "cell_ref": "A1",
+            "sheet": "Sheet1",
+            "type": "s",
+            "val": "hello",
+        }
+    }
+    e_cells = {
+        ("Sheet1", "A1"): {
+            "cell_ref": "A1",
+            "sheet": "Sheet1",
+            "type": "inlineStr",
+            "val": "hello",
+        }
+    }
     ok, mismatches = comparator.compare(v_cells, e_cells)
     assert ok
     assert not mismatches
@@ -125,27 +145,55 @@ def test_cell_types_equal_for_string_variants():
 def test_cell_type_mismatches_are_caught():
     comparator = DifferentialComparator()
 
-
-    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'n', 'val': 123}}
-    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 's', 'val': '123'}}
+    v_cells = {
+        ("Sheet1", "A1"): {"cell_ref": "A1", "sheet": "Sheet1", "type": "n", "val": 123}
+    }
+    e_cells = {
+        ("Sheet1", "A1"): {
+            "cell_ref": "A1",
+            "sheet": "Sheet1",
+            "type": "s",
+            "val": "123",
+        }
+    }
     ok, mismatches = comparator.compare(v_cells, e_cells)
     assert not ok
     assert len(mismatches) == 1
-    assert "Cell type mismatch (number vs string)" in mismatches[0]['reason']
+    assert "Cell type mismatch (number vs string)" in mismatches[0]["reason"]
 
-
-    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'b', 'val': True}}
-    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 's', 'val': 'TRUE'}}
+    v_cells = {
+        ("Sheet1", "A1"): {
+            "cell_ref": "A1",
+            "sheet": "Sheet1",
+            "type": "b",
+            "val": True,
+        }
+    }
+    e_cells = {
+        ("Sheet1", "A1"): {
+            "cell_ref": "A1",
+            "sheet": "Sheet1",
+            "type": "s",
+            "val": "TRUE",
+        }
+    }
     ok, mismatches = comparator.compare(v_cells, e_cells)
     assert not ok
     assert len(mismatches) == 1
-    assert "Cell type mismatch (boolean vs string)" in mismatches[0]['reason']
+    assert "Cell type mismatch (boolean vs string)" in mismatches[0]["reason"]
 
-
-    v_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'n', 'val': 1}}
-    e_cells = {("Sheet1", "A1"): {'cell_ref': 'A1', 'sheet': 'Sheet1', 'type': 'e', 'val': '#N/A'}}
+    v_cells = {
+        ("Sheet1", "A1"): {"cell_ref": "A1", "sheet": "Sheet1", "type": "n", "val": 1}
+    }
+    e_cells = {
+        ("Sheet1", "A1"): {
+            "cell_ref": "A1",
+            "sheet": "Sheet1",
+            "type": "e",
+            "val": "#N/A",
+        }
+    }
     ok, mismatches = comparator.compare(v_cells, e_cells)
     assert not ok
     assert len(mismatches) == 1
-    assert "Cell type mismatch (number vs error)" in mismatches[0]['reason']
-
+    assert "Cell type mismatch (number vs error)" in mismatches[0]["reason"]
