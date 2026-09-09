@@ -12,6 +12,13 @@ My goals with this project are:
   - Minus some functions that require calling Microsoft's own APIs
 2. Prioritize performance, making it possible to handle large workloads
 
+## LLM Policy
+
+- No LLM use for writing prose, unless clearly indicated at the _beginning_ of
+  the content
+  - Source code comments count as prose
+- LLMs may be used for source code generation
+
 ## Installation
 
 ### Homebrew (macOS/Linux)
