@@ -11,78 +11,63 @@ cargo test --workspace                  # all unit + integration tests
 cargo clippy --workspace                # lints (code carries #[allow(clippy::...)] in places)
 cargo fmt
 
-# A single test / module (engine tests live inside visi-core's lib target)
 cargo test -p visi-core test_fuzz_cell_reference_zero_coercion
 cargo test -p visi-core --lib core::engine::tests::rounding
 cargo test -p visi --test cli_tests
 ```
 
-CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace
---all-targets -- -D warnings`, `cargo test --workspace --exclude visi-python` on
-Linux and macOS, and the pytest suites (`fuzz/test_backend_parity.py`,
-`fuzz/test_comparator.py`, `visi-python/tests/`) on every PR. Everything requiring a real Excel — the `fuzz/`
-differential harness — and the nightly-only cargo-fuzz targets stay local.
+## Fuzzing/verification
 
-Differential fuzzing against real Microsoft Excel (Python, `fuzz/`). Use the venv,
-not system Python — `maturin develop` installs into whichever venv is active:
+In `fuzz/`, we perform differential fuzzing
+against a real instance of Microsoft Excel.
+Use `venv`, not the system Python when running.
 
 ```bash
 source fuzz/venv/bin/activate
 pip install -r fuzz/requirements.txt
-maturin develop -m visi-python/Cargo.toml --release      # the in-process bindings
-cargo build --release                                   # the CLI, for --backend subprocess
+maturin develop -m visi-python/Cargo.toml --release
 
-python fuzz/fuzz_excel.py --driver mock --iterations 5   # no Excel needed; exercises the pipeline
+# macos
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
-python fuzz/fuzz_excel.py --seed 48291 --iterations 1    # reproduce a specific failure
 
-python fuzz/grid_edit_probe.py                           # what a row/col insert/delete does to formula text
-python fuzz/fuzz_vba.py --iterations 200 --seed 909      # VBA execution + the cells a macro wrote
+# reproduce a specific failure
+python fuzz/fuzz_excel.py --seed 48291 --iterations 1    
+
+# test VBA execution
+python fuzz/fuzz_vba.py --iterations 200 --seed 909
+
+# various *_probe.py scripts to test
+# pieces of Excel functionality
 python fuzz/vba_host_probe.py                            # what Excel's object model actually does
-python fuzz/vba_range_tracking_probe.py                  # does a held Range follow a row/col edit (one case per round trip)
-python fuzz/vba_style_probe.py --paint                   # BGR vs RGB, checked against the saved file not the object model
-python fuzz/vba_table_probe.py                           # ListObjects; --empty is the zero-data-row case, one round trip per case
-python fuzz/band_insert_probe.py                         # what a partial (column-band) insert does to formulas
-python fuzz/pivot_filter_probe.py --variant visi         # can Excel open a pivot visi wrote? (exits non-zero if not)
-python fuzz/vba_pivot_probe.py                           # the VBA PivotTables object model
 python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
 
-pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/    # bindings must match the CLI
+# unit tests for the fuzz harness itself
+pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/
 ```
 
-Anything in `fuzz/` that becomes VBA *source* has a trap worth knowing: an
-undefined name or a duplicate `Dim` is a **compile** error, which the `On Error`
-harness cannot catch, so Excel goes modal and `osascript` never returns. A run
-that produces no output at all is a compile error, not a slow run -- `killall
-"Microsoft Excel"` and look at the generated source. `HARNESS_TEMPLATE` in
-`fuzz_vba.py` is imported and spliced into modules by both probe scripts, so it
-has to stay self-contained; `fuzz_vba.GRID_HARNESS_TEMPLATE` is the one that may
-depend on that file's own helpers.
+Be careful when generating VBA source code in a fuzz.
+A compile error, causes Excel to show a modal, which
+cannot be caught by the Excel driver. In such an event,
+kill the Microsoft Excel process and inspect the generated
+source code for errors. Examples of errors include:
 
-Each fuzzer takes `--backend {auto,bindings,subprocess}`. `auto` prefers the
-bindings and falls back to the CLI with a warning. Reach for `subprocess` when
-triaging a crash: under `bindings` the engine shares the harness process, so a
-Rust abort or stack overflow takes the whole run down instead of one iteration.
+- undefined name
+- duplicate `Dim`
 
-`cargo build --workspace` / `cargo test --workspace` include `visi-python`, which
-needs a `python3` on PATH to link. Without one, pass `--exclude visi-python` or set
-`PYO3_NO_PYTHON=1`; a bare `cargo build` / `cargo test` already skips it via
-`default-members`.
+### Rust fuzzing
 
-Failures land in `fuzz_results/failures/fail_iter_<N>_seed_<SEED>/` as `source.xlsx` / `visi_out.xlsx` / `excel_out.xlsx`. See `fuzz/README.md` for the Excel-parity edge cases the harness is built around (cached `<v>` values, 1900 leap-year bug, `_xlfn.` prefixes, float tolerance).
-
-Crash/panic fuzzing of the VBA import path (Rust, `visi-core/fuzz/`, separate from the Python differential harness above):
+Crash/panic fuzzing for Rust code lives in `visi-core/fuzz/`,
+separate from the Python differential harness above.
 
 ```bash
-cargo install cargo-fuzz                                          # needs a nightly toolchain
+# needs a nightly toolchain
+cargo install cargo-fuzz                                          
 cd visi-core && cargo +nightly fuzz run ovba_decompress
 mkdir -p fuzz/corpus/vba_import
 cargo +nightly fuzz run vba_import fuzz/corpus/vba_import fuzz/seeds/vba_import   # seed corpus gets past the CFB-magic-bytes gate
 mkdir -p fuzz/corpus/vba_parse
 cargo +nightly fuzz run vba_parse fuzz/corpus/vba_parse fuzz/seeds/vba_parse       # VBA source text, not a binary
 ```
-
-See `visi-core/fuzz/README.md`. `core::ovba`'s roundtrip/never-panics properties are also covered by `proptest` cases in `cargo test -p visi-core`, no nightly needed.
 
 ## Architecture
 
