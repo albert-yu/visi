@@ -8,13 +8,10 @@ both visi and real Microsoft Excel, comparing evaluated cell values.
 Usage:
     source fuzz/venv/bin/activate
 
-    # Run all files in fuzz/presaved/
     python fuzz/fuzz_presaved.py
 
-    # Run a specific file
     python fuzz/fuzz_presaved.py fuzz/presaved/NVDA_Put_Implied_Volatility.xlsx
 
-    # Pass explicit Excel path or driver
     python fuzz/fuzz_presaved.py --excel-path "/Applications/Microsoft Excel.app"
 """
 

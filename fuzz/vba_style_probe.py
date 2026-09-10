@@ -11,18 +11,18 @@ fine and is the wrong colour.
 Two channels, because the VBA one cannot catch a consistent-but-wrong
 convention:
 
-* **`--ask`** runs expressions and prints what Excel's object model returns.
-  If visi and Excel both round-trip `&HFF0000` back to `16711680`, that says
+* The object-model channel runs expressions and prints what Excel returns. If
+  visi and Excel both round-trip `&HFF0000` back to `16711680`, that says
   nothing about which colour it painted.
-* **`--paint`** has Excel *save* the workbook after setting colours, then
-  reads the real `fgColor`/`font color` ARGB out of the xlsx with openpyxl.
-  This is the channel that settles BGR, and it is independent of both
-  implementations.
+* The saved-file channel has Excel save the workbook after setting colours,
+  then reads the real `fgColor`/`font color` ARGB out of the xlsx with
+  openpyxl. This is the channel that settles BGR, and it is independent of
+  both implementations.
 
     source fuzz/venv/bin/activate
     maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/vba_style_probe.py              # both channels
-    python fuzz/vba_style_probe.py --paint      # just the decisive one
+    python fuzz/vba_style_probe.py
+    python fuzz/vba_style_probe.py --paint
 
 Same traps as the other VBA probes: a **compile** error hangs the AppleScript
 bridge and is not catchable by `On Error`, so a batch that returns nothing is

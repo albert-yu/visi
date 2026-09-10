@@ -35,7 +35,7 @@ There is a fifth behaviour, deliberately NOT asserted here because asserting
 it means hanging for the timeout on every run: an *untrapped* runtime error
 pops a modal dialog that `set display alerts to false` does not suppress, the
 osascript call never returns, and Excel must be SIGKILLed. That is why the
-`wrapper` check exists. Pass --demo-hang to see it, at the cost of a stall.
+`wrapper` check exists.
 
 Usage:
     python3 fuzz/vba_probe.py

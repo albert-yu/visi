@@ -8,13 +8,10 @@ cached values.
 
 Examples:
 
-    # Windows, real Excel oracle
     PYTHONIOENCODING=utf-8 python fuzz/fuzz_structural_edit.py --driver win32com --iterations 20
 
-    # macOS, real Excel oracle
     python fuzz/fuzz_structural_edit.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 
-    # Harness smoke test only; does not invoke Excel
     python fuzz/fuzz_structural_edit.py --driver mock --iterations 2
 """
 

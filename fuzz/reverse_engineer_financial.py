@@ -30,10 +30,8 @@ see the docstring on `newton_raphson_generic` for the derivation. Whether
 Excel is exactly what this script measures rather than assumes.
 
 Usage:
-    # Smoke-test the pipeline without Excel (candidates vs. visi only):
     python3 fuzz/reverse_engineer_financial.py --driver mock
 
-    # Full run against real Excel:
     python3 fuzz/reverse_engineer_financial.py \\
         --excel-path "/Applications/Microsoft Excel.app" --seed 1
 

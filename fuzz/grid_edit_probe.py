@@ -8,8 +8,8 @@ the range or grow it? Does deleting one row of a three-row range shrink it or
 break it? This asks Excel, one case at a time, and prints its answer next to
 visi's.
 
-    python fuzz/grid_edit_probe.py                    # every case
-    python fuzz/grid_edit_probe.py -k absolute        # cases matching a substring
+    python fuzz/grid_edit_probe.py
+    python fuzz/grid_edit_probe.py -k absolute
     python fuzz/grid_edit_probe.py --excel-path "/Applications/Microsoft Excel.app"
 
 Unlike the VBA harnesses in this directory there is no macro involved, so the

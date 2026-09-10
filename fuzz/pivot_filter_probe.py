@@ -21,8 +21,8 @@ and it is independent of anything visi does.
 
     source fuzz/venv/bin/activate
     maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/pivot_filter_probe.py                 # both variants
-    python fuzz/pivot_filter_probe.py --variant page  # just CurrentPage
+    python fuzz/pivot_filter_probe.py
+    python fuzz/pivot_filter_probe.py --variant page
 
 Two variants, because Excel encodes them differently and a macro can reach
 both:
@@ -30,7 +30,7 @@ both:
 * `multi`  -- `EnableMultiplePageItems = True` and individual `PivotItems(x).Visible = False`
 * `page`   -- a single `.CurrentPage = "Widget"`
 
-`--variant visi` is the other direction: can Excel open a pivot table *visi*
+The visi variant is the other direction: can Excel open a pivot table *visi*
 wrote? Exits non-zero if not, so it works as a check and not only as an
 exploration.
 """

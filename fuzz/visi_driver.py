@@ -59,7 +59,7 @@ def bindings_hint():
 
 
 def resolve_visi_binary(binary_path=None):
-    """The explicit `--visi-path` if it exists, else the newer of
+    """The explicit binary path if it exists, else the newer of
     target/release/visi and target/debug/visi.
 
     Preferring the newer of the two is deliberate: it means a `cargo build`
@@ -90,7 +90,7 @@ def pick_backend(requested):
 
 
 def add_backend_arg(parser):
-    """Adds the shared --backend flag to a fuzzer's ArgumentParser."""
+    """Adds the shared backend selector to a fuzzer's ArgumentParser."""
     parser.add_argument(
         "--backend",
         choices=["auto", "bindings", "subprocess"],

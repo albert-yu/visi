@@ -16,13 +16,13 @@ Three things have to be measured rather than assumed:
     source fuzz/venv/bin/activate
     maturin develop -m visi-python/Cargo.toml --release
     python fuzz/vba_table_probe.py
-    python fuzz/vba_table_probe.py --empty     # the zero-data-row fixture, alone
+    python fuzz/vba_table_probe.py --empty
 
-`--empty` runs against a separate workbook on purpose. A table whose `ref`
-covers only its header row is exactly the shape that can make Excel show a
-*repair* dialog on open -- which is modal, so it hangs the AppleScript bridge
-the same way a compile error does. Keeping it out of the main fixture means a
-bad guess there costs one run rather than all of them.
+The zero-data-row fixture runs against a separate workbook on purpose. A table
+whose `ref` covers only its header row is exactly the shape that can make Excel
+show a *repair* dialog on open -- which is modal, so it hangs the AppleScript
+bridge the same way a compile error does. Keeping it out of the main fixture
+means a bad guess there costs one run rather than all of them.
 
 Same traps as the other VBA probes: a compile error is not catchable by the
 `On Error` wrapper, so a batch that returns nothing is a compile error rather

@@ -44,7 +44,7 @@ random source rows into a copy of it, so the Excel oracle's data path never
 passes through visi's xlsx writer -- only the inert VBA skeleton does.
 
 Built through the `visi_core` bindings when they're installed, falling back to
-the CLI otherwise -- so `--backend bindings` needs nothing extra.
+the CLI otherwise -- so the bindings backend needs nothing extra.
 
 STATUS -- piloted against real Excel, works end-to-end. Every finding from
 that pilot (fixed and still-open alike) is tracked as a GitHub issue rather

@@ -21,10 +21,10 @@ implement the tracking yet, which is the point.
     maturin develop -m visi-python/Cargo.toml --release
     python fuzz/vba_range_tracking_probe.py
 
-**Every case runs in its own Excel round trip** (`--batch 1`, and do not raise
-it). Unlike `vba_host_probe.py`'s read cases, every case here mutates the
-sheet's shape, so two cases sharing a session would measure each other rather
-than Excel. A round trip re-opens the workbook, which is what resets the grid.
+**Every case runs in its own Excel round trip**. Unlike `vba_host_probe.py`'s
+read cases, every case here mutates the sheet's shape, so two cases sharing a
+session would measure each other rather than Excel. A round trip re-opens the
+workbook, which is what resets the grid.
 
 The traps inherited from the other probes still apply: a **compile** error
 hangs the AppleScript bridge and is not catchable by the `On Error` wrapper,

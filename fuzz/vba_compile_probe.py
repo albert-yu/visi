@@ -26,10 +26,10 @@ a name in statement position -- and the answers are what
 exactly the mistake this codebase keeps re-learning not to make.
 
 Usage:
-    python fuzz/vba_compile_probe.py                     # the built-in case list
-    python fuzz/vba_compile_probe.py --only undeclared   # cases whose label contains this
-    python fuzz/vba_compile_probe.py -e 'x = arr(1, 2)'  # one ad-hoc snippet
-    python fuzz/vba_compile_probe.py --list              # print cases, run nothing
+    python fuzz/vba_compile_probe.py
+    python fuzz/vba_compile_probe.py --only undeclared
+    python fuzz/vba_compile_probe.py -e 'x = arr(1, 2)'
+    python fuzz/vba_compile_probe.py --list
     python fuzz/vba_compile_probe.py -e 'Dim x As Long' --sig 'ByVal x As Long' --call-args ' 1'
 
 Cost: an *accepted* snippet is one fast round trip; a *rejected* one costs

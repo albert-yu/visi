@@ -33,9 +33,9 @@ shape the design (each verified against Excel 16.112, macOS 26.6.1):
    called that; it returned "ok" happily, because Excel never compiled the
    broken procedure. Nor does *referencing* the broken procedure from a dead
    branch of the one being called force it. Only invoking a procedure
-   compiles it, which is why `--corpus` below cannot get an Excel verdict for
-   an arbitrary module: there is no way to compile its procedures without
-   running them.
+   compiles it, which is why corpus-mode cannot get an Excel verdict for an
+   arbitrary module: there is no way to compile its procedures without running
+   them.
 
 3. **`If False Then ... End If` compiles its body without running it.** This
    is what makes (2) usable: the generated source goes inside a dead branch
@@ -51,10 +51,10 @@ leaving only the compile verdict -- which is all Phase 0 is about.
 Cost note: a *valid* case costs one fast AppleScript round trip (~1s). An
 *invalid* one costs the full timeout plus an Excel restart (~15s), since a
 hang is the signal. Runs are therefore dominated by however many invalid
-cases the generator produces; `--timeout` trades confidence for speed.
+cases the generator produces; the timeout setting trades confidence for speed.
 
 Usage:
-    python3 fuzz/fuzz_vba_parse.py --driver mock --iterations 20   # no Excel; parser-only smoke test
+    python3 fuzz/fuzz_vba_parse.py --driver mock --iterations 20
     python3 fuzz/fuzz_vba_parse.py --iterations 10 --seed 1
     python3 fuzz/fuzz_vba_parse.py --corpus visi-core/fuzz/seeds/vba_parse
 """

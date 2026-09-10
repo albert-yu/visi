@@ -59,9 +59,9 @@ on both sides -- a result, but a boring one that would crowd out the
 interesting cases.
 
 Usage:
-    python3 fuzz/fuzz_vba.py --driver mock --iterations 50   # visi only, no Excel
+    python3 fuzz/fuzz_vba.py --driver mock --iterations 50
     python3 fuzz/fuzz_vba.py --iterations 20 --seed 1
-    python3 fuzz/fuzz_vba.py --iterations 100 --batch 25     # 25 cases per Excel round trip
+    python3 fuzz/fuzz_vba.py --iterations 100 --batch 25
 """
 
 import argparse
@@ -421,11 +421,10 @@ class VbaGenerator:
     def extended_host_statement(self, target, vars_in_scope, depth):
         """Host-object cases that mutate workbook structure, tables or styles.
 
-        These are kept behind ``--host-surface extended`` because they are
+        These are kept behind the extended host surface because they are
         intentionally broader and more stateful than the original fast mix.
-        Run them with small batches (the CLI defaults to batch 1 in extended
-        mode) so a row insert, table resize or style write cannot set up the
-        next random case.
+        Run them with small batches so a row insert, table resize or style
+        write cannot set up the next random case.
         """
         kind = self.rng.random()
         row, col = self.cell()
@@ -803,8 +802,8 @@ class ExcelDriver:
         against one long-lived Excel, and `killall` alone was observed to
         leave the process running (the app intercepts SIGTERM for its own quit
         handshake). One batch here is many `run VB macro` calls, so this fires
-        both on failure and, via `--restart-every`, before the bridge has a
-        chance to wear out.
+        both on failure and periodically before the bridge has a chance to
+        wear out.
         """
         self.restarts += 1
         subprocess.run(

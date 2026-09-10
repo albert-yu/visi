@@ -12,7 +12,7 @@ time.
 
     python fuzz/vba_expr_probe.py -e 'Empty + "a"' -e '"a" + Empty'
     python fuzz/vba_expr_probe.py -f probes.txt
-    python fuzz/vba_expr_probe.py -e '1 + 1' --driver mock     # visi only
+    python fuzz/vba_expr_probe.py -e '1 + 1' --driver mock
 
 Each case becomes a `Private Function` whose value is the expression, plus the
 same `OK|TypeName|CStr` / `ERR|number` harness the fuzzer uses -- so a result
