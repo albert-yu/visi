@@ -1,16 +1,3 @@
-//! Formula text with its references resolved to ids.
-//!
-//! `parser::compile_formula` turns formula text into a [`CompiledFormula`]:
-//! the literal stretches stay text, but every reference becomes a `sheet_id`
-//! or `col_id` rather than a name. `parser::serialize_formula` renders it back
-//! to A1 text using whatever the names are *now*, which is what makes renaming
-//! a sheet, an Excel Table or a table column non-destructive -- nothing has to
-//! find and rewrite the formulas that mention it.
-//!
-//! This is not the evaluation form. Evaluating goes through
-//! `parser::parse_excel_formula`, which produces an AST; `Sheet::commit`
-//! compiles, re-serializes, and then evaluates the re-serialized text.
-
 use crate::core::RefType;
 use serde::{Deserialize, Serialize};
 

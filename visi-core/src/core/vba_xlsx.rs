@@ -1,26 +1,3 @@
-//! `vbaProject.bin` (CFB/OLE binary) import and export.
-//!
-//! Mirrors `pivot_xlsx.rs`'s two-entry-point shape (`import_*`/`inject_*`
-//! called from `xlsx.rs`'s `import_xlsx_data`/`export_xlsx_data`) and reuses
-//! its zip/OOXML plumbing (`get_zip_file_content`, `get_attr`,
-//! `parse_workbook_rels`, `escape_xml`), but the payload itself is a binary
-//! CFB container, not XML.
-//!
-//! Design (validated against real Excel via a scratchpad proof-of-concept,
-//! not just the MS-OVBA spec): on export, the `dir` stream's
-//! PROJECTINFORMATION+PROJECTREFERENCES prefix and the `_VBA_PROJECT`
-//! performance-cache stream are copied verbatim from `VbaProject::raw_donor`
-//! -- never regenerated. For a project imported from a real file, that
-//! preserves references (MSForms, Office, etc.) this codebase cannot yet
-//! synthesize; for a project created fresh here, `raw_donor` is itself
-//! `vba_synth::synthetic_raw_donor()`'s from-scratch bytes (empty
-//! references), so there's nothing real being preserved either way -- see
-//! `vba_synth.rs`. Everything else (the `dir` stream's PROJECTMODULES
-//! section, `PROJECT`, `PROJECTwm`, and every module's stream) is always
-//! rebuilt fresh from the current `VbaProject` state, since those need to
-//! reflect add/remove/rename/edit operations. See the module-level docs on
-//! `crate::core::vba` for the full picture.
-
 use crate::core::ovba;
 use crate::core::vba::{VbaModule, VbaModuleKind, VbaProject};
 use crate::core::xlsx::{escape_xml, get_attr, get_zip_file_content, parse_workbook_rels};

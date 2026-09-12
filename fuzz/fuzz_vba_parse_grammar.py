@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Grammar-based differential fuzzer for VBA parser syntax.
-
-This is the valid-by-construction companion to ``fuzz_vba_parse.py``'s
-fragment/mutation fuzzer. It builds whole modules from a small VBA grammar:
-module declarations, procedure signatures, property Get/Let/Set members,
-labels/GoTo/GoSub, line continuations, comments, contextual keyword member
-names, and optional/named arguments.
-
-The Excel verdict uses the same lazy-compile trick as ``fuzz_vba_parse.py``:
-a generated standard ``Harness`` procedure references every generated member
-inside ``If False Then``. Excel compiles that dead branch, but does not run it.
-"""
-
 import argparse
 import json
 import os

@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-VBA Event System Differential Probe
-===================================
-Probes and verifies:
-1. Worksheet_Change event triggers upon cell mutation.
-2. Application.EnableEvents = False event suppression.
-3. Workbook_SheetChange workbook-level event dispatch.
-4. Custom events with `Event`, `RaiseEvent`, and `Dim WithEvents`.
-"""
-
 import os
 import sys
 

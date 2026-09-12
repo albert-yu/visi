@@ -14,9 +14,10 @@ My goals with this project are:
 
 ## LLM Policy
 
-- No LLM use for writing prose, unless clearly indicated at the _beginning_ of
+- No LLM use for writing prose, unless clearly attributed at the _beginning_ of
   the content
   - Source code comments count as prose
+  - AGENTS.md should automatically enforce this
 - LLMs may be used for source code generation
 
 ## Installation

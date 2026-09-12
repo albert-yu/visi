@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""
-visi vs. Microsoft Excel Differential Fuzzing: Charts
-=========================================================
-Generates a random source data grid, builds a matching chart in both `visi`
-(via the `visi chart add`/`visi chart edit` CLI) and real Microsoft Excel (by
-driving Excel's own chart object model via AppleScript/COM automation --
-like pivot tables, Excel must *construct* a chart object; there's no
-"write XML, then recalculate" shortcut the way plain formulas work, which is
-why this lives in its own script rather than reusing `fuzz_excel.py`'s
-"generate formulas -> recalculate" flow), then compares the two engines'
-resulting chart structure (type, category/value ranges, title, axis labels,
-legend) via `chart_xlsx_reader.read_charts` -- `fuzz_excel.py`'s
-`XLSXEvaluatedReader`/`DifferentialComparator` only understand cell values
-and are structurally blind to charts.
-
-Every fuzz iteration exercises `visi chart add` followed by `visi chart
-edit` (not just add), so the edit path gets differential coverage against
-real Excel too.
-
-IMPORTANT -- unlike pivot tables, chart creation via AppleScript works
-*natively* against real Excel; no VBA-macro-template workaround is needed
-here. `make new chart object at end of chart objects of <sheet>` mirrors
-pivot's `make new pivot cache`'s "-50 Parameter error", but the working
-syntax is `make new chart object at <sheet>` (skip "at end of chart objects
-of" entirely) -- confirmed via a manual spike, not documented in Excel.sdef
-or any Microsoft reference found. Once the chart object exists, Excel's
-`chart wizard` command (the AppleScript exposure of VBA's
-`Chart.ChartWizard`) reliably sets source data, chart type, title, axis
-titles, and legend in one call, for every chart type visi supports except
-Pie -- see ExcelChartDriver's docstring for that caveat.
-
-Usage:
-    python3 fuzz/fuzz_chart.py --driver mock --iterations 5
-    python3 fuzz/fuzz_chart.py --excel-path "/Applications/Microsoft Excel.app" --iterations 10 --seed 1
-"""
-
 import argparse
 import os
 import random

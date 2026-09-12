@@ -1,12 +1,3 @@
-//! One-off generator for `fuzz/seeds/vba_import/`'s checked-in seed files:
-//! valid CFB-wrapped `vbaProject.bin` bytes, so libFuzzer starts past the
-//! "not a CFB container at all" gate and can mutate its way into the
-//! dir-stream/module-stream parsing logic instead (`fuzz/corpus/` itself is
-//! gitignored scratch state, so seeds live here and get passed as an extra
-//! input dir -- see `fuzz/README.md`). Not part of the normal build; run
-//! with `cargo run --example dump_vba_fuzz_seeds` and re-run whenever the
-//! synthetic project shape changes.
-
 use std::fs;
 use std::path::Path;
 use visi_core::core::vba::{VbaModule, VbaModuleKind, VbaProject};

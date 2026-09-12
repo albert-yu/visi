@@ -1,20 +1,3 @@
-//! Python bindings for `visi-core`, built with pyo3 and maturin.
-//!
-//! Development-only: this exists so the differential fuzz harness in `fuzz/`
-//! can drive the engine in-process instead of spawning the `visi` CLI once per
-//! operation. It is not published and carries no stability promise.
-//!
-//! It lives in its own crate because `crate-type` cannot be feature-gated, so
-//! a `cdylib` in `visi-core` would make every Rust consumer pay for a shared
-//! object they never link (see the commit that dropped `visi-core`'s cdylib).
-//!
-//! Depends on `visi-core` only, never on the `visi` CLI crate. Where a binding
-//! has to mirror CLI behavior -- `edit_chart`'s clear-vs-set flags,
-//! `add_pivot_field`'s post-add subtotal/label mutation, and `add_macro`'s
-//! sheet-name-to-id resolution with its `ThisWorkbook` exemption -- that
-//! mirroring is a contract enforced by `fuzz/test_backend_parity.py`, not an
-//! accident.
-
 use pyo3::prelude::*;
 use visi_engine::WorkbookManager;
 

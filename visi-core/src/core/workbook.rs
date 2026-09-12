@@ -1,20 +1,3 @@
-//! Workbook-level orchestration: the sheets, charts, pivot tables and VBA
-//! project of one `.xlsx` file, plus the CRUD and recalculation operations
-//! that span more than a single [`Sheet`].
-//!
-//! This layer is where cross-sheet behavior lives. [`Sheet::commit`] only
-//! propagates *local* dependencies; [`WorkbookManager::evaluate`] is what
-//! carries values across sheets. Likewise nothing recomputes a pivot table
-//! implicitly -- [`WorkbookManager::refresh_pivot_table`] is the only thing
-//! that writes a computed grid into cells. Embedders should drive the
-//! workbook through this type rather than manipulating [`Sheet`] directly,
-//! or cross-sheet formulas and pivot output will silently go stale.
-//!
-//! Loading and saving are byte-oriented ([`WorkbookManager::load_bytes`] /
-//! [`WorkbookManager::save_bytes`]) so this stays usable off the filesystem,
-//! including on wasm. The `visi` CLI layers path- and stdio-based helpers on
-//! top via its own `WorkbookFile` trait.
-
 use crate::core::formula::CompiledFormula;
 use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;

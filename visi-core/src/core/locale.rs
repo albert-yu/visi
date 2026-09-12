@@ -1,10 +1,3 @@
-//! Locale awareness for spreadsheet regional settings and date parsing.
-//!
-//! Provides [`Locale`] and [`DateOrder`] configuration matching Excel's
-//! regional behaviors: date field order (MDY vs DMY vs YMD), primary
-//! separators, localized month names in major languages, and 2-digit year
-//! pivot settings.
-
 use serde::{Deserialize, Serialize};
 
 /// Date field ordering of a locale.

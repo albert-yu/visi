@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""
-How does Excel encode a pivot filter selection in the file?
-==========================================================
-`PivotFilterField::selected_values` is deliberately *not* reconstructed on
-import today -- `pivot_xlsx.rs` resets it to "all", because restoring it would
-mean trusting index-based item references against source data that may since
-have changed. Issue #58 forces the question: a macro can set a filter, save,
-and carry on, so `PivotFields(...).CurrentPage` cannot be exposed on top of a
-gap that silently drops what the macro just did.
-
-Closing the gap means writing and reading real `<sharedItems>` values, and
-`AGENTS.md` warns that visi's pivot XML was only ever validated against
-`openpyxl` -- never real Excel, which accepts a malformed pivot part silently
-because `refreshOnLoad="1"` lets it rebuild the cache. So a mistake here does
-not announce itself.
-
-This asks Excel directly: it *builds* the pivot, sets a filter, saves, and the
-XML it wrote is dumped. That is the ground truth to parse and emit against,
-and it is independent of anything visi does.
-
-    source fuzz/venv/bin/activate
-    maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/pivot_filter_probe.py                 # both variants
-    python fuzz/pivot_filter_probe.py --variant page  # just CurrentPage
-
-Two variants, because Excel encodes them differently and a macro can reach
-both:
-
-* `multi`  -- `EnableMultiplePageItems = True` and individual `PivotItems(x).Visible = False`
-* `page`   -- a single `.CurrentPage = "Widget"`
-
-`--variant visi` is the other direction: can Excel open a pivot table *visi*
-wrote? Exits non-zero if not, so it works as a check and not only as an
-exploration.
-"""
-
 import argparse
 import os
 import re

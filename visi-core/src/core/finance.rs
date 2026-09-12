@@ -1,10 +1,3 @@
-//! Pure time-value-of-money and depreciation math shared by the Excel
-//! `Financial` functions dispatched in `engine::sheet::evaluate_function`.
-//!
-//! Kept free of `Sheet`/`ResultData` so it can be unit-tested against
-//! Microsoft's documented examples without spinning up a sheet, and so the
-//! Python differential fuzzer's expected values can be cross-checked here.
-
 pub fn pmt(rate: f64, nper: f64, pv: f64, fv: f64, pmt_type: f64) -> f64 {
     if rate == 0.0 {
         return -(pv + fv) / nper;

@@ -1,47 +1,4 @@
 #!/usr/bin/env python3
-"""
-VBA execution probe: can real Excel run a macro that only `visi` authored?
-==========================================================================
-Not a fuzzer. This is the feasibility check underpinning the test plan in
-`docs/vba-macro-support.md` -- a fixed, deterministic set of assertions about
-what Excel's AppleScript bridge will and will not do with a VBA module that
-was injected into `vbaProject.bin` by `visi macro add`, with Excel never
-involved in authoring it.
-
-It exists because that pipeline is the load-bearing assumption of any future
-`fuzz_vba.py`, and it is not obvious that it works: Excel for Mac's
-AppleScript dictionary exposes no VBProject object, so there is no automation
-path that puts a macro *into* a workbook. `visi` writing the module at the
-file-format level is the only reason a VBA differential fuzzer is possible on
-macOS at all. Re-run this before trusting that plan after any change to
-`vba_xlsx.rs` / `vba_synth.rs`, or after an Excel update.
-
-The four checks, and why each one matters to the harness design:
-
-    author-and-run   visi-authored module loads, runs, and its cell writes
-                     survive Excel's own save (and are still readable by
-                     visi afterwards)
-    return-value     `run VB macro` hands a typed return value straight back
-                     to AppleScript, so results need not be routed through
-                     cells and a file read
-    trapped-error    a runtime error under `On Error GoTo` comes back as
-                     structured text, making Err.Number comparable against
-                     the interpreter's
-    wrapper          an error raised inside a *called* procedure still
-                     reaches the caller's handler -- this is what lets the
-                     harness wrap generated code safely
-
-There is a fifth behaviour, deliberately NOT asserted here because asserting
-it means hanging for the timeout on every run: an *untrapped* runtime error
-pops a modal dialog that `set display alerts to false` does not suppress, the
-osascript call never returns, and Excel must be SIGKILLed. That is why the
-`wrapper` check exists. Pass --demo-hang to see it, at the cost of a stall.
-
-Usage:
-    python3 fuzz/vba_probe.py
-    python3 fuzz/vba_probe.py --visi target/release/visi --keep
-"""
-
 import argparse
 import os
 import shutil

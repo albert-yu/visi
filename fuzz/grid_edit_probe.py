@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""What real Excel does to a formula when a row or column is inserted or deleted.
-
-The reference-shifting rules in `visi-core/src/core/grid_edit.rs` are the kind
-of thing everyone thinks they remember and nobody has checked: does `$A$3` move
-when a row is inserted above it? Does inserting at a range's *first* row move
-the range or grow it? Does deleting one row of a three-row range shrink it or
-break it? This asks Excel, one case at a time, and prints its answer next to
-visi's.
-
-    python fuzz/grid_edit_probe.py                    # every case
-    python fuzz/grid_edit_probe.py -k absolute        # cases matching a substring
-    python fuzz/grid_edit_probe.py --excel-path "/Applications/Microsoft Excel.app"
-
-Unlike the VBA harnesses in this directory there is no macro involved, so the
-compile-error hang described in `AGENTS.md` does not apply -- but Excel is still
-driven through `osascript`, so every call has a timeout and a `killall` fallback.
-
-Exit status is non-zero if any case disagrees, which makes this usable as a
-check rather than only as an exploration.
-"""
-
 import argparse
 import os
 import shutil

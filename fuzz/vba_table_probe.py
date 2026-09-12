@@ -1,34 +1,4 @@
 #!/usr/bin/env python3
-"""
-What does Excel's `ListObjects` surface actually do?
-===================================================
-Phase 3 of `docs/vba-macro-support.md` maps `ListObjects` onto `ExcelTable`.
-Three things have to be measured rather than assumed:
-
-* `ListObject.Name = "X"` is **not** a field write -- names are unique
-  workbook-wide and a rename cascades into formula *text* across the whole
-  workbook. What does Excel do to a `Sales[Amount]` formula when the table is
-  renamed, and what does it do when the new name is already taken?
-* `.DataBodyRange` on a table with **zero data rows**. Is it `Nothing`, an error, or an empty range?
-* `.ListRows.Add` has to interact with the table's extent and with the
-  header/totals flags.
-
-    source fuzz/venv/bin/activate
-    maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/vba_table_probe.py
-    python fuzz/vba_table_probe.py --empty     # the zero-data-row fixture, alone
-
-`--empty` runs against a separate workbook on purpose. A table whose `ref`
-covers only its header row is exactly the shape that can make Excel show a
-*repair* dialog on open -- which is modal, so it hangs the AppleScript bridge
-the same way a compile error does. Keeping it out of the main fixture means a
-bad guess there costs one run rather than all of them.
-
-Same traps as the other VBA probes: a compile error is not catchable by the
-`On Error` wrapper, so a batch that returns nothing is a compile error rather
-than a slow run.
-"""
-
 import argparse
 import os
 import sys

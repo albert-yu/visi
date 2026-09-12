@@ -1,14 +1,3 @@
-//! The spellings match the CLI's, so the fuzz harness's existing config strings
-//! (`fuzz_chart.py`'s `CHART_TYPES`, `fuzz_pivot.py`'s `AGGREGATIONS`) work
-//! unchanged whether they are passed to the CLI or to these bindings. That
-//! 1:1 correspondence is what `fuzz/test_backend_parity.py` relies on, so
-//! adding a spelling here that the CLI does not accept would quietly break
-//! the equivalence it checks.
-//!
-//! The CLI's own mapping lives in the `visi` crate (`ChartTypeArg`,
-//! `PivotAreaArg`, `PivotAggArg`), which this crate deliberately does not
-//! depend on -- hence the duplication. The tests below pin the spellings.
-
 use crate::errors::invalid_argument;
 use pyo3::PyResult;
 use visi_engine::core::chart::ChartType;

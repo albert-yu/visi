@@ -1,13 +1,3 @@
-//! A tree-walking interpreter for VBA execution.
-//!
-//! Scope includes expressions, control flow, `Sub`/`Function`/`Property` calls,
-//! `On Error`, class modules, `Dim As New` auto-instantiation, `Class_Initialize` /
-//! `Class_Terminate` lifecycle tracking, custom events (`Event`/`RaiseEvent`/`WithEvents`),
-//! document modules, and — when a [`Host`] is attached — the workbook host object
-//! model and synchronous host events (`Worksheet_Change`, `Worksheet_Calculate`,
-//! `Workbook_SheetChange`, `Workbook_SheetCalculate`, `Workbook_Open`, `Auto_Open`,
-//! `Workbook_BeforeClose`, `Workbook_BeforeSave`).
-
 use std::collections::HashMap;
 use std::rc::Rc;
 

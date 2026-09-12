@@ -1,10 +1,3 @@
-//! Feeds arbitrary bytes as a raw `vbaProject.bin` (CFB container) into the
-//! VBA import pipeline: CFB parsing, the `dir` stream's OVBA decompression,
-//! `PROJECTMODULES` record walking, and per-module stream decompression.
-//! This is the full path a malicious or merely corrupt `.xlsm` someone
-//! imports would exercise, so -- like `ovba_decompress` -- this target only
-//! hunts for panics / unbounded allocation, not an output property.
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

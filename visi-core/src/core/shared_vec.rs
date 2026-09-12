@@ -1,5 +1,3 @@
-//! A cheaply cloneable, copy-on-write `Vec`.
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;

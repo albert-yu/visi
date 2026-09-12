@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-VBA Class Module and Object Model Differential Probe
-===================================================
-Probes and verifies:
-1. Class module property Get / Let / Set procedures.
-2. Default member dispatch (Attribute Item.VB_UserMemId = 0).
-3. Class_Initialize and Class_Terminate lifecycle via refcounting.
-4. Lazy instantiation with `Dim As New`.
-5. `TypeOf ... Is` and `TypeName(...)` verification for user-defined classes.
-"""
-
 import os
 import sys
 

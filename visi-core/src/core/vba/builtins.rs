@@ -1,16 +1,3 @@
-//! VBA's intrinsic functions, for the Phase 1 interpreter.
-//!
-//! Only the host-free ones: conversion, maths, strings, and type inspection.
-//! Anything that reaches a workbook (`Application.WorksheetFunction`,
-//! `Range`) is Phase 2, and anything non-deterministic (`Now`, `Rnd`,
-//! `Timer`) is deliberately absent — a differential fuzzer cannot compare a
-//! value that differs between the two runs by construction, so offering them
-//! would only produce noise.
-//!
-//! [`call`] returns `Ok(None)` for a name it does not know, so the caller can
-//! go on to report "Sub or Function not defined" itself rather than having
-//! two places that decide what exists.
-
 use super::value::{self, VResult, Variant, VbaError};
 
 /// Intrinsics that inspect a `Null` rather than propagating or rejecting it.

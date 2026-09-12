@@ -48,13 +48,10 @@ the Python bindings.
 ### Run Differential Fuzzing
 
 ```bash
-# macOS with Microsoft Excel installed in /Applications
 python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
 
-# Windows
 python fuzz/fuzz_excel.py --driver win32com --iterations 50
 
-# Smoke mode -- no Excel, no comparison. See below.
 python fuzz/fuzz_excel.py --driver mock --iterations 5
 ```
 

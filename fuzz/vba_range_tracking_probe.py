@@ -1,37 +1,4 @@
 #!/usr/bin/env python3
-"""
-Does a held VBA `Range` follow a row or column insert/delete?
-============================================================
-Issue #58 left this open: visi's `Range` is a `(sheet_id, rect)` *value*
-(`vba/host.rs`), so a row inserted above one silently makes it point somewhere
-else, while Excel's `Range` objects track the edit. Matching Excel means
-interning ranges -- but "tracks the edit" is not a specification, and the
-interesting cases are the ones nobody remembers:
-
-* What is `r.Address` after the single row `r` pointed at is **deleted**?
-* Does a multi-row `r` *grow* when a row is inserted inside it, the way a
-  formula's range reference does?
-* Does inserting at `r`'s first row move it or grow it?
-* Does a range survive having *all* of its rows deleted, and as what?
-
-This asks Excel and prints the answer. It compares nothing -- visi does not
-implement the tracking yet, which is the point.
-
-    source fuzz/venv/bin/activate
-    maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/vba_range_tracking_probe.py
-
-**Every case runs in its own Excel round trip** (`--batch 1`, and do not raise
-it). Unlike `vba_host_probe.py`'s read cases, every case here mutates the
-sheet's shape, so two cases sharing a session would measure each other rather
-than Excel. A round trip re-opens the workbook, which is what resets the grid.
-
-The traps inherited from the other probes still apply: a **compile** error
-hangs the AppleScript bridge and is not catchable by the `On Error` wrapper,
-so a case that never returns is a compile error rather than a slow run --
-`killall "Microsoft Excel"` and read the generated source.
-"""
-
 import argparse
 import os
 import sys

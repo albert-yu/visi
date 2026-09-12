@@ -1,9 +1,3 @@
-//! Excel Tables (ListObjects): named sub-ranges of a worksheet.
-//!
-//! Not to be confused with a [`Sheet`], which this codebase informally calls a
-//! "table" in places. An [`ExcelTable`] lives *on* a sheet and may cover only
-//! part of it.
-
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Sheet, generate_unique_id};

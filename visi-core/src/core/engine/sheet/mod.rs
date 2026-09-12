@@ -1,6 +1,3 @@
-//! The `Sheet` type: a worksheet's cells, its formula evaluation, and the
-//! dependency-tracked recalculation over them.
-
 mod edit;
 mod functions;
 

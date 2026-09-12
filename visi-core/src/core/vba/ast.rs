@@ -1,18 +1,3 @@
-//! The VBA syntax tree.
-//!
-//! Shaped for a tree-walking interpreter to come (see the phased plan in
-//! `docs/vba-macro-support.md`), so nodes carry the source positions an error
-//! at runtime will need, and constructs are kept apart where evaluation will
-//! treat them differently -- `For` and `For Each` are distinct variants
-//! rather than one loop with an optional collection, because almost nothing
-//! about executing them is shared.
-//!
-//! Where VBA offers several spellings of one thing, this normalises: `While`
-//! becomes a [`Stmt::DoLoop`], `Let x = 1` and `x = 1` are both
-//! [`Stmt::Assign`], and `=<` has already become `<=` in the lexer. Where the
-//! difference is semantic it is preserved: `Set x = y` keeps its `set` flag,
-//! since VBA assigns a reference rather than a value.
-
 use super::lexer::{NumBase, Pos, TypeSuffix};
 
 /// A whole module: the unit `visi macro check` validates.

@@ -1,5 +1,3 @@
-//! The value type a cell evaluates to.
-
 use serde::{Deserialize, Serialize};
 
 /// What a cell holds once it has been evaluated.

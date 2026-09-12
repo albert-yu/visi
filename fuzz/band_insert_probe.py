@@ -1,32 +1,4 @@
 #!/usr/bin/env python3
-"""
-What does a *partial* insert do to formulas?
-============================================
-`ListRows.Add` is not a row insert. Measured with `vba_table_probe.py`:
-adding a row to a table at `A1:C4` moves `A8` down to `A9` but leaves `E2`
-alone -- only the table's own columns shift. Excel calls this
-`Insert Shift:=xlDown` over a column band.
-
-The engine has no such operation (`Sheet::insert_row` moves the whole row),
-and building one means deciding what happens to every formula reference that
-touches the band. Some of those have no obvious answer:
-
-* a reference *inside* the band, below the insert point -- surely shifts
-* a reference *outside* the band -- surely does not
-* a range wholly inside the band -- shifts or grows, as for a row insert
-* **a range that straddles the band's edge** -- it cannot both shift and not
-  shift, so Excel has to do something arbitrary, and that is the case worth
-  knowing before writing any code
-* a range that *contains* the whole band
-
-Each case is a formula placed outside the affected area so it survives to be
-read, and every case runs in its own Excel round trip because each one
-mutates the sheet's shape.
-
-    source fuzz/venv/bin/activate
-    python fuzz/band_insert_probe.py
-"""
-
 import argparse
 import os
 import sys

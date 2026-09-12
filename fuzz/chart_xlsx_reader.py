@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-Reads chart objects back out of an .xlsx file via `openpyxl` and normalizes
-them into plain dicts comparable against visi-core's `Chart` struct fields
-(`chart_type`, `data_range`, `title`, `xlabel`, `ylabel`, `show_legend`).
-
-This is an independent-reader fidelity check: `openpyxl` implements OOXML
-chart parsing from scratch, so it can catch chart-XML mistakes that visi's
-own `parse_chart_xml` (used by the existing Rust round-trip tests) would
-never notice, since a bug shared by both visi's writer and its own reader
-would still "round-trip" successfully in a Rust-only test.
-
-Relies on `worksheet._charts`, an underscore-prefixed (non-public) openpyxl
-attribute -- the only way openpyxl exposes charts it has just read back from
-a file. There is no supported public API for this as of openpyxl 3.1.x.
-
-Usable standalone:
-    python3 fuzz/chart_xlsx_reader.py some.xlsx
-or as an importable module:
-    from chart_xlsx_reader import read_charts
-"""
-
 import json
 import sys
 

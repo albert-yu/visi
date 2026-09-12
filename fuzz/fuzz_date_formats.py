@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Focused date-format/display fuzzing for visi's xlsx output.
-
-This is intentionally separate from fuzz_excel.py's value comparator: date cells
-are numbers plus number formats, so a value-only comparison can miss a workbook
-that calculates correctly but no longer displays or round-trips as dates.
-
-Each iteration builds a small workbook through visi (so formula date-format
-inheritance is exercised), saves it, lets both visi and Excel round-trip it, and
-then checks the exported style/display metadata for:
-
-* typed date literals retain the expected date number format;
-* bare references and one-sided date arithmetic inherit that format;
-* date component/difference formulas stay ordinary numbers;
-* date-looking text remains text and has no date number format.
-"""
-
 import argparse
 import datetime as dt
 import os

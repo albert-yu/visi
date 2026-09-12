@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-"""
-What does Excel's VBA `PivotTables` surface actually do?
-=======================================================
-The last surface in Phase 3 of `docs/vba-macro-support.md`:
-`PivotTables(name|index)`, `.RefreshTable`, `.PivotFields(...)`, and the
-`CurrentPage` that issue #58 singled out as needing a decision.
-
-The file-format half is settled by `pivot_filter_probe.py`; this is the object
-model on top of it. Two questions matter most and neither is guessable:
-
-* What does `.CurrentPage` **read** as -- when nothing is filtered, when one
-  item is selected, and when several are? Excel shows `(All)` and
-  `(Multiple Items)` in the cell, but a property need not return the same
-  string.
-* Does assigning `.CurrentPage` re-render the grid on its own, or does it
-  need `.RefreshTable`? `AGENTS.md` records that nothing recomputes a pivot
-  in visi without an explicit refresh; if Excel differs, a macro that filters
-  and then reads cells sees different things in the two engines.
-
-The pivot is built by Excel itself (`EnsurePivot`, idempotent so each case can
-call it), because visi cannot create one Excel will treat as live.
-
-    source fuzz/venv/bin/activate
-    maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/vba_pivot_probe.py
-"""
-
 import argparse
 import os
 import sys

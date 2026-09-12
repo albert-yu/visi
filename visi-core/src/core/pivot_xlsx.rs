@@ -1,26 +1,3 @@
-//! Hand-rolled OOXML for native Excel PivotTables. Neither `calamine`
-//! (import) nor `rust_xlsxwriter` (export) has any pivot table support, so
-//! this module reads/writes the `xl/pivotCache/*` and `xl/pivotTables/*`
-//! parts directly by string-templating XML on export and hand-parsing it
-//! with `quick_xml` on import -- the same approach `xlsx.rs` already uses
-//! for Excel Tables' row-flag XML and for chart import.
-//!
-//! Export post-processes the zip `rust_xlsxwriter` already produced (it has
-//! no hook for injecting arbitrary extra parts): the destination cells are
-//! always written as plain computed values first (so any reader sees
-//! correct numbers), then this module adds the cache/table parts and
-//! wires up the required relationships/content-types so Excel recognizes
-//! and can refresh the range as a real PivotTable.
-//!
-//! Import reconstructs each `PivotTable`'s source, destination, and
-//! row/column/value field assignments, including each field's subtotal toggle
-//! (recovered from whether its `<item t="default"/>` placeholder is present).
-//! Filter *selections* are the one thing that does not survive: they reset to
-//! "all", since restoring them would mean trusting index-based item references
-//! against source data that may since have changed. That is enough for `visi
-//! pivot` CLI commands to keep editing a pivot table across process
-//! invocations, which is the primary reason this needs to round-trip at all.
-
 use crate::core::engine::{CellRef, ResultData, Sheet};
 use crate::core::parser::col_idx_to_letters;
 use crate::core::pivot::{

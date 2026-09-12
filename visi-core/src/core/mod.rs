@@ -1,7 +1,9 @@
 pub(crate) mod actions;
+#[doc = "Chart definitions and workbook chart helpers."]
 pub mod chart;
 pub(crate) mod date;
 pub(crate) mod date_fn;
+#[doc = "Spreadsheet engine types for cells, columns, sheets, and evaluation."]
 pub mod engine;
 pub(crate) mod engineering;
 pub(crate) mod ets;
@@ -9,23 +11,30 @@ pub(crate) mod extended_fn;
 pub(crate) mod finance;
 pub(crate) mod formula;
 pub(crate) mod grid_edit;
+#[doc = "Locale settings used for date parsing and formatting."]
 pub mod locale;
 pub(crate) mod math_trig;
 #[doc(hidden)]
 pub mod ovba;
 pub(crate) mod parser;
+#[doc = "Pivot table definitions and computation helpers."]
 pub mod pivot;
 pub(crate) mod pivot_xlsx;
 pub(crate) mod shared_vec;
 pub(crate) mod stats;
+#[doc = "Cell style data used by sheets and file I/O."]
 pub mod style;
+#[doc = "Excel table metadata and structured-reference helpers."]
 pub mod table;
 pub(crate) mod text;
+#[doc = "VBA project, module, syntax-checking, and macro execution support."]
 pub mod vba;
 pub(crate) mod vba_synth;
 #[doc(hidden)]
 pub mod vba_xlsx;
+#[doc = "Workbook-level management APIs over sheets and workbook objects."]
 pub mod workbook;
+#[doc = "Import and export support for `.xlsx` workbooks."]
 pub mod xlsx;
 pub(crate) mod xml;
 

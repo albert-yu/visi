@@ -1,22 +1,3 @@
-//! VBA's colour representation, and the bridge to `CellStyle`'s.
-//!
-//! `Interior.Color` and `Font.Color` are a `Long` in **BGR** order -- the
-//! low byte is red -- while [`CellStyle`](crate::core::CellStyle) stores
-//! `"#RRGGBB"`. So `&HFF0000` is **blue**, not red, and an implementation
-//! that treats the `Long` as `0xRRGGBB` produces a file that opens without
-//! complaint and is the wrong colour. It is measured rather than
-//! recalled: `fuzz/vba_style_probe.py --paint` has Excel *save* a workbook
-//! after setting colours and reads the real ARGB back with `openpyxl`, which
-//! is a channel neither implementation can talk its way past.
-//!
-//! Measured, and what [`rgb`] and [`bgr_to_hex`] encode:
-//!
-//! | VBA | in the saved file |
-//! | --- | --- |
-//! | `RGB(255, 0, 0)` = `255` | `FFFF0000` (red) |
-//! | `&HFF0000` = `16711680` | `FF0000FF` (blue) |
-//! | `RGB(1, 2, 3)` = `197121` | `FF010203` |
-
 use crate::core::CellStyle;
 
 /// `Interior.Color` on a cell with no fill. Measured: white, not zero and not

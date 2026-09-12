@@ -1,22 +1,3 @@
-//! `visi_core::Error` as a Python exception hierarchy.
-//!
-//! Every exception derives from [`VisiError`], so `except VisiError` catches
-//! anything the engine raises. The subclass says *what kind* of failure it was
-//! without parsing message text, and the structured payload each variant
-//! carries (`ObjectKind`, the offending name, the available names) is exposed
-//! as instance attributes.
-//!
-//! Two invariants worth keeping:
-//!
-//! - **`args` is always a 1-tuple of the message.** That makes `str(exc)`
-//!   equal to `Error`'s `Display`, which is exactly what the CLI prints to
-//!   stderr minus its `"Error: "` prefix -- so `fuzz/test_backend_parity.py`
-//!   can compare error text across the two backends. Putting the payload in
-//!   `args` instead would make `str(exc)` render a tuple.
-//! - **`visi_core::Error` is `#[non_exhaustive]`**, so the match below has a
-//!   `_` arm that maps to the base `VisiError`. A variant added upstream must
-//!   widen to the base class, never land in a wrong subclass.
-
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;

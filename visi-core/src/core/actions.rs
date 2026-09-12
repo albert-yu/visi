@@ -1,5 +1,3 @@
-//! The edit log a `Sheet` records as it is changed.
-
 use serde::{Deserialize, Serialize};
 
 /// A single edit made to a workbook, recorded so a host can observe or replay

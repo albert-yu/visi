@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-"""
-What does real Excel's VBA host object model actually do?
-=========================================================
-Phase 2 of `docs/vba-macro-support.md` binds the interpreter to a workbook,
-and issue #57 lists a dozen behaviours that have to be *measured* rather than
-taken from documentation -- the same rule that already caught a hand-probe
-getting a `Variant` rule backwards in Phase 1.
-
-Unlike `vba_expr_probe.py` this runs against a workbook with data in it (a
-small grid plus a formula, a text cell, a boolean, and two date-formatted
-cells, one of them fractional), because most of the open questions are about
-what a *cell* reads back as. And unlike the fuzzer it compares nothing: it
-asks Excel and prints the answer, because there is no second implementation
-to disagree with yet.
-
-    source fuzz/venv/bin/activate
-    python fuzz/vba_host_probe.py
-
-Cases run in order in one Excel session against one workbook, so every case
-that writes is at the end, after every case that reads. A read case moved
-below a write case silently measures the wrong thing.
-
-Two traps inherited from `vba_expr_probe.py`, both of which have already
-produced published-and-wrong conclusions in this project:
-
-* **`CStr(Null)` is itself error 94**, so a case whose result may be `Null`
-  has to be written as `IsNull(...)`.
-* **A compile error hangs the AppleScript bridge** and, unlike a runtime
-  error, is not catchable by the `On Error` wrapper. A case that never
-  returns is a compile error, not a hang.
-"""
-
 import argparse
 import os
 import sys
