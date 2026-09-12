@@ -119,7 +119,7 @@ Follows clig.dev. `-` means stdin/stdout for the file argument. Writes require e
 ## Comments
 
 When writing comments in source code, prefix the comment block
-with `$MODEL_NAME:`, e.g. `// Claude Opus 5:`, `# Gemini Flash 3:`
+with the active `$MODEL_NAME:`, e.g. `// Claude Opus 5:`, `# Gemini Flash 3.7:`, `// GPT 5.5`
 
 ## Documentation/Prose
 
