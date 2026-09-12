@@ -116,6 +116,14 @@ Follows clig.dev. `-` means stdin/stdout for the file argument. Writes require e
 - `visi-core/src/core/vba/host.rs` has inline tests over the VBA host object model, each asserting the exact string `fuzz/vba_host_probe.py` got back from real Excel for the same expression. Read one off a probe run rather than reasoning about it.
 - `visi/tests/cli_tests.rs` — integration tests that drive `WorkbookManager` (the same API the CLI handlers call) through real file round-trips.
 
-## Comments and prose
+## Comments
 
-When writing comments, documentation, or prose, clearly indicate that it was written by an LLM agent.
+When writing comments in source code, prefix the comment block
+with `$MODEL_NAME:`, e.g. `// Claude Opus 5:`, `# Gemini Flash 3:`
+
+## Documentation/Prose
+
+When writing documentation or other prose, prefix
+with the standalone line:
+
+_The following content is LLM-generated._
