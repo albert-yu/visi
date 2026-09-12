@@ -1,7 +1,12 @@
+#[doc = "Compact boolean bitmask storage used by engine data structures."]
 pub mod bitmask;
+#[doc = "Cell references, value types, dependency metadata, and engine errors."]
 pub mod cell;
+#[doc = "Column-oriented storage for sheet data."]
 pub mod column;
+#[doc = "Evaluation result values produced by formulas and cells."]
 pub mod result_data;
+#[doc = "Sheets, workbook context, and sheet-level evaluation helpers."]
 pub mod sheet;
 
 #[cfg(test)]

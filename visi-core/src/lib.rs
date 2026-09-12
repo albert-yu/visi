@@ -1,4 +1,5 @@
 #![warn(missing_docs)]
+#![doc = "Core spreadsheet engine, workbook model, and file-format helpers for Visi."]
 
 /// The engine's modules: sheets and cells, Excel Tables, pivot tables,
 /// charts, styling, VBA, and `.xlsx` I/O.
