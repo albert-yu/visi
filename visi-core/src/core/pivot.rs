@@ -1,21 +1,3 @@
-//! Pivot table definitions and the pure function that computes one.
-//!
-//! A [`PivotTable`] is a *definition*: where the records come from, which
-//! fields go in the row, column, value and filter areas, and where the result
-//! should land. [`compute_pivot`] turns that definition plus the workbook's
-//! sheets into a [`PivotGrid`], a display-ready set of header and body rows.
-//!
-//! Computing a grid never touches a sheet. Writing one into cells is
-//! `WorkbookManager::refresh_pivot_table`'s job, and -- as in Excel -- it only
-//! happens when something asks for it: **nothing recomputes a pivot table
-//! implicitly**, not `Sheet::commit` and not `WorkbookManager::evaluate`, so
-//! editing the source data leaves the rendered grid stale until a refresh.
-//! Every CRUD operation on a pivot definition refreshes explicitly afterward.
-//!
-//! Unlike an [`ExcelTable`](crate::core::table::ExcelTable), which is scoped
-//! to one sheet, a pivot table is workbook-level: its source and destination
-//! ranges may live on different sheets, so `WorkbookManager` owns the list.
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

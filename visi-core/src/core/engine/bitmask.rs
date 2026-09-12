@@ -1,5 +1,3 @@
-//! A packed bit-per-row validity mask.
-
 use crate::core::SharedVec;
 use serde::{Deserialize, Serialize};
 

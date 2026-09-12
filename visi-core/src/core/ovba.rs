@@ -1,25 +1,3 @@
-//! MS-OVBA "Compressed Container" codec (MS-OVBA section 2.4), used for both
-//! a `vbaProject.bin`'s `dir` stream and every module's source-code stream.
-//!
-//! Decompression is a direct implementation of the documented format, fully
-//! bounds-checked so malformed/truncated input (any `.xlsx`/`.xlsm` this
-//! codebase didn't author itself) returns a `Result` rather than panicking.
-//! Compression is a real greedy LZ77 (hash-indexed match finder) rather than
-//! a naive literal-only or "stored" encoder: real Excel-authored data was
-//! found (empirically, via a scratchpad proof-of-concept validated against
-//! real Excel) to always shrink each non-final chunk's 4096 decompressed
-//! bytes into <=4096 encoded bytes using genuine back-references, and to
-//! never use the spec-legal "stored/uncompressed" flag=0 chunk type -- both
-//! a naive literal encoder (which can't fit 4096 literal bytes in a
-//! 4096-byte budget) and a stored-chunk workaround were confirmed to make
-//! Excel silently drop the affected module from the VBA project tree, even
-//! though both decompress correctly through this same decompressor. That
-//! means a 4096-byte chunk with no 3-byte repeat anywhere in it (an
-//! adversarial/high-entropy input, not realistic VBA source) genuinely
-//! cannot be encoded in this format at all -- `compress` reports that as an
-//! error rather than silently falling back to the one encoding already
-//! proven to corrupt real Excel's macro loading.
-
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
     let sig = *data
         .first()

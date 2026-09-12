@@ -1,5 +1,3 @@
-//! The error type returned by `visi-core`'s public API.
-
 use crate::core::engine::EngineError;
 
 /// The kind of workbook object an [`Error`] refers to.

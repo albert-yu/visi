@@ -1,5 +1,3 @@
-//! Chart definitions.
-
 use serde::{Deserialize, Serialize};
 
 /// The chart shapes visi can read and write.

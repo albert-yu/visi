@@ -1,29 +1,3 @@
-//! Recognizing dates written as text, and converting them to Excel serials.
-//!
-//! [`parse_date`] infers both the date and the [`DateFormat`] it was written
-//! in; [`date_to_excel_serial`] converts to Excel's day count, reproducing the
-//! 1900 leap-year bug.
-//!
-//! The `DateFormat` half is what lets a date cell echo back in the notation it
-//! was typed in, the way Excel does: `6/22/26` stays `6/22/26` rather than
-//! normalizing to ISO. [`DateFormat::to_format_code`] lowers it to an Excel
-//! number-format code and [`render_date_code`] renders that code, so this
-//! module and `text::text_fn`'s `TEXT()` share one date formatter instead of
-//! keeping two.
-//!
-//! The value itself stays a plain numeric serial, as it is in Excel -- the
-//! notation lives on the cell, as `CellStyle::num_format`. `engine::sheet`
-//! records it when it recognizes a literal and renders through it in
-//! `get_display_string`; `xlsx` maps it to and from a worksheet `numFmt`.
-//! Month-name casing is the one detail a format code cannot carry, so it
-//! survives [`format_date`] but not a round trip through a worksheet --
-//! which is Excel's behavior too.
-//!
-//! `DateFormat` records the separator, field order, year width and month-name
-//! spelling, but not whether a numeric month or day was zero-padded --
-//! `06/22/2026` and `6/22/2026` are the same format. Rendering is unpadded
-//! there, which is what Excel also does with `m/d/yyyy`.
-
 use crate::core::locale::{DateOrder, Locale};
 
 const MONTHS_FULL: [&str; 12] = [

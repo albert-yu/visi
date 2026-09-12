@@ -1,9 +1,3 @@
-//! Cell and range accessors, text editing, styling, and the row/column
-//! structural operations.
-//!
-//! Split out of the parent module; these are the operations that change a
-//! sheet's *shape* or a cell's raw content, as opposed to evaluating it.
-
 use super::super::column::{ColumnPosition, DataColumn};
 use super::{CellRef, CellType, Direction, ResultData, Sheet, TextCellRef};
 

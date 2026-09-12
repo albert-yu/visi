@@ -1,14 +1,3 @@
-//! Filesystem and stdio access for [`WorkbookManager`].
-//!
-//! The workbook model itself lives in `visi-core` and is deliberately
-//! byte-oriented, so that it stays usable when embedded somewhere without a
-//! filesystem (wasm, for instance). The path- and stdio-based conventions
-//! this CLI needs -- including clig.dev's `-` meaning stdin/stdout -- are
-//! layered on here instead, as an extension trait.
-//!
-//! [`WorkbookManager`] is re-exported so `visi::engine::WorkbookManager`
-//! keeps resolving for existing callers.
-
 pub use visi_core::{SheetSummary, WorkbookManager, WorkbookSummary};
 
 use std::fs;

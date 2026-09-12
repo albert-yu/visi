@@ -1,6 +1,3 @@
-//! `visi`: Command line interface for the visi spreadsheet application.
-//! Consumes `visi-core` to read, evaluate, update, and export Excel (.xlsx) files.
-
 use serde_json::json;
 use visi::cli::{
     CellTypeArg, ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands,

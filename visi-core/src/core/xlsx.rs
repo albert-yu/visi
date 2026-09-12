@@ -1,10 +1,3 @@
-//! Reading and writing `.xlsx` files.
-//!
-//! Import goes through `calamine` and export through `rust_xlsxwriter` -- two
-//! libraries with different models, so a round trip is not symmetric and is
-//! worth checking after changes. Export writes each formula together with its
-//! cached result, so a reader that does not recalculate still sees values.
-
 use crate::core::{CellType, DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;

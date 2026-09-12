@@ -1,14 +1,3 @@
-//! The `Workbook` class: a thin wrapper over [`WorkbookManager`].
-//!
-//! Deliberately the *only* class exposed. `Sheet` and `Context` stay internal:
-//! `Context<'a>` borrows its sheets and so can never be `'static` as pyo3
-//! requires, and a `Sheet` handed out on its own would lose the cross-sheet
-//! propagation and pivot refresh that only exist at the manager level.
-//!
-//! All row/column coordinates are 0-based, matching visi-core. A1 notation is
-//! not parsed here -- callers pass indices -- so there is no second A1 parser
-//! to drift out of sync with `visi/src/utils.rs`.
-
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::path::PathBuf;

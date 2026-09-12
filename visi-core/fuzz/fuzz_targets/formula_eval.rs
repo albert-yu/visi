@@ -1,16 +1,3 @@
-//! Feeds arbitrary bytes as a formula string through the *full* formula
-//! pipeline -- `compile_formula` (name/ref resolution against real sheet
-//! IDs), `serialize_formula`, `parse_excel_formula` (the recursive-descent
-//! `Expr` parser), and `evaluate_ast`/`evaluate_function` -- against a
-//! small pre-populated sheet, via `Sheet::commit` exactly as a real edit
-//! would. Unlike `../../fuzz/fuzz_excel.py` (differential: compares
-//! `visi`'s output against real Excel's), this only hunts for panics,
-//! unbounded allocation, and stack overflow / infinite loops on
-//! adversarial formula text -- e.g. deeply nested parentheses/function
-//! calls stressing the recursive-descent parser and recursive AST
-//! evaluation, or a malformed structured/range reference. No output
-//! property is checked.
-
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

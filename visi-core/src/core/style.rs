@@ -1,5 +1,3 @@
-//! Per-cell formatting.
-
 use serde::{Deserialize, Serialize};
 
 /// Cell formatting style attributes (font color, background color, font styles, font family, font size).

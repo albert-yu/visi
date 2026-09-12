@@ -1,5 +1,3 @@
-//! `ResultData` <-> Python conversion.
-
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use visi_engine::core::ResultData;

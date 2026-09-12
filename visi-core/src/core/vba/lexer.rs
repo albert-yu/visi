@@ -1,31 +1,3 @@
-//! Tokenizer for VBA source text.
-//!
-//! Never panics and never allocates unboundedly: it is reachable from
-//! `visi-core/fuzz`'s `vba_parse` target over arbitrary bytes, and from
-//! `visi macro check` over whatever a user pasted into a module.
-//!
-//! Three things about VBA make this more than a keyword scanner, and each is
-//! a place a naive lexer gets it wrong:
-//!
-//! **Newlines are significant.** VBA is line-oriented -- a statement ends at
-//! the end of a line, not at a delimiter -- so [`TokenKind::Newline`] is a
-//! real token the parser matches on, not whitespace to skip. `:` is the
-//! explicit statement separator and is emitted as a distinct token, since
-//! `Foo: Bar` (two statements) and `Foo:` alone (a line label) differ only in
-//! what follows.
-//!
-//! **A line can be continued.** ` _` at end of line splices the next line on.
-//! The underscore must be preceded by whitespace and followed only by the
-//! line break, which is what keeps it from swallowing an identifier ending
-//! in `_`.
-//!
-//! **Keywords are not reserved here.** They are lexed as plain
-//! [`TokenKind::Ident`]s preserving their original spelling, and the parser
-//! matches them case-insensitively. VBA's keyword set is contextual (`Line`,
-//! `Name`, and `Type` are all keywords in one position and ordinary
-//! identifiers in another), so a lexer that promoted them to distinct tokens
-//! would have to un-promote them again constantly.
-
 use std::fmt;
 
 /// A source position, 1-based in both axes so it can be printed as-is.

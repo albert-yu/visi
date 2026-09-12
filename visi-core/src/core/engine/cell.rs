@@ -1,5 +1,3 @@
-//! Cell coordinates, dependency edges, and the engine's error types.
-
 use serde::{Deserialize, Serialize};
 
 /// A random 53-bit identifier for a sheet or column.

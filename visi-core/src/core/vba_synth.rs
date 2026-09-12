@@ -1,25 +1,3 @@
-//! Synthesizes a brand-new VBA project's binary internals from scratch: the
-//! `vbaProject.bin` "donor" skeleton (`dir` + `_VBA_PROJECT` streams) that
-//! `vba_xlsx::build_vba_project_bin` patches on every export, plus each
-//! module's opaque p-code prefix. Together these let a workbook's first VBA
-//! module be created without copying any bytes from a real, Excel-authored
-//! file.
-//!
-//! The `dir`-stream record IDs used by `build_skeleton_dir` (PROJECTSYSKIND,
-//! PROJECTLCID, PROJECTVERSION, ...) are documented in the public
-//! [MS-OVBA] specification. The module p-code prefix's internal layout is
-//! not: MS-OVBA calls it a "PerformanceCache" that implementations "MAY
-//! ignore", but real Excel was found (via the scratchpad proof-of-concept
-//! referenced from `vba.rs`) to actually parse it and silently drop a
-//! module whose bytes don't fit the expected shape, rather than falling
-//! back to the module's source text. `synthetic_module_prefix` builds a
-//! self-consistent, *zero-line* cache -- empty declaration/indirect/object
-//! tables, the `0xCAFE` line-table marker, a line count of zero -- at the
-//! fixed absolute offsets that shape is understood to occupy, so there is
-//! nothing for Excel to execute out of the cache and it always (re)compiles
-//! the module fresh from source instead. That makes this one fixed byte
-//! sequence valid for every module, independent of its actual source text.
-
 use crate::core::ovba;
 use crate::core::vba_xlsx::write_record;
 use std::io::Write;

@@ -1,23 +1,3 @@
-//! VBA macro project data model.
-//!
-//! A `VbaProject` is workbook-level (like `Chart`/`PivotTable`), not
-//! sheet-scoped like `ExcelTable`, since it's a single `vbaProject.bin` part
-//! per workbook holding potentially many modules, some of which (document
-//! modules) happen to bind to individual sheets.
-//!
-//! Unlike tables/pivots, round-tripping this through xlsx doesn't mean
-//! re-deriving every byte from these fields on export: `raw_donor` holds the
-//! `vbaProject.bin` bytes export (`vba_xlsx.rs`) patches only what changed
-//! into, rather than synthesizing a full CFB container from scratch every
-//! time. For a project imported from a real file, that's the file's own
-//! original bytes (preserving whatever PROJECTREFERENCES it already had --
-//! e.g. MSForms, Office -- which this codebase doesn't yet synthesize). For
-//! a brand-new project, `VbaProject::new_empty` builds `raw_donor` (and the
-//! per-module `prefix_bytes` new modules borrow) entirely synthetically via
-//! `vba_synth.rs`, with no real Excel-authored file involved. See the design
-//! notes in this crate's VBA feature plan for the full rationale (proven via a
-//! scratchpad proof-of-concept against real Excel).
-
 // The syntax layer. These are `#[doc(hidden)] pub` for the same reason
 // `ovba` and `vba_xlsx` are: `visi-core/fuzz`'s `vba_parse` target needs to
 // reach `parse_module` from outside the crate. The supported surface is

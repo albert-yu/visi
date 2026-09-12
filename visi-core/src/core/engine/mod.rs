@@ -1,5 +1,3 @@
-//! The spreadsheet engine: sheets, cells, columns and values.
-
 pub mod bitmask;
 pub mod cell;
 pub mod column;

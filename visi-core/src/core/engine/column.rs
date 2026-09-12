@@ -1,6 +1,3 @@
-//! Column storage: the typed value column and the per-column bundle of
-//! parallel vectors that a `Sheet` is made of.
-
 use crate::core::CompiledFormula;
 use crate::core::SharedVec;
 use serde::{Deserialize, Serialize};
