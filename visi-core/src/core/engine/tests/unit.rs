@@ -129,17 +129,17 @@ fn test_excel_formula_evaluations() {
         Some(25.0)
     );
 
-    let mut table2 = Sheet::new(SheetInit {
+    let mut sheet2 = Sheet::new(SheetInit {
         name: Some("table_2".to_string()),
         rows: 5,
         cols: 5,
         ..Default::default()
     });
-    table2.set_cell_src(0, 0, "42".to_string());
-    table2.commit(None).unwrap();
+    sheet2.set_cell_src(0, 0, "42".to_string());
+    sheet2.commit(None).unwrap();
 
     let mut context = Context::default();
-    context.sheets.insert("table_2".to_string(), &table2);
+    context.sheets.insert("table_2".to_string(), &sheet2);
 
     let (res_cross, _) = sheet.eval("=table_2!A1", Some(&context)).unwrap();
     assert_eq!(get_float_val(&res_cross), Some(42.0));
@@ -455,39 +455,39 @@ fn test_concatenation() {
 
 #[test]
 fn test_table_naming() {
-    let table1 = Sheet::new(SheetInit::default());
-    assert_eq!(table1.name, "table_1");
+    let sheet1 = Sheet::new(SheetInit::default());
+    assert_eq!(sheet1.name, "table_1");
 
-    let table2 = Sheet::new(SheetInit {
+    let sheet2 = Sheet::new(SheetInit {
         name: Some("my_table".to_string()),
         ..Default::default()
     });
-    assert_eq!(table2.name, "my_table");
+    assert_eq!(sheet2.name, "my_table");
 
-    let table3 = Sheet::new(SheetInit {
+    let sheet3 = Sheet::new(SheetInit {
         name: None,
         ..Default::default()
     });
-    assert_eq!(table3.name, "table_1");
+    assert_eq!(sheet3.name, "table_1");
 }
 
 #[test]
 fn test_table_references() {
-    let table1 = Sheet::new(SheetInit {
+    let sheet1 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_1".to_string()),
         rows: 5,
         cols: 5,
     });
 
-    let mut table2 = Sheet::new(SheetInit {
+    let mut sheet2 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_2".to_string()),
         rows: 5,
         cols: 5,
     });
 
-    table2.insert(
+    sheet2.insert(
         TextCellRef {
             row: 0,
             col: 0,
@@ -495,9 +495,9 @@ fn test_table_references() {
         },
         "42",
     );
-    table2.commit(None).unwrap();
+    sheet2.commit(None).unwrap();
 
-    table2.insert(
+    sheet2.insert(
         TextCellRef {
             row: 1,
             col: 1,
@@ -505,38 +505,38 @@ fn test_table_references() {
         },
         "100",
     );
-    table2.commit(None).unwrap();
+    sheet2.commit(None).unwrap();
 
     let mut context = Context::default();
-    context.sheets.insert("table_2".to_string(), &table2);
+    context.sheets.insert("table_2".to_string(), &sheet2);
 
-    let (result, _) = table1.eval("=table_2!A1", Some(&context)).unwrap();
+    let (result, _) = sheet1.eval("=table_2!A1", Some(&context)).unwrap();
     assert_eq!(get_int_val(&result), Some(42));
 
-    let (result2, _) = table1.eval("=table_2!B2", Some(&context)).unwrap();
+    let (result2, _) = sheet1.eval("=table_2!B2", Some(&context)).unwrap();
     assert_eq!(get_int_val(&result2), Some(100));
 
-    let (result3, _) = table1.eval("=table_2!A1 + 8", Some(&context)).unwrap();
+    let (result3, _) = sheet1.eval("=table_2!A1 + 8", Some(&context)).unwrap();
     assert_eq!(get_int_val(&result3), Some(50));
 }
 
 #[test]
 fn test_context_from_tables() {
-    let table1 = Sheet::new(SheetInit {
+    let sheet1 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_1".to_string()),
         rows: 5,
         cols: 5,
     });
 
-    let mut table2 = Sheet::new(SheetInit {
+    let mut sheet2 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_2".to_string()),
         rows: 5,
         cols: 5,
     });
 
-    table2.insert(
+    sheet2.insert(
         TextCellRef {
             row: 0,
             col: 0,
@@ -544,9 +544,9 @@ fn test_context_from_tables() {
         },
         "99",
     );
-    table2.commit(None).unwrap();
+    sheet2.commit(None).unwrap();
 
-    let sheets = vec![table1, table2];
+    let sheets = vec![sheet1, sheet2];
     let mut context = Context::new();
     for sheet in &sheets {
         context.add_table(sheet.name.clone(), sheet);
@@ -694,17 +694,17 @@ fn test_dependency_propagation() {
 }
 #[test]
 fn test_cross_table_dependency_propagation() {
-    let mut table1 = Sheet::new(SheetInit {
+    let mut sheet1 = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         ..Default::default()
     });
 
-    let mut table2 = Sheet::new(SheetInit {
+    let mut sheet2 = Sheet::new(SheetInit {
         name: Some("Sheet2".to_string()),
         ..Default::default()
     });
 
-    table1.insert(
+    sheet1.insert(
         TextCellRef {
             row: 0,
             col: 0,
@@ -712,9 +712,9 @@ fn test_cross_table_dependency_propagation() {
         },
         "10",
     );
-    table1.commit(None).unwrap();
+    sheet1.commit(None).unwrap();
 
-    table2.insert(
+    sheet2.insert(
         TextCellRef {
             row: 0,
             col: 0,
@@ -724,28 +724,28 @@ fn test_cross_table_dependency_propagation() {
     );
 
     let mut context = Context::new();
-    context.add_table("Sheet1".to_string(), &table1);
-    table2.commit(Some(&context)).unwrap();
+    context.add_table("Sheet1".to_string(), &sheet1);
+    sheet2.commit(Some(&context)).unwrap();
 
-    let b1 = table2.eval("=A1", None).unwrap().0;
+    let b1 = sheet2.eval("=A1", None).unwrap().0;
     assert_eq!(get_int_val(&b1), Some(20));
 
-    table1.columns[0].src[0] = "20".to_string();
-    table1.columns[0].dirty_indices.push(0);
+    sheet1.columns[0].src[0] = "20".to_string();
+    sheet1.columns[0].dirty_indices.push(0);
 
-    let updated_cells_1 = table1.commit(None).unwrap();
+    let updated_cells_1 = sheet1.commit(None).unwrap();
     assert!(updated_cells_1.contains(&CellRef::new(0, 0)));
 
     // `commit` propagates local dependencies only, so Sheet2 has no idea
     // Sheet1 moved. Marking it wholesale is how `WorkbookManager::evaluate`
     // drives cross-sheet propagation.
-    table2.mark_all_dirty();
+    sheet2.mark_all_dirty();
 
     let mut context = Context::new();
-    context.add_table("Sheet1".to_string(), &table1);
-    table2.commit(Some(&context)).unwrap();
+    context.add_table("Sheet1".to_string(), &sheet1);
+    sheet2.commit(Some(&context)).unwrap();
 
-    let b1_new = table2.eval("=A1", None).unwrap().0;
+    let b1_new = sheet2.eval("=A1", None).unwrap().0;
     assert_eq!(get_int_val(&b1_new), Some(40));
 }
 

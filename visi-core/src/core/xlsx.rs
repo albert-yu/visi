@@ -56,7 +56,7 @@ pub(crate) fn import_xlsx_data_raw(
 
     let sheet_names = workbook.sheet_names();
     let total_sheets = sheet_names.len();
-    let mut imported_tables = Vec::new();
+    let mut imported_sheets = Vec::new();
     // Maps each worksheet's original name to the (possibly de-duplicated)
     // name it was actually imported under, so Excel Table definitions --
     // read separately below, keyed by original sheet name -- can be
@@ -110,10 +110,10 @@ pub(crate) fn import_xlsx_data_raw(
 
             let mut sheet_name = orig_sheet_name.clone();
             let mut count = 1;
-            while existing_sheets.iter().any(|t| t.name == sheet_name)
-                || imported_tables
+            while existing_sheets.iter().any(|s| s.name == sheet_name)
+                || imported_sheets
                     .iter()
-                    .any(|t: &ImportedSheet| t.sheet.name == sheet_name)
+                    .any(|imported: &ImportedSheet| imported.sheet.name == sheet_name)
             {
                 sheet_name = format!("{}_{}", sheet_name, count);
                 count += 1;
@@ -291,7 +291,7 @@ pub(crate) fn import_xlsx_data_raw(
             let elapsed_cells = start_cells.elapsed();
 
             orig_to_assigned_name.insert(orig_sheet_name.clone(), sheet_name.clone());
-            let new_table = Sheet {
+            let new_sheet = Sheet {
                 id: rand::random::<u64>(),
                 name: sheet_name,
                 columns,
@@ -301,11 +301,11 @@ pub(crate) fn import_xlsx_data_raw(
                 uncommitted_actions: Vec::new(),
                 locale: crate::core::locale::Locale::default(),
             };
-            imported_tables.push(ImportedSheet { sheet: new_table });
+            imported_sheets.push(ImportedSheet { sheet: new_sheet });
 
             log::info!(
                 "Worksheet '{}' ({}x{} cells) processed. range_parse: {:.2?}, formula_parse: {:.2?}, cells_convert: {:.2?}, total_sheet: {:.2?}",
-                imported_tables.last().unwrap().sheet.name,
+                imported_sheets.last().unwrap().sheet.name,
                 rows,
                 cols,
                 elapsed_range,
@@ -316,7 +316,7 @@ pub(crate) fn import_xlsx_data_raw(
         }
     }
 
-    if imported_tables.is_empty() {
+    if imported_sheets.is_empty() {
         return Err("No worksheets found in the Excel file".to_string());
     }
 
@@ -328,9 +328,9 @@ pub(crate) fn import_xlsx_data_raw(
         let Some(assigned_sheet_name) = orig_to_assigned_name.get(&orig_sheet_name) else {
             continue;
         };
-        let Some(imported) = imported_tables
+        let Some(imported) = imported_sheets
             .iter_mut()
-            .find(|t: &&mut ImportedSheet| &t.sheet.name == assigned_sheet_name)
+            .find(|imported: &&mut ImportedSheet| &imported.sheet.name == assigned_sheet_name)
         else {
             continue;
         };
@@ -384,12 +384,12 @@ pub(crate) fn import_xlsx_data_raw(
         let mut chart_index_by_sheet: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         for parsed in parsed_charts {
-            if let Some(sheet) = imported_tables
+            if let Some(imported_sheet) = imported_sheets
                 .iter()
-                .find(|t| t.sheet.name == parsed.sheet_name)
+                .find(|imported| imported.sheet.name == parsed.sheet_name)
             {
                 let data_range = if parsed.info.data_range.is_empty() {
-                    format!("{}!A1", sheet.sheet.name)
+                    format!("{}!A1", imported_sheet.sheet.name)
                 } else {
                     parsed.info.data_range.clone()
                 };
@@ -416,19 +416,20 @@ pub(crate) fn import_xlsx_data_raw(
         }
     }
 
-    let sheet_id_by_name: std::collections::HashMap<String, u64> = imported_tables
+    let sheet_id_by_name: std::collections::HashMap<String, u64> = imported_sheets
         .iter()
-        .map(|t| (t.sheet.name.clone(), t.sheet.id))
+        .map(|imported| (imported.sheet.name.clone(), imported.sheet.id))
         .collect();
     let imported_pivots = crate::core::pivot_xlsx::import_pivot_tables(
         buffer,
         &sheet_id_by_name,
         |sheet_name, r0, c0, r1, c1| {
-            imported_tables
+            imported_sheets
                 .iter()
-                .find(|t| t.sheet.name == sheet_name)
-                .and_then(|t| {
-                    t.sheet
+                .find(|imported| imported.sheet.name == sheet_name)
+                .and_then(|imported| {
+                    imported
+                        .sheet
                         .tables
                         .iter()
                         .find(|tbl| {
@@ -443,7 +444,7 @@ pub(crate) fn import_xlsx_data_raw(
     let imported_vba = crate::core::vba_xlsx::import_vba_project(buffer, &sheet_id_by_name)?;
 
     Ok((
-        imported_tables,
+        imported_sheets,
         imported_charts,
         imported_pivots,
         imported_vba,
@@ -2263,19 +2264,19 @@ mod tests {
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
-        let (imported_tables, imported_charts, _, _) =
+        let (imported_sheets, imported_charts, _, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
+        assert_eq!(imported_sheets.len(), 1);
         assert_eq!(imported_charts.len(), 0);
 
-        let imported_table = &imported_tables[0].sheet;
-        assert_eq!(imported_table.name, "Sheet1");
-        assert_eq!(imported_table.columns.len(), 2);
+        let imported_sheet = &imported_sheets[0].sheet;
+        assert_eq!(imported_sheet.name, "Sheet1");
+        assert_eq!(imported_sheet.columns.len(), 2);
 
-        assert_eq!(imported_table.columns[0].src[0], "10");
-        assert_eq!(imported_table.columns[0].src[1], "20");
-        assert_eq!(imported_table.columns[1].src[0], "=A1 + A2");
-        assert_eq!(imported_table.columns[1].src[1], "abc");
+        assert_eq!(imported_sheet.columns[0].src[0], "10");
+        assert_eq!(imported_sheet.columns[0].src[1], "20");
+        assert_eq!(imported_sheet.columns[1].src[0], "=A1 + A2");
+        assert_eq!(imported_sheet.columns[1].src[1], "abc");
     }
 
     #[test]
@@ -2530,9 +2531,9 @@ mod tests {
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
-        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
-        let imported = &imported_tables[0].sheet;
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets.len(), 1);
+        let imported = &imported_sheets[0].sheet;
 
         // Column A must stay empty and column B must keep its own data --
         // not have it aliased into column A -- and the formula must still
@@ -2566,10 +2567,10 @@ mod tests {
             .unwrap();
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
-        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets.len(), 1);
 
-        let imported_sheet = &imported_tables[0].sheet;
+        let imported_sheet = &imported_sheets[0].sheet;
         assert_eq!(imported_sheet.tables.len(), 1);
         let table = &imported_sheet.tables[0];
         assert_eq!(table.name, "Sales");
@@ -2616,10 +2617,10 @@ mod tests {
             .unwrap();
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
-        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets.len(), 1);
 
-        let imported_sheet = &imported_tables[0].sheet;
+        let imported_sheet = &imported_sheets[0].sheet;
         assert_eq!(imported_sheet.tables.len(), 1);
         let table = &imported_sheet.tables[0];
         assert_eq!(table.name, "Empty");
@@ -2708,9 +2709,9 @@ mod tests {
         );
         let rewritten = writer.finish().unwrap().into_inner();
 
-        let (imported_tables, _, _, _) = import_xlsx_data(&rewritten, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
-        let imported_sheet = &imported_tables[0].sheet;
+        let (imported_sheets, _, _, _) = import_xlsx_data(&rewritten, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets.len(), 1);
+        let imported_sheet = &imported_sheets[0].sheet;
         assert_eq!(imported_sheet.tables.len(), 1);
         assert_eq!(imported_sheet.tables[0].name, "Sales");
         assert_eq!(imported_sheet.tables[0].columns, vec!["Name", "Amount"]);
@@ -2774,10 +2775,10 @@ mod tests {
         // still import cleanly.
         for bad_ref in [r#" ref="not-a-range""#, ""] {
             let rewritten = rewrite_table_ref(&two_row_table_workbook(), bad_ref);
-            let (imported_tables, _, _, _) =
+            let (imported_sheets, _, _, _) =
                 import_xlsx_data(&rewritten, &[], |_, _, _| {}).unwrap();
-            assert_eq!(imported_tables.len(), 1);
-            let imported_sheet = &imported_tables[0].sheet;
+            assert_eq!(imported_sheets.len(), 1);
+            let imported_sheet = &imported_sheets[0].sheet;
             assert!(
                 imported_sheet.tables.is_empty(),
                 "table with ref {bad_ref:?} should be skipped, not placed"
@@ -2792,9 +2793,9 @@ mod tests {
     fn test_xlsx_table_ref_survives_round_trip_unchanged() {
         // Control for the test above: the same workbook with its `ref` left
         // alone imports the table at exactly the declared bounds.
-        let (imported_tables, _, _, _) =
+        let (imported_sheets, _, _, _) =
             import_xlsx_data(&two_row_table_workbook(), &[], |_, _, _| {}).unwrap();
-        let table = &imported_tables[0].sheet.tables[0];
+        let table = &imported_sheets[0].sheet.tables[0];
         assert_eq!(table.name, "Sales");
         assert_eq!(table.columns, vec!["Name", "Amount"]);
         assert_eq!(
@@ -2844,8 +2845,8 @@ mod tests {
             .unwrap();
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
-        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        let tables = &imported_tables[0].sheet.tables;
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let tables = &imported_sheets[0].sheet.tables;
         assert_eq!(tables.len(), 2);
         let mut names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
         names.sort();
@@ -2874,13 +2875,13 @@ mod tests {
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
         assert!(!xlsx_data.is_empty());
 
-        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets.len(), 1);
 
-        let imported_table = &imported_tables[0].sheet;
-        assert_eq!(imported_table.name, "EmptyTable");
-        assert_eq!(imported_table.columns.len(), 5);
-        assert_eq!(imported_table.row_count(), 10);
+        let imported_sheet = &imported_sheets[0].sheet;
+        assert_eq!(imported_sheet.name, "EmptyTable");
+        assert_eq!(imported_sheet.columns.len(), 5);
+        assert_eq!(imported_sheet.row_count(), 10);
     }
 
     #[test]
@@ -2936,10 +2937,10 @@ mod tests {
                 export_xlsx_data(&[sheet], std::slice::from_ref(&chart), &[], None).unwrap();
             assert!(!xlsx_data.is_empty());
 
-            let (imported_tables, imported_charts, _, _) =
+            let (imported_sheets, imported_charts, _, _) =
                 import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
 
-            assert_eq!(imported_tables.len(), 1);
+            assert_eq!(imported_sheets.len(), 1);
             assert_eq!(imported_charts.len(), 1, "chart_type={:?}", chart_type);
 
             let imported_chart = &imported_charts[0];
@@ -3107,8 +3108,8 @@ mod tests {
         std::io::Read::read_to_string(&mut sheet_file, &mut xml_content).unwrap();
         assert!(!xml_content.contains("&quot;1&quot;"));
 
-        let (imported_tables, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        let mut imported_sheet = imported_tables.into_iter().next().unwrap().sheet;
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        let mut imported_sheet = imported_sheets.into_iter().next().unwrap().sheet;
         imported_sheet.columns[0].mark_dirty(0);
         imported_sheet.commit(None).unwrap();
 
@@ -3352,9 +3353,9 @@ mod tests {
         );
         assert!(zip.by_name("xl/pivotCache/pivotCacheRecords1.xml").is_ok());
 
-        let (imported_tables, _, imported_pivots, _) =
+        let (imported_sheets, _, imported_pivots, _) =
             import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
-        assert_eq!(imported_tables.len(), 1);
+        assert_eq!(imported_sheets.len(), 1);
         assert_eq!(imported_pivots.len(), 1);
 
         let reimported = &imported_pivots[0];
@@ -3374,7 +3375,7 @@ mod tests {
 
         // Recomputing from the reimported definition should reproduce the
         // same aggregation (East=15, West=70, Grand Total=85).
-        let reimported_sheet = &imported_tables[0].sheet;
+        let reimported_sheet = &imported_sheets[0].sheet;
         let grid = crate::core::pivot::compute_pivot(&[reimported_sheet], reimported).unwrap();
         assert_eq!(grid.body_rows.len(), 3);
     }

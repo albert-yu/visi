@@ -847,7 +847,7 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                     // Sheet::evaluate_ast), not by a per-column id the way the
                     // legacy whole-sheet-as-table StructuredReference below is.
                     // `sheets[0]` is always the sheet this formula belongs to
-                    // (see get_all_tables_for_compilation), matching the
+                    // (see get_all_sheets_for_compilation), matching the
                     // fallback convention used for unqualified refs elsewhere
                     // in this function.
                     let default_sheet_name = sheets.first().map(|s| s.name.clone());
@@ -863,8 +863,8 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                         parts.push(FormulaPart::Text(text));
                     } else {
                         let sheet_id = if let Some(ref name) = sheet {
-                            if let Some(t) = sheets.iter().find(|t| t.name == *name) {
-                                t.id
+                            if let Some(named_sheet) = sheets.iter().find(|s| s.name == *name) {
+                                named_sheet.id
                             } else if !sheets.is_empty() {
                                 sheets[0].id
                             } else {
@@ -877,9 +877,9 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                         };
 
                         let col_id = if let Some(ref col_name) = column {
-                            if let Some(table_obj) = sheets.iter().find(|t| t.id == sheet_id) {
+                            if let Some(sheet_obj) = sheets.iter().find(|s| s.id == sheet_id) {
                                 if let Some(col) =
-                                    table_obj.columns.iter().find(|c| c.name == *col_name)
+                                    sheet_obj.columns.iter().find(|c| c.name == *col_name)
                                 {
                                     Some(col.id)
                                 } else {
@@ -921,8 +921,8 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
 }
 
 pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String {
-    let get_table_name = |sheet_id: u64, sheets: &[Sheet]| -> String {
-        if let Some(sheet) = sheets.iter().find(|t| t.id == sheet_id) {
+    let get_sheet_name = |sheet_id: u64, sheets: &[Sheet]| -> String {
+        if let Some(sheet) = sheets.iter().find(|s| s.id == sheet_id) {
             if sheet.name.contains(' ') {
                 format!("'{}'", sheet.name)
             } else {
@@ -961,7 +961,7 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 };
 
                 if has_prefix {
-                    let sheet_name = get_table_name(*sheet_id, sheets);
+                    let sheet_name = get_sheet_name(*sheet_id, sheets);
                     result.push_str(&format!(
                         "{}!{}{}{}{}",
                         sheet_name,
@@ -1009,7 +1009,7 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                         RefType::Relative => "",
                     };
                     if has_prefix {
-                        let sheet_name = get_table_name(*sheet_id, sheets);
+                        let sheet_name = get_sheet_name(*sheet_id, sheets);
                         result.push_str(&format!(
                             "{}!{}{}:{}{}",
                             sheet_name, sc_prefix, start_col_letter, ec_prefix, end_col_letter,
@@ -1030,7 +1030,7 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                         RefType::Relative => "",
                     };
                     if has_prefix {
-                        let sheet_name = get_table_name(*sheet_id, sheets);
+                        let sheet_name = get_sheet_name(*sheet_id, sheets);
                         result.push_str(&format!(
                             "{}!{}{}:{}{}",
                             sheet_name,
@@ -1069,7 +1069,7 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                     };
 
                     if has_prefix {
-                        let sheet_name = get_table_name(*sheet_id, sheets);
+                        let sheet_name = get_sheet_name(*sheet_id, sheets);
                         result.push_str(&format!(
                             "{}!{}{}{}{}:{}{}{}{}",
                             sheet_name,
@@ -1098,8 +1098,8 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 }
             }
             FormulaPart::ColumnReference { sheet_id, col_id } => {
-                let sheet_name = get_table_name(*sheet_id, sheets);
-                let col_name = if let Some(sheet) = sheets.iter().find(|t| t.id == *sheet_id) {
+                let sheet_name = get_sheet_name(*sheet_id, sheets);
+                let col_name = if let Some(sheet) = sheets.iter().find(|s| s.id == *sheet_id) {
                     if let Some(col) = sheet.columns.iter().find(|c| c.id == *col_id) {
                         col.name.clone()
                     } else {
@@ -1116,9 +1116,9 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
                 is_this_row,
                 section,
             } => {
-                let sheet_name = get_table_name(*sheet_id, sheets);
+                let sheet_name = get_sheet_name(*sheet_id, sheets);
                 let col_name = if let Some(col_id_val) = col_id {
-                    if let Some(sheet) = sheets.iter().find(|t| t.id == *sheet_id) {
+                    if let Some(sheet) = sheets.iter().find(|s| s.id == *sheet_id) {
                         if let Some(col) = sheet.columns.iter().find(|c| c.id == *col_id_val) {
                             col.name.clone()
                         } else {
@@ -2149,20 +2149,20 @@ mod tests {
 
     #[test]
     fn test_compile_and_serialize() {
-        let table1 = Sheet::new(crate::core::SheetInit {
+        let sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
             rows: 5,
             cols: 5,
         });
-        let table2 = Sheet::new(crate::core::SheetInit {
+        let sheet2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
             rows: 5,
             cols: 5,
         });
 
-        let sheets = vec![table1, table2];
+        let sheets = vec![sheet1, sheet2];
 
         let formula = compile_formula("=Sheet2!B1 + 10", &sheets);
         assert_eq!(formula.parts.len(), 3);
@@ -2177,29 +2177,29 @@ mod tests {
             _ => panic!("Expected SheetReference"),
         }
 
-        let mut renamed_table2 = sheets[1].clone();
-        renamed_table2.name = "Sheet3".to_string();
+        let mut renamed_sheet2 = sheets[1].clone();
+        renamed_sheet2.name = "Sheet3".to_string();
 
-        let serialized = serialize_formula(&formula, &[sheets[0].clone(), renamed_table2]);
+        let serialized = serialize_formula(&formula, &[sheets[0].clone(), renamed_sheet2]);
         assert_eq!(serialized, "=Sheet3!B1 + 10");
     }
 
     #[test]
     fn test_table_names_with_spaces() {
-        let table1 = Sheet::new(crate::core::SheetInit {
+        let sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
             rows: 5,
             cols: 5,
         });
-        let table2 = Sheet::new(crate::core::SheetInit {
+        let sheet2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("My Sheet".to_string()),
             rows: 5,
             cols: 5,
         });
 
-        let sheets = vec![table1, table2];
+        let sheets = vec![sheet1, sheet2];
 
         let formula_quote = compile_formula("='My Sheet'!B1 + 10", &sheets);
         match &formula_quote.parts[1] {
@@ -2292,14 +2292,14 @@ mod tests {
 
     #[test]
     fn test_table_names_with_periods() {
-        let table1 = Sheet::new(crate::core::SheetInit {
+        let sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Model_SL_5.5Yr".to_string()),
             rows: 5,
             cols: 5,
         });
 
-        let sheets = vec![table1];
+        let sheets = vec![sheet1];
 
         let formula = compile_formula("=Model_SL_5.5Yr!B10 + 10", &sheets);
         assert_eq!(formula.parts.len(), 3);
@@ -2332,13 +2332,13 @@ mod tests {
 
     #[test]
     fn test_column_ranges() {
-        let table1 = Sheet::new(crate::core::SheetInit {
+        let sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
             rows: 5,
             cols: 5,
         });
-        let sheets = vec![table1];
+        let sheets = vec![sheet1];
 
         let formula = compile_formula("=SUM(A:B)", &sheets);
         assert_eq!(formula.parts.len(), 3);
@@ -2363,14 +2363,14 @@ mod tests {
         let serialized = serialize_formula(&formula, &sheets);
         assert_eq!(serialized, "=SUM(A:B)");
 
-        let table2 = Sheet::new(crate::core::SheetInit {
+        let sheet2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
             rows: 5,
             cols: 5,
         });
-        let tables_multi = vec![sheets[0].clone(), table2];
-        let formula_cross = compile_formula("=SUM(Sheet2!$A:$C)", &tables_multi);
+        let sheets_multi = vec![sheets[0].clone(), sheet2];
+        let formula_cross = compile_formula("=SUM(Sheet2!$A:$C)", &sheets_multi);
         match &formula_cross.parts[1] {
             FormulaPart::RangeReference {
                 sheet_id,
@@ -2393,7 +2393,7 @@ mod tests {
             _ => panic!("Expected RangeReference for cross sheet"),
         }
 
-        let serialized_cross = serialize_formula(&formula_cross, &tables_multi);
+        let serialized_cross = serialize_formula(&formula_cross, &sheets_multi);
         assert_eq!(serialized_cross, "=SUM(Sheet2!$A:$C)");
 
         let ast = parse_excel_formula("SUM(A:A)").unwrap();
@@ -2425,18 +2425,18 @@ mod tests {
 
     #[test]
     fn test_excel_structured_references() {
-        let mut table1 = Sheet::new(crate::core::SheetInit {
+        let mut sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
             rows: 5,
             cols: 2,
         });
-        table1.columns[0].name = "Sales".to_string();
-        table1.columns[0].id = 1;
-        table1.columns[1].name = "Cost".to_string();
-        table1.columns[1].id = 2;
+        sheet1.columns[0].name = "Sales".to_string();
+        sheet1.columns[0].id = 1;
+        sheet1.columns[1].name = "Cost".to_string();
+        sheet1.columns[1].id = 2;
 
-        let sheets = vec![table1];
+        let sheets = vec![sheet1];
 
         let f1 = compile_formula("=Sheet1[Sales]", &sheets);
         assert_eq!(f1.parts.len(), 2);
@@ -2493,20 +2493,20 @@ mod tests {
         let s3 = serialize_formula(&f3, &sheets);
         assert_eq!(s3, "=[[#Headers], [Sales]]");
 
-        let mut table2 = Sheet::new(crate::core::SheetInit {
+        let mut sheet2 = Sheet::new(crate::core::SheetInit {
             id: Some(456),
             name: Some("Sheet2".to_string()),
             rows: 5,
             cols: 2,
         });
-        table2.columns[0].name = "Revenue".to_string();
-        table2.columns[0].id = 3;
-        table2.columns[1].name = "Expenses".to_string();
-        table2.columns[1].id = 4;
+        sheet2.columns[0].name = "Revenue".to_string();
+        sheet2.columns[0].id = 3;
+        sheet2.columns[1].name = "Expenses".to_string();
+        sheet2.columns[1].id = 4;
 
-        let multi_tables = vec![sheets[0].clone(), table2];
-        let f4 = compile_formula("=Sheet2[Revenue]", &multi_tables);
-        let s4 = serialize_formula(&f4, &multi_tables);
+        let multi_sheets = vec![sheets[0].clone(), sheet2];
+        let f4 = compile_formula("=Sheet2[Revenue]", &multi_sheets);
+        let s4 = serialize_formula(&f4, &multi_sheets);
         assert_eq!(s4, "=Sheet2[Revenue]");
 
         let ast = parse_excel_formula("Sheet1[@Sales] + 10").unwrap();
@@ -2533,17 +2533,17 @@ mod tests {
 
     #[test]
     fn test_structured_reference_whole_row_no_column() {
-        let mut table1 = Sheet::new(crate::core::SheetInit {
+        let mut sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
             rows: 5,
             cols: 2,
         });
-        table1.columns[0].name = "Sales".to_string();
-        table1.columns[0].id = 1;
-        table1.columns[1].name = "Cost".to_string();
-        table1.columns[1].id = 2;
-        let sheets = vec![table1];
+        sheet1.columns[0].name = "Sales".to_string();
+        sheet1.columns[0].id = 1;
+        sheet1.columns[1].name = "Cost".to_string();
+        sheet1.columns[1].id = 2;
+        let sheets = vec![sheet1];
 
         // `[@]` (this row, no specific column) should parse with column = None,
         // not a column literally named "".
@@ -2579,15 +2579,15 @@ mod tests {
 
     #[test]
     fn test_structured_reference_whole_table_sections_no_column() {
-        let mut table1 = Sheet::new(crate::core::SheetInit {
+        let mut sheet1 = Sheet::new(crate::core::SheetInit {
             id: Some(123),
             name: Some("Sheet1".to_string()),
             rows: 5,
             cols: 2,
         });
-        table1.columns[0].name = "Sales".to_string();
-        table1.columns[1].name = "Cost".to_string();
-        let sheets = vec![table1];
+        sheet1.columns[0].name = "Sales".to_string();
+        sheet1.columns[1].name = "Cost".to_string();
+        let sheets = vec![sheet1];
 
         for (input, expected_section) in [
             ("=[#Data]", SheetSection::Data),
