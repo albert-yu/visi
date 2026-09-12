@@ -261,19 +261,15 @@ impl Sheet {
     /// Every sheet a formula on this one could refer to -- this sheet first,
     /// then the rest of `context` -- as the name-to-id lookup table that
     /// `compile_formula` resolves references against.
-    ///
-    /// "Tables" here means sheets, not [`ExcelTable`]s.
-    ///
-    /// [`ExcelTable`]: crate::core::table::ExcelTable
-    pub(crate) fn get_all_tables_for_compilation(&self, context: Option<&Context>) -> Vec<Sheet> {
+    pub(crate) fn get_all_sheets_for_compilation(&self, context: Option<&Context>) -> Vec<Sheet> {
         let mut list = vec![self.clone()];
         let mut seen = std::collections::HashSet::new();
         seen.insert(self.id);
         if let Some(ctx) = context {
-            for t in ctx.sheets.values() {
-                if !seen.contains(&t.id) {
-                    seen.insert(t.id);
-                    list.push((*t).clone());
+            for sheet in ctx.sheets.values() {
+                if !seen.contains(&sheet.id) {
+                    seen.insert(sheet.id);
+                    list.push((*sheet).clone());
                 }
             }
         }
@@ -322,7 +318,7 @@ impl Sheet {
         let max_ops = 10000.max(initial_queue_len * 3);
         let mut ops = 0;
 
-        let mut tables_for_compilation = self.get_all_tables_for_compilation(context);
+        let mut sheets_for_compilation = self.get_all_sheets_for_compilation(context);
         let mut last_log_time = Instant::now();
 
         while let Some(cell_ref) = queue.pop_front() {
@@ -421,9 +417,9 @@ impl Sheet {
                     (res, vec![], None, c_type)
                 } else {
                     let compiled =
-                        crate::core::parser::compile_formula(src, &tables_for_compilation);
+                        crate::core::parser::compile_formula(src, &sheets_for_compilation);
                     let eval_src =
-                        crate::core::parser::serialize_formula(&compiled, &tables_for_compilation);
+                        crate::core::parser::serialize_formula(&compiled, &sheets_for_compilation);
                     let (res, deps) = match self.eval_with_row(
                         &eval_src,
                         context,
@@ -515,7 +511,7 @@ impl Sheet {
                 col.data.set(cell_ref.row, result.clone());
                 updated_cells.insert(cell_ref);
             }
-            if let Some(comp_sheet) = tables_for_compilation
+            if let Some(comp_sheet) = sheets_for_compilation
                 .iter_mut()
                 .find(|s| s.name == self.name)
                 && let Some(col) = comp_sheet.columns.get_mut(cell_ref.col)
@@ -821,11 +817,11 @@ impl Sheet {
                     let sheet_name = ref_name;
                     let is_self = sheet_name == self.name;
 
-                    let target_table = if is_self {
+                    let target_sheet = if is_self {
                         self
                     } else if let Some(ctx) = context {
-                        if let Some(t) = ctx.sheets.get(&sheet_name) {
-                            t
+                        if let Some(sheet) = ctx.sheets.get(&sheet_name) {
+                            sheet
                         } else {
                             return Err(EngineError::EvalError(EvalError::UnknownFunction(
                                 format!("Sheet not found: {}", sheet_name),
@@ -842,7 +838,7 @@ impl Sheet {
                     // table (e.g. `Table1[#Data]` or `[@]`), rather than a single
                     // named column.
                     let col_indices: Vec<usize> = if let Some(col_name) = column {
-                        let pos = target_table
+                        let pos = target_sheet
                             .columns
                             .iter()
                             .position(|c| c.name == *col_name)
@@ -854,7 +850,7 @@ impl Sheet {
                             })?;
                         vec![pos]
                     } else {
-                        (0..target_table.columns.len()).collect()
+                        (0..target_sheet.columns.len()).collect()
                     };
                     let is_whole_table = column.is_none();
 
@@ -864,7 +860,7 @@ impl Sheet {
                                 .iter()
                                 .map(|&idx| {
                                     ResultData::String(
-                                        target_table
+                                        target_sheet
                                             .columns
                                             .get(idx)
                                             .map(|c| c.name.clone())
@@ -898,7 +894,7 @@ impl Sheet {
                                             cell: cell_ref,
                                         });
                                     }
-                                    results.push(target_table.get_result_data(&cell_ref));
+                                    results.push(target_sheet.get_result_data(&cell_ref));
                                 }
                                 if is_whole_table {
                                     Ok(ResultData::List(results))
@@ -916,9 +912,9 @@ impl Sheet {
                                             col: col_idx,
                                         });
                                     }
-                                    for r in 0..target_table.row_count() {
+                                    for r in 0..target_sheet.row_count() {
                                         let cell_ref = CellRef::new(r, col_idx);
-                                        results.push(target_table.get_result_data(&cell_ref));
+                                        results.push(target_sheet.get_result_data(&cell_ref));
                                     }
                                 }
                                 Ok(ResultData::List(results))

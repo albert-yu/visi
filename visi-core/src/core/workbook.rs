@@ -144,11 +144,11 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 impl WorkbookManager {
     /// Load Excel workbook from bytes buffer
     pub fn load_bytes(buffer: &[u8]) -> crate::Result<Self> {
-        let (imported_tables, charts, pivot_tables, vba_project) =
+        let (imported_sheets, charts, pivot_tables, vba_project) =
             import_xlsx_data(buffer, &[], |_, _, _| {})?;
 
         let locale = Locale::default();
-        let mut sheets: Vec<Sheet> = imported_tables.into_iter().map(|it| it.sheet).collect();
+        let mut sheets: Vec<Sheet> = imported_sheets.into_iter().map(|it| it.sheet).collect();
         for sheet in &mut sheets {
             sheet.locale = locale.clone();
         }
