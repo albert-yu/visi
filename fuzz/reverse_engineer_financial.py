@@ -1,46 +1,4 @@
 #!/usr/bin/env python3
-"""Reverse-engineers Excel's IRR/XIRR/RATE Newton-Raphson solver by grading a
-grid of candidate algorithm variants against real Microsoft Excel.
-
-`finance.rs`'s `rate`/`irr`/`xirr` are Newton-Raphson root finds and, per
-`fuzz/README.md`, "a known residual source of differential fuzzer failures":
-they can return `#NUM!` on inputs real Excel's own (undocumented) solver
-converges on, and occasionally the reverse. This script narrows that gap
-empirically rather than by guessing:
-
-1. It generates cashflow/RATE inputs specifically chosen to sit near the
-   convergence boundary (multi-sign-change cashflows with several plausible
-   IRR roots, guesses swept across a wide range, RATE inputs that push the
-   implied rate toward the -100% floor) -- the region generic random fuzzing
-   rarely hits, since well-behaved random inputs mostly converge trivially.
-2. It writes one formula per test case into a workbook and evaluates it in
-   real Excel (ground truth) and in `visi` (current behavior) via the same
-   AppleScript/CLI drivers `fuzz_excel.py` uses.
-3. It also evaluates every case against a grid of candidate pure-Python
-   Newton-Raphson variants (closed-form vs. numeric derivative, several
-   iteration caps / tolerances / zero-guess-retry policies -- see
-   `CANDIDATE_VARIANTS`), and reports which variant's `#NUM!`/converged-value
-   boundary agrees with real Excel most often.
-
-The closed-form derivative used by the "closed" variants is not guessed --
-it's the standard OpenOffice-lineage TVM Newton-Raphson formulation used by
-`formulajs` (a JS Excel-function reimplementation), translated to Python;
-see the docstring on `newton_raphson_generic` for the derivation. Whether
-*that* formula, plus which (eps, max_iter, retry) knobs, actually reproduces
-Excel is exactly what this script measures rather than assumes.
-
-Usage:
-    python3 fuzz/reverse_engineer_financial.py --driver mock
-
-    python3 fuzz/reverse_engineer_financial.py \\
-        --excel-path "/Applications/Microsoft Excel.app" --seed 1
-
-Output: a per-function ranking of candidate variants by agreement rate with
-Excel (best first), visi's own agreement rate as a baseline for comparison,
-and the worst mismatches for the best-scoring candidate -- printed to stdout
-and dumped as JSON under `fuzz_results/financial_reverse_engineering/`.
-"""
-
 import argparse
 import json
 import math

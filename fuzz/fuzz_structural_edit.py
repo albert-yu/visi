@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Differential fuzzer for structural edits against real Microsoft Excel.
-
-This harness generates a small multi-sheet workbook with values and formulas,
-applies a random sequence of row/column insert/delete operations in both Excel
-and visi, recalculates/saves, then compares both the rewritten formula text and
-cached values.
-
-Examples:
-
-    PYTHONIOENCODING=utf-8 python fuzz/fuzz_structural_edit.py --driver win32com --iterations 20
-
-    python fuzz/fuzz_structural_edit.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
-
-    python fuzz/fuzz_structural_edit.py --driver mock --iterations 2
-"""
-
 import argparse
 import os
 import random

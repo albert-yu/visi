@@ -1,43 +1,4 @@
 #!/usr/bin/env python3
-"""
-What does Excel's VBA *compiler* accept? -- a measurement probe.
-
-`fuzz_vba_parse.py` generates random source and reports an aggregate
-agree/disagree tally. This asks the same question -- does Excel compile
-this? -- but about snippets *you name*, one at a time, so a disagreement
-found by the fuzzer can be minimized down to the single line responsible.
-
-That distinction matters because a generated case is typically 5-15 lines
-and a compile error names none of them: Excel's only signal is the modal
-dialog that hangs the automation bridge (see `fuzz_vba_parse.py`'s
-docstring, point 1). So "which line did it?" is not readable from a fuzz
-failure -- it has to be bisected, which is what this is for.
-
-It is also the instrument for the *name-resolution* question specifically,
-which is what issue #78 turns on. Phase 0 checking cannot tell
-
-    a genuinely undeclared name (Excel: compile error)
-    a real VBA intrinsic or another module's procedure (Excel: fine)
-
-apart without knowing what VBA's built-in surface actually contains. Every
-`builtin:*` case below is one probe of that surface -- an unadorned call to
-a name in statement position -- and the answers are what
-`core/vba/resolve.rs`'s registry is built from. Guessing at that list is
-exactly the mistake this codebase keeps re-learning not to make.
-
-Usage:
-    python fuzz/vba_compile_probe.py
-    python fuzz/vba_compile_probe.py --only undeclared
-    python fuzz/vba_compile_probe.py -e 'x = arr(1, 2)'
-    python fuzz/vba_compile_probe.py --list
-    python fuzz/vba_compile_probe.py -e 'Dim x As Long' --sig 'ByVal x As Long' --call-args ' 1'
-
-Cost: an *accepted* snippet is one fast round trip; a *rejected* one costs
-the driver's full timeout twice over plus an Excel restart (~35s), since a
-hang is the only rejection signal there is. Keep case lists short and
-targeted rather than sweeping.
-"""
-
 import argparse
 import os
 import shutil

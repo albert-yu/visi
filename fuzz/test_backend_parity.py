@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Bindings/CLI equivalence.
-
-The `visi_core` extension module and the `visi` CLI must be observationally
-identical for every operation the fuzz harness drives. Nothing else checks
-this: the two backends duplicate a little logic on purpose (`edit_chart`'s
-clear-vs-set flags, `add_pivot_field`'s post-add subtotal mutation), and
-without a test that duplication drifts silently and the fuzzer starts
-measuring something other than what it reports.
-
-Corpus: freshly generated workbooks at fixed seeds, so this is fully
-self-contained on a clean checkout, plus any `fuzz_results/failures/*/source.xlsx`
-lying around locally. That second source is opportunistic and usually empty --
-`fuzz_results/` is gitignored, and only a genuine differential failure puts
-anything there. Do not rely on it for coverage.
-
-Comparison is over *parsed content*, never bytes: docProps/core.xml carries a
-creation timestamp and chart/pivot ids come from a random `generate_unique_id`,
-so two runs never produce identical archives.
-
-    source fuzz/venv/bin/activate
-    pytest fuzz/test_backend_parity.py
-"""
-
 import glob
 import os
 import sys

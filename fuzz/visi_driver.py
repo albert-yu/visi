@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""visi execution drivers, shared by fuzz_excel / fuzz_pivot / fuzz_chart.
-
-Each driver has two interchangeable backends:
-
-  "bindings"    -- the `visi_core` extension module (the `visi-python` crate,
-                   built with `maturin develop`). One process, and no disk
-                   round trip per operation.
-  "subprocess"  -- the `visi` CLI, exactly as before.
-
-The subprocess backend is kept for two reasons, and the second is the
-important one:
-
-  1. It still works on a checkout where the extension module hasn't been
-     built.
-  2. It is the crash-triage mode. Under "bindings" the engine shares this
-     process, so a Rust panic is a catchable PanicException but an abort or a
-     stack overflow (plausible -- the formula parser is recursive descent and
-     the generator emits deeply nested expressions) takes the whole run down,
-     losing every iteration's progress. Under "subprocess" it costs one
-     iteration.
-
-The two backends must stay observationally identical. That is not an
-aspiration, it is checked: see fuzz/test_backend_parity.py.
-"""
-
 import json
 import os
 import shutil

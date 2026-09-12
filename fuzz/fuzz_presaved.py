@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""
-Differential comparison harness for pre-saved Excel (.xlsx) files.
-=================================================================
-Runs pre-saved .xlsx files (by default from fuzz/presaved/) through
-both visi and real Microsoft Excel, comparing evaluated cell values.
-
-Usage:
-    source fuzz/venv/bin/activate
-
-    python fuzz/fuzz_presaved.py
-
-    python fuzz/fuzz_presaved.py fuzz/presaved/NVDA_Put_Implied_Volatility.xlsx
-
-    python fuzz/fuzz_presaved.py --excel-path "/Applications/Microsoft Excel.app"
-"""
-
 import argparse
 import os
 import shutil

@@ -1,34 +1,4 @@
 #!/usr/bin/env python3
-"""
-What does Excel's VBA style surface actually do?
-===============================================
-Phase 3 of `docs/vba-macro-support.md` maps `.Interior.Color`, `.Font.*` and
-`.NumberFormat` onto `CellStyle`. The colour conversion is notable
-because VBA's `Color` is a **BGR** `Long` while `CellStyle.bg_color` is an `"#RRGGBB"` string -- so
-`&HFF0000` is *blue*, not red, and getting it wrong produces a file that opens
-fine and is the wrong colour.
-
-Two channels, because the VBA one cannot catch a consistent-but-wrong
-convention:
-
-* The object-model channel runs expressions and prints what Excel returns. If
-  visi and Excel both round-trip `&HFF0000` back to `16711680`, that says
-  nothing about which colour it painted.
-* The saved-file channel has Excel save the workbook after setting colours,
-  then reads the real `fgColor`/`font color` ARGB out of the xlsx with
-  openpyxl. This is the channel that settles BGR, and it is independent of
-  both implementations.
-
-    source fuzz/venv/bin/activate
-    maturin develop -m visi-python/Cargo.toml --release
-    python fuzz/vba_style_probe.py
-    python fuzz/vba_style_probe.py --paint
-
-Same traps as the other VBA probes: a **compile** error hangs the AppleScript
-bridge and is not catchable by `On Error`, so a batch that returns nothing is
-a compile error rather than a slow run.
-"""
-
 import argparse
 import os
 import subprocess

@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""
-Ask real Excel and `visi` what one VBA expression evaluates to.
-===============================================================
-The fuzzer (`fuzz_vba.py`) finds *that* the two engines disagree on a 20-line
-generated procedure. Turning that into a rule needs the opposite tool: a
-handful of expressions chosen to discriminate between the models that could
-explain the disagreement, run through both engines side by side. That is step
-3 of the workflow in `docs/vba-error-ordering.md`, which until now meant
-hand-editing `vba_ordering_probe.bas` and re-deriving the AppleScript each
-time.
-
-    python fuzz/vba_expr_probe.py -e 'Empty + "a"' -e '"a" + Empty'
-    python fuzz/vba_expr_probe.py -f probes.txt
-    python fuzz/vba_expr_probe.py -e '1 + 1' --driver mock
-
-Each case becomes a `Private Function` whose value is the expression, plus the
-same `OK|TypeName|CStr` / `ERR|number` harness the fuzzer uses -- so a result
-here is directly comparable to a fuzzer verdict, and a whole file of cases
-costs one Excel round trip rather than one each.
-
-A case may carry setup statements, separated from the expression by `::`:
-
-    a = 32767 :: a + 1              # runtime, per value::ArithMode
-    32767 + 1                       # between constants -- a different rule
-
-Two traps this tool cannot protect you from, both of which have already
-produced published-and-wrong conclusions in this project:
-
-* **`CStr(Null)` is itself error 94.** A case whose result may be `Null` has
-  to be written as `IsNull(...)`, or the harness reports 94 and you cannot
-  tell which half raised it.
-* **A compile error hangs the AppleScript bridge**, and unlike a runtime
-  error it is not catchable by the `On Error` wrapper. `Len(False)` is the
-  classic one. A case that never returns is a compile error, not a hang.
-"""
-
 import argparse
 import os
 import sys

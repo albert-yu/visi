@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-visi vs. Microsoft Excel Differential Fuzzing Test Harness
-===========================================================
-Generates random .xlsx workbooks containing values and formulas, evaluates them
-using both `visi` and actual Microsoft Excel, and performs a cell-by-cell semantic
-comparison of evaluated results.
-
-Usage:
-    python3 fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
-"""
-
 import argparse
 import datetime
 import io
