@@ -2096,6 +2096,7 @@ impl<'w> Interpreter<'w> {
                     op,
                     BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Eqv | BinOp::Imp
                 ) && matches!(a, Variant::Str(_))
+                    && operand_kind(lhs) != Operand::Runtime
                 {
                     // Logical operators convert the left operand before the
                     // right expression is evaluated. Fuzz found
@@ -2904,6 +2905,16 @@ fn operand_kind(e: &Expr) -> Operand {
         {
             Operand::Literal
         }
+        Expr::Paren { expr, .. } if operand_kind(expr) == Operand::Runtime => Operand::Runtime,
+        Expr::Binary { op, lhs, rhs, .. }
+            if matches!(
+                op,
+                BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Eqv | BinOp::Imp
+            ) && (operand_kind(lhs) == Operand::Runtime
+                || operand_kind(rhs) == Operand::Runtime) =>
+        {
+            Operand::Runtime
+        }
         // Constant *and* statically typed. A constant expression over `Empty`
         // is neither one thing nor the other -- the compiler can fold it but
         // its type is `Variant`, so it behaves exactly as a variable does.
@@ -3503,6 +3514,10 @@ mod tests {
         // Not propagates Null. A bare `Not Null` only errors if the caller
         // then stringifies the returned Null (for example via CStr).
         assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
+        assert_eq!(expr("UCase(\"False\") And Null"), "Boolean|False");
+        assert_eq!(expr("UCase(\"0\") And Null"), "Long|0");
+        assert_eq!(expr("IsNull(UCase(\"True\") And Null)"), "Boolean|True");
+        assert_eq!(expr("UCase(\"abc\") And Null"), "ERR|13");
     }
 
     #[test]
@@ -3606,6 +3621,14 @@ mod tests {
             run("    Dim a, b\n    a = \"2\"\n    b = 10\n    F = (a > b)"),
             "Boolean|True"
         );
+        assert_eq!(
+            run("    Dim a\n    a = \"1True\"\n    F = (a = 1)"),
+            "Boolean|False"
+        );
+        assert_eq!(
+            run("    Dim a\n    a = \"3abc\"\n    F = (a < 5)"),
+            "Boolean|False"
+        );
     }
 
     /// A `Select Case` whose subject is a *constant* string compares as
@@ -3641,6 +3664,7 @@ mod tests {
             )
         };
         assert_eq!(run(&sel_var("\"32768abc\"")), "String|else");
+        assert_eq!(run(&sel_var("\"3abc\"")), "String|else");
         assert_eq!(run(&sel_var("\"3\"")), "String|range");
         assert_eq!(run(&sel_var("\"7\"")), "String|else");
         assert_eq!(run(&sel_var("\"abc\"")), "String|else");
@@ -3826,6 +3850,7 @@ mod tests {
             run("    Dim vc\n    vc = 10\n    F = ((\"  3  \" And vc) - (Not 2147483647))"),
             "ERR|6"
         );
+        assert_eq!(expr("(Trim(-1) And (1E3 * 1%)) >= \"7\""), "Boolean|False");
     }
 
     #[test]
