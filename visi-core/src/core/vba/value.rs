@@ -1168,7 +1168,7 @@ pub fn logical(
 /// is truthy is the answer genuinely unknown: `5 And Null` and `-1 And Null`
 /// are both `Null`.
 pub fn and(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<Variant> {
-    if let Some(v) = three_valued(lhs, rhs, false)? {
+    if let Some(v) = three_valued(lhs, rhs, kinds, false)? {
         return Ok(v);
     }
     logical(lhs, rhs, kinds, |x, y| x & y)
@@ -1179,7 +1179,7 @@ pub fn and(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<V
 /// Measured: `True Or Null` is `True`, `5 Or Null` is the `Integer` `5`, and
 /// `0 Or Null` is `Null`. A *truthy* operand determines the answer here.
 pub fn or(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<Variant> {
-    if let Some(v) = three_valued(lhs, rhs, true)? {
+    if let Some(v) = three_valued(lhs, rhs, kinds, true)? {
         return Ok(v);
     }
     logical(lhs, rhs, kinds, |x, y| x | y)
@@ -1209,12 +1209,24 @@ pub fn imp(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<V
 /// `vb Or Null` is the **`Long`** `-2147483647` in Excel, not the `Double`
 /// `-2147483646.9` -- the operand is rounded and narrowed before `Or` looks
 /// at it, and returning it unchanged was a mismatch fuzz/fuzz_vba.py caught.
-fn three_valued(lhs: &Variant, rhs: &Variant, deciding: bool) -> VResult<Option<Variant>> {
-    let known = match (lhs.is_null(), rhs.is_null()) {
+fn three_valued(
+    lhs: &Variant,
+    rhs: &Variant,
+    kinds: (Operand, Operand),
+    deciding: bool,
+) -> VResult<Option<Variant>> {
+    let (known, kind) = match (lhs.is_null(), rhs.is_null()) {
         (true, true) => return Ok(Some(Variant::Null)),
-        (true, false) => rhs,
-        (false, true) => lhs,
+        (true, false) => (rhs, kinds.1),
+        (false, true) => (lhs, kinds.0),
         (false, false) => return Ok(None),
+    };
+    let folded;
+    let known = if matches!(known, Variant::Str(_)) && kind == Operand::Runtime {
+        folded = logical_operand(known);
+        &folded
+    } else {
+        known
     };
     if matches!(known, Variant::Boolean(_)) {
         if known.to_bool()? != deciding {
@@ -1446,28 +1458,23 @@ pub fn compare_ctx(
             // raising. `fuzz/fuzz_vba.py` reached it through `StrReverse`,
             // but `CStr` and `TypeName` were already wrong the same way.
             let str_typed = str_kind.is_const() || str_kind == Operand::Static;
-            // Against a *statically typed* numeric partner the whole string
-            // must parse; against a numeric constant only a leading run need
-            // parse, as `Val` takes it.
+            // [AI-Agent] Constant strings keep Excel's numeric-prefix rule, but runtime strings must parse as a whole before they leave the ordering fallback.
             let ord = if num_kind == Operand::Static {
                 match parse_vba_number(text) {
                     Ok(a) => cmp_f64(a, numeric(other)?),
-                    // Only a string the compiler has typed has to parse. A
-                    // runtime one that does not falls back to the ordering
-                    // below, exactly as it does against a numeric constant:
-                    // `CLng(a) < ("abc" & a)` is True, not error 13. An
-                    // out-of-range string is a different failure (error 6,
-                    // from the conversion) and still propagates.
                     Err(e) if str_typed || e.number != 13 => return Err(e),
                     Err(_) => Ordering::Greater,
                 }
-            } else if num_kind.is_const() {
+            } else if num_kind.is_const() && str_typed {
                 match numeric_prefix(text) {
                     Some(a) => cmp_f64(a, numeric(other)?),
-                    // No numeric prefix at all. A typed string is an error; a
-                    // runtime one falls back to the ordering below.
-                    None if str_typed => return Err(VbaError::type_mismatch()),
-                    None => Ordering::Greater,
+                    None => return Err(VbaError::type_mismatch()),
+                }
+            } else if num_kind.is_const() {
+                match parse_vba_number(text) {
+                    Ok(a) => cmp_f64(a, numeric(other)?),
+                    Err(e) if e.number != 13 => return Err(e),
+                    Err(_) => Ordering::Greater,
                 }
             } else if str_typed {
                 // A *runtime* number, against a string whose type the compiler
