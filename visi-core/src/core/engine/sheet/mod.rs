@@ -146,6 +146,9 @@ pub struct Sheet {
     /// only the first and assumes the rest match -- so the `Vec` itself is
     /// crate-private. Read them through [`Sheet::columns`].
     pub(crate) columns: Vec<DataColumn>,
+    /// [AI-Agent] Excel/OpenXML row heights in point units, aligned with sheet rows.
+    #[serde(default)]
+    pub(crate) row_heights: Vec<Option<f64>>,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
@@ -237,6 +240,7 @@ impl Sheet {
             id: sheet_id,
             name: sheet_name,
             columns,
+            row_heights: vec![None; rows],
             tables: Vec::new(),
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),
@@ -255,6 +259,8 @@ impl Sheet {
         for col in &mut self.columns {
             col.rebuild_after_load();
         }
+        let row_count = self.row_count();
+        self.row_heights.resize(row_count, None);
         self.mark_all_dirty();
     }
 

@@ -62,6 +62,7 @@ pub(crate) fn import_xlsx_data_raw(
 
     let cell_styles = import_cell_styles(buffer).unwrap_or_default();
     let column_widths = import_column_widths(buffer).unwrap_or_default();
+    let row_heights = import_row_heights(buffer).unwrap_or_default();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -96,6 +97,11 @@ pub(crate) fn import_xlsx_data_raw(
                 && let Some(max_width_col) = sheet_widths.keys().max()
             {
                 cols = cols.max(max_width_col + 1);
+            }
+            if let Some(sheet_heights) = row_heights.get(orig_sheet_name)
+                && let Some(max_height_row) = sheet_heights.keys().max()
+            {
+                rows = rows.max(max_height_row + 1);
             }
 
             let mut sheet_name = orig_sheet_name.clone();
@@ -275,11 +281,21 @@ pub(crate) fn import_xlsx_data_raw(
             }
             let elapsed_cells = start_cells.elapsed();
 
+            let mut sheet_row_heights = vec![None; rows];
+            if let Some(imported_heights) = row_heights.get(orig_sheet_name) {
+                for (&row_idx, &height) in imported_heights {
+                    if row_idx < sheet_row_heights.len() {
+                        sheet_row_heights[row_idx] = Some(height);
+                    }
+                }
+            }
+
             orig_to_assigned_name.insert(orig_sheet_name.clone(), sheet_name.clone());
             let new_sheet = Sheet {
                 id: rand::random::<u64>(),
                 name: sheet_name,
                 columns,
+                row_heights: sheet_row_heights,
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -635,6 +651,7 @@ pub(crate) fn export_xlsx_data_raw(
     let mut sheet_id_to_worksheet_name = std::collections::HashMap::new();
     let mut empty_table_names = std::collections::HashSet::new();
     let mut worksheet_name_to_column_widths = std::collections::HashMap::new();
+    let mut worksheet_name_to_row_heights = std::collections::HashMap::new();
 
     for sheet in sheets {
         table_name_to_table.insert(sheet.name.clone(), sheet);
@@ -674,6 +691,22 @@ pub(crate) fn export_xlsx_data_raw(
             .collect::<Vec<_>>();
         if !explicit_widths.is_empty() {
             worksheet_name_to_column_widths.insert(worksheet_name.clone(), explicit_widths);
+        }
+        let explicit_heights = sheet
+            .row_heights
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, height)| {
+                let value = (*height)?;
+                if value.is_finite() && value >= 0.0 {
+                    Some((idx, value))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if !explicit_heights.is_empty() {
+            worksheet_name_to_row_heights.insert(worksheet_name.clone(), explicit_heights);
         }
 
         {
@@ -989,6 +1022,7 @@ pub(crate) fn export_xlsx_data_raw(
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
     let buffer = inject_column_widths(buffer, &worksheet_name_to_column_widths)?;
+    let buffer = inject_row_heights(buffer, &worksheet_name_to_row_heights)?;
 
     let formula_string_result_cells = formula_string_result_cells_by_sheet(sheets);
     let buffer = inject_formula_string_result_types(buffer, &formula_string_result_cells)?;
@@ -1281,6 +1315,196 @@ fn replace_or_insert_cols_xml(xml: &str, cols_xml: &str) -> String {
     }
 
     xml.to_string()
+}
+
+fn inject_row_heights(
+    original: Vec<u8>,
+    heights_by_sheet: &std::collections::HashMap<String, Vec<(usize, f64)>>,
+) -> Result<Vec<u8>, String> {
+    if heights_by_sheet.is_empty() {
+        return Ok(original);
+    }
+
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original.as_slice()))
+        .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(file);
+
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(sheet_file) = name.strip_prefix("xl/worksheets/")
+            && !sheet_file.contains('/')
+            && let Some(sheet_name) = sheet_file_to_name.get(sheet_file)
+            && let Some(heights) = heights_by_sheet.get(sheet_name)
+            && let Ok(xml) = std::str::from_utf8(&buf)
+        {
+            let new_xml = apply_row_heights_xml(xml, heights);
+            writer
+                .write_all(new_xml.as_bytes())
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+
+    let cursor = writer.finish().map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
+}
+
+fn apply_row_heights_xml(xml: &str, heights: &[(usize, f64)]) -> String {
+    let Some(sheet_data_start) = xml.find("<sheetData") else {
+        return xml.to_string();
+    };
+    let mut remaining = heights
+        .iter()
+        .filter_map(|(idx, height)| {
+            if *idx < 1_048_576 && height.is_finite() && *height >= 0.0 {
+                Some((idx + 1, *height))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    remaining.sort_by_key(|(row, _)| *row);
+    remaining.dedup_by_key(|(row, _)| *row);
+    if remaining.is_empty() {
+        return xml.to_string();
+    }
+
+    if let Some(rel_empty_end) = xml[sheet_data_start..].find("/>")
+        && xml[sheet_data_start..]
+            .find('>')
+            .is_some_and(|rel_end| rel_empty_end < rel_end)
+    {
+        let tag_end = sheet_data_start + rel_empty_end + 2;
+        let rows_xml = remaining
+            .iter()
+            .map(|(row, height)| empty_row_height_xml(*row, *height))
+            .collect::<String>();
+        return format!(
+            "{}<sheetData>{}</sheetData>{}",
+            &xml[..sheet_data_start],
+            rows_xml,
+            &xml[tag_end..]
+        );
+    }
+
+    let Some(rel_sheet_data_open_end) = xml[sheet_data_start..].find('>') else {
+        return xml.to_string();
+    };
+    let body_start = sheet_data_start + rel_sheet_data_open_end + 1;
+    let Some(rel_sheet_data_close) = xml[body_start..].find("</sheetData>") else {
+        return xml.to_string();
+    };
+    let body_end = body_start + rel_sheet_data_close;
+    let body = &xml[body_start..body_end];
+
+    let mut out_body = String::with_capacity(body.len() + remaining.len() * 32);
+    let mut pos = 0;
+    let mut next_height = 0usize;
+    while let Some(rel_row_start) = body[pos..].find("<row") {
+        let row_start = pos + rel_row_start;
+        out_body.push_str(&body[pos..row_start]);
+        let Some(rel_open_end) = body[row_start..].find('>') else {
+            out_body.push_str(&body[row_start..]);
+            pos = body.len();
+            break;
+        };
+        let open_end = row_start + rel_open_end;
+        let open_tag = &body[row_start..=open_end];
+        let row_num = attr_value(open_tag, "r").and_then(|s| s.parse::<usize>().ok());
+
+        if let Some(row_num) = row_num {
+            while next_height < remaining.len() && remaining[next_height].0 < row_num {
+                out_body.push_str(&empty_row_height_xml(
+                    remaining[next_height].0,
+                    remaining[next_height].1,
+                ));
+                next_height += 1;
+            }
+        }
+
+        let row_end = if open_tag.ends_with("/>") {
+            open_end + 1
+        } else if let Some(rel_close) = body[open_end + 1..].find("</row>") {
+            open_end + 1 + rel_close + "</row>".len()
+        } else {
+            open_end + 1
+        };
+        let mut row_xml = body[row_start..row_end].to_string();
+        if let Some(row_num) = row_num
+            && next_height < remaining.len()
+            && remaining[next_height].0 == row_num
+        {
+            row_xml = set_row_height_attrs(&row_xml, remaining[next_height].1);
+            next_height += 1;
+        }
+        out_body.push_str(&row_xml);
+        pos = row_end;
+    }
+    out_body.push_str(&body[pos..]);
+    while next_height < remaining.len() {
+        out_body.push_str(&empty_row_height_xml(
+            remaining[next_height].0,
+            remaining[next_height].1,
+        ));
+        next_height += 1;
+    }
+
+    format!("{}{}{}", &xml[..body_start], out_body, &xml[body_end..])
+}
+
+fn empty_row_height_xml(row: usize, height: f64) -> String {
+    format!("<row r=\"{}\" ht=\"{}\" customHeight=\"1\"/>", row, height)
+}
+
+fn set_row_height_attrs(row_xml: &str, height: f64) -> String {
+    let Some(open_end) = row_xml.find('>') else {
+        return row_xml.to_string();
+    };
+    let open_tag = &row_xml[..open_end];
+    let open_tag = set_or_insert_attr(open_tag, "ht", &height.to_string());
+    let open_tag = set_or_insert_attr(&open_tag, "customHeight", "1");
+    format!("{}{}", open_tag, &row_xml[open_end..])
+}
+
+fn set_or_insert_attr(tag: &str, name: &str, value: &str) -> String {
+    let needle = format!(" {}=\"", name);
+    if let Some(attr_start) = tag.find(&needle) {
+        let value_start = attr_start + needle.len();
+        if let Some(rel_value_end) = tag[value_start..].find('"') {
+            let value_end = value_start + rel_value_end;
+            return format!(
+                "{}{}{}",
+                &tag[..value_start],
+                escape_xml(value),
+                &tag[value_end..]
+            );
+        }
+    }
+    if let Some(prefix) = tag.strip_suffix('/') {
+        return format!("{} {}=\"{}\"/", prefix, name, escape_xml(value));
+    }
+    format!("{} {}=\"{}\"", tag, name, escape_xml(value))
+}
+
+fn attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!(" {}=\"", name);
+    let value_start = tag.find(&needle)? + needle.len();
+    let value_end = value_start + tag[value_start..].find('"')?;
+    Some(&tag[value_start..value_end])
 }
 
 fn inject_empty_table_flags(
@@ -2027,6 +2251,8 @@ type SheetCellStyles =
 
 type SheetColumnWidths = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
 
+type SheetRowHeights = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
+
 fn import_column_widths(buffer: &[u8]) -> Result<SheetColumnWidths, String> {
     use std::collections::HashMap;
 
@@ -2078,6 +2304,65 @@ fn parse_sheet_column_widths(xml: &str) -> std::collections::HashMap<usize, f64>
                         .min(16_384);
                     for one_based_col in min..=max {
                         out.insert(one_based_col - 1, width);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+fn import_row_heights(buffer: &[u8]) -> Result<SheetRowHeights, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: SheetRowHeights = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let heights = parse_sheet_row_heights(&sheet_xml);
+        if !heights.is_empty() {
+            out.insert(sheet_name, heights);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_sheet_row_heights(xml: &str) -> std::collections::HashMap<usize, f64> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut next_row = 1usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"row" {
+                    let row = get_attr(e, b"r")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(next_row)
+                        .max(1);
+                    next_row = row + 1;
+                    if let Some(height) = get_attr(e, b"ht").and_then(|s| s.parse::<f64>().ok())
+                        && row <= 1_048_576
+                        && height.is_finite()
+                        && height >= 0.0
+                    {
+                        out.insert(row - 1, height);
                     }
                 }
             }
@@ -2578,6 +2863,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2631,6 +2917,35 @@ mod tests {
             zip::ZipArchive::new(std::io::Cursor::new(exported_again.as_slice())).unwrap();
         let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
         assert!(sheet_xml.contains("width=\"22.5\""));
+    }
+
+    #[test]
+    fn test_xlsx_row_height_survives_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 3,
+            cols: 1,
+            ..Default::default()
+        });
+        sheet.set_row_height(1, Some(31.5));
+        sheet.set_cell_src(1, 0, "tall".to_string());
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("r=\"2\""));
+        assert!(sheet_xml.contains("ht=\"31.5\""));
+        assert!(sheet_xml.contains("customHeight=\"1\""));
+
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets[0].sheet.get_row_height(1), Some(31.5));
+
+        let exported_again =
+            export_xlsx_data(&[imported_sheets[0].sheet.clone()], &[], &[], None).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(exported_again.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("ht=\"31.5\""));
     }
 
     #[test]
@@ -2783,6 +3098,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns: vec![col],
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2926,6 +3242,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns: vec![col_a, col_b, col_c],
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3229,6 +3546,7 @@ mod tests {
             id: 2,
             name: "EmptyTable".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3273,6 +3591,7 @@ mod tests {
                 id: 1,
                 name: "Sheet1".to_string(),
                 columns,
+                row_heights: Vec::new(),
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -3352,6 +3671,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3382,6 +3702,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3414,6 +3735,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3442,6 +3764,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3787,6 +4110,7 @@ mod tests {
             id: 1,
             name: long_name.clone(),
             columns: Vec::new(),
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
