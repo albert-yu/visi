@@ -1,4 +1,4 @@
-use crate::core::{CellType, DataColumn, Sheet};
+use crate::core::{CellStyle, CellType, DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;
 
@@ -60,7 +60,7 @@ pub(crate) fn import_xlsx_data_raw(
     let mut orig_to_assigned_name: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    let cell_number_formats = import_cell_number_formats(buffer).unwrap_or_default();
+    let cell_styles = import_cell_styles(buffer).unwrap_or_default();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -84,6 +84,12 @@ pub(crate) fn import_xlsx_data_raw(
             if rows == 0 || cols == 0 {
                 rows = 10;
                 cols = 5;
+            }
+            if let Some(sheet_styles) = cell_styles.get(orig_sheet_name) {
+                for &(row_idx, col_idx) in sheet_styles.keys() {
+                    rows = rows.max(row_idx + 1);
+                    cols = cols.max(col_idx + 1);
+                }
             }
 
             let mut sheet_name = orig_sheet_name.clone();
@@ -244,17 +250,15 @@ pub(crate) fn import_xlsx_data_raw(
                     }
                 }
             }
-            if let Some(sheet_formats) = cell_number_formats.get(orig_sheet_name) {
-                for (&(row_idx, col_idx), code) in sheet_formats {
+            if let Some(sheet_styles) = cell_styles.get(orig_sheet_name) {
+                for (&(row_idx, col_idx), style) in sheet_styles {
                     let Some(col) = columns.get_mut(col_idx) else {
                         continue;
                     };
                     if row_idx >= col.styles.len() {
                         continue;
                     }
-                    let mut style = col.styles[row_idx].clone().unwrap_or_default();
-                    style.num_format = Some(code.clone());
-                    col.styles[row_idx] = Some(style);
+                    col.styles[row_idx] = Some(style.clone());
                 }
             }
             let elapsed_cells = start_cells.elapsed();
@@ -1890,6 +1894,237 @@ const BUILTIN_DATE_NUM_FMTS: &[(u32, &str)] = &[
 type SheetCellNumberFormats =
     std::collections::HashMap<String, std::collections::HashMap<(usize, usize), String>>;
 
+type SheetCellStyles =
+    std::collections::HashMap<String, std::collections::HashMap<(usize, usize), CellStyle>>;
+
+fn import_cell_styles(buffer: &[u8]) -> Result<SheetCellStyles, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+
+    let Some(styles_xml) = get_zip_file_content(&mut archive, "xl/styles.xml") else {
+        return Ok(HashMap::new());
+    };
+    let xf_to_style = parse_styles_cell_styles(&styles_xml);
+    if xf_to_style.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: HashMap<String, HashMap<(usize, usize), CellStyle>> = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let cells = parse_sheet_cell_styles(&sheet_xml, &xf_to_style);
+        if !cells.is_empty() {
+            out.insert(sheet_name, cells);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_styles_cell_styles(xml: &str) -> std::collections::HashMap<u32, CellStyle> {
+    use std::collections::HashMap;
+
+    let mut custom_num_formats: HashMap<u32, String> = HashMap::new();
+    let mut fonts: Vec<CellStyle> = Vec::new();
+    let mut fills: Vec<Option<String>> = Vec::new();
+    let mut out: HashMap<u32, CellStyle> = HashMap::new();
+    let mut in_fonts = false;
+    let mut in_font = false;
+    let mut current_font = CellStyle::default();
+    let mut in_fills = false;
+    let mut in_fill = false;
+    let mut current_fill: Option<String> = None;
+    let mut in_cell_xfs = false;
+    let mut xf_idx = 0u32;
+
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => match e.local_name().as_ref() {
+                b"numFmt" => {
+                    if let Some(id) = get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
+                        && let Some(code) = get_attr(e, b"formatCode")
+                    {
+                        custom_num_formats.insert(id, code);
+                    }
+                }
+                b"fonts" => in_fonts = true,
+                b"font" if in_fonts => {
+                    in_font = true;
+                    current_font = CellStyle::default();
+                }
+                b"b" if in_font => {
+                    if style_bool_enabled(e) {
+                        current_font.bold = Some(true);
+                    }
+                }
+                b"i" if in_font => {
+                    if style_bool_enabled(e) {
+                        current_font.italic = Some(true);
+                    }
+                }
+                b"u" if in_font => {
+                    if style_bool_enabled(e) {
+                        current_font.underline = Some(true);
+                    }
+                }
+                b"color" if in_font => current_font.font_color = style_color_hex(e),
+                b"name" if in_font => current_font.font_family = get_attr(e, b"val"),
+                b"sz" if in_font => {
+                    current_font.font_size = get_attr(e, b"val").and_then(|s| s.parse().ok());
+                }
+                b"fills" => in_fills = true,
+                b"fill" if in_fills => {
+                    in_fill = true;
+                    current_fill = None;
+                }
+                b"fgColor" if in_fill => {
+                    if let Some(color) = style_color_hex(e) {
+                        current_fill = Some(color);
+                    }
+                }
+                b"bgColor" if in_fill => {
+                    if current_fill.is_none() {
+                        current_fill = style_color_hex(e);
+                    }
+                }
+                b"cellXfs" => in_cell_xfs = true,
+                b"xf" if in_cell_xfs => {
+                    let mut style = CellStyle::default();
+                    if let Some(font_id) =
+                        get_attr(e, b"fontId").and_then(|s| s.parse::<usize>().ok())
+                        && font_id != 0
+                        && let Some(font) = fonts.get(font_id)
+                    {
+                        style.merge(font);
+                    }
+                    if let Some(fill_id) =
+                        get_attr(e, b"fillId").and_then(|s| s.parse::<usize>().ok())
+                        && fill_id > 1
+                        && let Some(Some(bg_color)) = fills.get(fill_id)
+                    {
+                        style.bg_color = Some(bg_color.clone());
+                    }
+                    if let Some(num_fmt_id) =
+                        get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
+                    {
+                        style.num_format =
+                            custom_num_formats.get(&num_fmt_id).cloned().or_else(|| {
+                                BUILTIN_DATE_NUM_FMTS
+                                    .iter()
+                                    .find(|(id, _)| *id == num_fmt_id)
+                                    .map(|(_, code)| (*code).to_string())
+                            });
+                    }
+                    if !style.is_empty() {
+                        out.insert(xf_idx, style);
+                    }
+                    xf_idx += 1;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::End(ref e)) => match e.local_name().as_ref() {
+                b"fonts" => in_fonts = false,
+                b"font" if in_font => {
+                    fonts.push(current_font.clone());
+                    current_font = CellStyle::default();
+                    in_font = false;
+                }
+                b"fills" => in_fills = false,
+                b"fill" if in_fill => {
+                    fills.push(current_fill.clone());
+                    current_fill = None;
+                    in_fill = false;
+                }
+                b"cellXfs" => in_cell_xfs = false,
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    out
+}
+
+fn style_bool_enabled(e: &quick_xml::events::BytesStart) -> bool {
+    get_attr(e, b"val").is_none_or(|value| {
+        value != "0" && !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("none")
+    })
+}
+
+fn style_color_hex(e: &quick_xml::events::BytesStart) -> Option<String> {
+    if let Some(rgb) = get_attr(e, b"rgb") {
+        let trimmed = rgb.trim().trim_start_matches('#');
+        let hex = match trimmed.len() {
+            8 => &trimmed[2..],
+            6 => trimmed,
+            _ => return None,
+        };
+        return Some(format!("#{}", hex.to_ascii_uppercase()));
+    }
+    get_attr(e, b"indexed")
+        .and_then(|idx| idx.parse::<u32>().ok())
+        .and_then(indexed_color_hex)
+}
+
+fn indexed_color_hex(index: u32) -> Option<String> {
+    let hex = match index {
+        0 | 8 => "#000000",
+        1 | 9 => "#FFFFFF",
+        2 | 10 => "#FF0000",
+        3 | 11 => "#00FF00",
+        4 | 12 => "#0000FF",
+        5 | 13 => "#FFFF00",
+        6 | 14 => "#FF00FF",
+        7 | 15 => "#00FFFF",
+        _ => return None,
+    };
+    Some(hex.to_string())
+}
+
+fn parse_sheet_cell_styles(
+    xml: &str,
+    xf_to_style: &std::collections::HashMap<u32, CellStyle>,
+) -> std::collections::HashMap<(usize, usize), CellStyle> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"c"
+                    && let Some(style_idx) = get_attr(e, b"s").and_then(|s| s.parse::<u32>().ok())
+                    && let Some(style) = xf_to_style.get(&style_idx)
+                    && let Some(reference) = get_attr(e, b"r")
+                    && let Some(rc) = parse_a1_cell(&reference)
+                {
+                    out.insert(rc, style.clone());
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 /// Maps each cell that carries a date number format to that format's code,
 /// keyed by sheet name and then by `(row, col)` -- both 0-based, matching the
 /// engine.
@@ -1900,6 +2135,7 @@ type SheetCellNumberFormats =
 /// this walks the zip directly, joining each worksheet's per-cell style index
 /// (`<c s="3">`) through `xl/styles.xml`'s `<cellXfs>` to a `numFmtId`, and
 /// then to either a custom `<numFmt>` code or a built-in one.
+#[allow(dead_code)]
 fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, String> {
     use std::collections::HashMap;
 
@@ -2173,6 +2409,63 @@ mod tests {
         assert_eq!(imported_sheet.columns[0].src[1], "20");
         assert_eq!(imported_sheet.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_sheet.columns[1].src[1], "abc");
+    }
+
+    #[test]
+    fn test_xlsx_cell_style_survives_load_evaluate_save_cycle() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 3,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "5".to_string());
+        sheet.set_cell_src(0, 1, "=A1*2".to_string());
+        sheet.columns[0].styles[0] = Some(CellStyle {
+            font_color: Some("#FF0000".to_string()),
+            bg_color: Some("#FFFF00".to_string()),
+            bold: Some(true),
+            italic: Some(true),
+            underline: Some(true),
+            font_family: Some("Arial".to_string()),
+            font_size: Some(14.0),
+            ..Default::default()
+        });
+        sheet.columns[1].styles[0] = Some(CellStyle {
+            font_color: Some("#0000FF".to_string()),
+            bg_color: Some("#00FF00".to_string()),
+            bold: Some(true),
+            ..Default::default()
+        });
+        sheet.columns[2].styles[0] = Some(CellStyle {
+            bg_color: Some("#00FFFF".to_string()),
+            ..Default::default()
+        });
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut wb = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        wb.evaluate().unwrap();
+        let evaluated = wb.save_bytes().unwrap();
+        let reloaded = crate::core::WorkbookManager::load_bytes(&evaluated).unwrap();
+
+        let style_a1 = reloaded.sheets[0].columns[0].styles[0].as_ref().unwrap();
+        assert_eq!(style_a1.font_color.as_deref(), Some("#FF0000"));
+        assert_eq!(style_a1.bg_color.as_deref(), Some("#FFFF00"));
+        assert_eq!(style_a1.bold, Some(true));
+        assert_eq!(style_a1.italic, Some(true));
+        assert_eq!(style_a1.underline, Some(true));
+        assert_eq!(style_a1.font_family.as_deref(), Some("Arial"));
+        assert_eq!(style_a1.font_size, Some(14.0));
+
+        let style_b1 = reloaded.sheets[0].columns[1].styles[0].as_ref().unwrap();
+        assert_eq!(style_b1.font_color.as_deref(), Some("#0000FF"));
+        assert_eq!(style_b1.bg_color.as_deref(), Some("#00FF00"));
+        assert_eq!(style_b1.bold, Some(true));
+
+        let style_c1 = reloaded.sheets[0].columns[2].styles[0].as_ref().unwrap();
+        assert_eq!(style_c1.bg_color.as_deref(), Some("#00FFFF"));
+        assert!(reloaded.sheets[0].columns[2].src[0].is_empty());
     }
 
     #[test]
