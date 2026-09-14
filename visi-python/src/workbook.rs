@@ -233,8 +233,6 @@ impl Workbook {
         Ok(self.inner.sheets[idx].get_src_str(&CellRef::new(row, col)))
     }
 
-    // ---- charts ---------------------------------------------------------
-
     /// Adds a chart over `range` (A1 with a sheet prefix, e.g. `"Sheet1!A1:B10"`).
     ///
     /// Returns the new chart's id. **That id is valid only for this in-memory
@@ -351,8 +349,6 @@ impl Workbook {
         }
         PyList::new(py, out)
     }
-
-    // ---- pivot tables ---------------------------------------------------
 
     /// Creates a pivot table sourced from a named Excel Table.
     #[allow(clippy::too_many_arguments)]
@@ -585,8 +581,6 @@ impl Workbook {
         }
         PyList::new(py, out)
     }
-
-    // ---- VBA macro modules ----------------------------------------------
 
     /// Whether the workbook carries a VBA project at all.
     fn has_macros(&self) -> bool {

@@ -115,10 +115,7 @@ impl Sheet {
                 let left_fmt = self.inherited_date_format(left);
                 let right_fmt = self.inherited_date_format(right);
                 match (left_fmt, right_fmt) {
-                    // Exactly one side is a date: the other is an offset in
-                    // days, so the result stays that date's format.
                     (Some(fmt), None) | (None, Some(fmt)) => Some(fmt),
-                    // Neither, or both (a day count) -- no date format.
                     _ => None,
                 }
             }
@@ -145,7 +142,6 @@ impl Sheet {
         if !crate::core::date::is_date_code(code) {
             return value.to_string();
         }
-        // Only a number is a date serial; text and errors render as-is.
         let serial = match value {
             ResultData::Float(f) => f,
             ResultData::Integer(i) => i as f64,
@@ -289,7 +285,6 @@ impl Sheet {
     /// truncates the first, clears those in between and trims the last.
     /// Ignored if `end` precedes `start`.
     pub fn delete(&mut self, start: TextCellRef, end: TextCellRef) {
-        // Validate positions are in correct order
         if start.col > end.col || (start.col == end.col && start.row > end.row) {
             return;
         }
@@ -539,8 +534,6 @@ impl Sheet {
         if count == 0 || self.columns.is_empty() || first_col > last_col {
             return;
         }
-        // Grow every column together first, so the band has somewhere to
-        // push into and the sheet stays rectangular throughout.
         for column in &mut self.columns {
             for _ in 0..count {
                 column.push_row();
@@ -549,8 +542,6 @@ impl Sheet {
         for column in &mut self.columns[first_col..=last_col] {
             for _ in 0..count {
                 column.insert_row(row);
-                // Drop the blank row the growth added, so this column ends
-                // the same length as the untouched ones.
                 column.remove_row(column.len() - 1);
             }
         }
@@ -583,8 +574,6 @@ impl Sheet {
             for _ in 0..count {
                 if row < column.len() {
                     column.remove_row(row);
-                    // Keep the length: the band gains a blank row at the
-                    // bottom for each one removed from the middle.
                     column.push_row();
                 }
             }

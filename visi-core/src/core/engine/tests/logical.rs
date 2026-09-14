@@ -2611,7 +2611,6 @@ fn test_fuzz_empty_string_cell_is_text_not_blank() {
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
 
-    // TYPE: 2 is text, 1 would be a number -- and a blank cell reads as 1.
     assert_eq!(numeric_at(&sheet, 1, 0), 2.0);
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(1, 1)),
@@ -2621,7 +2620,6 @@ fn test_fuzz_empty_string_cell_is_text_not_blank() {
         sheet.get_result_data(&CellRef::new(1, 2)),
         ResultData::Boolean(false)
     ));
-    // Text is greater than any number in Excel's ordering, so this is FALSE.
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(2, 0)),
         ResultData::Boolean(false)
@@ -2630,7 +2628,6 @@ fn test_fuzz_empty_string_cell_is_text_not_blank() {
         sheet.get_result_data(&CellRef::new(2, 1)),
         ResultData::Boolean(false)
     ));
-    // The control: C1 really is blank, and a blank cell's TYPE is 1.
     assert_eq!(numeric_at(&sheet, 2, 2), 1.0);
 }
 
@@ -2648,13 +2645,10 @@ fn test_empty_string_counts_as_both_present_and_blank() {
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
 
-    // A text cell holding "": present to COUNTA, blank to COUNTBLANK.
     assert_eq!(numeric_at(&sheet, 0, 1), 1.0);
     assert_eq!(numeric_at(&sheet, 0, 2), 1.0);
-    // A genuinely empty cell: counted by neither / only COUNTBLANK.
     assert_eq!(numeric_at(&sheet, 1, 1), 0.0);
     assert_eq!(numeric_at(&sheet, 1, 2), 1.0);
-    // A formula that returned "" behaves like the text cell.
     assert_eq!(numeric_at(&sheet, 2, 1), 1.0);
     assert_eq!(numeric_at(&sheet, 2, 2), 1.0);
 }

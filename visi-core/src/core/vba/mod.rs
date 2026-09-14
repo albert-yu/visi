@@ -1,10 +1,3 @@
-// The syntax layer. These are `#[doc(hidden)] pub` for the same reason
-// `ovba` and `vba_xlsx` are: `visi-core/fuzz`'s `vba_parse` target needs to
-// reach `parse_module` from outside the crate. The supported surface is
-// [`check_syntax`] and [`ModuleSyntax`] below, which is what `core`'s
-// `pub use` list carries -- the AST is an implementation detail until the
-// interpreter phases need it, and pinning its shape now would be a semver
-// commitment made a phase too early.
 #[doc(hidden)]
 pub mod ast;
 pub(crate) mod builtin_names;
@@ -225,10 +218,6 @@ impl crate::core::WorkbookManager {
         let mut interp = interp.with_host(host);
 
         let result = interp.run(procedure, args);
-        // The recalculation runs whether or not the procedure succeeded: a
-        // macro that wrote three cells and then raised has still written
-        // them, and leaving the workbook holding stale computed values would
-        // make the failure look like corruption.
         interp.finish();
         let mutated = interp.mutated();
         let result = result.map_err(to_runtime_error)?;
@@ -276,15 +265,6 @@ impl crate::core::WorkbookManager {
         project
             .modules
             .iter()
-            // A module that does not parse is skipped rather than fatal: it
-            // cannot be the one declaring the procedure, and reporting its
-            // syntax error here would blame the wrong module entirely.
-            //
-            // Deliberately `parse_module` rather than `check_syntax`: the
-            // only question is which module *declares* this procedure, which
-            // is answered by parsing alone. Going through the name-resolution
-            // pass as well would let an unrelated unresolved name elsewhere
-            // in the module hide a procedure that is really there.
             .find(|m| {
                 parser::parse_module(&m.source).is_ok_and(|module| {
                     module
@@ -703,12 +683,9 @@ mod tests {
     /// no supplied module declares.
     #[test]
     fn partial_scope_accepts_a_call_into_source_not_supplied() {
-        // A fragment on its own: reported by default, accepted as partial.
         assert!(check_syntax(CALLER).is_err());
         assert!(check_syntax_partial(CALLER).is_ok());
 
-        // Nothing else moves. A duplicate declaration is disproved by the
-        // module's own text, so the partial scope still reports it.
         let dup = "Sub Test()\n    Dim x As Long\n    Dim x As Long\nEnd Sub\n";
         assert!(check_syntax(dup).is_err());
         assert!(check_syntax_partial(dup).is_err());
@@ -721,7 +698,6 @@ mod tests {
             assert!(result.is_ok(), "{name} should be clean: {result:?}");
         }
 
-        // Drop the sibling and the same call is a whole-project error.
         let alone = project_of(&[("Module1", CALLER)]);
         let results = alone.check_modules();
         assert_eq!(results.len(), 1);
@@ -735,8 +711,6 @@ mod tests {
             other => panic!("expected a syntax error, got {other:?}"),
         }
 
-        // ...and clean again under `--partial`, where the missing declaration
-        // may be in a project this one merely references.
         assert!(alone.check_modules_partial()[0].1.is_ok());
     }
 

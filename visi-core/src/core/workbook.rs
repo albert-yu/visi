@@ -28,9 +28,6 @@ fn resize_table_columns(
     edit: &GridEdit,
 ) {
     if edit.insert {
-        // Inserting at or before the table's first column moves the table
-        // rather than widening it, so only a strictly-interior insert adds a
-        // column -- the same asymmetry `shift_span` encodes for references.
         if edit.at > table.start_col && edit.at <= table.end_col {
             let offset = (edit.at - table.start_col).min(table.columns.len());
             for _ in 0..edit.count {
@@ -46,8 +43,6 @@ fn resize_table_columns(
             table.columns.drain(lo..hi);
         }
     }
-    // A table loaded from elsewhere may already disagree with its own extent;
-    // the new width is the authority either way.
     table
         .columns
         .resize(new_end_col - new_start_col + 1, String::new());
@@ -203,16 +198,8 @@ impl WorkbookManager {
             return Ok(());
         }
 
-        // `self.sheets` is the one place true workbook order exists --
-        // `Context.sheets` is an unordered `HashMap` -- so `SHEET()` needs
-        // this collected once up front rather than derived from a context.
         let sheet_order: Vec<String> = self.sheets.iter().map(|s| s.name.clone()).collect();
 
-        // Multi-pass evaluation to resolve cross-sheet formula dependencies.
-        // Every cell is re-marked dirty at the start of *each* pass, not
-        // just once before the loop -- `Sheet::commit` drains and clears a
-        // sheet's dirty queue as it processes it, so without re-marking,
-        // passes 2 and 3 would have nothing left dirty.
         for _pass in 0..3 {
             for sheet in &mut self.sheets {
                 sheet.mark_all_dirty();
@@ -472,8 +459,6 @@ impl WorkbookManager {
     /// the cells they cover. See `core::grid_edit` for the rules.
     pub fn insert_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
         let sheet = &self.sheets[sheet_idx];
-        // `Sheet::insert_row` appends when the index is past the end, so the
-        // edit the rewrite is told about has to say the same thing.
         let at = row_idx.min(sheet.row_count());
         let edit = GridEdit::insert_row(sheet.id, at);
         self.apply_grid_edit(edit, &[], |wb| wb.sheets[sheet_idx].insert_row(at));
@@ -517,9 +502,6 @@ impl WorkbookManager {
                 len: sheet.col_count(),
             });
         }
-        // A whole-column reference is held by column id, not position, so the
-        // only way to tell whether the edit broke one is to note the id
-        // before the column is gone.
         let deleted_col_ids = vec![sheet.columns()[col_idx].id];
         let edit = GridEdit::delete_col(sheet.id, col_idx);
         self.apply_grid_edit(edit, &deleted_col_ids, |wb| {
@@ -592,9 +574,6 @@ impl WorkbookManager {
         deleted_col_ids: &[u64],
         apply: impl FnOnce(&mut Self),
     ) {
-        // Phase 1: compile against the pre-edit grid and shift. Formulas the
-        // edit does not touch are skipped outright rather than rewritten to
-        // an equivalent spelling.
         let mut shifted: Vec<(usize, usize, usize, CompiledFormula)> = Vec::new();
         for (sheet_idx, sheet) in self.sheets.iter().enumerate() {
             for (col_idx, column) in sheet.columns().iter().enumerate() {
@@ -612,14 +591,11 @@ impl WorkbookManager {
             }
         }
 
-        // Phase 2.
         apply(self);
         self.shift_table_and_pivot_ranges(&edit);
 
-        // Phase 3.
         for (sheet_idx, col_idx, row_idx, compiled) in shifted {
             let Some((row, col)) = self.moved_cell(&edit, sheet_idx, row_idx, col_idx) else {
-                // The cell holding the formula was itself deleted.
                 continue;
             };
             let text = crate::core::parser::serialize_formula(&compiled, &self.sheets);
@@ -636,10 +612,6 @@ impl WorkbookManager {
         row: usize,
         col: usize,
     ) -> Option<(usize, usize)> {
-        // A band edit moves only its own columns, so a formula *beside* the
-        // band stays where it is -- including one below the insert row.
-        // Getting this wrong writes the rewritten formula into the cell below
-        // the right one and leaves the original in place.
         if self.sheets[sheet_idx].id != edit.sheet_id || !edit.covers_columns(col, col) {
             return Some((row, col));
         }
@@ -665,8 +637,6 @@ impl WorkbookManager {
                 continue;
             }
             sheet.tables.retain_mut(|table| {
-                // A band edit moves a table only if the table's columns are
-                // wholly inside the band, exactly as for a reference.
                 if !edit.covers_columns(table.start_col, table.end_col) {
                     return true;
                 }
@@ -678,9 +648,6 @@ impl WorkbookManager {
                     table.end_col,
                 ) {
                     Some((r0, c0, r1, c1)) => {
-                        // Column names are per sheet-column, so dropping a
-                        // column has to drop its name with it or every name
-                        // past it shifts onto the wrong column.
                         if edit.axis == Axis::Col {
                             resize_table_columns(table, c0, c1, edit);
                         }
@@ -717,10 +684,6 @@ impl WorkbookManager {
             if pivot.dest_sheet_id == edit.sheet_id
                 && edit.covers_columns(pivot.dest_col, pivot.dest_col)
             {
-                // The destination is a corner, not a span. A deleted corner
-                // clamps to the edit rather than vanishing: the grid is
-                // rewritten wholesale on the next refresh anyway, so what
-                // matters is that it names a live cell.
                 match edit.axis {
                     Axis::Row => {
                         pivot.dest_row =
@@ -733,9 +696,6 @@ impl WorkbookManager {
                                 .unwrap_or(edit.at);
                     }
                 }
-                // The last rendered extent is only used to clear stale cells,
-                // so a stale one over-clears rather than under-clears; drop it
-                // and let the next refresh re-record it.
                 pivot.last_output_end_row = None;
                 pivot.last_output_end_col = None;
             }
@@ -958,13 +918,6 @@ impl WorkbookManager {
         {
             return Err(Error::DocumentModuleExists);
         }
-        // Donate p-code prefix bytes and a module cookie from any existing
-        // module in this same project -- proven (via a scratchpad
-        // proof-of-concept against real Excel) that the prefix's content
-        // doesn't need to correspond to the module it precedes, only its
-        // shape matters. If this project has no modules yet (the common
-        // case for one freshly created by `ensure_vba_project`), fall back
-        // to the synthetic seed values instead.
         let prefix_bytes = project
             .modules
             .first()
@@ -987,7 +940,6 @@ impl WorkbookManager {
             bound_sheet_id: stored_bound_sheet_id,
             prefix_bytes,
             module_cookie,
-            // A brand-new module has no already-compressed form to reuse.
             cached_compressed_source: None,
         });
         Ok(())
@@ -1068,9 +1020,6 @@ impl WorkbookManager {
             .find_module_mut(name)
             .ok_or_else(|| Error::not_found(ObjectKind::VbaModule, name))?;
         module.source = source;
-        // Invalidate the cached compressed form -- see
-        // VbaModule::cached_compressed_source -- since it no longer matches
-        // the new `source`.
         module.cached_compressed_source = None;
         Ok(())
     }
@@ -1170,9 +1119,6 @@ impl WorkbookManager {
         self.sheets[idx]
             .rename_table(old_name, new_name)
             .map_err(Error::InvalidArgument)?;
-        // Excel updates every structured reference to a renamed table, so a
-        // formula like `=SUM(Sales[Amount])` keeps working after "Sales" is
-        // renamed; match that instead of silently breaking those formulas.
         self.rewrite_table_references(old_name, Some(new_name), None);
         self.evaluate()
     }
@@ -1237,8 +1183,6 @@ impl WorkbookManager {
         self.sheets[idx]
             .rename_table_column(table_name, col_index, new_name)
             .map_err(Error::InvalidArgument)?;
-        // As with rename_table, keep dependent formulas working across the
-        // rename instead of leaving them referencing the old column name.
         self.rewrite_table_references(table_name, None, Some((&old_col_name, new_name)));
         self.evaluate()
     }
@@ -1525,8 +1469,6 @@ impl WorkbookManager {
             Some(compute_pivot(&sheet_refs, &pivot).map_err(Error::InvalidArgument)?)
         };
 
-        // Clear the previously rendered area first, since a refresh can
-        // shrink the grid (fewer groups, a narrower filter, etc).
         if let (Some(old_end_row), Some(old_end_col)) =
             (pivot.last_output_end_row, pivot.last_output_end_col)
         {
@@ -1555,7 +1497,7 @@ impl WorkbookManager {
                 r += 1;
             }
             if !grid.filter_rows.is_empty() {
-                r += 1; // blank spacer row before the grid, matching Excel
+                r += 1;
             }
             for header in &grid.header_rows {
                 for (c, text) in header.iter().enumerate() {

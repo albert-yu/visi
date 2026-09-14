@@ -293,7 +293,6 @@ impl Sheet {
         let mut queue_set: HashSet<CellRef> = HashSet::new();
         let mut updated_cells: HashSet<CellRef> = HashSet::new();
 
-        // 1. Collect initial dirty cells
         for (col_idx, col_data) in self.columns.iter_mut().enumerate() {
             for row_idx in &col_data.dirty_indices {
                 let cell = CellRef::new(*row_idx, col_idx);
@@ -346,8 +345,6 @@ impl Sheet {
                 .and_then(|c| c.cell_types.get(cell_ref.row).copied())
                 .unwrap_or(CellType::Auto);
 
-            // `Some(code)` when this cell's literal was recognized as a date;
-            // applied below, since detecting it only has `&self`.
             let mut detected_num_format: Option<String> = None;
             let (result, new_deps, compiled_to_cache, final_cell_type) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
@@ -359,11 +356,6 @@ impl Sheet {
                     };
                     (ResultData::String(val), vec![], None, CellType::String)
                 } else if !src.starts_with('=') && cell_type_hint != CellType::Formula {
-                    // Numeric text is trimmed before it is parsed, because
-                    // that is what entering it does: a cell given `"  3  "`
-                    // holds the *number* 3, in Excel and (measured through
-                    // `fuzz/fuzz_vba.py`, where a macro assigned exactly that
-                    // string) through VBA's `Range.Value` as well.
                     let (res, c_type) = if let Some(stripped) = src.strip_prefix('\'') {
                         (ResultData::String(stripped.to_string()), CellType::String)
                     } else if src.is_empty() {
@@ -376,19 +368,10 @@ impl Sheet {
                     } else if let Ok(i) = src.trim().parse::<i64>() {
                         (ResultData::Integer(i), CellType::Number)
                     } else if let Ok(f) = src.trim().parse::<f64>()
-                        // Rust's `f64::from_str` accepts "inf" and "NaN";
-                        // Excel has neither, and reports #NUM! for both. A
-                        // non-finite literal here would otherwise become a
-                        // Float that no formula could have produced -- found
-                        // by `fuzz/fuzz_vba.py`, where a macro assigned
-                        // `-2.5 ^ 1000` to a cell and this stored `-inf`
-                        // where Excel stored `#NUM!`.
                         && f.is_finite()
                     {
                         (ResultData::Float(f), CellType::Number)
                     } else if crate::core::engine::result_data::is_excel_error_code(src) {
-                        // Typing an error value into a cell produces the
-                        // error, not the text. See `is_excel_error_code`.
                         (ResultData::Error(src.to_uppercase()), CellType::Error)
                     } else if src.eq_ignore_ascii_case("true") {
                         (ResultData::Boolean(true), CellType::Boolean)
@@ -398,18 +381,12 @@ impl Sheet {
                         src.trim_matches(' '),
                         &self.locale,
                     ) {
-                        // Excel stores a typed date as a serial and remembers
-                        // the notation as the cell's number format, so `6/22/26`
-                        // is a number that happens to display as a date.
                         detected_num_format = Some(format.to_format_code());
                         (
                             ResultData::Float(crate::core::date::date_to_excel_serial(date)),
                             CellType::Number,
                         )
                     } else if let Some(f) = crate::core::date_fn::parse_time_fraction(src) {
-                        // Same for a typed time: it is a numeric day fraction,
-                        // not text. The time number format is not represented
-                        // yet, so for now only the value semantics are matched.
                         (ResultData::Float(f), CellType::Number)
                     } else {
                         (ResultData::String(src.to_string()), CellType::String)
@@ -438,7 +415,6 @@ impl Sheet {
                 }
             };
 
-            // If a leading apostrophe was used to force string type, strip it from src
             if let Some(src_str) = self.get_src_str_ref(&cell_ref)
                 && let Some(stripped) = src_str.strip_prefix('\'')
             {
@@ -464,7 +440,6 @@ impl Sheet {
                 }
             }
 
-            // Add new dependencies (only if not empty to save map allocations)
             if !new_deps.is_empty() {
                 let mut new_deps_set = HashSet::new();
                 for provider in new_deps {
@@ -477,10 +452,6 @@ impl Sheet {
                 self.dependencies_rev.insert(cell_ref, new_deps_set);
             }
 
-            // A recognized date literal carries its notation onto the cell,
-            // and a formula that shifts a date by a number inherits that
-            // date's -- `=A1+1` on a date displays as the next day, as in
-            // Excel, rather than as a bare serial.
             let inherited = if detected_num_format.is_some()
                 || !matches!(result, ResultData::Float(_) | ResultData::Integer(_))
             {
@@ -491,8 +462,6 @@ impl Sheet {
                     .and_then(|body| crate::core::parser::parse_excel_formula(body).ok())
                     .and_then(|ast| self.inherited_date_format(&ast))
             };
-            // An explicit format the user (or an imported worksheet) already
-            // set wins, so re-entering a date does not clobber it.
             if let Some(code) = detected_num_format.or(inherited) {
                 let existing = self
                     .get_cell_style(cell_ref.row, cell_ref.col)
@@ -521,9 +490,6 @@ impl Sheet {
                 col.data.set(cell_ref.row, result);
             }
 
-            // Propagate to dependents (Local only)
-            // If this cell changed, we need to notify anyone who depends on THIS cell (locally).
-            // A local dependency is represented as Dependency::Local(this_cell).
             let local_dep_key = Dependency::Local(cell_ref);
             if let Some(dependents) = self.dependencies.get(&local_dep_key) {
                 for dependent in dependents {
@@ -534,7 +500,6 @@ impl Sheet {
                 }
             }
 
-            // Also notify anyone who depends on the whole COLUMN
             let local_col_dep_key = Dependency::LocalColumn(cell_ref.col);
             if let Some(dependents) = self.dependencies.get(&local_col_dep_key) {
                 for dependent in dependents {
@@ -669,13 +634,6 @@ impl Sheet {
                     None => self.name.clone(),
                 };
 
-                // The leading name of a structured reference is first looked up as
-                // a real Excel Table (an `ExcelTable` may live on any sheet in
-                // scope, and is scoped to its own row/column range). If no such
-                // table exists, fall back to the legacy behavior of treating the
-                // name as a sheet name and the whole sheet as an implicit table --
-                // this keeps existing formulas working for sheets that don't
-                // define any explicit table.
                 let mut found: Option<(&Sheet, &crate::core::table::ExcelTable)> =
                     self.find_table(&ref_name).map(|t| (self, t));
                 if found.is_none()
@@ -693,7 +651,6 @@ impl Sheet {
                     let is_self = table_sheet.name == self.name;
                     let sheet_name = table_sheet.name.clone();
 
-                    // (local index within the table, absolute sheet column index)
                     let col_indices: Vec<(usize, usize)> = if let Some(col_name) = column {
                         let local = excel_table.local_column_index(col_name).ok_or_else(|| {
                             EngineError::EvalError(EvalError::UnknownFunction(format!(
@@ -776,19 +733,6 @@ impl Sheet {
                                     Ok(results.into_iter().next().unwrap_or(ResultData::None))
                                 }
                             } else {
-                                // A table's column reference is bounded to
-                                // its own data rows, not the whole sheet
-                                // column -- so, like any other bounded range
-                                // (e.g. A1:A100), each cell in that range
-                                // gets its own dependency rather than a
-                                // whole-column one. Otherwise a formula
-                                // placed in the same column but *outside*
-                                // the table (a common layout, since summary
-                                // formulas often sit right below or beside
-                                // a table) would register a dependency on
-                                // its own cell and falsely trip circular-
-                                // dependency detection, which real Excel
-                                // does not do.
                                 let mut results = Vec::new();
                                 for &(_, col_idx) in &col_indices {
                                     for r in
@@ -811,9 +755,6 @@ impl Sheet {
                         }
                     }
                 } else {
-                    // Legacy fallback: no explicit ExcelTable found by that name --
-                    // resolve `ref_name` as a sheet name and treat the whole sheet
-                    // as an implicit table.
                     let sheet_name = ref_name;
                     let is_self = sheet_name == self.name;
 
@@ -834,9 +775,6 @@ impl Sheet {
                         ))));
                     };
 
-                    // `column: None` means the reference spans every column in the
-                    // table (e.g. `Table1[#Data]` or `[@]`), rather than a single
-                    // named column.
                     let col_indices: Vec<usize> = if let Some(col_name) = column {
                         let pos = target_sheet
                             .columns
@@ -997,20 +935,6 @@ impl Sheet {
 
                 let is_col_range = *end_row == usize::MAX;
 
-                // A whole-column range's dependency is scoped to the
-                // *column*, not each individual cell, but the loop below
-                // still visits every (row, col) pair -- without tracking
-                // which columns this range has already registered, the
-                // `deps.contains` scan below (needed for correctness
-                // against whatever `deps` already held coming in) would
-                // run once per *cell* instead of once per *column*, i.e.
-                // O(width * height * deps.len()) instead of O(width *
-                // deps.len()). For a wide range (e.g. `=C:LL`, 322
-                // columns) evaluated repeatedly (e.g. inside a self-
-                // referential formula bounded by commit()'s max_ops),
-                // that quadratic-in-width blowup was
-                // the difference between finishing in under a second and
-                // taking tens of seconds to minutes.
                 let mut seen_col_deps: HashSet<usize> = HashSet::new();
 
                 let mut results = Vec::new();
@@ -1028,20 +952,6 @@ impl Sheet {
                             } else {
                                 deps.push(Dependency::Local(cell_ref));
                             }
-                            // A range that includes the very cell this
-                            // formula lives in (most commonly a bare,
-                            // unaggregated whole-column/whole-row range
-                            // like `=C:P` sitting inside columns C..P)
-                            // must not read that cell's own currently
-                            // stored value back into itself: on every
-                            // recompute the stored value *is* this List,
-                            // so reading it back would nest a List inside
-                            // itself one level deeper each pass (unbounded
-                            // growth).
-                            // Blank matches this engine's existing
-                            // convention for an unresolvable self-read
-                            // elsewhere (e.g. ISBLANK(GET(...)) on an
-                            // empty cell).
                             if row == Some(r) && col == Some(c) {
                                 results.push(ResultData::None);
                             } else {
@@ -1690,32 +1600,7 @@ impl Sheet {
         x_arg: Option<&ResultData>,
         y_arg: Option<&ResultData>,
     ) -> Result<(Vec<f64>, Vec<f64>), String> {
-        // The size check has to come *before* propagating any error cell
-        // sitting inside either range: real Excel reports #N/A for two
-        // differently-sized ranges even when one of them contains a live
-        // error (confirmed by probing `CORREL` over a 4-cell and a 3-cell
-        // range whose second range held a #DIV/0!, which answers #N/A).
-        // These functions are therefore excluded from the generic
-        // "any error in an argument short-circuits the call" pre-pass, and
-        // re-raise the error here only once the shapes agree.
-        // A *scalar* operand carrying an error propagates before any
-        // shape logic runs: Excel resolves a 1x1 reference to a plain
-        // value first, and an error value in an ordinary operand position
-        // short-circuits the call. So `SUMX2PY2(A1:A4, P1:P1)` with a
-        // #DIV/0! in P1 is #DIV/0!, even though the two operands are
-        // differently sized.
-        //
-        // An error inside a *multi-cell* range does not get that
-        // treatment -- there the size check wins, and
-        // `SUMX2PY2(A1:A4, N1:N3)` with an error inside N1:N3 is #N/A.
-        // Both confirmed against real Excel, and consistently across
-        // CORREL/SLOPE/STEYX/SUMX2PY2.
         for arg in [x_arg, y_arg].into_iter().flatten() {
-            // A one-cell *range* evaluates to a one-element List rather
-            // than a bare scalar, so both spellings have to be unwrapped
-            // here -- matching only the bare form let
-            // `STEYX(H6:H6, F2:H2)` report the shape mismatch (#N/A)
-            // instead of the error sitting in H6.
             let scalar = match arg {
                 ResultData::List(items) if items.len() == 1 => &items[0],
                 other => other,
@@ -1723,13 +1608,6 @@ impl Sheet {
             if let ResultData::Error(e) = scalar {
                 return Err(e.clone());
             }
-            // A one-cell operand that is *empty* isn't a one-element array,
-            // it's a missing operand: Excel answers #VALUE! rather than the
-            // #N/A a shape mismatch would give. Note this is specifically
-            // about blankness -- a one-cell operand holding text or a
-            // boolean still reports #N/A, so it can't be folded into the
-            // general non-numeric handling (all three confirmed against
-            // real Excel with CORREL against a 4-cell range).
             if Self::is_empty_scalar_operand(arg) {
                 return Err("#VALUE!".to_string());
             }
@@ -1807,12 +1685,6 @@ impl Sheet {
                 BlankPolicy::Skip => Ok(()),
                 BlankPolicy::Reject => Err("#VALUE!".to_string()),
             },
-            // Numeric text is coerced, non-numeric text is not, when
-            // `coerce_text` is set: real Excel gives GCD("12", 8) = 4,
-            // LCM("4", 6) = 12 and MULTINOMIAL("3", 2) = 10, while
-            // GCD("x", 8) is #VALUE! either way. Booleans stay rejected
-            // regardless -- GCD(TRUE, 8) is #VALUE! -- which is why this
-            // can't just fall through to `to_f64`.
             ResultData::String(_) if coerce_text => match self.to_f64(arg) {
                 Some(f) => {
                     out.push(f);
@@ -1953,7 +1825,6 @@ impl Sheet {
                 }
             }
             ResultData::Error(e) => return Err(e.clone()),
-            // Anything nested is a reference, never a direct argument.
             ResultData::List(list) => {
                 let mut out = Vec::new();
                 for v in list {
@@ -2023,16 +1894,11 @@ impl Sheet {
         expr: &crate::core::parser::Expr,
         value: &ResultData,
     ) -> Vec<Vec<f64>> {
-        // A list of lists already carries its own shape.
         if let ResultData::List(items) = value
             && items.iter().any(|i| matches!(i, ResultData::List(_)))
         {
             return self.extract_matrix(value);
         }
-        // Only real numbers: the matrix functions reject text, booleans
-        // and blanks alike (all confirmed #VALUE! against real Excel), so
-        // a cell that isn't a number collapses the whole matrix rather
-        // than being coerced by to_f64.
         fn plain(v: &ResultData) -> Option<f64> {
             match v {
                 ResultData::Float(f) => Some(*f),
@@ -2118,10 +1984,6 @@ impl Sheet {
     fn opt_f64_arg(&self, args: &[ResultData], i: usize, default: f64) -> Result<f64, EngineError> {
         match args.get(i) {
             None => Ok(default),
-            // A supplied-but-blank argument is 0, not the default. Excel
-            // draws that line sharply: LOG(1, <blank>) is #NUM! because the
-            // base is 0, while LOG(1) uses base 10 and returns 0. Same for
-            // LEFT("abcd", <blank>) = "" and MROUND(10, <blank>) = 0.
             Some(ResultData::None) => Ok(0.0),
             Some(ResultData::Error(e)) => Err(EngineError::EvalError(EvalError::UnknownFunction(
                 e.clone(),
@@ -2260,9 +2122,6 @@ impl Sheet {
     fn counta_helper(&self, arg: &ResultData) -> usize {
         match arg {
             ResultData::None => 0,
-            // COUNTA counts every non-blank value, and the empty string is a
-            // value -- Excel counts both a text cell holding "" and a formula
-            // that returned "".
             ResultData::List(list) => {
                 let mut count = 0;
                 for item in list {
@@ -2302,8 +2161,6 @@ impl Sheet {
                 for item in list {
                     let (p, h) = self.product_helper(item, false);
                     if h {
-                        // Raw here; the 15-significant-digit snap belongs
-                        // on the final product only. See the PRODUCT arm.
                         prod *= p;
                         has_nums = true;
                     }
@@ -2400,8 +2257,6 @@ impl Sheet {
     fn criteria_text_eq(val: &ResultData, pattern: &str) -> bool {
         let text = val.to_string();
         if pattern.contains('*') || pattern.contains('?') {
-            // Excel wildcard criteria are text-pattern matches; numeric and
-            // boolean cells are not counted by criteria like "*".
             matches!(val, ResultData::String(_)) && Self::wildcard_criteria_matches(pattern, &text)
         } else {
             text.to_lowercase() == pattern.to_lowercase()
@@ -2411,11 +2266,6 @@ impl Sheet {
     fn match_criteria(&self, val: &ResultData, criteria: &ResultData) -> bool {
         let crit_str = criteria.to_string();
         if let Some(rest) = crit_str.strip_prefix(">=") {
-            // A numeric comparison can only ever be satisfied by a genuine
-            // number -- confirmed against real Excel via the differential
-            // fuzzer (fuzzing the new database D* functions): blank, text,
-            // and boolean cells must all fail ">"/"<" criteria outright,
-            // not fall back to comparing as if they were 0.
             let val_f = match Self::range_numeric(val) {
                 Some(f) => f,
                 None => return false,
@@ -2679,11 +2529,6 @@ impl Sheet {
     }
 
     fn proper(&self, s: &str) -> String {
-        // Per Microsoft's own definition, PROPER capitalizes a letter
-        // preceded by "any character that is not a letter" -- that
-        // includes digits, not just punctuation/spacing, which is why
-        // PROPER("123abc") is "123Abc": the digits aren't letters, so the
-        // 'a' right after them still counts as the start of a new word.
         let mut c_chars = Vec::new();
         let mut capitalize_next = true;
         for c in s.chars() {
@@ -2750,8 +2595,6 @@ impl Sheet {
         use crate::core::parser::Expr;
 
         if args.is_empty() || args.len().is_multiple_of(2) {
-            // Needs one or more name/value pairs followed by a calculation,
-            // i.e. an odd number of arguments overall.
             return Ok(ResultData::Error("#VALUE!".to_string()));
         }
         if args.len() == 1 {
@@ -2762,8 +2605,6 @@ impl Sheet {
             Expr::Identifier(n) => n.as_str(),
             _ => return Ok(ResultData::Error("#VALUE!".to_string())),
         };
-        // Excel rejects reusing a name across a single LET's own pairs,
-        // rather than letting a later pair silently shadow an earlier one.
         let remaining_pairs = args.len() / 2 - 1;
         let is_duplicate = args[2..]
             .iter()
@@ -3148,9 +2989,6 @@ impl Sheet {
                 if params.len() != 1 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
-                // Recovers real column count the same way INDEX's 3-arg
-                // form does: re-matching the raw AST node, since the
-                // already-evaluated array argument is just a flat List.
                 let num_cols = match &args[0] {
                     Expr::RangeRef {
                         start_col, end_col, ..
@@ -3192,14 +3030,6 @@ impl Sheet {
                 Ok(ResultData::List(results))
             }
             "REDUCE" | "SCAN" => {
-                // initial_value is optional in real Excel's 3-argument
-                // REDUCE/SCAN; since the parser has no dedicated "omitted
-                // argument" syntax to express that, this implementation
-                // also accepts a plain 2-argument call (array, lambda) as
-                // the omitted-initial-value form, seeding the accumulator
-                // from the array's own first element and folding over the
-                // rest -- rather than only supporting a literal 3rd
-                // argument that happens to error out.
                 if args.len() != 2 && args.len() != 3 {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
@@ -3212,11 +3042,6 @@ impl Sheet {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 let array = self.eval_as_array(&args[array_idx], context, row, col, deps, scope)?;
-                // SCAN's output has the same length as `array` -- an
-                // explicit initial_value (3-arg form) is external to the
-                // array and doesn't get its own output entry (every entry
-                // is a real fold), whereas the 2-arg fallback's seed *is*
-                // the array's own first element, so it does.
                 let (mut acc, rest, mut history): (ResultData, &[ResultData], Vec<ResultData>) =
                     if args.len() == 3 {
                         let init = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
@@ -3371,10 +3196,6 @@ impl Sheet {
 
         match func_name {
             "ROW" => match args.first() {
-                // A multi-row reference returns an array of row numbers
-                // (one per row spanned), not just the first one -- a
-                // single-row reference (including a plain cell, where
-                // start_row == end_row) still returns the plain scalar.
                 Some(arg) => match Self::range_bounds(arg) {
                     Some((_, start_row, _, end_row, _)) if end_row > start_row => {
                         Ok(ResultData::List(
@@ -3392,8 +3213,6 @@ impl Sheet {
                 },
             },
             "COLUMN" => match args.first() {
-                // Same array-vs-scalar distinction as ROW, but across
-                // columns instead of rows.
                 Some(arg) => match Self::range_bounds(arg) {
                     Some((_, _, start_col, _, end_col)) if end_col > start_col => {
                         Ok(ResultData::List(
@@ -3446,9 +3265,6 @@ impl Sheet {
                 }
             }
             "AREAS" => {
-                // This engine's parser has no multi-area (comma-separated
-                // union) reference syntax, so every reference is exactly
-                // one area.
                 if args.is_empty() {
                     Ok(ResultData::Error("#VALUE!".to_string()))
                 } else {
@@ -3496,11 +3312,6 @@ impl Sheet {
                 context.map(|c| c.sheets.len() + 1).unwrap_or(1) as f64,
             )),
             "SHEET" => {
-                // With no argument, report this sheet's own ordinal. With
-                // a reference argument, report the *referenced* sheet's
-                // ordinal (a bare reference with no explicit sheet, e.g.
-                // `SHEET(A1)`, means this sheet). Excel also accepts a
-                // plain text sheet name, e.g. `SHEET("Sheet2")`.
                 let sheet_name = match args.first() {
                     None => Some(self.name.clone()),
                     Some(arg) => match Self::range_bounds(arg) {
@@ -3523,11 +3334,6 @@ impl Sheet {
                                     .position(|n| n.eq_ignore_ascii_case(&name))
                             })
                             .map(|i| i + 1)
-                            // No context (standalone eval outside a
-                            // WorkbookManager pass) or the name wasn't
-                            // found in workbook order: 1 is the same
-                            // approximation this used unconditionally
-                            // before.
                             .unwrap_or(1);
                         Ok(ResultData::Float(ordinal as f64))
                     }
@@ -3605,7 +3411,6 @@ impl Sheet {
                     None => true,
                 };
                 if !a1_style {
-                    // R1C1-style reference text isn't supported.
                     return Ok(ResultData::Error("#VALUE!".to_string()));
                 }
                 match Self::parse_a1_reference(&text) {
@@ -3709,8 +3514,6 @@ impl Sheet {
             Some(bounds) => bounds,
             None => return Ok(ResultData::Error("#REF!".to_string())),
         };
-        // Registers the usual dependency on the referenced cell, mirroring
-        // how INDIRECT/OFFSET treat a dynamically resolved reference.
         self.read_cell_with_deps(&sheet_opt, target_row, target_col, context, deps);
 
         let sheet_id = match &sheet_opt {
@@ -4001,8 +3804,6 @@ impl Sheet {
                     None => ResultData::Error("#N/A".to_string()),
                 };
                 if func_name == "WRAPROWS" {
-                    // Row-major flat storage with num_cols == wrap is
-                    // exactly the padded input sequence itself.
                     let mut result = flat;
                     let rem = result.len() % wrap;
                     if rem != 0 {
@@ -4038,9 +3839,6 @@ impl Sheet {
                 };
                 let mut seen: Vec<(String, ResultData, usize)> = Vec::new();
                 for v in &flat {
-                    // UNIQUE compares values without the cross-type coercion
-                    // used by worksheet comparison operators: text "3" and
-                    // numeric 3 are distinct values.
                     let key = match v {
                         ResultData::None => "blank:".to_string(),
                         ResultData::Boolean(b) => format!("bool:{b}"),
