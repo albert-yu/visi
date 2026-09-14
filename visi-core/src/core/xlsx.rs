@@ -1,4 +1,4 @@
-use crate::core::{CellType, DataColumn, Sheet};
+use crate::core::{CellStyle, CellType, DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;
 
@@ -60,7 +60,9 @@ pub(crate) fn import_xlsx_data_raw(
     let mut orig_to_assigned_name: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    let cell_number_formats = import_cell_number_formats(buffer).unwrap_or_default();
+    let cell_styles = import_cell_styles(buffer).unwrap_or_default();
+    let column_widths = import_column_widths(buffer).unwrap_or_default();
+    let row_heights = import_row_heights(buffer).unwrap_or_default();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -85,6 +87,22 @@ pub(crate) fn import_xlsx_data_raw(
                 rows = 10;
                 cols = 5;
             }
+            if let Some(sheet_styles) = cell_styles.get(orig_sheet_name) {
+                for &(row_idx, col_idx) in sheet_styles.keys() {
+                    rows = rows.max(row_idx + 1);
+                    cols = cols.max(col_idx + 1);
+                }
+            }
+            if let Some(sheet_widths) = column_widths.get(orig_sheet_name)
+                && let Some(max_width_col) = sheet_widths.keys().max()
+            {
+                cols = cols.max(max_width_col + 1);
+            }
+            if let Some(sheet_heights) = row_heights.get(orig_sheet_name)
+                && let Some(max_height_row) = sheet_heights.keys().max()
+            {
+                rows = rows.max(max_height_row + 1);
+            }
 
             let mut sheet_name = orig_sheet_name.clone();
             let mut count = 1;
@@ -103,6 +121,12 @@ pub(crate) fn import_xlsx_data_raw(
                     let mut col = DataColumn::new(rows);
                     col.id = rand::random::<u64>();
                     col.name = crate::core::parser::col_idx_to_letters(col_idx);
+                    if let Some(width) = column_widths
+                        .get(orig_sheet_name)
+                        .and_then(|sheet_widths| sheet_widths.get(&col_idx))
+                    {
+                        col.width = Some(*width);
+                    }
                     col
                 })
                 .collect::<Vec<_>>();
@@ -244,26 +268,34 @@ pub(crate) fn import_xlsx_data_raw(
                     }
                 }
             }
-            if let Some(sheet_formats) = cell_number_formats.get(orig_sheet_name) {
-                for (&(row_idx, col_idx), code) in sheet_formats {
+            if let Some(sheet_styles) = cell_styles.get(orig_sheet_name) {
+                for (&(row_idx, col_idx), style) in sheet_styles {
                     let Some(col) = columns.get_mut(col_idx) else {
                         continue;
                     };
                     if row_idx >= col.styles.len() {
                         continue;
                     }
-                    let mut style = col.styles[row_idx].clone().unwrap_or_default();
-                    style.num_format = Some(code.clone());
-                    col.styles[row_idx] = Some(style);
+                    col.styles[row_idx] = Some(style.clone());
                 }
             }
             let elapsed_cells = start_cells.elapsed();
+
+            let mut sheet_row_heights = vec![None; rows];
+            if let Some(imported_heights) = row_heights.get(orig_sheet_name) {
+                for (&row_idx, &height) in imported_heights {
+                    if row_idx < sheet_row_heights.len() {
+                        sheet_row_heights[row_idx] = Some(height);
+                    }
+                }
+            }
 
             orig_to_assigned_name.insert(orig_sheet_name.clone(), sheet_name.clone());
             let new_sheet = Sheet {
                 id: rand::random::<u64>(),
                 name: sheet_name,
                 columns,
+                row_heights: sheet_row_heights,
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -618,6 +650,8 @@ pub(crate) fn export_xlsx_data_raw(
     let mut table_name_to_table = std::collections::HashMap::new();
     let mut sheet_id_to_worksheet_name = std::collections::HashMap::new();
     let mut empty_table_names = std::collections::HashSet::new();
+    let mut worksheet_name_to_column_widths = std::collections::HashMap::new();
+    let mut worksheet_name_to_row_heights = std::collections::HashMap::new();
 
     for sheet in sheets {
         table_name_to_table.insert(sheet.name.clone(), sheet);
@@ -645,6 +679,35 @@ pub(crate) fn export_xlsx_data_raw(
         used_names.insert(worksheet_name.to_lowercase());
         table_name_to_worksheet_name.insert(sheet.name.clone(), worksheet_name.clone());
         sheet_id_to_worksheet_name.insert(sheet.id, worksheet_name.clone());
+        let explicit_widths = sheet
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, col)| {
+                col.width
+                    .filter(|width| width.is_finite() && *width >= 0.0)
+                    .map(|width| (idx, width))
+            })
+            .collect::<Vec<_>>();
+        if !explicit_widths.is_empty() {
+            worksheet_name_to_column_widths.insert(worksheet_name.clone(), explicit_widths);
+        }
+        let explicit_heights = sheet
+            .row_heights
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, height)| {
+                let value = (*height)?;
+                if value.is_finite() && value >= 0.0 {
+                    Some((idx, value))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if !explicit_heights.is_empty() {
+            worksheet_name_to_row_heights.insert(worksheet_name.clone(), explicit_heights);
+        }
 
         {
             let worksheet = workbook.add_worksheet();
@@ -958,6 +1021,9 @@ pub(crate) fn export_xlsx_data_raw(
         .save_to_buffer()
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
+    let buffer = inject_column_widths(buffer, &worksheet_name_to_column_widths)?;
+    let buffer = inject_row_heights(buffer, &worksheet_name_to_row_heights)?;
+
     let formula_string_result_cells = formula_string_result_cells_by_sheet(sheets);
     let buffer = inject_formula_string_result_types(buffer, &formula_string_result_cells)?;
 
@@ -1149,6 +1215,296 @@ fn force_open_tag_type_str(open_tag: &str) -> String {
     }
 
     format!("{} t=\"str\"", open_tag)
+}
+
+fn inject_column_widths(
+    original: Vec<u8>,
+    widths_by_sheet: &std::collections::HashMap<String, Vec<(usize, f64)>>,
+) -> Result<Vec<u8>, String> {
+    if widths_by_sheet.is_empty() {
+        return Ok(original);
+    }
+
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original.as_slice()))
+        .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(file);
+
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(sheet_file) = name.strip_prefix("xl/worksheets/")
+            && !sheet_file.contains('/')
+            && let Some(sheet_name) = sheet_file_to_name.get(sheet_file)
+            && let Some(widths) = widths_by_sheet.get(sheet_name)
+            && let Ok(xml) = std::str::from_utf8(&buf)
+        {
+            let cols_xml = build_column_widths_xml(widths);
+            let new_xml = replace_or_insert_cols_xml(xml, &cols_xml);
+            writer
+                .write_all(new_xml.as_bytes())
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+
+    let cursor = writer.finish().map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
+}
+
+fn build_column_widths_xml(widths: &[(usize, f64)]) -> String {
+    let mut sorted = widths.to_vec();
+    sorted.sort_by_key(|(idx, _)| *idx);
+    let mut out = String::from("<cols>");
+    for (idx, width) in sorted {
+        if !width.is_finite() || width < 0.0 || idx >= 16_384 {
+            continue;
+        }
+        let one_based = idx + 1;
+        out.push_str(&format!(
+            "<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"/>",
+            one_based, one_based, width
+        ));
+    }
+    out.push_str("</cols>");
+    out
+}
+
+fn replace_or_insert_cols_xml(xml: &str, cols_xml: &str) -> String {
+    if let Some(cols_start) = xml.find("<cols") {
+        if let Some(rel_cols_end) = xml[cols_start..].find("</cols>") {
+            let cols_end = cols_start + rel_cols_end + "</cols>".len();
+            return format!("{}{}{}", &xml[..cols_start], cols_xml, &xml[cols_end..]);
+        }
+        if let Some(rel_tag_end) = xml[cols_start..].find("/>") {
+            let cols_end = cols_start + rel_tag_end + 2;
+            return format!("{}{}{}", &xml[..cols_start], cols_xml, &xml[cols_end..]);
+        }
+    }
+
+    if let Some(sheet_format_start) = xml.find("<sheetFormatPr") {
+        if let Some(rel_empty_end) = xml[sheet_format_start..].find("/>") {
+            let insert_at = sheet_format_start + rel_empty_end + 2;
+            return format!("{}{}{}", &xml[..insert_at], cols_xml, &xml[insert_at..]);
+        }
+        if let Some(rel_end) = xml[sheet_format_start..].find("</sheetFormatPr>") {
+            let insert_at = sheet_format_start + rel_end + "</sheetFormatPr>".len();
+            return format!("{}{}{}", &xml[..insert_at], cols_xml, &xml[insert_at..]);
+        }
+    }
+
+    if let Some(sheet_data_start) = xml.find("<sheetData") {
+        return format!(
+            "{}{}{}",
+            &xml[..sheet_data_start],
+            cols_xml,
+            &xml[sheet_data_start..]
+        );
+    }
+
+    xml.to_string()
+}
+
+fn inject_row_heights(
+    original: Vec<u8>,
+    heights_by_sheet: &std::collections::HashMap<String, Vec<(usize, f64)>>,
+) -> Result<Vec<u8>, String> {
+    if heights_by_sheet.is_empty() {
+        return Ok(original);
+    }
+
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original.as_slice()))
+        .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(file);
+
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(sheet_file) = name.strip_prefix("xl/worksheets/")
+            && !sheet_file.contains('/')
+            && let Some(sheet_name) = sheet_file_to_name.get(sheet_file)
+            && let Some(heights) = heights_by_sheet.get(sheet_name)
+            && let Ok(xml) = std::str::from_utf8(&buf)
+        {
+            let new_xml = apply_row_heights_xml(xml, heights);
+            writer
+                .write_all(new_xml.as_bytes())
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+
+    let cursor = writer.finish().map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
+}
+
+fn apply_row_heights_xml(xml: &str, heights: &[(usize, f64)]) -> String {
+    let Some(sheet_data_start) = xml.find("<sheetData") else {
+        return xml.to_string();
+    };
+    let mut remaining = heights
+        .iter()
+        .filter_map(|(idx, height)| {
+            if *idx < 1_048_576 && height.is_finite() && *height >= 0.0 {
+                Some((idx + 1, *height))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    remaining.sort_by_key(|(row, _)| *row);
+    remaining.dedup_by_key(|(row, _)| *row);
+    if remaining.is_empty() {
+        return xml.to_string();
+    }
+
+    if let Some(rel_empty_end) = xml[sheet_data_start..].find("/>")
+        && xml[sheet_data_start..]
+            .find('>')
+            .is_some_and(|rel_end| rel_empty_end < rel_end)
+    {
+        let tag_end = sheet_data_start + rel_empty_end + 2;
+        let rows_xml = remaining
+            .iter()
+            .map(|(row, height)| empty_row_height_xml(*row, *height))
+            .collect::<String>();
+        return format!(
+            "{}<sheetData>{}</sheetData>{}",
+            &xml[..sheet_data_start],
+            rows_xml,
+            &xml[tag_end..]
+        );
+    }
+
+    let Some(rel_sheet_data_open_end) = xml[sheet_data_start..].find('>') else {
+        return xml.to_string();
+    };
+    let body_start = sheet_data_start + rel_sheet_data_open_end + 1;
+    let Some(rel_sheet_data_close) = xml[body_start..].find("</sheetData>") else {
+        return xml.to_string();
+    };
+    let body_end = body_start + rel_sheet_data_close;
+    let body = &xml[body_start..body_end];
+
+    let mut out_body = String::with_capacity(body.len() + remaining.len() * 32);
+    let mut pos = 0;
+    let mut next_height = 0usize;
+    while let Some(rel_row_start) = body[pos..].find("<row") {
+        let row_start = pos + rel_row_start;
+        out_body.push_str(&body[pos..row_start]);
+        let Some(rel_open_end) = body[row_start..].find('>') else {
+            out_body.push_str(&body[row_start..]);
+            pos = body.len();
+            break;
+        };
+        let open_end = row_start + rel_open_end;
+        let open_tag = &body[row_start..=open_end];
+        let row_num = attr_value(open_tag, "r").and_then(|s| s.parse::<usize>().ok());
+
+        if let Some(row_num) = row_num {
+            while next_height < remaining.len() && remaining[next_height].0 < row_num {
+                out_body.push_str(&empty_row_height_xml(
+                    remaining[next_height].0,
+                    remaining[next_height].1,
+                ));
+                next_height += 1;
+            }
+        }
+
+        let row_end = if open_tag.ends_with("/>") {
+            open_end + 1
+        } else if let Some(rel_close) = body[open_end + 1..].find("</row>") {
+            open_end + 1 + rel_close + "</row>".len()
+        } else {
+            open_end + 1
+        };
+        let mut row_xml = body[row_start..row_end].to_string();
+        if let Some(row_num) = row_num
+            && next_height < remaining.len()
+            && remaining[next_height].0 == row_num
+        {
+            row_xml = set_row_height_attrs(&row_xml, remaining[next_height].1);
+            next_height += 1;
+        }
+        out_body.push_str(&row_xml);
+        pos = row_end;
+    }
+    out_body.push_str(&body[pos..]);
+    while next_height < remaining.len() {
+        out_body.push_str(&empty_row_height_xml(
+            remaining[next_height].0,
+            remaining[next_height].1,
+        ));
+        next_height += 1;
+    }
+
+    format!("{}{}{}", &xml[..body_start], out_body, &xml[body_end..])
+}
+
+fn empty_row_height_xml(row: usize, height: f64) -> String {
+    format!("<row r=\"{}\" ht=\"{}\" customHeight=\"1\"/>", row, height)
+}
+
+fn set_row_height_attrs(row_xml: &str, height: f64) -> String {
+    let Some(open_end) = row_xml.find('>') else {
+        return row_xml.to_string();
+    };
+    let open_tag = &row_xml[..open_end];
+    let open_tag = set_or_insert_attr(open_tag, "ht", &height.to_string());
+    let open_tag = set_or_insert_attr(&open_tag, "customHeight", "1");
+    format!("{}{}", open_tag, &row_xml[open_end..])
+}
+
+fn set_or_insert_attr(tag: &str, name: &str, value: &str) -> String {
+    let needle = format!(" {}=\"", name);
+    if let Some(attr_start) = tag.find(&needle) {
+        let value_start = attr_start + needle.len();
+        if let Some(rel_value_end) = tag[value_start..].find('"') {
+            let value_end = value_start + rel_value_end;
+            return format!(
+                "{}{}{}",
+                &tag[..value_start],
+                escape_xml(value),
+                &tag[value_end..]
+            );
+        }
+    }
+    if let Some(prefix) = tag.strip_suffix('/') {
+        return format!("{} {}=\"{}\"/", prefix, name, escape_xml(value));
+    }
+    format!("{} {}=\"{}\"", tag, name, escape_xml(value))
+}
+
+fn attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!(" {}=\"", name);
+    let value_start = tag.find(&needle)? + needle.len();
+    let value_end = value_start + tag[value_start..].find('"')?;
+    Some(&tag[value_start..value_end])
 }
 
 fn inject_empty_table_flags(
@@ -1890,6 +2246,362 @@ const BUILTIN_DATE_NUM_FMTS: &[(u32, &str)] = &[
 type SheetCellNumberFormats =
     std::collections::HashMap<String, std::collections::HashMap<(usize, usize), String>>;
 
+type SheetCellStyles =
+    std::collections::HashMap<String, std::collections::HashMap<(usize, usize), CellStyle>>;
+
+type SheetColumnWidths = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
+
+type SheetRowHeights = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
+
+fn import_column_widths(buffer: &[u8]) -> Result<SheetColumnWidths, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: SheetColumnWidths = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let widths = parse_sheet_column_widths(&sheet_xml);
+        if !widths.is_empty() {
+            out.insert(sheet_name, widths);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_sheet_column_widths(xml: &str) -> std::collections::HashMap<usize, f64> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"col"
+                    && let Some(width) = get_attr(e, b"width").and_then(|s| s.parse::<f64>().ok())
+                    && width.is_finite()
+                    && width >= 0.0
+                {
+                    let min = get_attr(e, b"min")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .max(1);
+                    let max = get_attr(e, b"max")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(min)
+                        .max(min)
+                        .min(16_384);
+                    for one_based_col in min..=max {
+                        out.insert(one_based_col - 1, width);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+fn import_row_heights(buffer: &[u8]) -> Result<SheetRowHeights, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: SheetRowHeights = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let heights = parse_sheet_row_heights(&sheet_xml);
+        if !heights.is_empty() {
+            out.insert(sheet_name, heights);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_sheet_row_heights(xml: &str) -> std::collections::HashMap<usize, f64> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut next_row = 1usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"row" {
+                    let row = get_attr(e, b"r")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(next_row)
+                        .max(1);
+                    next_row = row + 1;
+                    if let Some(height) = get_attr(e, b"ht").and_then(|s| s.parse::<f64>().ok())
+                        && row <= 1_048_576
+                        && height.is_finite()
+                        && height >= 0.0
+                    {
+                        out.insert(row - 1, height);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+fn import_cell_styles(buffer: &[u8]) -> Result<SheetCellStyles, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+
+    let Some(styles_xml) = get_zip_file_content(&mut archive, "xl/styles.xml") else {
+        return Ok(HashMap::new());
+    };
+    let xf_to_style = parse_styles_cell_styles(&styles_xml);
+    if xf_to_style.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: HashMap<String, HashMap<(usize, usize), CellStyle>> = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let cells = parse_sheet_cell_styles(&sheet_xml, &xf_to_style);
+        if !cells.is_empty() {
+            out.insert(sheet_name, cells);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_styles_cell_styles(xml: &str) -> std::collections::HashMap<u32, CellStyle> {
+    use std::collections::HashMap;
+
+    let mut custom_num_formats: HashMap<u32, String> = HashMap::new();
+    let mut fonts: Vec<CellStyle> = Vec::new();
+    let mut fills: Vec<Option<String>> = Vec::new();
+    let mut out: HashMap<u32, CellStyle> = HashMap::new();
+    let mut in_fonts = false;
+    let mut in_font = false;
+    let mut current_font = CellStyle::default();
+    let mut in_fills = false;
+    let mut in_fill = false;
+    let mut current_fill: Option<String> = None;
+    let mut in_cell_xfs = false;
+    let mut xf_idx = 0u32;
+
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => match e.local_name().as_ref() {
+                b"numFmt" => {
+                    if let Some(id) = get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
+                        && let Some(code) = get_attr(e, b"formatCode")
+                    {
+                        custom_num_formats.insert(id, code);
+                    }
+                }
+                b"fonts" => in_fonts = true,
+                b"font" if in_fonts => {
+                    in_font = true;
+                    current_font = CellStyle::default();
+                }
+                b"b" if in_font => {
+                    if style_bool_enabled(e) {
+                        current_font.bold = Some(true);
+                    }
+                }
+                b"i" if in_font => {
+                    if style_bool_enabled(e) {
+                        current_font.italic = Some(true);
+                    }
+                }
+                b"u" if in_font => {
+                    if style_bool_enabled(e) {
+                        current_font.underline = Some(true);
+                    }
+                }
+                b"color" if in_font => current_font.font_color = style_color_hex(e),
+                b"name" if in_font => current_font.font_family = get_attr(e, b"val"),
+                b"sz" if in_font => {
+                    current_font.font_size = get_attr(e, b"val").and_then(|s| s.parse().ok());
+                }
+                b"fills" => in_fills = true,
+                b"fill" if in_fills => {
+                    in_fill = true;
+                    current_fill = None;
+                }
+                b"fgColor" if in_fill => {
+                    if let Some(color) = style_color_hex(e) {
+                        current_fill = Some(color);
+                    }
+                }
+                b"bgColor" if in_fill => {
+                    if current_fill.is_none() {
+                        current_fill = style_color_hex(e);
+                    }
+                }
+                b"cellXfs" => in_cell_xfs = true,
+                b"xf" if in_cell_xfs => {
+                    let mut style = CellStyle::default();
+                    if let Some(font_id) =
+                        get_attr(e, b"fontId").and_then(|s| s.parse::<usize>().ok())
+                        && font_id != 0
+                        && let Some(font) = fonts.get(font_id)
+                    {
+                        style.merge(font);
+                    }
+                    if let Some(fill_id) =
+                        get_attr(e, b"fillId").and_then(|s| s.parse::<usize>().ok())
+                        && fill_id > 1
+                        && let Some(Some(bg_color)) = fills.get(fill_id)
+                    {
+                        style.bg_color = Some(bg_color.clone());
+                    }
+                    if let Some(num_fmt_id) =
+                        get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
+                    {
+                        style.num_format =
+                            custom_num_formats.get(&num_fmt_id).cloned().or_else(|| {
+                                BUILTIN_DATE_NUM_FMTS
+                                    .iter()
+                                    .find(|(id, _)| *id == num_fmt_id)
+                                    .map(|(_, code)| (*code).to_string())
+                            });
+                    }
+                    if !style.is_empty() {
+                        out.insert(xf_idx, style);
+                    }
+                    xf_idx += 1;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::End(ref e)) => match e.local_name().as_ref() {
+                b"fonts" => in_fonts = false,
+                b"font" if in_font => {
+                    fonts.push(current_font.clone());
+                    current_font = CellStyle::default();
+                    in_font = false;
+                }
+                b"fills" => in_fills = false,
+                b"fill" if in_fill => {
+                    fills.push(current_fill.clone());
+                    current_fill = None;
+                    in_fill = false;
+                }
+                b"cellXfs" => in_cell_xfs = false,
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    out
+}
+
+fn style_bool_enabled(e: &quick_xml::events::BytesStart) -> bool {
+    get_attr(e, b"val").is_none_or(|value| {
+        value != "0" && !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("none")
+    })
+}
+
+fn style_color_hex(e: &quick_xml::events::BytesStart) -> Option<String> {
+    if let Some(rgb) = get_attr(e, b"rgb") {
+        let trimmed = rgb.trim().trim_start_matches('#');
+        let hex = match trimmed.len() {
+            8 => &trimmed[2..],
+            6 => trimmed,
+            _ => return None,
+        };
+        return Some(format!("#{}", hex.to_ascii_uppercase()));
+    }
+    get_attr(e, b"indexed")
+        .and_then(|idx| idx.parse::<u32>().ok())
+        .and_then(indexed_color_hex)
+}
+
+fn indexed_color_hex(index: u32) -> Option<String> {
+    let hex = match index {
+        0 | 8 => "#000000",
+        1 | 9 => "#FFFFFF",
+        2 | 10 => "#FF0000",
+        3 | 11 => "#00FF00",
+        4 | 12 => "#0000FF",
+        5 | 13 => "#FFFF00",
+        6 | 14 => "#FF00FF",
+        7 | 15 => "#00FFFF",
+        _ => return None,
+    };
+    Some(hex.to_string())
+}
+
+fn parse_sheet_cell_styles(
+    xml: &str,
+    xf_to_style: &std::collections::HashMap<u32, CellStyle>,
+) -> std::collections::HashMap<(usize, usize), CellStyle> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"c"
+                    && let Some(style_idx) = get_attr(e, b"s").and_then(|s| s.parse::<u32>().ok())
+                    && let Some(style) = xf_to_style.get(&style_idx)
+                    && let Some(reference) = get_attr(e, b"r")
+                    && let Some(rc) = parse_a1_cell(&reference)
+                {
+                    out.insert(rc, style.clone());
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 /// Maps each cell that carries a date number format to that format's code,
 /// keyed by sheet name and then by `(row, col)` -- both 0-based, matching the
 /// engine.
@@ -1900,6 +2612,7 @@ type SheetCellNumberFormats =
 /// this walks the zip directly, joining each worksheet's per-cell style index
 /// (`<c s="3">`) through `xl/styles.xml`'s `<cellXfs>` to a `numFmtId`, and
 /// then to either a custom `<numFmt>` code or a built-in one.
+#[allow(dead_code)]
 fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, String> {
     use std::collections::HashMap;
 
@@ -2150,6 +2863,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2173,6 +2887,122 @@ mod tests {
         assert_eq!(imported_sheet.columns[0].src[1], "20");
         assert_eq!(imported_sheet.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_sheet.columns[1].src[1], "abc");
+    }
+
+    #[test]
+    fn test_xlsx_column_width_survives_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 3,
+            ..Default::default()
+        });
+        sheet.set_column_width(1, Some(22.5));
+        sheet.set_cell_src(0, 1, "wide".to_string());
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("<cols>"));
+        assert!(sheet_xml.contains("min=\"2\""));
+        assert!(sheet_xml.contains("max=\"2\""));
+        assert!(sheet_xml.contains("width=\"22.5\""));
+
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets[0].sheet.get_column_width(1), Some(22.5));
+
+        let exported_again =
+            export_xlsx_data(&[imported_sheets[0].sheet.clone()], &[], &[], None).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(exported_again.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("width=\"22.5\""));
+    }
+
+    #[test]
+    fn test_xlsx_row_height_survives_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 3,
+            cols: 1,
+            ..Default::default()
+        });
+        sheet.set_row_height(1, Some(31.5));
+        sheet.set_cell_src(1, 0, "tall".to_string());
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("r=\"2\""));
+        assert!(sheet_xml.contains("ht=\"31.5\""));
+        assert!(sheet_xml.contains("customHeight=\"1\""));
+
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets[0].sheet.get_row_height(1), Some(31.5));
+
+        let exported_again =
+            export_xlsx_data(&[imported_sheets[0].sheet.clone()], &[], &[], None).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(exported_again.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("ht=\"31.5\""));
+    }
+
+    #[test]
+    fn test_xlsx_cell_style_survives_load_evaluate_save_cycle() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 3,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "5".to_string());
+        sheet.set_cell_src(0, 1, "=A1*2".to_string());
+        sheet.columns[0].styles[0] = Some(CellStyle {
+            font_color: Some("#FF0000".to_string()),
+            bg_color: Some("#FFFF00".to_string()),
+            bold: Some(true),
+            italic: Some(true),
+            underline: Some(true),
+            font_family: Some("Arial".to_string()),
+            font_size: Some(14.0),
+            ..Default::default()
+        });
+        sheet.columns[1].styles[0] = Some(CellStyle {
+            font_color: Some("#0000FF".to_string()),
+            bg_color: Some("#00FF00".to_string()),
+            bold: Some(true),
+            ..Default::default()
+        });
+        sheet.columns[2].styles[0] = Some(CellStyle {
+            bg_color: Some("#00FFFF".to_string()),
+            ..Default::default()
+        });
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut wb = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        wb.evaluate().unwrap();
+        let evaluated = wb.save_bytes().unwrap();
+        let reloaded = crate::core::WorkbookManager::load_bytes(&evaluated).unwrap();
+
+        let style_a1 = reloaded.sheets[0].columns[0].styles[0].as_ref().unwrap();
+        assert_eq!(style_a1.font_color.as_deref(), Some("#FF0000"));
+        assert_eq!(style_a1.bg_color.as_deref(), Some("#FFFF00"));
+        assert_eq!(style_a1.bold, Some(true));
+        assert_eq!(style_a1.italic, Some(true));
+        assert_eq!(style_a1.underline, Some(true));
+        assert_eq!(style_a1.font_family.as_deref(), Some("Arial"));
+        assert_eq!(style_a1.font_size, Some(14.0));
+
+        let style_b1 = reloaded.sheets[0].columns[1].styles[0].as_ref().unwrap();
+        assert_eq!(style_b1.font_color.as_deref(), Some("#0000FF"));
+        assert_eq!(style_b1.bg_color.as_deref(), Some("#00FF00"));
+        assert_eq!(style_b1.bold, Some(true));
+
+        let style_c1 = reloaded.sheets[0].columns[2].styles[0].as_ref().unwrap();
+        assert_eq!(style_c1.bg_color.as_deref(), Some("#00FFFF"));
+        assert!(reloaded.sheets[0].columns[2].src[0].is_empty());
     }
 
     #[test]
@@ -2268,6 +3098,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns: vec![col],
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2411,6 +3242,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns: vec![col_a, col_b, col_c],
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2714,6 +3546,7 @@ mod tests {
             id: 2,
             name: "EmptyTable".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2758,6 +3591,7 @@ mod tests {
                 id: 1,
                 name: "Sheet1".to_string(),
                 columns,
+                row_heights: Vec::new(),
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -2837,6 +3671,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2867,6 +3702,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2899,6 +3735,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2927,6 +3764,7 @@ mod tests {
             id: 1,
             name: "Sheet1".to_string(),
             columns,
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3272,6 +4110,7 @@ mod tests {
             id: 1,
             name: long_name.clone(),
             columns: Vec::new(),
+            row_heights: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),

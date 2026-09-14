@@ -727,6 +727,7 @@ impl WorkbookManager {
             id: generate_unique_id(),
             name: name.to_string(),
             columns,
+            row_heights: vec![None; 10],
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),

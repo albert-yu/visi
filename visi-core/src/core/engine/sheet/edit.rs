@@ -343,6 +343,7 @@ impl Sheet {
                 for column in &mut self.columns {
                     column.insert_row(0);
                 }
+                self.row_heights.insert(0, None);
                 self.uncommitted_actions
                     .push(crate::core::SheetAction::InsertRow {
                         sheet_name: self.name.clone(),
@@ -353,6 +354,7 @@ impl Sheet {
                 for column in &mut self.columns {
                     column.push_row();
                 }
+                self.row_heights.push(None);
                 self.uncommitted_actions
                     .push(crate::core::SheetAction::InsertRow {
                         sheet_name: self.name.clone(),
@@ -400,6 +402,7 @@ impl Sheet {
             for col in &mut self.columns {
                 col.resize_rows(final_rows);
             }
+            self.row_heights.resize(final_rows, None);
         }
     }
 
@@ -460,14 +463,43 @@ impl Sheet {
         }
     }
 
+    /// [GPT-5.5] Returns the custom width for the zero-based column, if one is set.
+    pub fn get_column_width(&self, col: usize) -> Option<f64> {
+        self.columns.get(col).and_then(|column| column.width)
+    }
+
+    /// [GPT-5.5] Sets or clears the custom width for an existing zero-based column.
+    pub fn set_column_width(&mut self, col: usize, width: Option<f64>) {
+        if let Some(column) = self.columns.get_mut(col) {
+            column.width = width.filter(|value| value.is_finite() && *value >= 0.0);
+        }
+    }
+
+    /// [GPT-5.5] Returns the custom height for the zero-based row, if one is set.
+    pub fn get_row_height(&self, row: usize) -> Option<f64> {
+        self.row_heights.get(row).and_then(|height| *height)
+    }
+
+    /// [GPT-5.5] Sets or clears the custom height for an existing zero-based row.
+    pub fn set_row_height(&mut self, row: usize, height: Option<f64>) {
+        if row >= self.row_count() {
+            return;
+        }
+        let row_count = self.row_count();
+        self.row_heights.resize(row_count, None);
+        self.row_heights[row] = height.filter(|value| value.is_finite() && *value >= 0.0);
+    }
+
     /// Insert a new empty row at the specified index
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
         let row_count = self.row_count();
+        self.row_heights.resize(row_count, None);
         if index >= row_count {
             for column in &mut self.columns {
                 column.push_row();
             }
+            self.row_heights.push(None);
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
                     sheet_name: self.name.clone(),
@@ -477,6 +509,7 @@ impl Sheet {
             for column in &mut self.columns {
                 column.insert_row(index);
             }
+            self.row_heights.insert(index, None);
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
                     sheet_name: self.name.clone(),
@@ -496,6 +529,9 @@ impl Sheet {
         if index < row_count {
             for column in &mut self.columns {
                 column.remove_row(index);
+            }
+            if index < self.row_heights.len() {
+                self.row_heights.remove(index);
             }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::DeleteRow {
@@ -539,6 +575,8 @@ impl Sheet {
                 column.push_row();
             }
         }
+        let row_count = self.row_count();
+        self.row_heights.resize(row_count, None);
         for column in &mut self.columns[first_col..=last_col] {
             for _ in 0..count {
                 column.insert_row(row);

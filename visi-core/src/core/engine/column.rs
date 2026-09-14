@@ -293,6 +293,9 @@ pub struct DataColumn {
     /// Display name, empty unless one was set.
     #[serde(default)]
     pub name: String,
+    /// [AI-Agent] Excel/OpenXML column width in character units, when one was explicitly stored.
+    #[serde(default)]
+    pub width: Option<f64>,
     /// The computed values. Rebuilt on load, so not persisted.
     #[serde(skip, default)]
     pub(crate) data: ColumnData,
@@ -326,6 +329,7 @@ impl DataColumn {
         Self {
             id: generate_unique_id(),
             name: String::new(),
+            width: None,
             data: ColumnData::new(size),
             src: vec![String::new(); size].into(),
             cell_types: vec![CellType::Auto; size].into(),
