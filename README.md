@@ -1,24 +1,37 @@
 # visi monorepo
 
+> [!NOTE]
+> While ~99% of the code is LLM-authored, the _prose_
+> should not be. See the [LLM policy](#llm-policy).
+
 [![CI](https://github.com/albert-yu/visi/actions/workflows/ci.yml/badge.svg)](https://github.com/albert-yu/visi/actions/workflows/ci.yml)
+
+## Overview
 
 `visi` is a CLI application for editing and evaluating Excel spreadsheets.
 
-My goals with this project are:
+### Goals
 
-1. Match Excel's execution behavior 100%
-  - Pivot tables
-  - Macro-enabled workbooks (VBA) support
-  - Minus some functions that require calling Microsoft's own APIs
-2. Prioritize performance, making it possible to handle large workloads
+- Match Excel's execution behavior 100%, including pivot tables, macros (VBA), and error messages.
+  - In some cases, `visi` even produces more numerically accurate results
+  - Excludes some functionality that require Microsoft web services
+- Prioritize performance
+  - Written in Rust to maximize potential performance capacity
+  - Fast startup time
+  - Handle large workflows
 
-## LLM Policy
+### Why `visi`
 
-- No LLM use for writing prose, unless clearly attributed at the _beginning_ of
-  the content
-  - Source code comments count as prose
-  - AGENTS.md should automatically enforce this
-- LLMs may be used for source code generation
+LLMs are good at authoring spreadsheets with existing tools
+(such as `openpyxl` for Python), but in order
+to _evaluate_ the formula results, you need a real
+spreadsheet application (such as Excel). Excel is
+unsuitable for headlessly evaluation of
+spreadsheet files, especially on non-Windows
+platforms (e.g. no COM automation).
+
+`visi` aims to bridge this gap by providing an
+execution/verification layer for spreadsheets.
 
 ## Installation
 
@@ -130,12 +143,18 @@ This monorepo is structured follows:
 - **[`visi-core`](visi-core/)**: embeddedable spreadsheet engine that parses and executes the formulas in the workbook 
 - **[`visi`](visi/)**: Command-line application using `visi-core` which can edit and execute Excel files headlessly
 
-### How to catch up to Excel
-
-`visi`'s strategy for feature parity with Excel by using 
+`visi` aims for feature parity with Excel by using
 a harness that drives a real copy of Excel via AppleScript or COM automation,
 runs computations, and compares the results. Both the cell values and types
 should match exactly. See [`fuzz`](./fuzz/README.md) for more details.
+
+## LLM Policy
+
+- LLMs may be used for source code generation
+- No LLM use for writing prose, unless clearly attributed at the _beginning_ of
+  the content
+  - Source code comments count as prose
+  - AGENTS.md should automatically enforce this
 
 ## License
 

@@ -57,16 +57,9 @@ pub(crate) fn import_xlsx_data_raw(
     let sheet_names = workbook.sheet_names();
     let total_sheets = sheet_names.len();
     let mut imported_sheets = Vec::new();
-    // Maps each worksheet's original name to the (possibly de-duplicated)
-    // name it was actually imported under, so Excel Table definitions --
-    // read separately below, keyed by original sheet name -- can be
-    // attached to the right imported Sheet.
     let mut orig_to_assigned_name: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // Keyed by *original* sheet name, like the table definitions below, since
-    // it is read straight out of the zip rather than through calamine. A
-    // malformed styles part costs the date notation, not the import.
     let cell_number_formats = import_cell_number_formats(buffer).unwrap_or_default();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
@@ -80,21 +73,6 @@ pub(crate) fn import_xlsx_data_raw(
             let formula_range = workbook.worksheet_formula(orig_sheet_name).ok();
             let elapsed_formula = start_formula.elapsed();
 
-            // calamine's `Range::rows()`/`Index` address cells relative to
-            // the used range's own top-left corner, not the sheet's
-            // absolute A1 origin -- a sheet whose leftmost/topmost
-            // populated cell isn't row 1 / column A (e.g. a lone value at
-            // B1) would otherwise get that data silently stored at
-            // internal row/col 0, which every later A1 lookup elsewhere
-            // (CLI, formulas) treats as meaning row 1 / column A, missing
-            // the real column/row entirely. Sizing `rows`/`cols` off the
-            // combined absolute `end()` of both ranges pads the sheet with
-            // leading empty rows/columns instead, so internal index 0
-            // always really is row 1 / column A. `Range::get_value` (used
-            // in the slow path below) already takes absolute positions;
-            // only `rows()`/`Index` are range-relative, which is why the
-            // fast path further down only fires when `matches_exactly`
-            // confirms there's no leading offset to account for.
             let ends = [range.end(), formula_range.as_ref().and_then(|fr| fr.end())];
             let (mut rows, mut cols) = ends
                 .into_iter()
@@ -161,9 +139,6 @@ pub(crate) fn import_xlsx_data_raw(
                             calamine::Data::Error(e) => {
                                 crate::core::engine::ResultData::Error(format!("{:?}", e))
                             }
-                            // A date is its serial. Without this it would
-                            // land as `None` and stay blank until something
-                            // forced a recalculation.
                             calamine::Data::DateTime(d) => {
                                 crate::core::engine::ResultData::Float(d.as_f64())
                             }
@@ -223,9 +198,6 @@ pub(crate) fn import_xlsx_data_raw(
                             calamine::Data::Error(e) => {
                                 crate::core::engine::ResultData::Error(format!("{:?}", e))
                             }
-                            // A date is its serial. Without this it would
-                            // land as `None` and stay blank until something
-                            // forced a recalculation.
                             calamine::Data::DateTime(d) => {
                                 crate::core::engine::ResultData::Float(d.as_f64())
                             }
@@ -272,9 +244,6 @@ pub(crate) fn import_xlsx_data_raw(
                     }
                 }
             }
-            // Reattach the date notation each cell was formatted with. The
-            // value itself already arrived as a serial; without this it would
-            // display as 46195 instead of 6/22/26.
             if let Some(sheet_formats) = cell_number_formats.get(orig_sheet_name) {
                 for (&(row_idx, col_idx), code) in sheet_formats {
                     let Some(col) = columns.get_mut(col_idx) else {
@@ -320,10 +289,6 @@ pub(crate) fn import_xlsx_data_raw(
         return Err("No worksheets found in the Excel file".to_string());
     }
 
-    // Import Excel Table (ListObject) definitions, attaching each one to its
-    // owning sheet. Every field comes from the table's own `xl/tables/*.xml`
-    // part rather than from calamine, whose table API panics on a table with
-    // a header row and zero data rows -- see `import_tables_from_zip`.
     for (orig_sheet_name, parsed) in import_tables_from_zip(buffer).unwrap_or_default() {
         let Some(assigned_sheet_name) = orig_to_assigned_name.get(&orig_sheet_name) else {
             continue;
@@ -335,10 +300,6 @@ pub(crate) fn import_xlsx_data_raw(
             continue;
         };
 
-        // The declared `ref` is the sole source of truth for a table's
-        // position. A table whose `ref` is missing or unparseable can't be
-        // placed on the sheet at all, so it's skipped rather than guessed
-        // at.
         let Some((start_row, start_col, end_row, end_col)) = parsed.bounds else {
             log::warn!(
                 "Skipping table '{}' on sheet '{}': missing or unparseable ref",
@@ -373,12 +334,6 @@ pub(crate) fn import_xlsx_data_raw(
         start_total.elapsed()
     );
 
-    // Import charts from drawings and charts xml in ZIP. Chart ids are
-    // derived deterministically from (sheet name, position within that
-    // sheet's charts) rather than `rand::random()`: the CLI is a fresh
-    // process per invocation, so a random id would change on every reload
-    // of an unchanged file, making `chart edit --id`/`chart delete --id`
-    // unable to find a chart a prior `chart list` just reported.
     let mut imported_charts = Vec::new();
     if let Ok(parsed_charts) = import_charts_from_zip(buffer) {
         let mut chart_index_by_sheet: std::collections::HashMap<String, usize> =
@@ -661,26 +616,18 @@ pub(crate) fn export_xlsx_data_raw(
     let mut used_names = std::collections::HashSet::new();
     let mut table_name_to_worksheet_name = std::collections::HashMap::new();
     let mut table_name_to_table = std::collections::HashMap::new();
-    // Sheet id -> the actually-assigned worksheet name (after the 31-char
-    // truncation and case-insensitive de-dup below), so
-    // `vba_xlsx::export_vba_project` can match a Document module's bound
-    // sheet against the same name this function writes into the sheet
-    // element, rather than the original (possibly longer/colliding)
-    // `sheet.name`.
     let mut sheet_id_to_worksheet_name = std::collections::HashMap::new();
     let mut empty_table_names = std::collections::HashSet::new();
 
     for sheet in sheets {
         table_name_to_table.insert(sheet.name.clone(), sheet);
 
-        // 31-char limit for worksheet name
         let mut worksheet_name = if sheet.name.len() > 31 {
             sheet.name[..31].to_string()
         } else {
             sheet.name.clone()
         };
 
-        // Ensure unique worksheet name (case-insensitive)
         let mut counter = 1;
         while used_names.contains(&worksheet_name.to_lowercase()) {
             let counter_suffix = format!("_{}", counter);
@@ -767,10 +714,6 @@ pub(crate) fn export_xlsx_data_raw(
                                 .map_err(|e| format!("Failed to write Excel string: {}", e))?;
                         }
                     } else if let Some(serial) = date_serial_for_export(style_opt, col, row_idx) {
-                        // A date cell's src is the text that was typed
-                        // ("6/22/26"), which is not parseable as a number.
-                        // Excel wants the serial plus the number format, so
-                        // the computed value is what goes out.
                         let rx_format = format_opt
                             .as_ref()
                             .expect("a date cell always has a num_format style");
@@ -839,13 +782,6 @@ pub(crate) fn export_xlsx_data_raw(
                 }
             }
 
-            // Export Excel Tables (ListObjects) defined on this sheet. Cell
-            // values/formulas were already written above; a `TableColumn`
-            // with no total/formula set leaves the totals row and data cells
-            // alone, so `add_table` only adds table metadata (name, header
-            // row, autofilter, style) without touching content we already
-            // wrote -- except the header row, which it re-writes with the
-            // same column name we already used to populate it.
             for table in &sheet.tables {
                 let rx_columns: Vec<rust_xlsxwriter::TableColumn> = table
                     .columns
@@ -996,16 +932,6 @@ pub(crate) fn export_xlsx_data_raw(
             if let Some(ref title) = chart.title {
                 rx_chart.title().set_name(title);
             }
-            // `xlabel`/`ylabel` mean "category axis label"/"value axis
-            // label" (matching parse_chart_xml's in_cat_ax/in_val_ax
-            // reading on import), not "screen x/y axis". For horizontal
-            // Bar charts, rust_xlsxwriter's x_axis()/y_axis() address
-            // the *visual* bottom/left axes, which are the value/category
-            // axes respectively -- the opposite of every other chart
-            // type here, where the category axis is drawn horizontally.
-            // Swap the setters here so xlabel always lands on <c:catAx>
-            // and ylabel on <c:valAx>, keeping export consistent with
-            // what import expects to read back.
             let (x_axis_label, y_axis_label) =
                 if chart.chart_type == crate::core::chart::ChartType::Bar {
                     (chart.ylabel.as_ref(), chart.xlabel.as_ref())
@@ -1671,14 +1597,6 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
     let mut in_cat = false;
     let mut in_val = false;
 
-    // Scatter charts (`<c:scatterChart>`) have no `<c:catAx>` at all -- both
-    // of their axes are `<c:valAx>` (there's no category axis for an XY
-    // scatter plot), so `in_cat_ax`/`in_val_ax` alone can't tell the first
-    // (x) axis's title from the second (y) axis's title the way they can
-    // for every other chart type, which has exactly one axis of each kind.
-    // Titles found while `in_val_ax` are collected here in document order
-    // and only classified into xlabel/ylabel once parsing finishes and it's
-    // known whether a `<c:catAx>` ever appeared at all.
     let mut saw_cat_ax = false;
     let mut val_ax_titles: Vec<String> = Vec::new();
 
@@ -1709,14 +1627,6 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
                 } else if local == b"ser" {
                     in_ser = true;
                 } else if local == b"cat" || local == b"xVal" {
-                    // Scatter charts (`<c:scatterChart>`) encode their two
-                    // series ranges as `<c:xVal>`/`<c:yVal>` instead of the
-                    // `<c:cat>`/`<c:val>` every other chart type uses --
-                    // without this, a Scatter chart's range silently
-                    // resolves to empty on every reimport (falls back to
-                    // "Sheet!A1" in the caller), corrupting it on the very
-                    // next save since the CLI is a fresh process per
-                    // invocation.
                     in_cat = true;
                 } else if local == b"val" || local == b"yVal" {
                     in_val = true;
@@ -1797,12 +1707,6 @@ fn parse_chart_xml(xml: &str) -> Option<ParsedChartInfo> {
         String::new()
     };
 
-    // Classify the collected `<c:valAx>` titles now that it's known whether
-    // a `<c:catAx>` ever appeared: with one, this is a normal chart with a
-    // single value axis (its title is the y-axis label); without one, it's
-    // a Scatter chart whose first/second `<c:valAx>` are the x/y axes
-    // respectively, matching the order rust_xlsxwriter's x_axis()/y_axis()
-    // write them in on export.
     let mut val_ax_titles = val_ax_titles.into_iter();
     let ylabel = if saw_cat_ax {
         val_ax_titles.next()
@@ -1886,10 +1790,6 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
                         totals_row_count = get_attr(e, b"totalsRowCount")
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
-                        // `insertRow="1"` marks a table sitting on its
-                        // insert-row placeholder, i.e. with zero data rows.
-                        // The extent does not say so on its own -- see
-                        // `ExcelTable::has_insert_row`.
                         has_insert_row = get_attr(e, b"insertRow")
                             .is_some_and(|s| s == "1" || s.eq_ignore_ascii_case("true"));
                         bounds = get_attr(e, b"ref")
@@ -2041,8 +1941,6 @@ fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String>
     use std::collections::HashMap;
 
     let mut custom: HashMap<u32, String> = HashMap::new();
-    // `<xf>` appears under both `<cellStyleXfs>` and `<cellXfs>`; a cell's
-    // `s=` indexes the latter, so only that run is collected.
     let mut cell_xfs: Vec<u32> = Vec::new();
     let mut in_cell_xfs = false;
 
@@ -2157,8 +2055,6 @@ fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
     let mut hasher = DefaultHasher::new();
     sheet_name.hash(&mut hasher);
     index_in_sheet.hash(&mut hasher);
-    // Cap to JS Number.MAX_SAFE_INTEGER (2^53 - 1), matching
-    // generate_unique_id's convention, to avoid serialization precision loss.
     hasher.finish() & 0x001F_FFFF_FFFF_FFFF
 }
 
@@ -2330,7 +2226,6 @@ mod tests {
             sheet.get_cell_type(&crate::core::CellRef::new(0, 0)),
             CellType::String
         );
-        // The control: a genuinely empty src really is blank.
         assert!(matches!(
             sheet.get_result_data(&crate::core::CellRef::new(1, 0)),
             crate::core::ResultData::None
@@ -2354,9 +2249,7 @@ mod tests {
         let (imported, _, _, _) = import_xlsx_data(&bytes, &[], |_, _, _| {}).unwrap();
         let imported = &imported[0].sheet;
 
-        // The serial is what was written, not the typed text.
         assert_eq!(imported.columns[0].src[0], "46195");
-        // ... and the notation came back with it.
         for (row, want) in ["6/22/26", "22-Jun-2026", "2026-06-22"].iter().enumerate() {
             assert_eq!(
                 imported.get_display_string(&crate::core::CellRef::new(row, 0)),
@@ -2508,10 +2401,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_import_data_offset_from_column_a_is_not_lost() {
-        // Column A is entirely blank; real data starts at column B, with a
-        // formula in column C referencing it. Verify that used-range
-        // addressing accounts for sheet-absolute origin so column B data
-        // is preserved at column B.
         let col_a = DataColumn::from_src("A", vec![String::new(), String::new()]);
 
         let col_b = DataColumn::from_src("B", vec!["42".to_string(), "8".to_string()]);
@@ -2535,9 +2424,6 @@ mod tests {
         assert_eq!(imported_sheets.len(), 1);
         let imported = &imported_sheets[0].sheet;
 
-        // Column A must stay empty and column B must keep its own data --
-        // not have it aliased into column A -- and the formula must still
-        // read "=B1 + B2" (not silently rewritten to "=A1 + A2").
         assert_eq!(imported.columns.len(), 3);
         assert!(imported.columns[0].src[0].is_empty());
         assert!(imported.columns[0].src[1].is_empty());
@@ -2582,8 +2468,6 @@ mod tests {
         assert_eq!(table.data_start_row(), 1);
         assert_eq!(table.data_end_row(), 2);
 
-        // The structured reference over the re-imported table should still
-        // only see the table's own data rows.
         let mut imported_sheet = imported_sheet.clone();
         imported_sheet.mark_all_dirty();
         imported_sheet.commit(None).unwrap();
@@ -2600,9 +2484,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_zero_data_row_table_import_export_cycle() {
-        // Exporting an Excel Table with a header row but zero data rows,
-        // then reimporting it, should succeed and parse the table bounds
-        // correctly.
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 1,
@@ -2627,22 +2508,16 @@ mod tests {
         assert_eq!(table.columns, vec!["Name", "Amount"]);
         assert!(table.has_header_row);
         assert!(!table.has_totals_row);
-        // Zero data rows: the data range is empty (start past end).
         assert!(table.data_start_row() > table.data_end_row());
     }
 
     #[test]
     fn an_insert_row_attribute_is_read_off_the_table_part() {
-        // Excel writes `insertRow="1"` on a table whose only data row was
-        // deleted, keeping `ref` a row taller than the data -- so the extent
-        // alone cannot tell this from a table with one blank row. Sample
-        // trimmed from a file Excel itself saved; see `ExcelTable::has_insert_row`.
         let with_flag = r#"<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Hollow" displayName="Hollow" ref="A1:C2" insertRow="1" totalsRowShown="0"><tableColumns count="3"><tableColumn id="1" name="Region"/><tableColumn id="2" name="Product"/><tableColumn id="3" name="Amount"/></tableColumns></table>"#;
         let parsed = parse_table_part_xml(with_flag).expect("parses");
         assert!(parsed.has_insert_row);
         assert_eq!(parsed.bounds, Some((0, 0, 1, 2)));
 
-        // The ordinary case, where the same extent really does hold data.
         let without = with_flag.replace(" insertRow=\"1\"", "");
         let parsed = parse_table_part_xml(&without).expect("parses");
         assert!(!parsed.has_insert_row);
@@ -2650,15 +2525,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_table_import_with_absolute_relationship_target() {
-        // Openpyxl (and other OPC-compliant writers) may emit worksheet->table
-        // relationship `Target` attributes as absolute package paths
-        // ("/xl/tables/table1.xml") rather than the "../tables/table1.xml"
-        // relative form Excel and rust_xlsxwriter use. `parse_sheet_table_rels`
-        // takes the basename of the `Target` regardless of its form, which
-        // makes both spellings equivalent by construction. Simulate an
-        // openpyxl-authored file by rewriting a normally-exported file's
-        // sheet rels to use an absolute target, then confirm the table
-        // still imports.
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 3,
@@ -2676,10 +2542,6 @@ mod tests {
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
-        // Rewrite every worksheet rels part's relative table target
-        // ("../tables/table1.xml") to the absolute package-path form
-        // openpyxl uses ("/xl/tables/table1.xml"), leaving everything else
-        // byte-for-byte identical.
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&xlsx_data[..])).unwrap();
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
@@ -2733,7 +2595,6 @@ mod tests {
 
             if name.starts_with("xl/tables/") && name.ends_with(".xml") {
                 let text = String::from_utf8(buf.clone()).unwrap();
-                // Only the <table> element's own ref, not <autoFilter ref=>.
                 let new_text = text.replacen(r#" ref="A1:B2""#, new_ref_attr, 1);
                 assert_ne!(new_text, text, "expected to rewrite a table ref");
                 rewrote = true;
@@ -2767,12 +2628,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_table_with_unparseable_ref_is_skipped_not_misplaced() {
-        // The table's declared `ref` is the sole source of truth for its
-        // position now that the import path no longer consults calamine's
-        // `Table::data()` range as a fallback. A table whose `ref` can't be
-        // parsed therefore can't be placed at all, and is dropped rather
-        // than guessed at -- importantly, the *sheet* and its cell data must
-        // still import cleanly.
         for bad_ref in [r#" ref="not-a-range""#, ""] {
             let rewritten = rewrite_table_ref(&two_row_table_workbook(), bad_ref);
             let (imported_sheets, _, _, _) =
@@ -2783,7 +2638,6 @@ mod tests {
                 imported_sheet.tables.is_empty(),
                 "table with ref {bad_ref:?} should be skipped, not placed"
             );
-            // The underlying cells are untouched by the table being dropped.
             assert_eq!(imported_sheet.columns[0].src[0], "Name");
             assert_eq!(imported_sheet.columns[0].src[1], "Widget");
         }
@@ -2791,8 +2645,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_table_ref_survives_round_trip_unchanged() {
-        // Control for the test above: the same workbook with its `ref` left
-        // alone imports the table at exactly the declared bounds.
         let (imported_sheets, _, _, _) =
             import_xlsx_data(&two_row_table_workbook(), &[], |_, _, _| {}).unwrap();
         let table = &imported_sheets[0].sheet.tables[0];
@@ -2813,9 +2665,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_multiple_tables_on_one_sheet_all_import() {
-        // `parse_sheet_table_rels` returns a Vec because one worksheet can
-        // own several tables -- calamine's per-name lookup hid that, so it
-        // is worth pinning down directly.
         let mut sheet = Sheet::new(crate::core::SheetInit {
             name: Some("Sheet1".to_string()),
             rows: 6,
@@ -2886,10 +2735,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_chart_import_export_cycle() {
-        // Covers Bar and Column specifically (not just Line) because
-        // `parse_chart_xml`'s bar-vs-column disambiguation reads
-        // `<c:barDir val="col"|"bar">`, a branch the original single-type
-        // (Line) version of this test never exercised.
         for chart_type in [
             crate::core::chart::ChartType::Line,
             crate::core::chart::ChartType::Bar,
@@ -3012,11 +2857,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_formula_numeric_looking_string_cache_preserves_type() {
-        // rust_xlsxwriter infers the cached formula result type from the
-        // cached text and would write <v>1</v> as a number unless we force the
-        // cell type. Excel functions such as BIN2HEX return text even when the
-        // text looks numeric, and openpyxl observes that type in data_only
-        // reads used by the differential fuzzer.
         let mut columns = Vec::new();
         let mut col1 = DataColumn::from_src("A", vec!["=BIN2HEX(\"0001\")".to_string()]);
         col1.data
@@ -3079,9 +2919,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_numeric_looking_text_cell_preserves_type() {
-        // A cell whose text content looks like a number (e.g. imported from a
-        // spreadsheet where the user typed "1" into a text-formatted cell)
-        // must round-trip as text, not silently become the number 1.
         let mut columns = Vec::new();
         let col1 = DataColumn::from_src("A", vec!["\"1\"".to_string()]);
         columns.push(col1);
@@ -3099,8 +2936,6 @@ mod tests {
 
         let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
 
-        // The exported xlsx should contain the plain text "1", not a literal
-        // quote-wrapped string.
         let cursor = std::io::Cursor::new(xlsx_data.clone());
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
         let mut sheet_file = zip.by_name("xl/worksheets/sheet1.xml").unwrap();
@@ -3134,8 +2969,6 @@ mod tests {
         for i in 0..zip.len() {
             let mut f = zip.by_index(i).unwrap();
             let name = f.name().to_string();
-            // `_rels` parts share the same stem, and the map is unordered --
-            // matching one of those instead was a genuinely flaky test.
             if name.contains("pivot") && !name.contains("_rels") {
                 let mut buf = String::new();
                 use std::io::Read;
@@ -3160,8 +2993,6 @@ mod tests {
         for (c, h) in ["Region", "Product", "Amount"].iter().enumerate() {
             sheet.set_cell_src(0, c, h.to_string());
         }
-        // First-seen order is East, West, North -- deliberately *not*
-        // alphabetical, which is what makes the two orderings distinguishable.
         let rows = [
             ["East", "Widget", "10"],
             ["East", "Gadget", "5"],
@@ -3204,11 +3035,6 @@ mod tests {
 
     #[test]
     fn shared_items_carry_the_values_in_first_seen_order() {
-        // An `<item x="N"/>` indexes this list. Leaving it empty -- which is
-        // what visi did -- makes every one of those indices dangle, and Excel
-        // refuses to open the file. openpyxl does not resolve them, which is
-        // how it went unnoticed. Verified against Excel with
-        // `fuzz/pivot_filter_probe.py --variant visi`.
         let (sheets, pivots) = pivot_shape_fixture();
         let parts = emitted_pivot_parts(&sheets, &pivots);
         let cache = parts
@@ -3232,9 +3058,6 @@ mod tests {
 
     #[test]
     fn item_indices_map_display_order_onto_the_cache_order() {
-        // The display order is sorted (East, North, West) while the cache is
-        // first-seen (East, West, North), so the indices must be 0, 2, 1.
-        // Identical to what Excel writes for the same data.
         let (sheets, pivots) = pivot_shape_fixture();
         let parts = emitted_pivot_parts(&sheets, &pivots);
         let table = parts
@@ -3252,10 +3075,6 @@ mod tests {
 
     #[test]
     fn a_page_field_gets_the_all_placeholder_item() {
-        // Without the trailing `<item t="default"/>` a `<pageField>` with no
-        // `item` attribute selects a default item that is not there, and
-        // Excel will not open the file -- measured, with and without an
-        // actual selection.
         let (sheets, mut pivots) = pivot_shape_fixture();
         for selection in [None, Some(vec!["Widget".to_string()])] {
             pivots[0].filter_fields[0].selected_values = selection.clone();
@@ -3273,8 +3092,6 @@ mod tests {
                 page.starts_with(|_c: char| true) && page.contains("<item t=\"default\"/></items>"),
                 "page field items must end with the (All) placeholder ({selection:?}): {table}"
             );
-            // And the selection is marked by hiding the others, against the
-            // cache indices.
             if selection.is_some() {
                 assert!(
                     page.contains("<item h=\"1\""),
@@ -3343,7 +3160,6 @@ mod tests {
         )
         .unwrap();
 
-        // The exported file must contain real pivot table XML parts.
         let cursor = std::io::Cursor::new(xlsx_data.clone());
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
         assert!(zip.by_name("xl/pivotTables/pivotTable1.xml").is_ok());
@@ -3373,8 +3189,6 @@ mod tests {
             other => panic!("Expected PivotSource::Table, got {:?}", other),
         }
 
-        // Recomputing from the reimported definition should reproduce the
-        // same aggregation (East=15, West=70, Grand Total=85).
         let reimported_sheet = &imported_sheets[0].sheet;
         let grid = crate::core::pivot::compute_pivot(&[reimported_sheet], reimported).unwrap();
         assert_eq!(grid.body_rows.len(), 3);
@@ -3382,8 +3196,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_pivot_outer_field_subtotal_off_survives_round_trip() {
-        // An outer/solo row/col field's `subtotal: false` setting must
-        // survive xlsx round-trip.
         use crate::core::pivot::{
             PivotAggregation, PivotField, PivotSource, PivotTable, PivotValueField,
         };
@@ -3414,9 +3226,6 @@ mod tests {
             .add_table("Sales".to_string(), 0, 0, 4, 2, true, false)
             .unwrap();
 
-        // A single row field ("Region") with its subtotal explicitly turned
-        // off -- i.e. it's currently the *innermost* (only) field of its
-        // axis. This setting must be preserved through export and re-import.
         let pivot = PivotTable {
             id: 42,
             name: "Pivot1".to_string(),
@@ -3458,8 +3267,6 @@ mod tests {
 
     #[test]
     fn test_xlsx_document_module_codename_survives_sheet_name_truncation() {
-        // Bound Document module sheet matching should succeed even when a
-        // worksheet name over 31 chars gets truncated on export.
         let long_name = "A".repeat(40);
         let sheet = Sheet {
             id: 1,

@@ -150,19 +150,15 @@ mod tests {
 
     #[test]
     fn rgb_packs_the_components_the_way_excel_does() {
-        // Each measured through `CStr(RGB(...))`.
         assert_eq!(rgb(255, 0, 0), 255);
         assert_eq!(rgb(0, 255, 0), 65280);
         assert_eq!(rgb(0, 0, 255), 16_711_680);
         assert_eq!(rgb(1, 2, 3), 197_121);
-        // Measured: a component over 255 clamps rather than carrying into the
-        // next byte, which would have turned `RGB(300, 0, 0)` green.
         assert_eq!(rgb(300, 0, 0), 255);
     }
 
     #[test]
     fn the_long_is_bgr_so_ff0000_is_blue() {
-        // Settled against the saved file via `--paint`.
         assert_eq!(bgr_to_hex(0x00FF_0000), "#0000FF");
         assert_eq!(bgr_to_hex(255), "#FF0000");
         assert_eq!(bgr_to_hex(rgb(1, 2, 3)), "#010203");
@@ -179,8 +175,6 @@ mod tests {
 
     #[test]
     fn colour_names_and_bare_hex_are_read_back_too() {
-        // Not Excel behaviour -- this is so a fill set by `visi style
-        // --bg-color red` is legible to a macro rather than erroring.
         assert_eq!(hex_to_bgr("red"), Some(255));
         assert_eq!(hex_to_bgr("FF0000"), Some(255));
         assert_eq!(hex_to_bgr("not a colour"), None);
@@ -188,20 +182,15 @@ mod tests {
 
     #[test]
     fn the_palette_is_the_one_excel_reported() {
-        // Spot checks against `--palette`; the whole table came from that run.
         assert_eq!(nearest_color_index("#FF0000"), Some(3));
         assert_eq!(nearest_color_index("#000000"), Some(1));
         assert_eq!(nearest_color_index("#FFFFFF"), Some(2));
         assert_eq!(nearest_color_index("#333333"), Some(56));
-        // The palette repeats: `#000080` is slots 11 and 25, and Excel
-        // reports the lower one.
         assert_eq!(nearest_color_index("#000080"), Some(11));
     }
 
     #[test]
     fn an_off_palette_colour_reports_the_nearest_slot_not_xlnone() {
-        // All three measured. The first guess here was `xlNone`, and it was
-        // wrong -- Excel does a nearest-colour match.
         assert_eq!(nearest_color_index("#010203"), Some(1), "near black");
         assert_eq!(nearest_color_index("#FA0A0A"), Some(3), "near red");
         assert_eq!(nearest_color_index("#0AC80A"), Some(4), "near green");

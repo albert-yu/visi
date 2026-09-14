@@ -14,7 +14,7 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
             .get(pos..pos + 2)
             .ok_or("truncated compressed container: chunk header cut off")?;
         let header = u16::from_le_bytes([header_bytes[0], header_bytes[1]]);
-        let chunk_size = (header & 0x0FFF) as usize + 3; // includes the 2-byte header
+        let chunk_size = (header & 0x0FFF) as usize + 3;
         let signature = (header >> 12) & 0b111;
         if signature != 0b011 {
             return Err(format!(
@@ -23,15 +23,12 @@ pub fn decompress(data: &[u8]) -> Result<Vec<u8>, String> {
         }
         let compressed_flag = (header >> 15) & 1;
         let chunk_start = pos + 2;
-        let chunk_data_end = pos + chunk_size; // exclusive, relative to `data`
+        let chunk_data_end = pos + chunk_size;
         let chunk_data = data
             .get(chunk_start..chunk_data_end.min(data.len()))
             .ok_or("truncated compressed container: chunk body cut off")?;
 
         if compressed_flag == 0 {
-            // Uncompressed chunk: exactly 4096 raw bytes. Not produced by
-            // `compress` below, but real files could in principle contain
-            // one, so decoding still supports it.
             out.extend_from_slice(chunk_data);
         } else {
             decompress_chunk(chunk_data, &mut out)?;
@@ -224,11 +221,6 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
-        // `compress` can legitimately reject high-entropy input (see the
-        // module doc comment), so this only checks the roundtrip property
-        // when compression succeeds -- `decompress_never_panics_or_ooms`
-        // below covers arbitrary bytes on the decode side, which is the
-        // side that actually receives untrusted input from imported files.
         #[test]
         fn roundtrip_when_compressible(data in proptest::collection::vec(any::<u8>(), 0..4096)) {
             if let Ok(compressed) = compress(&data) {
@@ -271,11 +263,6 @@ mod tests {
 
     #[test]
     fn compress_errors_instead_of_panicking_on_incompressible_chunk() {
-        // A 4096-byte chunk of xorshift32 pseudorandom bytes: high-entropy
-        // enough that 3-byte-window repeats are rare (expected well under
-        // one across 4096 positions among 256^3 possible 3-tuples), so this
-        // encoding's literal-plus-flag-byte overhead (4096 literals need
-        // 4096 + 512 flag bytes = 4608) can't fit the 4096-byte budget.
         let mut state = 0x2463_9A11u32;
         let original: Vec<u8> = (0..4096)
             .map(|_| {
@@ -291,13 +278,11 @@ mod tests {
     #[test]
     fn decompress_errors_instead_of_panicking_on_malformed_input() {
         assert!(decompress(&[]).is_err());
-        assert!(decompress(&[0x02]).is_err()); // bad signature
-        assert!(decompress(&[0x01, 0x00]).is_err()); // truncated header
-        assert!(decompress(&[0x01, 0x00, 0x00]).is_err()); // bad chunk signature bits
-        // Compressed chunk whose sole token claims an offset larger than
-        // anything decoded so far (would underflow `out.len() - offset`).
+        assert!(decompress(&[0x02]).is_err());
+        assert!(decompress(&[0x01, 0x00]).is_err());
+        assert!(decompress(&[0x01, 0x00, 0x00]).is_err());
         let mut malformed = vec![0x01u8];
-        let body = [0x01u8, 0xFF, 0xFF]; // flag byte: bit 0 set (copy token) + 2 token bytes
+        let body = [0x01u8, 0xFF, 0xFF];
         let total_size = 2 + body.len();
         let header: u16 = (1 << 15) | (0b011 << 12) | (total_size - 3) as u16;
         malformed.extend_from_slice(&header.to_le_bytes());

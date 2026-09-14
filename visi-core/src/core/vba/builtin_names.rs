@@ -18,58 +18,37 @@ pub(super) fn is_builtin(name: &str) -> bool {
 /// compares once per call target is nothing next to parsing the module.
 #[rustfmt::skip]
 static BUILTIN_NAMES: &[&str] = &[
-    // ---- VBA: conversion ------------------------------------------------
     "cbool", "cbyte", "ccur", "cdate", "cdbl", "cdec", "cint", "clng", "clnglng", "clngptr",
     "csng", "cstr", "cvar", "cvdate", "cverr", "hex", "oct", "val",
-    // ---- VBA: maths -----------------------------------------------------
     "abs", "atn", "cos", "exp", "fix", "int", "log", "rnd", "round", "sgn", "sin", "sqr", "tan",
-    // ---- VBA: strings ---------------------------------------------------
     "asc", "ascb", "ascw", "chr", "chrb", "chrw", "filter", "format", "formatcurrency",
     "formatdatetime", "formatnumber", "formatpercent", "instr", "instrb", "instrrev", "join",
     "lcase", "left", "leftb", "len", "lenb", "ltrim", "mid", "midb", "replace", "right", "rightb",
     "rtrim", "space", "split", "str", "strcomp", "strconv", "string", "strreverse", "trim",
     "ucase",
-    // ---- VBA: date and time ---------------------------------------------
     "date", "dateadd", "datediff", "datepart", "dateserial", "datevalue", "day", "hour", "minute",
     "month", "monthname", "now", "second", "time", "timer", "timeserial", "timevalue", "weekday",
     "weekdayname", "year",
-    // ---- VBA: type inspection -------------------------------------------
     "isarray", "isdate", "isempty", "iserror", "ismissing", "isnull", "isnumeric", "isobject",
     "typename", "vartype",
-    // ---- VBA: arrays ----------------------------------------------------
     "array", "lbound", "ubound",
-    // ---- VBA: financial -------------------------------------------------
     "ddb", "fv", "ipmt", "irr", "mirr", "nper", "npv", "pmt", "ppmt", "pv", "rate", "sln", "syd",
-    // ---- VBA: file and device I/O ---------------------------------------
-    // Out of scope for the interpreter, but perfectly compilable, which is
-    // the only question this module answers.
     "chdir", "chdrive", "close", "curdir", "dir", "eof", "fileattr", "filecopy", "filedatetime",
     "filelen", "freefile", "get", "getattr", "input", "inputb", "kill", "line", "loc", "lock",
     "lof", "mkdir", "name", "open", "print", "put", "reset", "rmdir", "savepicture", "seek",
     "setattr", "unlock", "width", "write",
-    // ---- VBA: interaction and system ------------------------------------
     "appactivate", "beep", "callbyname", "choose", "command", "createobject", "deletesetting",
     "doevents", "environ", "getallsettings", "getobject", "getsetting", "iif", "inputbox", "load",
     "msgbox", "partition", "qbcolor", "randomize", "rgb", "savesetting", "sendkeys", "shell",
     "spc", "switch", "tab", "unload",
-    // ---- VBA: errors and debugging --------------------------------------
     "debug", "err", "error", "raise",
-    // ---- VBA: pointer and assignment intrinsics --------------------------
-    // Hidden but perfectly callable, and `LSet`/`RSet` are statements whose
-    // leading word the parser hands over as an ordinary identifier.
     "lset", "objptr", "rset", "strptr", "varptr",
-    // ---- VBA: root library objects --------------------------------------
-    // `VBA.Left(...)`, `Excel.Range(...)` -- a qualified call's leading name
-    // is an ordinary identifier as far as the parser is concerned.
     "collection",
     "excel",
     "office",
     "stdole",
     "vba",
     "vbacceleratorbuttons",
-    // ---- Excel: the Application global surface ---------------------------
-    // Every one of these is reachable as a bare name in a standard module,
-    // because Excel exposes Application's members globally.
     "activecell",
     "activechart",
     "activeprinter",
@@ -112,10 +91,6 @@ mod tests {
 
     #[test]
     fn builtin_names_are_lowercase_and_unique() {
-        // `is_builtin` lowercases before comparing, so a mixed-case entry
-        // here would be unfindable -- a false positive on working code, the
-        // one direction this module must never fail in. Ordering is
-        // deliberately *not* required; see `BUILTIN_NAMES`.
         for n in BUILTIN_NAMES {
             assert_eq!(*n, n.to_ascii_lowercase(), "not lowercase: {n}");
         }

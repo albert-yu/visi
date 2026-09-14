@@ -248,8 +248,6 @@ impl Lexer {
         while let Some(c) = self.peek() {
             match c {
                 '\r' => {
-                    // Swallow CR so CRLF (what real .bas files carry) emits
-                    // exactly one Newline.
                     self.bump();
                 }
                 '\n' => {
@@ -265,17 +263,6 @@ impl Lexer {
                     self.consume_line_continuation();
                     self.space_before = true;
                 }
-                // A `_` starting a token that is *not* a continuation would
-                // begin an identifier, and VBA has none: a name must start
-                // with a letter (the same rule `validate_vba_module_name`
-                // enforces for modules). Measured -- real Excel refuses to
-                // compile `_ y = 2`, while a trailing `_` continuation is
-                // fine (`fuzz/vba_compile_probe.py --only continuation`).
-                //
-                // Note `is_ident_start` still admits `_`: it answers a
-                // different question at `suffix_would_be_operator`, where a
-                // following continuation must keep `&` an operator rather
-                // than turn it into a type suffix.
                 '_' => {
                     return Err(LexError {
                         message: "Invalid character: a name cannot start with '_'".to_string(),
@@ -303,8 +290,6 @@ impl Lexer {
     /// name beginning with an underscore (measured; see the `'_'` arm in
     /// [`Lexer::run`]).
     fn is_line_continuation(&self) -> bool {
-        // Something like `a_` must not split: the underscore has to be its
-        // own token position, i.e. preceded by whitespace or line start.
         let prev_ok = self.i == 0
             || self
                 .chars
@@ -321,8 +306,6 @@ impl Lexer {
                 _ => return false,
             }
         }
-        // Trailing `_` at end of input: treat as a continuation of nothing,
-        // which is harmless and avoids an identifier named `_`.
         true
     }
 
@@ -346,13 +329,10 @@ impl Lexer {
 
     fn lex_string(&mut self) -> Result<(), LexError> {
         let pos = self.pos();
-        self.bump(); // opening quote
+        self.bump();
         let mut s = String::new();
         loop {
             match self.peek() {
-                // A string literal cannot span lines; an unterminated one is
-                // an error rather than a silent swallow of the rest of the
-                // module.
                 None | Some('\n') => {
                     return Err(LexError {
                         message: "unterminated string literal".to_string(),
@@ -389,9 +369,6 @@ impl Lexer {
             return Ok(());
         }
 
-        // A date literal needs a closing `#` on the same line. Anything else
-        // (a directive, a stray hash) falls through to punctuation, so `#If`
-        // reaches the parser as `#` + `If`.
         let mut j = self.i + 1;
         let mut content = String::new();
         while let Some(&c) = self.chars.get(j) {
@@ -422,9 +399,6 @@ impl Lexer {
         if let Some(last) = self.out.last_mut() {
             match &mut last.kind {
                 TokenKind::Number { suffix: slot, .. } => *slot = Some(suffix),
-                // An identifier's suffix is part of its name in VBA (`a$` and
-                // `a` are the same variable, but `a$` is how it was written),
-                // so fold it back into the spelling rather than dropping it.
                 TokenKind::Ident(name) => name.push(suffix.as_char()),
                 _ => {}
             }
@@ -432,8 +406,6 @@ impl Lexer {
     }
 
     fn starts_based_number(&self) -> bool {
-        // `&H1F` / `&O17`, but `a & b` is concatenation. Also require that
-        // this `&` isn't a type suffix, which `lex_punct` handles.
         if !self.space_before && self.last_takes_suffix() {
             return false;
         }
@@ -442,7 +414,7 @@ impl Lexer {
 
     fn lex_based_number(&mut self) -> Result<(), LexError> {
         let pos = self.pos();
-        self.bump(); // &
+        self.bump();
         let marker = self.bump().unwrap_or('h');
         let (base, radix) = if marker.eq_ignore_ascii_case(&'h') {
             (NumBase::Hex, 16)
@@ -468,10 +440,6 @@ impl Lexer {
                 pos,
             });
         }
-        // VBA wraps &H literals into signed 16/32-bit, but that is a value
-        // question rather than a syntax one; Phase 0 only needs the digits to
-        // be well-formed. u128 keeps an absurdly long literal from wrapping
-        // silently here.
         let value = u128::from_str_radix(&digits, radix).map_err(|_| LexError {
             message: "numeric literal is too large".to_string(),
             pos,
@@ -485,7 +453,6 @@ impl Lexer {
             },
             pos,
         );
-        // A based literal may still carry `&` (Long) as a suffix: `&HFF&`.
         if let Some(c) = self.peek()
             && let Some(suffix) = TypeSuffix::from_char(c)
         {
@@ -507,13 +474,11 @@ impl Lexer {
                 self.bump();
             }
         } else if self.peek() == Some('.') && self.i == start {
-            // A leading `.5`.
             self.bump();
             while self.peek().is_some_and(|c| c.is_ascii_digit()) {
                 self.bump();
             }
         }
-        // `1E5`, `1.5e-3`, and VBA's `D` exponent for Double literals.
         if let Some(e) = self.peek()
             && (e == 'e' || e == 'E' || e == 'd' || e == 'D')
         {
@@ -575,8 +540,6 @@ impl Lexer {
         }
         let name: String = self.chars[start..self.i].iter().collect();
 
-        // `Rem` is a comment keyword, but only as a whole word starting a
-        // statement -- `Remainder` is an ordinary identifier.
         if name.eq_ignore_ascii_case("rem") && self.starts_statement() {
             self.skip_line_comment();
             return;
@@ -623,8 +586,6 @@ impl Lexer {
         let pos = self.pos();
         let c = self.peek().unwrap_or('\0');
 
-        // A sigil reaching here directly after an identifier/number is a type
-        // suffix, not an operator.
         if !self.space_before
             && self.last_takes_suffix()
             && let Some(suffix) = TypeSuffix::from_char(c)
@@ -642,7 +603,6 @@ impl Lexer {
             if two == *p {
                 self.bump();
                 self.bump();
-                // `=<` and `=>` are accepted spellings of `<=` and `>=`.
                 let canon = match *p {
                     "=<" => "<=",
                     "=>" => ">=",
@@ -746,11 +706,8 @@ mod tests {
 
     #[test]
     fn a_name_cannot_start_with_an_underscore() {
-        // Measured against real Excel, which refuses to compile `_ y = 2`
-        // (`fuzz/vba_compile_probe.py --only continuation`).
         assert!(lex("_leading\n").is_err());
         assert!(lex("_ y = 2\n").is_err());
-        // A *trailing* `_` is a real continuation and stays one.
         assert_eq!(idents("y = 1 + _\n    2\n"), vec!["y"]);
     }
 
@@ -771,7 +728,6 @@ mod tests {
     fn rem_is_a_comment_only_at_the_start_of_a_statement() {
         assert!(idents("Rem this is a comment").is_empty());
         assert_eq!(idents("x: Rem note"), vec!["x"]);
-        // Not a comment: an ordinary name that merely begins with "rem".
         assert_eq!(idents("Remainder = 1"), vec!["Remainder"]);
         assert_eq!(idents("x = Rem"), vec!["x", "Rem"]);
     }
@@ -795,7 +751,6 @@ mod tests {
         assert_eq!(num(".5"), 0.5);
         assert_eq!(num("1E3"), 1000.0);
         assert_eq!(num("1.5e-3"), 0.0015);
-        // VBA's Double exponent marker.
         assert_eq!(num("1D2"), 100.0);
         assert_eq!(num("&HFF"), 255.0);
         assert_eq!(num("&O17"), 15.0);
@@ -820,8 +775,6 @@ mod tests {
 
     #[test]
     fn ampersand_between_operands_stays_concatenation() {
-        // The overlap that a naive "sigil after ident is a suffix" rule gets
-        // wrong: `a & b` and `a$ & b$` both concatenate.
         assert!(kinds("a & b").contains(&TokenKind::Punct("&")));
         assert!(kinds("a$ & b$").contains(&TokenKind::Punct("&")));
         assert_eq!(idents("a$ & b$"), vec!["a$", "b$"]);
@@ -840,7 +793,6 @@ mod tests {
             TokenKind::Ident(name) => assert_eq!(name, "x#"),
             other => panic!("{other:?}"),
         }
-        // `#If` must reach the parser as punctuation plus a name.
         assert_eq!(kinds("#If")[0], TokenKind::Punct("#"));
         assert_eq!(kinds("#If")[1], TokenKind::Ident("If".into()));
     }
@@ -850,15 +802,12 @@ mod tests {
         assert_eq!(kinds("a <= b")[1], TokenKind::Punct("<="));
         assert_eq!(kinds("a <> b")[1], TokenKind::Punct("<>"));
         assert_eq!(kinds("a >= b")[1], TokenKind::Punct(">="));
-        // VBA also accepts the reversed spellings, canonicalised here.
         assert_eq!(kinds("a =< b")[1], TokenKind::Punct("<="));
         assert_eq!(kinds("a => b")[1], TokenKind::Punct(">="));
     }
 
     #[test]
     fn keywords_keep_their_spelling_and_are_not_reserved() {
-        // `Name` is a keyword in `Name x As y` and a property everywhere else;
-        // the lexer must not decide which.
         assert_eq!(idents("ws.Name = \"x\""), vec!["ws", "Name"]);
     }
 

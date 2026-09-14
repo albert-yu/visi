@@ -1,6 +1,3 @@
-// High-precision Date and Time functions for visi-core
-// Implements Excel-compatible serial date calculations, 1900 leap year bug support, day/month/year extractions, and workday/networkdays routines.
-
 pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
     let mut y = year;
     let mut m = month;
@@ -38,9 +35,6 @@ pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
     }
     days += day;
 
-    // Excel 1900 epoch offset (1900-01-01 is serial 1).
-    // Dec 31 1BC is day 0 in this count.
-    // Excel includes non-existent leap day Feb 29, 1900 (serial 60).
     let mut serial = (days - 693595) as f64;
     if serial >= 60.0 {
         serial += 1.0;
@@ -51,10 +45,6 @@ pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
 pub fn serial_to_ymd(serial: f64) -> (i32, i32, i32) {
     let mut s = serial.floor() as i64;
     if s < 1 {
-        // Serial 0 is Excel's phantom "January 0, 1900", not 1 January:
-        // DAY(0) is 0, MONTH(0) is 1, YEAR(0) is 1900, and
-        // TEXT(0.6299, "yyyy-mm-dd") is "1900-01-00". Returning day 1 here
-        // made every one of those off by a day.
         return (1900, 1, 0);
     }
     if s == 60 {
@@ -189,8 +179,6 @@ pub fn datedif(start: f64, end: f64, unit: &str) -> Result<f64, String> {
         "D" => Ok(end.floor() - start.floor()),
         "MD" => Ok(days as f64),
         "YM" => Ok(months as f64),
-        // Days since the most recent anniversary of the start date, i.e.
-        // the day count with whole years removed.
         "YD" => {
             let anniversary = ymd_to_serial(y1 + years, m1, d1);
             Ok(end.floor() - anniversary)
@@ -313,21 +301,12 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
             d2 = 30;
         }
     } else {
-        // The DAYS360 *function's* US method, which is not quite the NASD
-        // 30/360 convention Excel's own YEARFRAC and bond functions use --
-        // see `days_30_360_nasd`, which documents the two differences and
-        // the cases that separate them. The end-of-February rule below is
-        // what distinguishes this from the European method; without it the
-        // two agree on every pair that avoids a February month-end, which
-        // is why omitting it went unnoticed for a long time.
         if m1 == 2 && d1 == days_in_month(y1, m1) {
             d1 = 30;
         }
         if d1 == 31 {
             d1 = 30;
         }
-        // Note this tests the *adjusted* d1, so a February month-end start
-        // does pull a 31st end date back to the 30th here.
         if d2 == 31 && d1 == 30 {
             d2 = 30;
         }
@@ -453,7 +432,6 @@ pub fn days_30_360_nasd(start_date: f64, end_date: f64) -> f64 {
 
     let d1_is_feb_eom = m1 == 2 && d1 == days_in_month(y1, m1);
     let d2_is_feb_eom = m2 == 2 && d2 == days_in_month(y2, m2);
-    // Tested before d1 is adjusted below.
     let d1_was_month_end = d1 == 30 || d1 == 31;
 
     if d1_is_feb_eom && d2_is_feb_eom {
@@ -558,13 +536,12 @@ pub fn weekday(serial: f64, return_type: Option<f64>) -> Result<f64, String> {
         return Err("#NUM!".to_string());
     }
     let r_type = return_type.unwrap_or(1.0).floor() as i32;
-    // 1900-01-01 (serial 1) was Sunday
-    let base_day = (s + 6) % 7; // 0=Sunday, 1=Monday, ..., 6=Saturday
+    let base_day = (s + 6) % 7;
 
     match r_type {
-        1 => Ok((base_day + 1) as f64), // 1=Sunday..7=Saturday
-        2 => Ok((if base_day == 0 { 7 } else { base_day }) as f64), // 1=Monday..7=Sunday
-        3 => Ok((if base_day == 0 { 6 } else { base_day - 1 }) as f64), // 0=Monday..6=Sunday
+        1 => Ok((base_day + 1) as f64),
+        2 => Ok((if base_day == 0 { 7 } else { base_day }) as f64),
+        3 => Ok((if base_day == 0 { 6 } else { base_day - 1 }) as f64),
         11 => Ok((if base_day == 0 { 7 } else { base_day }) as f64),
         12 => Ok(((base_day + 5) % 7 + 1) as f64),
         _ => Ok((base_day + 1) as f64),
@@ -587,7 +564,7 @@ pub fn weeknum(serial: f64, return_type: Option<f64>) -> Result<f64, String> {
 pub fn isoweeknum(serial: f64) -> Result<f64, String> {
     let (y, _m, _d) = serial_to_ymd(serial);
     let day_of_year = serial.floor() - ymd_to_serial(y, 1, 1) + 1.0;
-    let wday = weekday(serial, Some(2.0))?; // 1=Mon..7=Sun
+    let wday = weekday(serial, Some(2.0))?;
     let iso_week = ((day_of_year - wday + 10.0) / 7.0).floor();
 
     if iso_week < 1.0 {
@@ -612,7 +589,7 @@ pub fn networkdays(start_date: f64, end_date: f64, holidays: &[f64]) -> Result<f
 
     let mut count = 0;
     for day in s..=e {
-        let w = weekday(day as f64, Some(2.0))? as i64; // 1=Mon..7=Sun
+        let w = weekday(day as f64, Some(2.0))? as i64;
         if w <= 5 && !hol_set.contains(&day) {
             count += 1;
         }
@@ -651,20 +628,6 @@ pub fn actual_actual_year_days(start: f64, end: f64) -> f64 {
     let d1 = start.min(end);
     let d2 = start.max(end);
     if d2 - d1 <= 366.0 {
-        // Within a single year the denominator is 366 when either the
-        // period actually contains a 29 February, or the whole period
-        // lies inside one leap year; otherwise 365. Taking the *end*
-        // year's leap-ness alone is wrong for a
-        // short period that ends in a leap year before the leap day.
-        //
-        // Four real-Excel data points pin all three branches down:
-        //   2016-06-01 -> 2016-09-01  366  (wholly inside leap 2016)
-        //   2027-12-26 -> 2028-03-26  366  (spans 29 Feb 2028)
-        //   2023-08-05 -> 2024-01-05  365  (ends in a leap year, before
-        //                                   the leap day)
-        //   2015-02-15 -> 2016-02-13  365  (same, and YEARFRAC there is
-        //                                   363/365 = 0.994520547945205
-        //                                   to the last digit)
         let (y1, _, _) = serial_to_ymd(d1);
         let (y2, _, _) = serial_to_ymd(d2);
         let is_leap = |y: i32| (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
@@ -700,9 +663,6 @@ pub fn yearfrac(start_date: f64, end_date: f64, basis: Option<f64>) -> Result<f6
     let diff = d2 - d1;
 
     match b {
-        // The NASD convention, not the DAYS360 function's US method --
-        // Excel's own YEARFRAC and DAYS360 genuinely disagree on February
-        // month-ends. See `days_30_360_nasd`.
         0 => Ok(days_30_360_nasd(d1, d2) / 360.0),
         1 => Ok(diff / actual_actual_year_days(d1, d2)),
         2 => Ok(diff / 360.0),

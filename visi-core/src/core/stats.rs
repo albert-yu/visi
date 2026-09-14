@@ -1,11 +1,4 @@
-// High-precision statistical functions for visi-core
-// Implements Excel-compatible statistical distributions, summary measures, linear regression, and criteria functions.
-
 use std::cmp::Ordering;
-
-// ============================================================================
-// 1. Core Mathematical Utilities (Special Functions)
-// ============================================================================
 
 /// Inverse standard normal CDF (Acklam's algorithm, max error < 1.15e-9, refined with Newton steps to double precision).
 pub fn inv_normal_cdf(p: f64) -> Result<f64, String> {
@@ -13,7 +6,6 @@ pub fn inv_normal_cdf(p: f64) -> Result<f64, String> {
         return Err("#NUM!".to_string());
     }
 
-    // Coefficients in rational approximations
     let a = [
         -3.969683028665376e+01,
         2.209460984245205e+02,
@@ -51,24 +43,20 @@ pub fn inv_normal_cdf(p: f64) -> Result<f64, String> {
     let mut x: f64;
 
     if p < p_low {
-        // Lower tail
         q = (-2.0 * p.ln()).sqrt();
         x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
             / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
     } else if p <= p_high {
-        // Central region
         q = p - 0.5;
         let r = q * q;
         x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
             / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
     } else {
-        // Upper tail
         q = (-2.0 * (1.0 - p).ln()).sqrt();
         x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
             / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
     }
 
-    // Refine using 2 Halley/Newton steps to achieve maximum f64 precision
     for _ in 0..2 {
         let err = normal_cdf(x) - p;
         let pdf = normal_pdf(x);
@@ -88,12 +76,6 @@ pub fn normal_pdf(x: f64) -> f64 {
 
 /// Standard normal CDF via error function
 pub fn normal_cdf(x: f64) -> f64 {
-    // Via erfc, not `0.5 * (1 + erf(...))`. In the left tail erf approaches
-    // -1, so that form cancels catastrophically and eventually rounds to
-    // exactly 0: NORM.S.DIST(-11, TRUE) came out as 0 instead of
-    // 1.9106595744986622e-28, which real Excel reports in full. erfc keeps
-    // the tail accurate all the way down (Excel still resolves
-    // NORM.S.DIST(-30, TRUE) as 4.9067139271479094e-198).
     0.5 * erfc(-x / std::f64::consts::SQRT_2)
 }
 
@@ -251,7 +233,6 @@ fn gamma_half_integer(a: f64) -> Option<f64> {
     }
     let two_a = two_a as u32;
     if two_a.is_multiple_of(2) {
-        // a is a positive integer: Gamma(a) = (a - 1)!
         let n = two_a / 2;
         let mut r = 1.0f64;
         for k in 2..n {
@@ -259,7 +240,6 @@ fn gamma_half_integer(a: f64) -> Option<f64> {
         }
         Some(r)
     } else {
-        // a = n + 1/2: Gamma(a) = (n - 1/2)(n - 3/2)...(1/2) * sqrt(pi)
         let n = (two_a - 1) / 2;
         let mut r = std::f64::consts::PI.sqrt();
         for k in 0..n {
@@ -290,30 +270,7 @@ pub fn incbeta(a: f64, b: f64, x: f64) -> f64 {
         return 1.0 - incbeta(b, a, 1.0 - x);
     }
 
-    // The prefactor x^a (1-x)^b / (a * B(a,b)), computed from tgamma
-    // directly rather than as exp(a*ln x + b*ln(1-x) - lbeta).
-    //
-    // The log form routes everything through a single exponential, so the
-    // *absolute* error of its argument becomes the *relative* error of the
-    // result -- and lgamma(a+b) alone contributes ~1 ULP of a number that
-    // can be 5 or more, which is ~5e-16 straight into the exponent. Over a
-    // spread of (a, b, x) drawn from F-distribution degrees of freedom,
-    // that cost a median of 12.7 ULP and a p90 of 51.6; going through
-    // tgamma gives 1.9 and 4.6.
-    //
-    // Falls back to the log form whenever tgamma overflows (large a + b)
-    // or the powers underflow, which is exactly where the logarithm earns
-    // its keep -- hence a finiteness check rather than a fixed cutoff.
     let beta = beta_gamma(a) * beta_gamma(b) / beta_gamma(a + b);
-    // `1 - x` rounds, and raising it to the power `b` multiplies that
-    // rounding by `b` -- for b = 50 a half-ULP slip in `1 - x` became 15
-    // ULP in the result. Recover the exact residual (`om + om_err` is
-    // `1 - x` exactly) and apply the first-order correction, which brings
-    // that same case back to 0.3 ULP.
-    //
-    // `(1.0 - om) - x` is exact either way: for x >= 0.5 the original
-    // subtraction was already exact by Sterbenz and the residual is 0,
-    // and for x < 0.5 `om` lands in (0.5, 1] where `1.0 - om` is exact.
     let om = 1.0 - x;
     let om_err = (1.0 - om) - x;
     let pow_om = om.powf(b) * (1.0 + b * om_err / om);
@@ -362,12 +319,6 @@ pub fn incbeta(a: f64, b: f64, x: f64) -> f64 {
         let del = d * c;
         h *= del;
 
-        // Machine epsilon rather than the textbook 1e-15: that threshold
-        // leaves about 1e-15 relative error, which is exactly the size of
-        // the disagreements this was producing in the 15th significant
-        // digit (FTEST over one fuzzed pair came out 0.941716332833876
-        // where the true value is 0.94171633283387507 and Excel prints
-        // 0.941716332833875).
         if (del - 1.0).abs() < f64::EPSILON {
             break;
         }
@@ -388,20 +339,6 @@ pub fn inv_incbeta(a: f64, b: f64, p: f64) -> Result<f64, String> {
         return Err("#NUM!".to_string());
     }
 
-    // Safeguarded Newton: a Newton step when it stays inside the current
-    // bracket, otherwise a bisection step. incbeta is monotonically
-    // increasing in x on [0, 1], so [0, 1] is always a valid starting
-    // bracket and bisection alone would already converge -- Newton is
-    // only an accelerator here, never something that can run away.
-    //
-    // The previous version was unguarded Newton that simply *clamped* an
-    // overshooting step to [1e-12, 1-1e-12]. Those clamps are absorbing:
-    // once a step overshot, x stuck to the boundary and the loop returned
-    // it as the answer. That surfaced against real Excel as BETAINV
-    // answering a flat 1e-12 or 0.999999999999, and (since
-    // F.INV/F.INV.RT/FINV map y back through `df2*y / (df1*(1-y))`, which
-    // blows up as y approaches 1) as F.INV returning ~1e12 instead of a
-    // small number.
     let y = inv_normal_cdf(p)?;
     let h = 2.0 / (1.0 / (2.0 * a - 1.0) + 1.0 / (2.0 * b - 1.0));
     let w = (y * (h + 5.0 / 6.0 - 2.0 / (3.0 * h)).sqrt() / h)
@@ -422,7 +359,6 @@ pub fn inv_incbeta(a: f64, b: f64, p: f64) -> Result<f64, String> {
         if err.abs() < 1e-14 {
             return Ok(x);
         }
-        // incbeta is increasing, so err < 0 means x is still too small.
         if err < 0.0 {
             lo = x;
         } else {
@@ -452,10 +388,6 @@ pub fn inv_incbeta(a: f64, b: f64, p: f64) -> Result<f64, String> {
 
     Ok(x)
 }
-
-// ============================================================================
-// 2. Descriptive & Summary Statistics
-// ============================================================================
 
 pub fn avedev(data: &[f64]) -> Result<f64, String> {
     if data.is_empty() {
@@ -536,7 +468,6 @@ pub fn mode_sngl(data: &[f64]) -> Result<f64, String> {
     let mut first_seen = std::collections::HashMap::new();
 
     for (idx, &x) in data.iter().enumerate() {
-        // Quantize floats slightly for exact hash key matching
         let key = x.to_bits();
         let entry = counts.entry(key).or_insert(0);
         *entry += 1;
@@ -550,7 +481,6 @@ pub fn mode_sngl(data: &[f64]) -> Result<f64, String> {
         return Err("#N/A".to_string());
     }
 
-    // Return the mode that appeared earliest
     let mut best_val = 0.0;
     let mut best_idx = usize::MAX;
     for (key, count) in counts {
@@ -587,11 +517,6 @@ pub fn mode_mult(data: &[f64]) -> Result<Vec<f64>, String> {
         return Err("#N/A".to_string());
     }
 
-    // Real Excel returns tied modes in the order they first appear in the
-    // data (same rule MODE.SNGL above uses to break a tie down to one
-    // value), not sorted by value -- verified via
-    // fuzz/fuzz_excel.py (INDEX(MODE.MULT(...), 1) picked the
-    // first-encountered mode, not the smallest, when three values tied).
     let mut modes: Vec<(usize, f64)> = counts
         .into_iter()
         .filter(|&(_, count)| count == max_count)
@@ -617,10 +542,6 @@ pub fn trimmean(data: &[f64], percent: f64) -> Result<f64, String> {
     let trimmed = &sorted[k..(n - k)];
     Ok(trimmed.iter().sum::<f64>() / trimmed.len() as f64)
 }
-
-// ============================================================================
-// 3. Variance & Higher Moments
-// ============================================================================
 
 pub fn var_s(data: &[f64]) -> Result<f64, String> {
     if data.len() <= 1 {
@@ -666,9 +587,6 @@ pub fn skew(data: &[f64]) -> Result<f64, String> {
 
 pub fn skew_p(data: &[f64]) -> Result<f64, String> {
     let n = data.len();
-    // Skewness needs at least three observations; Excel reports #DIV/0!
-    // below that for both SKEW and SKEW.P (confirmed directly -- two
-    // values give #DIV/0!, three compute).
     if n < 3 {
         return Err("#DIV/0!".to_string());
     }
@@ -698,10 +616,6 @@ pub fn kurt(data: &[f64]) -> Result<f64, String> {
     let term2 = (3.0 * (nf - 1.0) * (nf - 1.0)) / ((nf - 2.0) * (nf - 3.0));
     Ok(term1 - term2)
 }
-
-// ============================================================================
-// 4. Ranks, Quantiles, and Percentiles
-// ============================================================================
 
 pub fn large(data: &[f64], k: usize) -> Result<f64, String> {
     if k == 0 || k > data.len() {
@@ -876,11 +790,6 @@ pub fn percentrank_inc(data: &[f64], x: f64, significance: usize) -> Result<f64,
         }
     }
 
-    // Excel's PERCENTRANK truncates to `significance` digits rather than
-    // rounding (a raw value of e.g. 0.4545 gives 0.454, not 0.455). The
-    // nudge matters: a rank that is mathematically exactly 0.4 can land a
-    // hair below it in f64 (0.39999999999999997), and truncating *that*
-    // yields 0.399 where Excel reports 0.4.
     let mult = 10.0_f64.powi(significance as i32);
     let scaled = ans * mult;
     Ok((scaled + scaled.abs().max(1.0) * f64::EPSILON * 4.0).floor() / mult)
@@ -914,24 +823,12 @@ pub fn percentrank_exc(data: &[f64], x: f64, significance: usize) -> Result<f64,
         }
     }
 
-    // Excel's PERCENTRANK truncates to `significance` digits rather than
-    // rounding (a raw value of e.g. 0.4545 gives 0.454, not 0.455). The
-    // nudge matters: a rank that is mathematically exactly 0.4 can land a
-    // hair below it in f64 (0.39999999999999997), and truncating *that*
-    // yields 0.399 where Excel reports 0.4.
     let mult = 10.0_f64.powi(significance as i32);
     let scaled = ans * mult;
     Ok((scaled + scaled.abs().max(1.0) * f64::EPSILON * 4.0).floor() / mult)
 }
 
-// ============================================================================
-// 5. Bivariate Statistics & Linear Regression
-// ============================================================================
-
 pub fn covariance_p(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
-    // Length mismatch is #N/A, but zero usable pairs is #DIV/0! -- both
-    // confirmed against real Excel (e.g. CORREL over two ranges whose
-    // every pair contains a text cell gives #DIV/0!, not #N/A).
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
     }
@@ -967,9 +864,6 @@ pub fn covariance_s(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
 }
 
 pub fn correl(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
-    // Length mismatch is #N/A, but zero usable pairs is #DIV/0! -- both
-    // confirmed against real Excel (e.g. CORREL over two ranges whose
-    // every pair contains a text cell gives #DIV/0!, not #N/A).
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
     }
@@ -1001,9 +895,6 @@ pub fn correl(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
 }
 
 pub fn slope(ys: &[f64], xs: &[f64]) -> Result<f64, String> {
-    // Length mismatch is #N/A, but zero usable pairs is #DIV/0! -- both
-    // confirmed against real Excel (e.g. CORREL over two ranges whose
-    // every pair contains a text cell gives #DIV/0!, not #N/A).
     if xs.len() != ys.len() {
         return Err("#N/A".to_string());
     }
@@ -1076,10 +967,6 @@ pub fn forecast_linear(x: f64, ys: &[f64], xs: &[f64]) -> Result<f64, String> {
     let b = intercept(ys, xs)?;
     Ok(m * x + b)
 }
-
-// ============================================================================
-// 6. Distribution Functions
-// ============================================================================
 
 pub fn standardize(x: f64, mean: f64, std_dev: f64) -> Result<f64, String> {
     if std_dev <= 0.0 {
@@ -1347,12 +1234,6 @@ pub fn hypgeom_dist(
     let n_pop = pop_size.floor();
 
     let pmf_fn = |x: f64| -> f64 {
-        // C(m_pop, x) is architecturally 0 once x is outside [0, m_pop],
-        // and likewise C(n_pop - m_pop, n - x) once (n - x) is outside
-        // [0, n_pop - m_pop] -- the lgamma-based log-combination formula
-        // below assumes valid choose() arguments and produces a pole
-        // (lgamma of a non-positive integer -> NaN) rather than 0 outside
-        // that range, so this has to be checked before calling it.
         if x < 0.0 || x > m_pop || (n - x) < 0.0 || (n - x) > n_pop - m_pop {
             return 0.0;
         }
@@ -1387,10 +1268,6 @@ pub fn chisq_dist_rt(x: f64, df: f64) -> Result<f64, String> {
     if x < 0.0 || df < 1.0 {
         return Err("#NUM!".to_string());
     }
-    // The upper incomplete gamma directly, not `1 - CDF`. For a large
-    // statistic the CDF is within an ULP of 1 and the subtraction
-    // underflows to exactly 0 -- CHITEST over a series with one large
-    // term returned 0 where real Excel resolves 6.4e-103.
     Ok(regularized_gamma_q(df / 2.0, x / 2.0))
 }
 
@@ -1415,26 +1292,8 @@ pub fn chisq_test(actual: &[f64], expected: &[f64], categories: usize) -> Result
     if actual.len() != expected.len() {
         return Err("#N/A".to_string());
     }
-    // No surviving pair is not an error: the statistic is simply 0, and
-    // with the degrees of freedom coming from `categories` the answer is
-    // 1. Real Excel returns 1 for two 3-cell ranges whose every pair holds
-    // something non-numeric. (A raw size mismatch, and a `categories` of
-    // fewer than 2, are both rejected by the caller before this point.)
     let mut chi2 = 0.0;
     for (&o, &e) in actual.iter().zip(expected.iter()) {
-        // An expected frequency of exactly zero is the division itself
-        // failing, so that is #DIV/0! and is checked here.
-        //
-        // A *negative* expected frequency is not rejected per element,
-        // which is the non-obvious part. Excel just divides by it, letting
-        // that term push the statistic down, and only reports #NUM! if the
-        // total comes out negative -- so whether a negative expected value
-        // is an error depends on the other terms:
-        //
-        //   CHITEST({1,2,3}, {5,-4,3})              = #NUM!   (chi2 = -5.8)
-        //   CHITEST({-478.8,352.51,8.5}, {38,8.5,-75}) = 0    (chi2 ~ 20859)
-        //
-        // Rejecting `e < 0` up front got the second case wrong.
         if e == 0.0 {
             return Err("#DIV/0!".to_string());
         }
@@ -1466,12 +1325,6 @@ pub fn f_dist_rt(x: f64, df1: f64, df2: f64) -> Result<f64, String> {
     if x < 0.0 || df1 < 1.0 || df2 < 1.0 {
         return Err("#NUM!".to_string());
     }
-    // Via the symmetry I_y(a, b) = 1 - I_(1-y)(b, a), rather than
-    // subtracting the left tail from 1. For a large F statistic that left
-    // tail sits within an ULP or two of 1, so `1.0 - cdf` throws away most
-    // of the answer's significant digits -- F.TEST agreed with Excel only
-    // to about 12 of them. Forming 1-y directly as df2 / (df1*x + df2)
-    // sidesteps the cancellation.
     let y_complement = df2 / (df1 * x + df2);
     Ok(incbeta(df2 / 2.0, df1 / 2.0, y_complement))
 }
@@ -1540,7 +1393,6 @@ pub fn t_inv(p: f64, df: f64) -> Result<f64, String> {
     if p == 0.5 {
         return Ok(0.0);
     }
-    // Newton-Raphson solver
     let mut x = inv_normal_cdf(p)?;
     for _ in 0..30 {
         let err = t_dist(x, df, true)? - p;
@@ -1577,13 +1429,6 @@ pub fn t_test(
 
     let (t_stat, df) = match test_type {
         1 => {
-            // Paired. A genuine length mismatch is #N/A (though the
-            // caller already checks raw sizes before pairwise-excluding),
-            // but *too few usable pairs* is #DIV/0! -- there's no
-            // denominator to divide by. Confirmed against real Excel:
-            // T.TEST over two 5-cell ranges whose pairwise-valid overlap
-            // is a single pair reports #DIV/0!, as does a pair of
-            // identical (zero-variance) samples.
             if n1 != n2 {
                 return Err("#N/A".to_string());
             }
@@ -1603,7 +1448,6 @@ pub fn t_test(
             (mean_d / (sd / (n1 as f64).sqrt()), (n1 - 1) as f64)
         }
         2 => {
-            // Two-sample homoscedastic (equal variance)
             if n1 <= 1 || n2 <= 1 {
                 return Err("#DIV/0!".to_string());
             }
@@ -1620,7 +1464,6 @@ pub fn t_test(
             ((m1 - m2) / se, df)
         }
         3 => {
-            // Welch's t-test (heteroscedastic)
             if n1 <= 1 || n2 <= 1 {
                 return Err("#DIV/0!".to_string());
             }
@@ -1688,10 +1531,6 @@ pub fn fisher(x: f64) -> Result<f64, String> {
 }
 
 pub fn fisherinv(y: f64) -> Result<f64, String> {
-    // (e^2y - 1) / (e^2y + 1) is tanh(y), but computing it that way
-    // overflows to inf/inf for y beyond ~355 and came back as #NUM! where
-    // Excel simply reports 1. tanh saturates instead, which is also what
-    // the identity is worth in f64 long before that point.
     Ok(y.tanh())
 }
 
@@ -1724,9 +1563,6 @@ pub fn prob(
     if x_range.len() != prob_range.len() {
         return Err("#N/A".to_string());
     }
-    // No usable probabilities at all is a probability sum of 0, which
-    // fails the "must sum to 1" rule below -- Excel reports #NUM! for it,
-    // not #N/A (confirmed with a probability range that is entirely text).
     let prob_sum: f64 = prob_range.iter().sum();
     if (prob_sum - 1.0).abs() > 1e-6 {
         return Err("#NUM!".to_string());
@@ -1734,10 +1570,6 @@ pub fn prob(
     let upper = upper_limit.unwrap_or(lower_limit);
 
     let mut sum = 0.0;
-    // Excel checks only that the probabilities sum to 1; it does *not*
-    // reject an individual one outside [0, 1]. PROB({1,2}, {1.5,-0.5}, 0,
-    // 3) is 1 in real Excel, and rejecting the negative there turned a
-    // pairwise-excluded range that legitimately summed to 1 into #NUM!.
     for (&x, &p) in x_range.iter().zip(prob_range.iter()) {
         if x >= lower_limit && x <= upper {
             sum += p;
@@ -1747,14 +1579,6 @@ pub fn prob(
 }
 
 pub fn frequency(data: &[f64], bins: &[f64]) -> Result<Vec<f64>, String> {
-    // Excel sorts the bins internally to work out the interval each value
-    // falls in, but reports each interval's count back at that bin's
-    // *original* position in bins_array, with the overflow count last.
-    // Returning the counts in sorted order instead
-    // silently permutes the result whenever bins_array isn't already
-    // ascending. Verified against real Excel with bins [25, -10, 8] over
-    // data [5, -20, 30, 1, 12]: Excel gives [1, 1, 2, 1], i.e. the sorted
-    // counts [1, 2, 1] mapped back through each bin's rank, then overflow.
     let mut order: Vec<usize> = (0..bins.len()).collect();
     order.sort_by(|&a, &b| bins[a].partial_cmp(&bins[b]).unwrap_or(Ordering::Equal));
     let sorted_bins: Vec<f64> = order.iter().map(|&i| bins[i]).collect();

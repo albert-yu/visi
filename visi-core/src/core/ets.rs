@@ -1,18 +1,3 @@
-// Exponential Triple Smoothing (ETS), the forecasting model behind Excel's
-// FORECAST.ETS family.
-//
-// Excel documents this as the "AAA version" of ETS: Additive error,
-// Additive trend, Additive seasonality -- i.e. Holt-Winters additive
-// smoothing. The recurrences, with season length `m`:
-//
-//   level_t  = a*(y_t - s_{t-m}) + (1-a)*(level_{t-1} + trend_{t-1})
-//   trend_t  = b*(level_t - level_{t-1}) + (1-b)*trend_{t-1}
-//   season_t = g*(y_t - level_{t-1} - trend_{t-1}) + (1-g)*s_{t-m}
-//
-// and an h-step-ahead forecast of `level_n + h*trend_n + s_{n+h-m*ceil(h/m)}`.
-// With `m <= 1` the seasonal terms drop out and this degrades to Holt's
-// linear method, which is what Excel does when it detects no seasonality.
-
 /// A timeline resolved onto a regular grid, plus the grid's own geometry.
 pub struct Series {
     /// Observations, one per grid step, gaps already filled.
@@ -76,7 +61,6 @@ pub fn build_series(
         .collect();
     pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Average out duplicate timestamps (Excel's default aggregation).
     let mut times: Vec<f64> = Vec::new();
     let mut obs: Vec<f64> = Vec::new();
     for (t, v) in pairs {
@@ -84,7 +68,6 @@ pub fn build_series(
             && (t - last).abs() <= f64::EPSILON * last.abs().max(1.0)
         {
             let n = obs.len();
-            // Running mean of the duplicates seen so far at this timestamp.
             obs[n - 1] = (obs[n - 1] + v) / 2.0;
             continue;
         }
@@ -95,8 +78,6 @@ pub fn build_series(
         return Err("#VALUE!".to_string());
     }
 
-    // The step is the smallest gap; every other gap must be a whole multiple
-    // of it or the timeline isn't on a constant step at all.
     let mut step = f64::INFINITY;
     for w in times.windows(2) {
         let d = w[1] - w[0];
@@ -126,7 +107,6 @@ pub fn build_series(
         grid[idx] = Some(*v);
     }
 
-    // Fill gaps. Excel tolerates up to 30% missing.
     let missing = grid.iter().filter(|g| g.is_none()).count();
     if missing * 10 > grid.len() * 3 {
         return Err("#NUM!".to_string());
@@ -172,7 +152,6 @@ pub fn detect_period(values: &[f64]) -> usize {
     if n < 4 {
         return 0;
     }
-    // First difference to detrend.
     let diffs: Vec<f64> = values.windows(2).map(|w| w[1] - w[0]).collect();
     let dn = diffs.len();
     let mean = diffs.iter().sum::<f64>() / dn as f64;
@@ -196,7 +175,6 @@ pub fn detect_period(values: &[f64]) -> usize {
             best = (p, acf);
         }
     }
-    // A genuine season repeats strongly; anything weaker is noise.
     if best.1 >= 0.3 { best.0 } else { 0 }
 }
 
@@ -239,24 +217,10 @@ fn initial_state(values: &[f64], period: usize) -> (f64, f64, Vec<f64>, usize) {
 
     let mut seasons = Vec::new();
     if period > 1 {
-        // Classical decomposition: estimate the trend-cycle with a centred
-        // moving average of exactly one season, then read the seasonal
-        // indices off the residual.
-        //
-        // Fitting a straight line to the raw series instead does *not*
-        // work: the seasonal pattern is not orthogonal to the linear basis,
-        // so it biases the slope. On a series with true slope 0.5 and
-        // indices [-1.75, 7.75, 2.25, -8.25] repeating, a plain
-        // least-squares fit returns 0.353, and every seasonal index (and
-        // hence the whole forecast) inherits that error. A centred moving
-        // average of one full season averages the seasonality out by
-        // construction.
         let half = m / 2;
         let mut sums = vec![0.0; m];
         let mut counts = vec![0.0; m];
         for i in half..n.saturating_sub(half) {
-            // For an even season length the window straddles two points at
-            // each end, which get half weight apiece.
             let trend_cycle = if m.is_multiple_of(2) {
                 if i < half || i + half >= n {
                     continue;
@@ -276,8 +240,6 @@ fn initial_state(values: &[f64], period: usize) -> (f64, f64, Vec<f64>, usize) {
         if counts.iter().all(|c| *c > 0.0) {
             seasons = sums.iter().zip(counts.iter()).map(|(s, c)| s / c).collect();
         } else {
-            // Too short for a full moving average: fall back to deviations
-            // from the overall mean, which is at least unbiased in level.
             let mean = values.iter().sum::<f64>() / n as f64;
             let mut acc = vec![0.0; m];
             let mut cnt = vec![0.0; m];
@@ -291,7 +253,6 @@ fn initial_state(values: &[f64], period: usize) -> (f64, f64, Vec<f64>, usize) {
                 .map(|(a, c)| if *c > 0.0 { a / c } else { 0.0 })
                 .collect();
         }
-        // Additive indices must sum to zero.
         let mean = seasons.iter().sum::<f64>() / m as f64;
         for season in seasons.iter_mut() {
             *season -= mean;
@@ -351,8 +312,6 @@ fn smooth(values: &[f64], period: usize, alpha: f64, beta: f64, gamma: f64) -> M
 }
 
 fn sse(values: &[f64], period: usize, alpha: f64, beta: f64, gamma: f64) -> f64 {
-    // `residuals` already starts after the initialization window, so every
-    // one of them is genuinely attributable to the parameters being scored.
     smooth(values, period, alpha, beta, gamma)
         .residuals
         .iter()
@@ -383,14 +342,6 @@ pub fn fit(values: &[f64], period: usize) -> Model {
                     1 => beta,
                     _ => gamma,
                 };
-                // Scan in Excel's preference order so that a *tie* resolves
-                // the way Excel's optimizer does. When the series fits
-                // perfectly every parameter triple scores the same, and
-                // Excel reports alpha at its maximum with beta at its
-                // minimum (a perfectly linear input comes back as
-                // alpha = 0.9, beta = 0.001), so alpha is scanned downward
-                // from the top and beta/gamma upward from the bottom, with
-                // only strict improvements accepted.
                 let steps = ((PARAM_MAX - PARAM_MIN) / scale).round() as i64;
                 let mut best = (current, f64::INFINITY);
                 for k in 0..=steps {
@@ -428,8 +379,6 @@ pub fn fit(values: &[f64], period: usize) -> Model {
     }
 
     if period <= 1 {
-        // Excel reports gamma as an epsilon rather than a clean zero when
-        // there is no seasonal component to smooth.
         gamma = f64::EPSILON;
     }
     let mut model = smooth(values, period, alpha, beta, gamma);
@@ -486,7 +435,6 @@ impl Model {
             1 => Ok(self.alpha),
             2 => Ok(self.beta),
             3 => Ok(self.gamma),
-            // MASE: mean absolute error scaled by the naive one-step error.
             4 => {
                 if tail.is_empty() {
                     return Ok(0.0);
@@ -496,7 +444,6 @@ impl Model {
                 let denom = naive / (self.values.len() - 1).max(1) as f64;
                 Ok(if denom == 0.0 { 0.0 } else { mae / denom })
             }
-            // SMAPE: symmetric mean absolute percentage error.
             5 => {
                 if tail.is_empty() {
                     return Ok(0.0);

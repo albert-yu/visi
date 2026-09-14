@@ -62,18 +62,8 @@ fn build_items_xml(shared_idx: &[usize], with_default: bool) -> String {
 /// `display` pairs each value with its `<sharedItems>` index, for the same
 /// reason [`build_items_xml`] takes them.
 fn build_filter_items_xml(display: &[(usize, String)], selected: &Option<Vec<String>>) -> String {
-    // The trailing `<item t="default"/>` is the "(All)" entry, and it is not
-    // optional: a `<pageField>` with no `item` attribute selects the default
-    // item, so omitting it leaves the field pointing at nothing. Measured --
-    // Excel writes `count="4"` for three values, and a file without it does
-    // not open at all, with or without a selection.
     let mut s = format!("<items count=\"{}\">", display.len() + 1);
     for (idx, value) in display {
-        // Case-insensitive, because the items themselves are merged that
-        // way (`distinct_strings` keeps the first casing seen in the source).
-        // Comparing exactly meant a selection naming `east` matched none of
-        // the merged `East` item, so nothing was hidden and the filter
-        // silently became "select everything".
         let hidden = selected
             .as_ref()
             .is_some_and(|sel| !sel.iter().any(|s| s.eq_ignore_ascii_case(value)));
@@ -268,11 +258,6 @@ fn build_pivot_xml_unit(
         .map(|f| pivot::column_index(&col_names, &f.column))
         .collect::<Result<_, _>>()?;
 
-    // Two orders, both needed and different -- measured with
-    // `fuzz/pivot_filter_probe.py`. `cache_items` is the cache's own
-    // first-seen order, which is what `<sharedItems>` stores and what an
-    // `<item x="N"/>` indexes; `field_items` is the sorted display order the
-    // grid is drawn in.
     let axis_field_idxs: Vec<usize> = row_field_idxs
         .iter()
         .chain(col_field_idxs.iter())
@@ -336,13 +321,6 @@ fn build_pivot_xml_unit(
         } else {
             ""
         };
-        // A field used on an axis has to list its values here: an
-        // `<item x="N"/>` in the pivot table part indexes *this* list, so
-        // leaving it empty makes every one of those indices dangle. Excel
-        // rejects such a file outright (openpyxl does not, which is how it
-        // went unnoticed -- see `fuzz/pivot_filter_probe.py --variant visi`).
-        // A field that is only aggregated needs no items, and Excel writes
-        // none for one either.
         let shared_items = match cache_items.get(&i) {
             Some(values) if !values.is_empty() => {
                 let mut body = format!(
@@ -438,7 +416,6 @@ fn build_pivot_xml_unit(
         1
     };
 
-    // pivotFields: one per source column, in order.
     let mut pivot_fields_xml = String::new();
     for i in 0..col_names.len() {
         let mut attrs = String::new();
@@ -446,12 +423,6 @@ fn build_pivot_xml_unit(
 
         if let Some(pos) = row_field_idxs.iter().position(|&x| x == i) {
             attrs.push_str(" axis=\"axisRow\"");
-            // Write the field's own `subtotal` setting regardless of
-            // whether it's currently the innermost field of its axis (a
-            // subtotal never actually renders there either way --
-            // `flatten_groups` separately gates on `!is_innermost` at
-            // compute time) so that `subtotal: false` round-trips cleanly
-            // even when it is currently the sole field on its axis.
             let subtotal_enabled = pivot.row_fields[pos].subtotal;
             let idxs = shared_idx_for(&field_items, &cache_items, i);
             items_xml = Some(build_items_xml(&idxs, subtotal_enabled));
@@ -499,10 +470,6 @@ fn build_pivot_xml_unit(
     let mut page_fields_xml = String::new();
     for (pos, &idx) in page_field_idxs.iter().enumerate() {
         let ff = &pivot.filter_fields[pos];
-        // Single-select mode records the choice as `item="N"`, a *position*
-        // in the field's display-ordered `<items>`; multi-select records it
-        // by hiding the others and carries no `item` at all. Both measured;
-        // see `fuzz/pivot_filter_probe.py`.
         let item_attr = match (&ff.selected_values, ff.multiple_selection) {
             (Some(selected), false) if selected.len() == 1 => field_items
                 .get(&idx)
@@ -555,11 +522,6 @@ fn build_pivot_xml_unit(
         )
     } else {
         let grid = compute_pivot(sheets, pivot)?;
-        // Excel's own `<location>` spans only the row/col header + data
-        // grid, not the filter/page-field rows above it (those are
-        // documented separately via `rowPageCount`/`colPageCount` below,
-        // matching real Excel's convention, verified against an
-        // Excel-produced pivotTable1.xml).
         let height = grid.header_rows.len() + grid.body_rows.len();
         let width = grid.width.max(1);
         let grid_start_row = pivot.dest_row + grid.grid_row_offset();
@@ -591,9 +553,6 @@ fn build_pivot_xml_unit(
     let row_items_count = row_items_xml.matches("<i").count();
     let col_items_count = col_items_xml.matches("<i").count();
 
-    // Matches real Excel: `rowPageCount`/`colPageCount` on `<location>`
-    // document how many rows/columns above/left of `ref` are reserved for
-    // filter/page fields, only present at all when there are any.
     let page_count_attrs = if pivot.filter_fields.is_empty() {
         String::new()
     } else {
@@ -917,10 +876,6 @@ fn rewrite_zip_with_pivot_parts(
     Ok(cursor.into_inner())
 }
 
-// ---------------------------------------------------------------------------
-// Import: reconstruct PivotTable definitions from a workbook's pivot XML.
-// ---------------------------------------------------------------------------
-
 enum PivotXmlSection {
     None,
     RowFields,
@@ -976,11 +931,6 @@ fn parse_pivot_table_xml(xml: &str) -> Option<ParsedPivotTable> {
     let mut data_fields = Vec::new();
     let mut section = PivotXmlSection::None;
 
-    // `<pivotFields>` has one `<pivotField>` per source column, in order --
-    // its position there is the same `x` index `<rowFields>`/`<colFields>`
-    // reference. Track that position and, while inside one, whether an
-    // `<item t="default"/>` subtotal placeholder shows up among its
-    // `<items>` (see `build_items_xml`).
     let mut in_pivot_fields = false;
     let mut pivot_field_idx: i64 = -1;
     let mut current_field_has_default = false;
@@ -1156,10 +1106,6 @@ fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
                     field_names.push(get_attr(e, b"name").unwrap_or_default());
                     shared_items.push(Vec::new());
                 } else if matches!(local, b"s" | b"n" | b"d" | b"b") {
-                    // A `<sharedItems>` entry. Typed by element name (`s`
-                    // string, `n` number, `b` boolean, `d` date); the pivot
-                    // engine groups on the rendered string either way, so
-                    // only the value is kept.
                     if let Some(v) = get_attr(e, b"v")
                         && let Some(last) = shared_items.last_mut()
                     {
@@ -1265,7 +1211,6 @@ pub fn import_pivot_tables(
             continue;
         };
 
-        // Destination sheet: whichever worksheet's rels points at this file.
         let pt_basename = pt_file.rsplit('/').next().unwrap_or(&pt_file);
         let worksheet_rels_files: Vec<String> = archive
             .file_names()
@@ -1296,7 +1241,6 @@ pub fn import_pivot_tables(
         let Some(cache_target) = rid_to_target.get(rid) else {
             continue;
         };
-        // `cache_target` is relative to `xl/` (e.g. "pivotCache/pivotCacheDefinition1.xml").
         let cache_path = format!("xl/{}", cache_target.trim_start_matches('/'));
         let Some(cache_xml) = get_zip_file_content(&mut archive, &cache_path) else {
             continue;
@@ -1358,26 +1302,12 @@ pub fn import_pivot_tables(
                 subtotal: field_subtotal(x),
             })
             .collect();
-        // A filter selection *is* reconstructed, resolved through the
-        // cache's `<sharedItems>` to plain value strings rather than kept as
-        // indices. That is what makes it safe: the indices are trusted only
-        // against the cache definition in the same file, which is
-        // self-consistent by construction, and a value that no longer exists
-        // in changed source data simply matches nothing.
-        //
-        // Both of Excel's forms are read, because a macro can produce either
-        // -- `h="1"` on hidden items (multi-select), or `<pageField item="N">`
-        // naming a position in the display list (single). Measured with
-        // `fuzz/pivot_filter_probe.py`.
         let filter_fields: Vec<PivotFilterField> = parsed
             .page_field_fld
             .iter()
             .enumerate()
             .map(|(pos, &fld)| {
                 let mut field = PivotFilterField::new(field_name(fld));
-                // A `<pageField item="N">` is the single-select form; without
-                // it the field is multi-select, which is also the default for
-                // a field with no selection at all.
                 field.multiple_selection =
                     parsed.page_field_item.get(pos).copied().flatten().is_none();
                 let items = parsed.field_items.get(&fld);
@@ -1386,14 +1316,10 @@ pub fn import_pivot_tables(
 
                 field.selected_values =
                     match (parsed.page_field_item.get(pos).copied().flatten(), items) {
-                        // Single selection: one position in the display list.
                         (Some(display_pos), Some(items)) => items
                             .get(display_pos)
                             .and_then(|&(shared_idx, _)| value_at(shared_idx))
                             .map(|v| vec![v]),
-                        // Multi-selection: everything not hidden. All-visible
-                        // means no filter at all, which stays `None` so it is
-                        // not confused with "every value happens to be picked".
                         (None, Some(items)) if items.iter().any(|&(_, hidden)| hidden) => Some(
                             items
                                 .iter()
@@ -1412,12 +1338,6 @@ pub fn import_pivot_tables(
                 .iter()
                 .map(|(fld, agg, _)| PivotValueField::new(field_name(*fld), *agg))
                 .collect();
-            // Disambiguated collectively (a second value field reusing the
-            // same source column defaults to "<Agg> of <Column>2", not
-            // "<Agg> of <Column>" -- see `value_field_labels`), so a
-            // reimported field's stored `<dataField name="...">` only
-            // counts as a genuine user-set custom name if it differs from
-            // *that*, not from the plain single-field default.
             let default_labels = pivot::value_field_labels(&raw);
             raw.into_iter()
                 .zip(parsed.data_fields.iter().map(|(_, _, dname)| dname))
@@ -1433,11 +1353,6 @@ pub fn import_pivot_tables(
                 .collect()
         };
 
-        // `<location>` spans only the row/col header + data grid, not the
-        // filter/page-field rows reserved above it on export (see
-        // `build_pivot_xml_unit`), so `dest_row` -- the anchor of the whole
-        // visual block, filter rows included -- needs that offset added
-        // back in.
         let filter_row_offset = if filter_fields.is_empty() {
             0
         } else {

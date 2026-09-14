@@ -1317,14 +1317,6 @@ fn test_fuzz_average_range_ignores_text_cell() {
 
 #[test]
 fn test_product_snaps_once_not_per_factor() {
-    // Excel snaps a formula's result to 15 significant digits, and PRODUCT
-    // is where that is observable twice over.
-    //
-    // Applying the snap per factor compounds: over seven factors the
-    // partial products drift about 14 ULP, and
-    // CONCATENATE(PRODUCT(...), ...) rendered 189124133819.665 where real
-    // Excel gives 189124133819.664 -- which is also what the plain
-    // a*b*c*... chain produces.
     let mut sheet = create_sheet(&[
         ["-198.552", "=CONCATENATE(\"x\", PRODUCT(A1:A7))"],
         ["139.6292", "=A1*A2*A3*A4*A5*A6*A7"],
@@ -1340,9 +1332,6 @@ fn test_product_snaps_once_not_per_factor() {
         other => panic!("expected x189124133819.664, got {other:?}"),
     }
 
-    // ... but dropping the snap entirely is wrong too: it is what makes
-    // ROUNDDOWN see 29369.2 rather than 29369.199999999997, which is
-    // covered by test_fuzz_rounddown_abs_product_precision.
     let mut sheet = create_sheet(&[[
         "-35",
         "-0.617",
