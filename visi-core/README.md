@@ -3,6 +3,8 @@
 [![crates.io](https://img.shields.io/crates/v/visi-core.svg)](https://crates.io/crates/visi-core)
 [![docs.rs](https://docs.rs/visi-core/badge.svg)](https://docs.rs/visi-core)
 
+_The following document is LLM-generated._
+
 An embeddable spreadsheet engine: Excel formula compilation and evaluation,
 a dependency-tracking recalculation engine, and `.xlsx` import/export.
 
@@ -59,8 +61,6 @@ fn f(wb: &mut WorkbookManager) -> Result<(), Box<dyn std::error::Error>> {
 
 - **Formulas** — 500+ Excel functions across math/trig, statistics, text,
   date/time, financial, engineering, lookup, and information families.
-  Formula text compiles to a representation that stores references by
-  sheet/column *id* rather than name, so renames are non-destructive.
 - **Recalculation** — a dirty-queue BFS maintaining both directions of the
   dependency graph, with cross-sheet propagation handled at the workbook level.
 - **Excel fidelity** — number formatting reproduces Excel's 15-significant-digit

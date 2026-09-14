@@ -1,5 +1,7 @@
 # visi-python
 
+_The following content is LLM-generated._
+
 Python bindings for [`visi-core`](../visi-core), exposed as the module
 `visi_core`. **Development-only** — not published, no stability promise. It
 exists so the differential fuzz harness in [`fuzz/`](../fuzz) can drive the
