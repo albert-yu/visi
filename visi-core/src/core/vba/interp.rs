@@ -457,6 +457,7 @@ impl<'w> Interpreter<'w> {
         if let Some(h) = self.host.as_mut() {
             h.finish();
         }
+        // Clean up remaining global class instances
         let mut all_globals = Vec::new();
         for m in self.modules.values_mut() {
             for v in m.globals.values() {
@@ -519,6 +520,7 @@ impl<'w> Interpreter<'w> {
         self.ops = 0;
         self.init_all_modules()?;
 
+        // 1. Workbook_Open in ThisWorkbook (document module)
         if let Some(m_env) = self.modules.get("thisworkbook")
             && let Some(mp) = m_env.procs.get("workbook_open")
             && let Some(sub) = mp.first()
@@ -533,6 +535,7 @@ impl<'w> Interpreter<'w> {
             res?;
         }
 
+        // 2. Auto_Open in standard modules
         let std_mods: Vec<String> = self
             .modules
             .values()
@@ -709,6 +712,7 @@ impl<'w> Interpreter<'w> {
         };
         self.instances.insert(id, instance);
 
+        // Call Class_Initialize if present
         let init_proc = module
             .procs
             .get("class_initialize")
@@ -857,6 +861,7 @@ impl<'w> Interpreter<'w> {
                 change.width,
             );
 
+            // 1. Worksheet_Change on the specific sheet document module
             if let Some(sheet_mod_name) = self.find_document_module_name_by_sheet_id(sheet_id)
                 && let Some(m_env) = self.modules.get(&sheet_mod_name)
                 && let Some(mp) = m_env.procs.get("worksheet_change")
@@ -872,6 +877,7 @@ impl<'w> Interpreter<'w> {
                 res?;
             }
 
+            // 2. Workbook_SheetChange on ThisWorkbook
             if let Some(m_env) = self.modules.get("thisworkbook")
                 && let Some(mp) = m_env.procs.get("workbook_sheetchange")
                 && let Some(sub) = mp.first()
@@ -899,6 +905,7 @@ impl<'w> Interpreter<'w> {
             .as_mut()
             .and_then(|h| h.pending_calculate_sheets.pop())
         {
+            // 1. Worksheet_Calculate on sheet
             if let Some(sheet_mod_name) = self.find_document_module_name_by_sheet_id(sheet_id)
                 && let Some(m_env) = self.modules.get(&sheet_mod_name)
                 && let Some(mp) = m_env.procs.get("worksheet_calculate")
@@ -914,6 +921,7 @@ impl<'w> Interpreter<'w> {
                 res?;
             }
 
+            // 2. Workbook_SheetCalculate on ThisWorkbook
             if let Some(m_env) = self.modules.get("thisworkbook")
                 && let Some(mp) = m_env.procs.get("workbook_sheetcalculate")
                 && let Some(sub) = mp.first()
@@ -944,6 +952,7 @@ impl<'w> Interpreter<'w> {
     ) -> Option<(String, Rc<Procedure>)> {
         let lower = name.to_ascii_lowercase();
 
+        // 1. Current frame's me (if class or document instance)
         if let Some(me_obj) = frame.me {
             match me_obj {
                 ObjRef::UserClass(id) => {
@@ -978,6 +987,7 @@ impl<'w> Interpreter<'w> {
             }
         }
 
+        // 2. Active module
         if let Some(m_env) = self.modules.get(&self.active_module)
             && let Some(mp) = m_env.procs.get(&lower)
             && let Some(p) = mp.first()
@@ -985,6 +995,7 @@ impl<'w> Interpreter<'w> {
             return Some((self.active_module.clone(), p));
         }
 
+        // 3. Other standard modules
         for (m_name, m_env) in &self.modules {
             if m_env.kind == VbaModuleKind::Standard
                 && *m_name != self.active_module
@@ -1115,6 +1126,7 @@ impl<'w> Interpreter<'w> {
                 .unwrap_or(Variant::Empty)
         };
 
+        // Dec ref local variables
         let locals = std::mem::take(&mut frame.locals);
         for (_, val) in locals {
             self.dec_ref(&val);
@@ -1439,6 +1451,7 @@ impl<'w> Interpreter<'w> {
                     }
                 }
 
+                // Copy ByRef parameter changes back to caller's variables if args were identifiers
                 for (i, a) in args.iter().enumerate() {
                     if let Some(Expr::Ident { name: arg_var, .. }) = &a.value
                         && i < arg_vals.len()
@@ -1704,6 +1717,7 @@ impl<'w> Interpreter<'w> {
                 let key = name.to_ascii_lowercase();
                 self.inc_ref(&v);
 
+                // Handle WithEvents dynamic registration
                 let is_with_events = frame.with_events_locals.contains_key(&key)
                     || self
                         .modules
@@ -1914,6 +1928,7 @@ impl<'w> Interpreter<'w> {
     fn lookup(&mut self, name: &str, frame: &mut Frame) -> Option<Variant> {
         let key = name.to_ascii_lowercase();
 
+        // 1. Check local variable in frame with auto-new check
         if frame.auto_new_locals.contains_key(&key) {
             let val = frame.locals.get(&key).cloned();
             if val
@@ -1932,6 +1947,7 @@ impl<'w> Interpreter<'w> {
             return Some(v.clone());
         }
 
+        // 2. Check instance fields if inside a class instance
         if let Some(ObjRef::UserClass(id)) = frame.me {
             let auto_cls = self.instances.get(&id).and_then(|inst| {
                 if inst.auto_new_fields.contains_key(&key) {
@@ -1960,6 +1976,7 @@ impl<'w> Interpreter<'w> {
             }
         }
 
+        // 3. Check current module's globals
         let auto_cls = self.modules.get(&self.active_module).and_then(|m| {
             if m.auto_new_vars.contains_key(&key) {
                 let val = m.globals.get(&key);
@@ -1986,6 +2003,7 @@ impl<'w> Interpreter<'w> {
             return Some(v.clone());
         }
 
+        // 4. Check document modules / singleton names
         if key == "thisworkbook" {
             return Some(Variant::Object(ObjRef::Workbook));
         }
@@ -1999,6 +2017,7 @@ impl<'w> Interpreter<'w> {
             }
         }
 
+        // 5. Check public globals in other standard modules
         for m in self.modules.values() {
             if m.kind == VbaModuleKind::Standard
                 && m.name != self.active_module
@@ -2079,6 +2098,10 @@ impl<'w> Interpreter<'w> {
                 ) && matches!(a, Variant::Str(_))
                     && operand_kind(lhs) != Operand::Runtime
                 {
+                    // Logical operators convert the left operand before the
+                    // right expression is evaluated. Fuzz found
+                    // `("a" + "Z") Eqv ("1" \ 0)`: Excel raises the left
+                    // type mismatch (13), not the right division by zero (11).
                     a.to_bool()?;
                 }
                 let b = self.eval(rhs, frame)?;
@@ -2105,6 +2128,7 @@ impl<'w> Interpreter<'w> {
                         other => return Err(out_of_scope(&format!("Err.{other}"))),
                     });
                 }
+                // Check module-qualified procedure/global access
                 if let Some(t) = target
                     && let Expr::Ident {
                         name: mod_ident, ..
@@ -2636,6 +2660,9 @@ fn compare_with(op: BinOp, ord: std::cmp::Ordering) -> bool {
 /// and not constant; `(Empty + 1)` is constant and not statically typed.
 fn is_constant(e: &Expr) -> bool {
     match e {
+        // `Null` is not foldable, so nothing containing it is constant.
+        // `(False & Null) = (0.1 / -2.5)` is simply False, where the same
+        // comparison with a foldable string is error 13.
         Expr::Literal(Literal::Null) => false,
         Expr::Literal(_) => true,
         Expr::Paren { expr, .. } => is_constant(expr),
@@ -2727,6 +2754,13 @@ const STATICALLY_STRING: &[&str] = &["cstr", "typename", "strreverse", "replace"
 fn is_statically_boolean(e: &Expr) -> bool {
     match e {
         Expr::Paren { expr, .. } => is_statically_boolean(expr),
+        // `Not` of a Boolean is a Boolean, so it carries the static type
+        // through: `Select Case (Not IsEmpty("Z"))` takes `Case 0, 1` -- the
+        // case values convert with `CBool` -- where the same subject read as
+        // a plain -1 takes `Case Else`. `Not` of a *number* is a number and
+        // does not, which the `Variant::Boolean` check at the use site
+        // enforces anyway: `Select Case (Not 5)` is -6 and matches neither.
+        // Measured; found by `fuzz/fuzz_vba.py`.
         Expr::Unary {
             op: UnOp::Not,
             expr,
@@ -2808,6 +2842,9 @@ fn is_literal_string(e: &Expr) -> bool {
 /// and converts, while `(3# >= Empty)` does not.
 fn is_statically_typed(e: &Expr) -> bool {
     match e {
+        // `Empty` and `Null` are `Variant`, not statically typed values. This
+        // is the distinction the whole §24 rule turns on: `(3# >= Empty)` is
+        // a compile-time *constant* and still not a compile-time `Boolean`.
         Expr::Literal(Literal::Empty | Literal::Null) => false,
         Expr::Literal(_) => true,
         Expr::Paren { expr, .. } | Expr::Unary { expr, .. } => is_statically_typed(expr),
@@ -2821,6 +2858,10 @@ fn is_statically_typed(e: &Expr) -> bool {
                     | BinOp::IntDiv
                     | BinOp::Mod
                     | BinOp::Pow
+                    // `&` yields a `String` whatever it is handed, and a
+                    // comparison a `Boolean` -- provided every operand is
+                    // itself statically typed. `("1" & "3")` is strict
+                    // where `(Empty & "13")` is not.
                     | BinOp::Concat
                     | BinOp::Eq
                     | BinOp::Ne
@@ -2835,6 +2876,8 @@ fn is_statically_typed(e: &Expr) -> bool {
                     BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Eqv | BinOp::Imp
                 )
         }
+        // Boolean- and String-returning intrinsics count for the same reason
+        // the numeric ones do: the compiler knows the type without the value.
         Expr::Call { target, .. } => matches!(target.as_ref(), Expr::Ident { name, .. }
         if {
             let name = name.to_ascii_lowercase();
@@ -2851,6 +2894,12 @@ fn operand_kind(e: &Expr) -> Operand {
     let statically_typed = is_statically_typed(e);
     match e {
         Expr::Literal(_) => Operand::Literal,
+        // A parenthesised or signed literal is still just a literal, however
+        // many layers deep: `(Not True)` behaves as `False` does, where the
+        // *folded* `(3# >= Empty)` does not, and the two differ only in that
+        // one bottoms out at a literal through unary operators and the other
+        // through a comparison. Measured -- `TypeName(32767) >= (Not True)`
+        // is error 13 while `TypeName(0) >= (3# >= Empty)` compares as text.
         Expr::Paren { expr, .. } | Expr::Unary { expr, .. }
             if operand_kind(expr) == Operand::Literal =>
         {
@@ -2866,6 +2915,10 @@ fn operand_kind(e: &Expr) -> Operand {
         {
             Operand::Runtime
         }
+        // Constant *and* statically typed. A constant expression over `Empty`
+        // is neither one thing nor the other -- the compiler can fold it but
+        // its type is `Variant`, so it behaves exactly as a variable does.
+        // `(3# >= Empty)` and `(Empty & "13")` are the measured cases (§24).
         _ if is_constant(e) && statically_typed => Operand::ConstExpr,
         _ if statically_typed => Operand::Static,
         _ => Operand::Runtime,
@@ -2926,12 +2979,15 @@ fn eval_binary(
             None => Ok(Variant::Null),
             Some(ord) => Ok(Variant::Boolean(compare_with(op, ord))),
         },
+        // And/Or/Imp are three-valued; Xor and Eqv are not (a Null operand
+        // always makes their result unknown).
         And => null_on_the_right(a, b, kinds, value::and(a, b, kinds)),
         Or => null_on_the_right(a, b, kinds, value::or(a, b, kinds)),
         Xor => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| x ^ y)),
         Eqv => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| !(x ^ y))),
         Imp => null_on_the_right(a, b, kinds, value::imp(a, b, kinds)),
         Like => Err(out_of_scope("Like")),
+        // Handled before the operands are dereferenced -- see `eval`.
         Is => is_comparison(a, b),
     }
 }
@@ -3003,6 +3059,8 @@ fn literal_to_variant(l: &Literal) -> Variant {
             Some(TypeSuffix::Currency) => Variant::Currency((value * 10_000.0).round() as i64),
             Some(TypeSuffix::String) => Variant::Str(value::format_number(*value)),
             None => {
+                // A fraction or exponent forces Double, which the lexer
+                // records: `1E3` is a Double even though `1000` is a Long.
                 let _ = base;
                 Variant::from_literal(*value, *is_float || value.fract() != 0.0)
             }
@@ -3011,6 +3069,11 @@ fn literal_to_variant(l: &Literal) -> Variant {
         Literal::Bool(b) => Variant::Boolean(*b),
         Literal::Empty => Variant::Empty,
         Literal::Null => Variant::Null,
+        // `#6/22/2026#` is the Date 46195, and `CStr` of it is `6/22/26`.
+        // The engine's own date parser reads the literal, so a date written
+        // in a macro and a date typed into a cell go through one
+        // implementation. A literal it cannot read is Empty rather than a
+        // wrong number -- the same refusal Phase 1 made for every date.
         Literal::Date(text) => match crate::core::date::parse_date(text) {
             Some((d, _)) => Variant::Date(crate::core::date::date_to_excel_serial(d)),
             None => Variant::Empty,
@@ -3075,8 +3138,12 @@ mod tests {
         run(&format!("    F = {e}"))
     }
 
+    // ---- expressions ----------------------------------------------------
+
     #[test]
     fn arithmetic_and_types_match_the_excel_probe() {
+        // Each expectation is what `fuzz/vba_variant_probe.bas` returned from
+        // Excel 16.112 for the same expression.
         assert_eq!(expr("1 + 1"), "Integer|2");
         assert_eq!(expr("32767 + 1"), "ERR|6");
         assert_eq!(expr("1 / 2"), "Double|0.5");
@@ -3094,6 +3161,7 @@ mod tests {
 
     #[test]
     fn precedence_is_the_one_measured_in_phase_0() {
+        // The parser's table, exercised through evaluation.
         assert_eq!(expr("2 ^ 3 ^ 2"), "Double|64");
         assert_eq!(expr("-2 ^ 2"), "Double|-4");
         assert_eq!(expr("2 + 3 & 4"), "String|54");
@@ -3144,6 +3212,8 @@ mod tests {
         assert_eq!(expr("CDbl(\"1e3\")"), "Double|1000");
     }
 
+    // ---- control flow ---------------------------------------------------
+
     #[test]
     fn for_loops_run_and_can_be_exited() {
         assert_eq!(
@@ -3156,10 +3226,12 @@ mod tests {
             ),
             "Integer|3"
         );
+        // A negative step counts down.
         assert_eq!(
             run("    Dim t\n    For i = 5 To 1 Step -1\n        t = t + i\n    Next i\n    F = t"),
             "Integer|15"
         );
+        // A loop whose bounds exclude the start never runs.
         assert_eq!(
             run(
                 "    Dim t\n    t = 0\n    For i = 5 To 1\n        t = t + 1\n    Next i\n    F = t"
@@ -3180,6 +3252,7 @@ mod tests {
             ),
             "Integer|5"
         );
+        // A post-tested loop always runs its body at least once.
         assert_eq!(
             run("    Dim i\n    i = 9\n    Do\n        i = i + 1\n    Loop While i < 5\n    F = i"),
             "Integer|10"
@@ -3226,6 +3299,8 @@ mod tests {
         );
     }
 
+    // ---- procedures -----------------------------------------------------
+
     #[test]
     fn functions_call_each_other_and_return_by_name() {
         let src = "Function Outer()\n    Outer = Inner(3) + Inner(4)\nEnd Function\n\
@@ -3245,6 +3320,7 @@ mod tests {
             .unwrap();
         assert_eq!(v, Variant::Integer(120));
 
+        // Unbounded recursion stops rather than blowing the Rust stack.
         let src = "Function Boom()\n    Boom = Boom()\nEnd Function\n";
         let m = parse_module(src).unwrap();
         let e = Interpreter::new(m).run("Boom", Vec::new()).unwrap_err();
@@ -3271,6 +3347,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.number, 16);
     }
+
+    // ---- error handling -------------------------------------------------
 
     #[test]
     fn on_error_goto_runs_the_handler_and_exposes_err() {
@@ -3324,6 +3402,7 @@ mod tests {
 
     #[test]
     fn an_error_inside_a_handler_is_not_caught_by_the_same_handler() {
+        // Without this, a handler that itself fails loops forever.
         let src = "Function F()\n    On Error GoTo Failed\n    F = 1 / 0\n    Exit Function\n\
                    Failed:\n    F = 1 / 0\nEnd Function\n";
         let m = parse_module(src).unwrap();
@@ -3344,6 +3423,8 @@ mod tests {
         );
     }
 
+    // ---- builtins -------------------------------------------------------
+
     #[test]
     fn string_builtins_are_one_based_like_vba() {
         assert_eq!(expr("Len(\"abcd\")"), "Long|4");
@@ -3359,6 +3440,7 @@ mod tests {
         assert_eq!(expr("Replace(\"aXbXc\", \"X\", \"-\")"), "String|a-b-c");
         assert_eq!(expr("Chr(65)"), "String|A");
         assert_eq!(expr("Asc(\"A\")"), "Integer|65");
+        // Mid is 1-based, so 0 is an error rather than a clamp.
         assert_eq!(expr("Mid(\"abcd\", 0)"), "ERR|5");
     }
 
@@ -3385,6 +3467,7 @@ mod tests {
 
     #[test]
     fn a_typed_dim_starts_at_its_types_zero_not_empty() {
+        // Observable: `Dim s As String` makes s "" rather than Empty.
         assert_eq!(
             run("    Dim s As String\n    F = TypeName(s)"),
             "String|String"
@@ -3393,12 +3476,19 @@ mod tests {
         assert_eq!(run("    Dim v\n    F = TypeName(v)"), "String|Empty");
     }
 
+    // ---- three-valued logic, comparison, loop counters -------------------
+    //
+    // All measured against Excel 16.112 after fuzz/fuzz_vba.py flagged them.
+
     #[test]
     fn and_or_and_imp_are_three_valued() {
+        // A falsy operand determines And; a truthy one determines Or. The
+        // deciding operand is returned unchanged, keeping its type.
         assert_eq!(expr("False And Null"), "Boolean|False");
         assert_eq!(expr("True Or Null"), "Boolean|True");
         assert_eq!(expr("IsNull(True And Null)"), "Boolean|True");
         assert_eq!(expr("IsNull(False Or Null)"), "Boolean|True");
+        // Numeric operands keep their own subtype through the same rule.
         assert_eq!(
             run("    Dim a\n    a = 0\n    F = (a And Null)"),
             "Integer|0"
@@ -3415,10 +3505,14 @@ mod tests {
             run("    Dim a\n    a = 0\n    F = IsNull(a Or Null)"),
             "Boolean|True"
         );
+        // Imp is determined by a true consequent or a false antecedent.
         assert_eq!(expr("Null Imp True"), "Boolean|True");
         assert_eq!(expr("False Imp Null"), "Boolean|True");
+        // Xor and Eqv are not three-valued: Null always wins.
         assert_eq!(expr("IsNull(Null Xor True)"), "Boolean|True");
         assert_eq!(expr("IsNull(Null Eqv True)"), "Boolean|True");
+        // Not propagates Null. A bare `Not Null` only errors if the caller
+        // then stringifies the returned Null (for example via CStr).
         assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
         assert_eq!(expr("UCase(\"False\") And Null"), "Boolean|False");
         assert_eq!(expr("UCase(\"0\") And Null"), "Long|0");
@@ -3428,11 +3522,17 @@ mod tests {
 
     #[test]
     fn string_versus_number_comparison_depends_on_constant_ness() {
+        // The four rules in `value::compare_ctx`, each with the Excel result
+        // that established it.
+
+        // Both constant: numeric, and error 13 if the string will not parse.
         assert_eq!(expr("\"10\" = 10"), "Boolean|True");
         assert_eq!(expr("\"2\" > 10"), "Boolean|False");
         assert_eq!(expr("\"\" = 0"), "ERR|13");
         assert_eq!(expr("\"abc\" > 1"), "ERR|13");
 
+        // Numeric constant, string variable: numeric, falling back rather
+        // than erroring when the string will not parse.
         assert_eq!(
             run("    Dim a\n    a = \"2\"\n    F = (a > 10)"),
             "Boolean|False"
@@ -3450,6 +3550,7 @@ mod tests {
             "Boolean|False"
         );
 
+        // String constant, numeric variable: string comparison.
         assert_eq!(
             run("    Dim b\n    b = 10\n    F = (\"2\" > b)"),
             "Boolean|True"
@@ -3459,10 +3560,14 @@ mod tests {
             "Boolean|True"
         );
 
+        // A call whose return type is declared numeric counts as statically
+        // typed, exactly as a literal does -- see `STATICALLY_NUMERIC`.
         assert_eq!(
             run("    Dim a\n    a = True\n    F = ((1.5 & \"abc\") <> CLng(a))"),
             "ERR|13"
         );
+        // The same comparison against a plain Variant uses the runtime rule
+        // and does not error.
         assert_eq!(
             run("    Dim a\n    a = -1\n    F = ((1.5 & \"abc\") <> a)"),
             "Boolean|True"
@@ -3472,12 +3577,21 @@ mod tests {
             "Boolean|True"
         );
 
+        // Against a numeric constant the string is coerced by its numeric
+        // *prefix*, as Val takes it -- which is what separates these two,
+        // identical by every structural property: "1.5False" has the prefix
+        // 1.5, "True255" has none.
         assert_eq!(expr("(Not 2!) <= (\"1.5\" & False)"), "Boolean|True");
         assert_eq!(expr("(-True) <> (True & &HFF)"), "ERR|13");
         assert_eq!(expr("\"False\" = -0.04"), "ERR|13");
         assert_eq!(expr("\"1.5abc\" > 1"), "Boolean|True");
+        // Null is not foldable, so nothing containing it is constant, and
+        // this falls back to the runtime ordering instead of erroring.
         assert_eq!(expr("(False & Null) = (0.1 / -2.5)"), "Boolean|False");
 
+        // A statically-typed numeric partner is strict whatever the string
+        // side looks like -- but only the C* conversions qualify. `Len` does
+        // not, despite its documented `As Long` signature.
         assert_eq!(
             run("    Dim a\n    a = True\n    F = ((1.5 & \"abc\") <> CLng(a))"),
             "ERR|13"
@@ -3487,12 +3601,18 @@ mod tests {
             "Boolean|True"
         );
 
+        // A Boolean partner converts the string with CBool, so the words
+        // compare as booleans. A numeric partner does not: `"True" = -1` is
+        // error 13.
         assert_eq!(
             run("    Dim a\n    a = \"True\"\n    F = (a = True)"),
             "Boolean|True"
         );
         assert_eq!(expr("\"True\" = -1"), "ERR|13");
 
+        // Both variables: a number sorts before a string, whatever it is.
+        // This is the row that defeats every simpler theory -- "1.5" and 1.5
+        // are equal both numerically and textually, and Excel says False.
         assert_eq!(
             run("    Dim a, b\n    a = \"1.5\"\n    b = 1.5\n    F = (a = b)"),
             "Boolean|False"
@@ -3523,6 +3643,7 @@ mod tests {
                  Case Else\n        r = \"else\"\n    End Select\n    F = r"
             )
         };
+        // Constant subjects: "32768abc" sorts between "2" and "5" as text.
         assert_eq!(run(&sel("\"32768abc\"")), "String|range");
         assert_eq!(run(&sel("(32768 & \"abc\")")), "String|range");
         assert_eq!(run(&sel("\"3\"")), "String|range");
@@ -3530,9 +3651,12 @@ mod tests {
         assert_eq!(run(&sel("\"7\"")), "String|else");
         assert_eq!(run(&sel("\"1x\"")), "String|else");
         assert_eq!(run(&sel("\"\"")), "String|else");
+        // Numeric constant subjects are unaffected.
         assert_eq!(run(&sel("3")), "String|range");
         assert_eq!(run(&sel("7")), "String|else");
 
+        // The same strings in a *variable* use the numeric rule instead, so
+        // "32768abc" no longer matches while "3" still does.
         let sel_var = |value: &str| {
             format!(
                 "    Dim a, r\n    a = {value}\n    Select Case a\n    Case 2 To 5\n        \
@@ -3557,6 +3681,7 @@ mod tests {
             run(&sel("    Case 3\n        r = \"value\"\n")),
             "String|else"
         );
+        // "abc" >= "2" as text, so this one matches.
         assert_eq!(
             run(&sel("    Case Is >= 2\n        r = \"is\"\n")),
             "String|is"
@@ -3565,6 +3690,8 @@ mod tests {
 
     #[test]
     fn select_case_null_subject_matches_no_case_form() {
+        // Measured with fuzz/vba_expr_probe.py after fuzz/fuzz_vba.py found
+        // `Select Case Null` incorrectly taking a `Case 2 To 5` arm.
         let sel = |cases: &str| {
             format!(
                 "    Dim r\n    Select Case Null\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
@@ -3584,24 +3711,32 @@ mod tests {
         );
     }
 
+    // ---- error ordering (docs/vba-error-ordering.md) --------------------
+
     #[test]
     fn zero_divided_by_zero_is_overflow_not_division_by_zero() {
+        // Measured: only floating-point `/` makes the distinction.
         assert_eq!(expr("1 / 0"), "ERR|11");
         assert_eq!(expr("-1 / 0"), "ERR|11");
         assert_eq!(expr("1.5 / 0"), "ERR|11");
         assert_eq!(expr("0 / 0"), "ERR|6");
         assert_eq!(expr("False / 0"), "ERR|6");
+        // `\` and `Mod` stay at 11 even for 0 op 0.
         assert_eq!(expr("0 \\ 0"), "ERR|11");
         assert_eq!(expr("0 Mod 0"), "ERR|11");
     }
 
     #[test]
     fn logical_operators_convert_the_left_operand_before_evaluating_the_right() {
+        // Found by fuzz/fuzz_vba.py: the left type mismatch wins over the
+        // right division by zero.
         assert_eq!(expr("(\"a\" + \"Z\") Eqv (\"1\" \\ 0)"), "ERR|13");
     }
 
     #[test]
     fn division_coerces_both_operands_before_testing_the_divisor() {
+        // A type mismatch beats a division by zero. Testing the divisor
+        // first masked the real error.
         assert_eq!(expr("\"xxxx\" / 0"), "ERR|13");
         assert_eq!(expr("\"\" / 0"), "ERR|13");
         assert_eq!(expr("0 / \"xxxx\""), "ERR|13");
@@ -3610,6 +3745,8 @@ mod tests {
 
     #[test]
     fn a_static_string_over_a_null_is_invalid_use_of_null() {
+        // Left-specific, and only for a statically typed string. See
+        // `null_on_the_right` for the measured table.
         for e in [
             "\"  3  \" Imp Null",
             "\"3\" And Null",
@@ -3626,19 +3763,26 @@ mod tests {
             run("    Dim a\n    a = Null\n    F = IsNull(\"  3  \" Or a)"),
             "ERR|94"
         );
+        // A runtime string does not trigger it, and neither does a Null on
+        // the left.
         assert_eq!(
             run("    Dim a\n    a = \"  3  \"\n    F = IsNull(a Imp Null)"),
             "Boolean|False"
         );
         assert_eq!(expr("IsNull(Null Or \"  3  \")"), "Boolean|False");
         assert_eq!(expr("IsNull(Null Xor \"  3  \")"), "Boolean|True");
+        // The string's own conversion is checked first: these stay 13.
         assert_eq!(expr("\"abc\" Imp Null"), "ERR|13");
         assert_eq!(expr("\"True\" Or Null"), "ERR|13");
+        // A numeric operand is unaffected.
         assert_eq!(expr("IsNull(255 Imp Null)"), "Boolean|False");
     }
 
     #[test]
     fn a_statically_typed_numeric_partner_is_strict_only_against_a_constant_string() {
+        // `Len`, `Val` and `Sgn` are declared numeric like the `C*`
+        // conversions, so a constant string compared against one has to parse
+        // whole; `Int` and `Abs` return their argument's type and do not.
         let with = |e: &str| run(&format!("    Dim va\n    va = 1\n    F = {e}"));
         for f in ["CLng(va)", "Len(CStr(va))", "Val(CStr(va))", "Sgn(va)"] {
             assert_eq!(with(&format!("({f} > (-32768 & -2.5))")), "ERR|13", "{f}");
@@ -3650,6 +3794,9 @@ mod tests {
                 "{f}"
             );
         }
+        // A *runtime* string is not held to that: it compares numerically
+        // when it parses, and falls back to the ordering when it does not,
+        // rather than erroring.
         assert_eq!(
             run("    Dim va, vb\n    va = 5\n    vb = \"1\"\n    F = (CLng(va) < vb)"),
             "Boolean|False"
@@ -3659,6 +3806,11 @@ mod tests {
 
     #[test]
     fn negating_the_long_minimum_between_constants_wraps_to_itself() {
+        // `-(-2147483648)` is arithmetically 2147483648, and Excel gives back
+        // the Long -2147483648 -- plain two's complement, and wrong. Narrow:
+        // the Integer minimum errors instead, and at run time the whole thing
+        // widens to a Double. All three measured, and matched deliberately,
+        // since a macro doing this should behave the same way here.
         assert_eq!(expr("TypeName(-(Not 2147483647))"), "String|Long");
         assert_eq!(expr("CStr(-(Not 2147483647))"), "String|-2147483648");
         assert_eq!(expr("CStr(-(Not 32767))"), "ERR|6");
@@ -3670,6 +3822,11 @@ mod tests {
 
     #[test]
     fn select_case_sees_not_of_a_boolean_as_statically_boolean() {
+        // §7's rule -- `Select Case` converts its case values to the
+        // subject's *static* type -- carries through `Not`, because `Not` of
+        // a Boolean is a Boolean. Measured; `fuzz/fuzz_vba.py` found it as a
+        // case that took `Case Else` here and `Case 0, 1` in Excel, which
+        // then raised on an expression the other arm never evaluates.
         let sel = |subject: &str| {
             run(&format!(
                 "    Dim c\n    Select Case {subject}\n    Case 0, 1\n        c = \"one\"\n                     Case 2 To 5\n        c = \"range\"\n    Case Else\n        c = \"else\"\n                     End Select\n    F = c"
@@ -3680,11 +3837,15 @@ mod tests {
         assert_eq!(sel("(Not (IsEmpty(\"Z\")))"), "String|one");
         assert_eq!(sel("(Not CBool(0))"), "String|one");
         assert_eq!(sel("IsEmpty(\"Z\")"), "String|one");
+        // `Not` of a *number* is a number, so this stays on the numeric path
+        // and matches nothing.
         assert_eq!(sel("(Not 5)"), "String|else");
     }
 
     #[test]
     fn logical_expression_width_is_static_for_arithmetic_overflow() {
+        // Found by fuzz/fuzz_vba.py: this overflows as `2 - (Not 2147483647)`
+        // does, even though the logical expression's operand may be Variant.
         assert_eq!(
             run("    Dim vc\n    vc = 10\n    F = ((\"  3  \" And vc) - (Not 2147483647))"),
             "ERR|6"
@@ -3694,6 +3855,12 @@ mod tests {
 
     #[test]
     fn overflow_between_constants_is_really_between_statically_typed_operands() {
+        // §28. The fixed-width arithmetic that makes `32767 + 1` error 6 is
+        // chosen by static *typing*, not by constness, and the two come apart
+        // in both directions. Measured; `fuzz/fuzz_vba.py` found it on seed
+        // 314159 through `CInt(vb) ^ (vb Mod va)`.
+        //
+        // Typed but not constant: these overflow.
         assert_eq!(expr("CStr(CInt(32767) + 1)"), "ERR|6");
         assert_eq!(expr("CStr(CInt(32767) * 2)"), "ERR|6");
         assert_eq!(expr("CStr(CInt(32767) + CInt(1))"), "ERR|6");
@@ -3702,7 +3869,10 @@ mod tests {
         assert_eq!(expr("CStr(CInt(32767) ^ 4652)"), "ERR|6");
         assert_eq!(expr("CStr(CDbl(32767) ^ 4652)"), "ERR|6");
         assert_eq!(expr("CStr(Len(\"abcde\") ^ 4652)"), "ERR|6");
+        // Constant but not typed: `Empty` is a `Variant`, so this promotes
+        // exactly as a variable does. visi had this backwards.
         assert_eq!(expr("CStr((Empty + 32767) + 1)"), "String|32768");
+        // Unchanged: literals overflow, a variable promotes.
         assert_eq!(expr("CStr(32767 + 1)"), "ERR|6");
         assert_eq!(
             run("    Dim a\n    a = 32767\n    F = CStr(a + 1)"),
@@ -3712,8 +3882,10 @@ mod tests {
             run("    Dim a\n    a = 1\n    F = CStr(CInt(32767) + a)"),
             "String|32768"
         );
+        // Typed, but the width is `Long`, so there is nothing to overflow.
         assert_eq!(expr("CStr(Len(\"abcde\") + 32763)"), "String|32768");
         assert_eq!(expr("CStr(CInt(Empty) + 32768)"), "String|32768");
+        // `^` overflows at runtime too.
         assert_eq!(
             run("    Dim vb\n    vb = 4652\n    F = CStr(32767 ^ vb)"),
             "ERR|6"
@@ -3722,6 +3894,14 @@ mod tests {
 
     #[test]
     fn a_statically_string_value_compares_as_text_against_a_runtime_number() {
+        // §27. The other half of §23's split: a declared `String` against a
+        // *runtime* number compares as text with the number via `CStr`,
+        // exactly as a literal does, where a `Variant`-returning intrinsic
+        // orders. Measured; `fuzz/fuzz_vba.py` found it on seed 987654.
+        //
+        // `a` is a variable throughout, so the number is never static and the
+        // strictness of §13/§23 never applies -- these differ only in how
+        // well the compiler knows the *string*.
         let with = |setup: &str, e: &str| run(&format!("    Dim a, b\n{setup}\n    F = CStr({e})"));
         assert_eq!(with("    a = 5", "(a < \"10\")"), "String|False");
         assert_eq!(with("    a = 5", "(a < CStr(10))"), "String|False");
@@ -3730,11 +3910,17 @@ mod tests {
             with("    a = 5\n    b = 10", "(a < CStr(b))"),
             "String|False"
         );
+        // A `Variant`-returning intrinsic is not statically `String`, so the
+        // runtime rule applies instead: the number sorts first.
         assert_eq!(with("    a = 5", "(a < Trim(\"10\"))"), "String|True");
+        // Text, and never an error, even when the string will not convert --
+        // this is the row the ordering got wrong in both directions.
         assert_eq!(with("    a = -2", "(a < CStr(\"\"))"), "String|False");
         assert_eq!(with("    a = -2", "(a < StrReverse(\"\"))"), "String|False");
         assert_eq!(with("    a = -2", "(a < CStr(\"abc\"))"), "String|True");
         assert_eq!(with("    a = -2", "(a < \"\")"), "String|False");
+        // The case as the fuzzer found it: the fold is statically `String`
+        // through `&`, so it compares as text and the whole thing is False.
         assert_eq!(
             with(
                 "    a = 1\n    b = 1",
@@ -3746,6 +3932,11 @@ mod tests {
 
     #[test]
     fn is_numeric_of_empty_is_true_and_of_null_is_false() {
+        // §26. `Empty` answers as the 0 it coerces to; `Null` answers for
+        // nothing; `""` is not numeric despite comparing equal to `Empty`.
+        // Measured. `fuzz/fuzz_vba.py` found it on seed 862021 as
+        // `(Not vc) Xor IsNumeric(Empty)`, which is 1 when the operand is
+        // False and -2 when it is True.
         assert_eq!(expr("CStr(IsNumeric(Empty))"), "String|True");
         assert_eq!(expr("CStr(IsNumeric(Null))"), "String|False");
         assert_eq!(expr("CStr(IsNumeric(\"\"))"), "String|False");
@@ -3757,6 +3948,9 @@ mod tests {
 
     #[test]
     fn instr_of_an_empty_haystack_is_zero() {
+        // `InStr("", "")` is 0 while `InStr("a", "")` is 1: an empty needle
+        // matches at the start position only when there is a string to match
+        // in. Measured.
         assert_eq!(expr("CStr(InStr(\"\", \"\"))"), "String|0");
         assert_eq!(expr("CStr(InStr(Empty, \"\"))"), "String|0");
         assert_eq!(expr("CStr(InStr(\"a\", \"\"))"), "String|1");
@@ -3765,6 +3959,14 @@ mod tests {
 
     #[test]
     fn static_typing_propagates_through_arithmetic() {
+        // `Len(CStr(a)) / 2` is a Double as surely as `Len(CStr(a))` is a
+        // Long -- every operand's type is known -- so the strictness of the
+        // test above applies to the whole expression. One Variant operand
+        // loses it.
+        //
+        // Found by `fuzz/fuzz_vba.py` on an unseen seed, which is worth
+        // noting: the rule itself is §13, already implemented and tested, and
+        // what was missing was only that it stopped at the top-level call.
         let with = |e: &str| run(&format!("    Dim a\n    a = -3\n    F = {e}"));
         assert_eq!(with("(Len(CStr(a)) = \"-7False\")"), "ERR|13");
         assert_eq!(with("((Len(CStr(a)) / 2) = \"-7False\")"), "ERR|13");
@@ -3774,19 +3976,38 @@ mod tests {
             with("((Len(CStr(a)) / (-32768)) = ((-7) & (0 > \"1.5\")))"),
             "ERR|13"
         );
+        // A Variant operand anywhere in the arithmetic makes the whole
+        // expression a Variant, and then the string compares as text.
         assert_eq!(with("((Len(CStr(a)) + a) = \"-7False\")"), "Boolean|False");
         assert_eq!(with("((a / (-32768)) = \"-7False\")"), "Boolean|False");
         assert_eq!(with("((a + 1) = \"-7False\")"), "Boolean|False");
+        // The positive half: against a statically typed number a string that
+        // *does* parse compares **numerically**, where a Variant partner
+        // would compare it as text and say False.
         assert_eq!(with("((CLng(a) * 2) = \"-6.0\")"), "Boolean|True");
     }
 
     #[test]
     fn static_typing_propagates_through_comparison_and_concatenation() {
+        // §24. The half of §18 it explicitly left open: `&` yields a `String`
+        // and a comparison a `Boolean`, provided every operand is itself
+        // statically typed. `Empty` is a `Variant`, so a fold over it is
+        // neither -- which is what §16's "one cell that resists explanation"
+        // actually was.
+        //
+        // The Boolean side. All measured with `fuzz/vba_expr_probe.py`
+        // against the same literal string, so only the partner varies:
+        // convert says True (CBool("0") is 0, and 0 >= -1), text says False
+        // ("0" sorts below "True").
         assert_eq!(expr("(\"0\" >= (3# >= CDbl(0)))"), "Boolean|True");
         assert_eq!(expr("(\"0\" >= (Len(CStr(0)) >= 1))"), "Boolean|True");
         assert_eq!(expr("(\"0\" >= (\"1\" >= -7))"), "Boolean|True");
         assert_eq!(expr("(\"0\" >= (2 >= 1))"), "Boolean|True");
         assert_eq!(expr("(\"0\" >= (1 = 1))"), "Boolean|True");
+        // ...and the same shapes with a `Variant` operand, which could yield
+        // `Null` and so is not statically `Boolean`. A declared-Boolean call
+        // over `Empty` still is, which is what says this is about the static
+        // type and not about `Empty` appearing anywhere.
         assert_eq!(expr("(\"0\" >= (3# >= Empty))"), "Boolean|False");
         assert_eq!(expr("(\"0\" >= (Empty = Empty))"), "Boolean|False");
         assert_eq!(expr("(\"0\" < (3# >= Empty))"), "Boolean|True");
@@ -3796,6 +4017,11 @@ mod tests {
             run("    Dim b\n    b = 1\n    F = (\"0\" >= (3# >= b))"),
             "Boolean|False"
         );
+        // The String side, against a Boolean that is *not* static, where a
+        // statically typed String compares as text and a Variant takes the
+        // numeric rules. `("1" + "3")` is the case the fuzzer reduced to:
+        // a fold of two string literals is a `String` as surely as a literal
+        // is, where a fold over `Empty` is not.
         let folded = |s: &str| expr(&format!("({s} <= (\"\" <> Empty))"));
         assert_eq!(folded("\"13\""), "Boolean|True");
         assert_eq!(folded("(\"1\" + \"3\")"), "Boolean|True");
@@ -3807,13 +4033,21 @@ mod tests {
             run("    Dim a\n    a = \"13\"\n    F = (a <= (\"\" <> Empty))"),
             "Boolean|False"
         );
+        // Against a Boolean that *is* static, every string kind converts,
+        // including the fold.
         assert_eq!(expr("((\"1\" + \"3\") <= False)"), "Boolean|True");
         assert_eq!(expr("((Empty & \"13\") <= False)"), "Boolean|True");
         assert_eq!(expr("((\"1\" + \"3\") = True)"), "Boolean|True");
         assert_eq!(expr("((\"1\" + \"3\") > False)"), "Boolean|False");
+        // A fold that will not convert is error 13, exactly as the literal
+        // it is: the strictness follows the static `String` type.
         assert_eq!(expr("((\"1\" + \"  3  \") <= False)"), "ERR|13");
         assert_eq!(expr("((\"abc\" + \"d\") > True)"), "ERR|13");
+        // ...while the same unconvertible string through a Variant orders
+        // above the number (§23) instead of raising.
         assert_eq!(expr("((Empty & \"1  3  \") <= False)"), "Boolean|False");
+        // Text, not an error, when the Boolean is not static -- even though
+        // the string will not convert.
         assert_eq!(
             expr("((\"1\" & \"  3  \") <= (\"\" <> Empty))"),
             "Boolean|True"
@@ -3822,6 +4056,9 @@ mod tests {
 
     #[test]
     fn a_string_converts_with_cbool_against_a_static_boolean() {
+        // The rule: convert the string with `CBool`, compare as Booleans, and
+        // fall back to the ordinary runtime ordering only when the conversion
+        // fails. Ordering is numeric, so True (-1) sorts below False (0).
         let with = |setup: &str, e: &str| run(&format!("    Dim va, vb\n{setup}\n    F = {e}"));
         assert_eq!(with("    va = \"011\"", "(va = True)"), "Boolean|True");
         assert_eq!(with("    va = \"0\"", "(va = False)"), "Boolean|True");
@@ -3832,8 +4069,18 @@ mod tests {
         assert_eq!(with("    va = \"011\"", "(va < False)"), "Boolean|True");
         assert_eq!(with("    va = \"011\"", "(va > False)"), "Boolean|False");
         assert_eq!(with("    va = \"011\"", "(va > True)"), "Boolean|False");
+        // The two that pin down *that* there is a fallback: `CBool` raises for
+        // both, yet neither comparison does -- they are simply unequal. What
+        // the fallback *is* takes the ordering cases in
+        // `an_unconvertible_runtime_string_sorts_above_a_static_boolean`;
+        // equality cannot tell text from ordering.
         assert_eq!(with("    va = \"abc\"", "(va = True)"), "Boolean|False");
         assert_eq!(with("    va = \"\"", "(va = False)"), "Boolean|False");
+        // A *statically* String operand takes the same conversion but does
+        // **not** get that fallback -- it is error 13 instead. The
+        // discriminating rows, all measured: the same string reaches the
+        // fallback through a Variant or through a Variant-returning
+        // intrinsic, and error 13 only through one declared `As String`.
         assert_eq!(expr("CStr(32767) >= (Not True)"), "Boolean|False");
         assert_eq!(expr("TypeName(32767) >= False"), "ERR|13");
         assert_eq!(expr("(TypeName(32767) >= (Not True))"), "ERR|13");
@@ -3847,79 +4094,142 @@ mod tests {
             with("    va = \"011\"", "(va < IsNull(32768))"),
             "Boolean|True"
         );
+        // A string *literal* converts too, and a conversion failure is
+        // error 13 rather than the text fallback.
         assert_eq!(expr("(\"abc\" < True)"), "ERR|13");
         assert_eq!(expr("(\"Z\" < True)"), "ERR|13");
         assert_eq!(expr("(False >= \"abc\")"), "ERR|13");
         assert_eq!(expr("(\"\" = False)"), "ERR|13");
+        // These two are what the numeric reading got wrong, and they are the
+        // same rule: `CBool("011")` and `CBool("12")` are both True (-1),
+        // which sorts *below* False (0). `("011" < False)` in particular sat
+        // in this file as an unexplained divergence for the whole of Phase 1;
+        // `fuzz/fuzz_vba.py` re-surfaced it as `(False > "12")` and the
+        // `CBool` model accounts for both.
         assert_eq!(expr("(\"011\" < False)"), "Boolean|True");
         assert_eq!(expr("(False > \"12\")"), "Boolean|True");
         assert_eq!(expr("(\"0\" = False)"), "Boolean|True");
+        // Neither side is statically typed here -- `Empty` is a `Variant`, so
+        // the fold over it is not a `String` and the comparison is not a
+        // `Boolean` -- so both fall to the numeric rules: `"1"` becomes 1, and
+        // `1 <= 0` is False, where the conversion would say True. See §24.
         assert_eq!(
             expr("((Empty & \"1\") <= (\"\" <> Empty))"),
             "Boolean|False"
         );
+        // Against a Boolean that is *not* statically `Boolean` -- here a
+        // comparison with an `Empty` operand -- a statically typed `String`
+        // compares as text, with the Boolean rendered "True"/"False".
         assert_eq!(expr("TypeName(0) >= (3# >= Empty)"), "Boolean|False");
         assert_eq!(expr("(3# >= Empty) >= TypeName(0)"), "Boolean|True");
         assert_eq!(expr("CStr(0) >= (3# >= Empty)"), "Boolean|False");
         assert_eq!(expr("(Not True) <= CStr(32767)"), "Boolean|False");
         assert_eq!(expr("False >= TypeName(0)"), "ERR|13");
+        // ...where a comparison whose operands *are* all statically typed is
+        // a statically known Boolean, and converts. This pair looks like an
+        // exception about static strings and is not one: the two differ in
+        // the **Boolean**, not the string -- see §24 and the test below.
         assert_eq!(expr("(\"000\" < (\"1\" >= -7))"), "Boolean|False");
         assert_eq!(
             run("    Dim va\n    va = \"000\"\n    F = (va < (\"1\" >= -7))"),
             "Boolean|False"
         );
         assert_eq!(expr("(Right(100000, 3) < (\"1\" >= -7))"), "Boolean|False");
+        // A *static* Boolean partner converts against every string kind,
+        // including a static one.
         assert_eq!(expr("(CStr(0) >= CBool(1))"), "Boolean|True");
         assert_eq!(expr("(\"000\" < CBool(1))"), "Boolean|False");
         assert_eq!(expr("(TypeName(0) >= CBool(1))"), "ERR|13");
+        // A Boolean *variable* is not static at all, so none of this applies
+        // and the runtime rule takes over: a number sorts before a string.
         assert_eq!(
             with("    va = \"011\"\n    vb = False", "(va < vb)"),
             "Boolean|False"
         );
+        // The words take the same path -- `CBool` accepts them too --
+        // case-insensitively, and order as the Booleans they become.
         assert_eq!(with("    va = \"True\"", "(va < False)"), "Boolean|True");
         assert_eq!(with("    va = \"true\"", "(va = True)"), "Boolean|True");
         assert_eq!(with("    va = \"TRUE\"", "(va = True)"), "Boolean|True");
         assert_eq!(with("    va = \"true\"", "(va = False)"), "Boolean|False");
+        // A Boolean variable is not static: the number sorts before the
+        // string, so "011" is Greater and `<` is False.
         assert_eq!(
             with("    va = \"011\"\n    vb = False", "(va < vb)"),
             "Boolean|False"
         );
+        // A numeric partner is unaffected, and still refuses the words.
         assert_eq!(with("    va = \"011\"", "(va < 0)"), "Boolean|False");
         assert_eq!(expr("(\"True\" = -1)"), "ERR|13");
     }
 
     #[test]
     fn an_unconvertible_runtime_string_sorts_above_a_static_boolean() {
+        // When `CBool` will not take the string, a *runtime* one falls back to
+        // the ordinary runtime rule -- the number sorts first, so the string
+        // is Greater whatever the two spell. This was written as a text
+        // comparison, which every case available at the time agreed with:
+        // `"abc"`, `"Integer"` and `""` all sort on the same side of
+        // `"True"`/`"False"` as the ordering rule puts them, so the two
+        // readings only come apart on a string that does not -- `"ABC"`,
+        // whose `A` sorts below both words.
+        //
+        // Measured with `fuzz/vba_expr_probe.py`; every expectation here is
+        // what Excel returned. Found while reducing the `StrReverse` case in
+        // `statically_string_intrinsics_are_strict_against_a_boolean`.
         let with = |setup: &str, e: &str| run(&format!("    Dim va\n{setup}\n    F = {e}"));
         assert_eq!(with("    va = \"ABC\"", "(va > True)"), "Boolean|True");
         assert_eq!(with("    va = \"ABC\"", "(va < True)"), "Boolean|False");
         assert_eq!(with("    va = \"ABC\"", "(va >= False)"), "Boolean|True");
+        // The same through a `Variant`-returning intrinsic, which is how the
+        // fuzzer's generated code reaches it.
         assert_eq!(expr("Chr(65) > True"), "Boolean|True");
         assert_eq!(expr("Chr(65) > False"), "Boolean|True");
         assert_eq!(expr("Hex(255) > True"), "Boolean|True");
         assert_eq!(expr("Space(2) > True"), "Boolean|True");
+        // The cases the text reading was derived from still hold -- they are
+        // simply blind to the difference.
         assert_eq!(with("    va = \"abc\"", "(va = True)"), "Boolean|False");
         assert_eq!(expr("LCase(\"Integer\") >= (Not True)"), "Boolean|True");
     }
 
     #[test]
     fn statically_string_intrinsics_are_strict_against_a_boolean() {
+        // `StrReverse`, `Replace` and `Join` are declared `As String` and have
+        // no `$` form, so the plain name is the typed one -- an unconvertible
+        // result against a statically known Boolean is error 13, where the
+        // Variant-returning neighbours fall back to ordering instead.
+        //
+        // `fuzz/fuzz_vba.py` found this as a whole-procedure divergence: Excel
+        // stopped at `StrReverse(False) > (Not False)` with 13 while visi took
+        // the comparison as True, ran into the other branch, and raised 11 on
+        // a division by zero Excel never reached. Measured with
+        // `fuzz/vba_expr_probe.py`; see `STATICALLY_STRING`.
         assert_eq!(expr("StrReverse(False) > (Not False)"), "ERR|13");
         assert_eq!(expr("StrReverse(\"abc\") > True"), "ERR|13");
         assert_eq!(expr("StrReverse(\"abc\") > 5"), "ERR|13");
         assert_eq!(expr("True > StrReverse(\"abc\")"), "ERR|13");
         assert_eq!(expr("Replace(\"abc\", \"a\", \"z\") > True"), "ERR|13");
+        // A *numeric* partner is strict the same way, and was already wrong
+        // for `CStr`/`TypeName` before `StrReverse` joined them: the strictness
+        // keyed off the string being *constant* rather than merely typed.
         assert_eq!(expr("CStr(\"abc\") > 5"), "ERR|13");
         assert_eq!(expr("TypeName(1) > 5"), "ERR|13");
         assert_eq!(expr("CStr(\"abc\") >= 0"), "ERR|13");
         assert_eq!(expr("CStr(\"abc\") > CLng(1)"), "ERR|13");
         assert_eq!(expr("TypeName(1) > CLng(5)"), "ERR|13");
+        // Variant-returning neighbours are unaffected, against either partner.
         assert_eq!(expr("Trim(\"abc\") > True"), "Boolean|True");
         assert_eq!(expr("LTrim(\"abc\") > True"), "Boolean|True");
         assert_eq!(expr("Trim(\"abc\") > 5"), "Boolean|True");
         assert_eq!(expr("Chr(65) > 5"), "Boolean|True");
+        // A typed string that *does* convert is not an error.
         assert_eq!(expr("CStr(\"11\") > 5"), "Boolean|True");
+        // Two strings still compare as text, whatever their kinds.
         assert_eq!(expr("TypeName(1) > \"5\""), "Boolean|True");
+        // The same string through a Variant is not statically typed, so it
+        // compares rather than erroring -- the row that makes this about the
+        // declared return type and not the value.
         assert_eq!(
             run("    Dim va\n    va = StrReverse(\"abc\")\n    F = (va > True)"),
             "Boolean|True"
@@ -3928,11 +4238,17 @@ mod tests {
             run("    Dim va\n    va = 5\n    F = (StrReverse(\"abc\") > va)"),
             "Boolean|True"
         );
+        // A convertible result still converts: `CBool("11")` is True (-1),
+        // which sorts below False (0).
         assert_eq!(expr("StrReverse(\"11\") > False"), "Boolean|False");
     }
 
     #[test]
     fn division_overflows_rather_than_returning_an_infinity() {
+        // `/` was the last operator handing back an INF where Excel raises
+        // error 6, at run time as well as between constants. Measured with
+        // `fuzz/vba_expr_probe.py`; `^` remains the one operator that does
+        // produce infinities, and feeding one of those to `/` raises too.
         assert_eq!(expr("1E308 / 1E-308"), "ERR|6");
         assert_eq!(
             run("    Dim a, b\n    a = 1E308\n    b = 1E-308\n    F = a / b"),
@@ -3942,6 +4258,7 @@ mod tests {
             run("    Dim a, b\n    a = 3.75\n    b = a ^ 32767\n    F = b / 2"),
             "ERR|6"
         );
+        // Ordinary division is untouched, and so are the two zero cases.
         assert_eq!(expr("1 / 2"), "Double|0.5");
         assert_eq!(expr("1 / 0"), "ERR|11");
         assert_eq!(expr("0 / 0"), "ERR|6");
@@ -3949,15 +4266,20 @@ mod tests {
 
     #[test]
     fn pow_overflow_raises_at_runtime_too() {
+        // Measured after fuzz/fuzz_vba.py found `b = 3# : e = 32767 : b ^ e`.
         assert_eq!(expr("3.75 ^ 32767"), "ERR|6");
         assert_eq!(expr("255 ^ 255"), "ERR|6");
         assert_eq!(run("    Dim a\n    a = 3.75\n    F = (a ^ 32767)"), "ERR|6");
         assert_eq!(run("    Dim a\n    a = 255\n    F = (a ^ 255)"), "ERR|6");
+        // A finite result is unaffected.
         assert_eq!(expr("2 ^ 10"), "Double|1024");
     }
 
     #[test]
     fn overflowing_pow_raises_before_arithmetic_can_observe_infinity() {
+        // `^` raises overflow when the result exceeds Double range, even at
+        // runtime. A previous model let it produce INF and only made later
+        // arithmetic reject it.
         assert_eq!(run("    Dim a\n    a = 255\n    F = (a ^ 255)"), "ERR|6");
         assert_eq!(run("    Dim a\n    a = 255\n    F = -(a ^ 255)"), "ERR|6");
         assert_eq!(
@@ -3969,6 +4291,7 @@ mod tests {
             "ERR|6"
         );
         assert_eq!(run("    Dim a\n    a = 1E300\n    F = (a * a)"), "ERR|6");
+        // Finite overflow of an addition is still fine.
         assert_eq!(
             run("    Dim a, b\n    a = 1E300\n    b = 1E300\n    F = (a + b)"),
             "Double|2E+300"
@@ -3977,10 +4300,13 @@ mod tests {
 
     #[test]
     fn imp_follows_its_definition_rather_than_a_hand_rolled_table() {
+        // `255 Imp Null` is `Not 255 Or Null` = `-256 Or Null` = -256,
+        // because -256 is truthy. A hand-rolled three-valued table said Null.
         assert_eq!(
             run("    Dim a\n    a = 255\n    F = (a Imp Null)"),
             "Integer|-256"
         );
+        // The measured endpoints still hold.
         assert_eq!(expr("Null Imp True"), "Boolean|True");
         assert_eq!(expr("False Imp Null"), "Boolean|True");
         assert_eq!(expr("5 Imp 3"), "Integer|-5");
@@ -3988,6 +4314,8 @@ mod tests {
 
     #[test]
     fn single_combined_with_long_widens_past_both() {
+        // A Single cannot hold every Long, so VBA goes to Double -- but a
+        // Single with an Integer stays Single. Both measured.
         assert_eq!(run("    Dim a\n    a = 2!\n    F = (a + 1)"), "Single|3");
         assert_eq!(
             run("    Dim a, b\n    a = 2!\n    b = 1&\n    F = (a * b)"),
@@ -4003,10 +4331,14 @@ mod tests {
     /// which short-circuit. Measured in both directions with `IsNull`.
     #[test]
     fn only_plus_short_circuits_past_a_bad_partner() {
+        // `+` alone returns Null without looking at the other side --
+        // plausibly because it cannot tell addition from concatenation
+        // without inspecting both, so it gives up first.
         assert_eq!(expr("IsNull(Null + \"Z\")"), "Boolean|True");
         assert_eq!(expr("IsNull(\"Z\" + Null)"), "Boolean|True");
         assert_eq!(expr("IsNull(Null + \"12\")"), "Boolean|True");
 
+        // Every other operator coerces the partner, and a bad string wins.
         for e in [
             "\"Z\" - Null",
             "Null - \"Z\"",
@@ -4022,14 +4354,17 @@ mod tests {
             assert_eq!(expr(e), "ERR|13", "for {e}");
         }
 
+        // `&` keeps the non-Null side rather than propagating at all.
         assert_eq!(expr("\"Z\" & Null"), "String|Z");
 
+        // A well-formed partner still propagates.
         assert_eq!(expr("IsNull(1 - Null)"), "Boolean|True");
         assert_eq!(expr("IsNull(Null Mod 3)"), "Boolean|True");
     }
 
     #[test]
     fn unary_sign_promotes_on_overflow_at_runtime() {
+        // Same constant-vs-runtime split the binary operators have.
         assert_eq!(
             run("    Dim a\n    a = 2147483647\n    F = (-(Not a))"),
             "Double|2147483648"
@@ -4038,6 +4373,7 @@ mod tests {
             run("    Dim a\n    a = 2147483647\n    F = TypeName(-(Not a))"),
             "String|Double"
         );
+        // Integer widens to Long the same way.
         assert_eq!(
             run("    Dim a\n    a = 32767\n    F = (-(Not a))"),
             "Long|32768"
@@ -4046,6 +4382,12 @@ mod tests {
 
     #[test]
     fn a_statically_boolean_select_subject_converts_its_cases_with_cbool() {
+        // Every row measured against Excel 16.112 with
+        // `fuzz/vba_expr_probe.py`. A *statically* Boolean subject converts
+        // each case value with CBool and compares the Booleans; a Variant
+        // holding a Boolean does not, and compares numerically with True as
+        // -1. The two halves of this test are the same subject value either
+        // side of that line.
         let sel = |subject: &str, cases: &str| {
             format!(
                 "    Dim r\n    Select Case {subject}\n{cases}    Case Else\n        r = \"else\"\n    End Select\n    F = r"
@@ -4058,17 +4400,25 @@ mod tests {
             ))
         };
 
+        // Statically Boolean: a folded constant, or a Boolean-returning
+        // intrinsic over a variable.
         for subject in [
             "(1 = 1)",
             "True",
             "CBool(1)",
             "IsNumeric(0)",
+            // Found by fuzz/fuzz_vba.py: a non-constant comparison is still
+            // statically Boolean when both operands are statically typed.
             "(Val(&O17) >= (True > 3#))",
         ] {
             assert_eq!(hit(subject, "1"), "String|a", "{subject} vs Case 1");
             assert_eq!(hit(subject, "0"), "String|else", "{subject} vs Case 0");
             assert_eq!(hit(subject, "0, 1"), "String|a", "{subject} vs Case 0, 1");
+            // Both ends become True, so the range is True To True.
             assert_eq!(hit(subject, "2 To 5"), "String|a", "{subject} vs 2 To 5");
+            // ... while `0 To 1` becomes False To True, i.e. 0 To -1, which
+            // is empty. This row is why the conversion cannot be "compare as
+            // Booleans" -- it has to happen before the comparison.
             assert_eq!(hit(subject, "0 To 1"), "String|else", "{subject} vs 0 To 1");
             assert_eq!(hit(subject, "Is = 1"), "String|a", "{subject} vs Is = 1");
             assert_eq!(hit(subject, "Is > 0"), "String|else", "{subject} vs Is > 0");
@@ -4076,11 +4426,13 @@ mod tests {
         }
         assert_eq!(hit("(1 = 2)", "0, 1"), "String|a");
         assert_eq!(hit("(1 = 2)", "2 To 5"), "String|else");
+        // CBool(Null) is error 94, and the case value goes through CBool.
         assert_eq!(
             run(&sel("CBool(1)", "    Case Null\n        r = \"a\"\n")),
             "ERR|94"
         );
 
+        // The same values in a Variant compare numerically instead.
         let via_var = |value: &str, case: &str| {
             run(&format!(
                 "    Dim a, r\n    a = {value}\n    Select Case a\n    Case {case}\n        \
@@ -4096,6 +4448,10 @@ mod tests {
 
     #[test]
     fn select_case_constant_bool_int_op_subject_is_not_statically_boolean() {
+        // Reproduces fuzz_results/failures/vba_exec_case_197. `True \\ "12"`
+        // folds to the Boolean True as an expression, but Excel does not use
+        // the statically-Boolean `Select Case` rule for that folded result, so
+        // `Case 0, 1` is not taken.
         assert_eq!(
             run(
                 "    Dim r\n    Select Case (True \\ \"12\")\n    Case 0, 1\n        r = \"value\"\n    Case Else\n        r = \"else\"\n    End Select\n    F = r"
@@ -4111,13 +4467,17 @@ mod tests {
         assert_eq!(expr("True Mod \"12\""), "Boolean|False");
         assert_eq!(expr("True \\ \"12\""), "Boolean|True");
         assert_eq!(expr("False \\ \"12\""), "Boolean|False");
+        // "0" becomes False, i.e. zero, so these divide by zero.
         assert_eq!(expr("True Mod \"0\""), "ERR|11");
         assert_eq!(expr("True \\ \"0\""), "ERR|11");
 
+        // Left-specific.
         assert_eq!(expr("\"12\" Mod True"), "Long|0");
         assert_eq!(expr("\"12\" \\ True"), "Long|-12");
+        // The partner has to be a String.
         assert_eq!(expr("True Mod 12"), "Integer|-1");
         assert_eq!(expr("True \\ 12"), "Integer|0");
+        // Both have to be constants.
         assert_eq!(
             run("    Dim a\n    a = True\n    F = (a Mod \"12\")"),
             "Long|-1"
@@ -4126,6 +4486,7 @@ mod tests {
             run("    Dim b\n    b = \"12\"\n    F = (True Mod b)"),
             "Long|-1"
         );
+        // Only `\\` and `Mod`.
         assert_eq!(expr("True And \"12\""), "Long|12");
         assert_eq!(expr("True Or \"12\""), "Long|-1");
         assert_eq!(expr("True Eqv \"12\""), "Long|12");
@@ -4133,6 +4494,8 @@ mod tests {
 
     #[test]
     fn integer_operators_process_the_left_operand_first() {
+        // Which error surfaces depends on the order: the left operand
+        // overflowing a Long beats a bad string on the right, and vice versa.
         assert_eq!(
             run("    Dim a\n    a = \"32768100000\"\n    F = (a Mod \"Double\")"),
             "ERR|6"
@@ -4202,6 +4565,7 @@ mod tests {
             assert_eq!(expr(&format!("{f}(Null)")), "ERR|94", "{f} should reject");
         }
         assert_eq!(expr("Replace(Null, \"a\", \"b\")"), "ERR|94");
+        // Inspection functions look at it rather than propagating or rejecting.
         assert_eq!(expr("TypeName(Null)"), "String|Null");
         assert_eq!(expr("IsNull(Null)"), "Boolean|True");
         assert_eq!(expr("IsNumeric(Null)"), "Boolean|False");
@@ -4210,17 +4574,34 @@ mod tests {
 
     #[test]
     fn conversions_reject_null_rather_than_propagating_it() {
+        // `CStr(Null)` raises error 94. Propagating a Null instead was a real
+        // mismatch: callers put it under `On Error Resume Next` expecting the
+        // assignment to be skipped, and a returned Null poisoned everything
+        // downstream of it.
         assert_eq!(expr("CStr(Null)"), "ERR|94");
         assert_eq!(expr("CDbl(Null)"), "ERR|94");
         assert_eq!(expr("CLng(Null)"), "ERR|94");
+        // String functions do propagate.
         assert_eq!(expr("IsNull(UCase(Null))"), "Boolean|True");
         assert_eq!(expr("IsNull(Left(Null, 1))"), "Boolean|True");
+        // Inspection functions look at it rather than propagating.
         assert_eq!(expr("TypeName(Null)"), "String|Null");
         assert_eq!(expr("IsNull(Null)"), "Boolean|True");
     }
 
     #[test]
     fn fuzz_statement_conditions_read_null_as_false_unlike_cbool() {
+        // Harvested from fuzz/fuzz_vba.py's win32com (Windows) run, seed 1,
+        // case 2: `If (-Null) Then ... Else ... End If` ran the Else branch
+        // in real Excel rather than raising 94 the way `CBool(Null)` does.
+        //
+        // Measured directly (win32com, real Windows Excel) that this is a
+        // real, separate rule rather than a slip in the Gen2 case: `If Null
+        // Then` takes the Else branch, `Do While Null` never loops, and `Do
+        // Until Null` loops until an explicit exit (the condition reads as
+        // False, never True) -- while `CBool(Null)` still raises 94 in that
+        // same session. Two different coercions behind what looks like one
+        // "read as boolean" idea.
         assert_eq!(
             run("    If Null Then\n        F = \"T\"\n    Else\n        F = \"F\"\n    End If"),
             "String|F"
@@ -4237,11 +4618,14 @@ mod tests {
             ),
             "Integer|4"
         );
+        // The explicit conversion is untouched -- still 94.
         assert_eq!(expr("CBool(Null)"), "ERR|94");
     }
 
     #[test]
     fn fuzz_not_null_propagates_until_observed() {
+        // Harvested from fuzz/fuzz_vba.py win32com case 20: assigning
+        // `Not Null` does not raise, and concatenation later skips the Null.
         assert_eq!(expr("IsNull(Not Null)"), "Boolean|True");
         assert_eq!(
             run("    Dim a, b\n    a = Not Null\n    b = \"x\" & a\n    F = b"),
@@ -4251,15 +4635,24 @@ mod tests {
 
     #[test]
     fn the_words_true_and_false_coerce_on_the_integer_path_only() {
+        // Measured. The integer/logical path accepts them as -1 and 0; the
+        // floating-point path has never heard of them.
         assert_eq!(expr("\"True\" Xor 1"), "Integer|-2");
         assert_eq!(expr("\"False\" Xor 1"), "Integer|1");
         assert_eq!(expr("\"True\" \\ 1"), "Integer|-1");
         assert_eq!(expr("\"True\" Mod 2"), "Integer|-1");
         assert_eq!(expr("CBool(\"True\")"), "Boolean|True");
+        // Case-insensitive, and space-tolerant.
         assert_eq!(expr("\"true\" Xor 1"), "Integer|-2");
         assert_eq!(expr("\"TRUE\" Xor 1"), "Integer|-2");
+        // `Not` keeps it a Boolean, because both sides of the operation are
+        // one; `Xor` with a number goes bitwise and yields an Integer.
         assert_eq!(expr("Not \"True\""), "Boolean|False");
 
+        // Against a Boolean partner the fold is suppressed only when *both*
+        // sides are statically typed -- a literal, or a call with a declared
+        // return type. `CStr` is declared `As String`; `LCase` returns a
+        // Variant, and that pair is what separates the two halves.
         assert_eq!(expr("True Eqv \"True\""), "ERR|13");
         assert_eq!(expr("\"True\" Eqv True"), "ERR|13");
         assert_eq!(expr("True Eqv CStr(True)"), "ERR|13");
@@ -4267,6 +4660,7 @@ mod tests {
             run("    Dim a\n    a = 3.75\n    F = (IsNumeric(a) Eqv CStr(True))"),
             "ERR|13"
         );
+        // ... and happens as soon as either side is a Variant.
         assert_eq!(expr("LCase(\"TRUE\") Eqv True"), "Boolean|True");
         assert_eq!(expr("LCase(False) Eqv IsNull(True)"), "Boolean|True");
         assert_eq!(
@@ -4286,6 +4680,7 @@ mod tests {
             "Boolean|False"
         );
 
+        // The floating-point path still rejects them.
         for e in [
             "\"True\" + 1",
             "\"False\" + 1",
@@ -4296,11 +4691,15 @@ mod tests {
         }
         assert_eq!(expr("IsNumeric(\"True\")"), "Boolean|False");
 
+        // The exact shape the fuzzer hit: Trim of a comparison yields the
+        // word, which then has to work as a logical operand.
         assert_eq!(expr("Trim((1 >= 2)) Xor 5"), "Integer|5");
     }
 
     #[test]
     fn a_string_outside_double_range_fails_to_convert() {
+        // Error 6 from the *conversion*, not a quiet infinity -- and not the
+        // 13 an unparseable string gives.
         assert_eq!(
             run("    Dim a\n    a = \"1E+2923\"\n    F = (a ^ 255)"),
             "ERR|6"
@@ -4309,6 +4708,7 @@ mod tests {
             run("    Dim a\n    a = \"1E400\"\n    F = (a + 1)"),
             "ERR|6"
         );
+        // The power itself overflows too, even with runtime operands.
         assert_eq!(
             run("    Dim a\n    a = \"255\"\n    F = (a ^ 255)"),
             "ERR|6"
@@ -4318,6 +4718,8 @@ mod tests {
 
     #[test]
     fn an_empty_string_never_coerces_to_a_number() {
+        // Measured across every operator: `"" - 3`, `"" + 3`, `"" * 3`,
+        // `"" \ 3`, `"" And 1`, `Not ""` and `CDbl("")` are all error 13.
         for e in [
             "\"\" - 3",
             "\"\" + 3",
@@ -4332,6 +4734,8 @@ mod tests {
 
     #[test]
     fn val_always_returns_a_double() {
+        // Measured directly. A previous version typed the result like a
+        // literal, inferred from a fuzz case where `Val` may never have run.
         assert_eq!(expr("Val(255)"), "Double|255");
         assert_eq!(expr("Val(\"1.5\")"), "Double|1.5");
         assert_eq!(expr("Val(\"100000\")"), "Double|100000");
@@ -4348,6 +4752,8 @@ mod tests {
             run("    Dim a, b\n    a = 0\n    b = -246\n    F = (a ^ b)"),
             "ERR|5"
         );
+        // Zero and positive exponents are fine, as is a negative exponent
+        // over a non-zero base.
         assert_eq!(
             run("    Dim a, b\n    a = 0\n    b = 0\n    F = (a ^ b)"),
             "Double|1"
@@ -4364,14 +4770,18 @@ mod tests {
 
     #[test]
     fn logical_operators_range_check_their_operands_too() {
+        // Same rule as `\\` and `Mod`: the operands must fit a Long.
         assert_eq!(expr("True Or \"2147483648\""), "ERR|6");
         assert_eq!(expr("1 And \"2147483648\""), "ERR|6");
+        // Operands that round into a Long are fine.
         assert_eq!(expr("True Or \"3.752147483647\""), "Long|-1");
         assert_eq!(expr("1 And \"12\""), "Long|0");
     }
 
     #[test]
     fn int_div_and_mod_range_check_their_operands_not_just_the_result() {
+        // `254 Mod "22147483647"` is error 6 even though the answer is 254:
+        // the operand is not a Long. Checking only the result let it through.
         assert_eq!(
             run("    Dim a, b\n    a = 254\n    b = \"22147483647\"\n    F = (a Mod b)"),
             "ERR|6"
@@ -4384,6 +4794,7 @@ mod tests {
             run("    Dim a, b\n    a = 3000000000#\n    b = 3\n    F = (a Mod b)"),
             "ERR|6"
         );
+        // Operands that do fit a Long still work.
         assert_eq!(
             run("    Dim a, b\n    a = 254\n    b = 2147483647\n    F = (a Mod b)"),
             "Long|254"
@@ -4400,14 +4811,18 @@ mod tests {
 
     #[test]
     fn a_negative_base_with_a_fractional_exponent_is_an_error() {
+        // Excel raises error 5 rather than returning NaN.
         assert_eq!(expr("(-1) ^ 1.5"), "ERR|5");
         assert_eq!(expr("(-8) ^ (1 / 3)"), "ERR|5");
+        // Integral exponents are fine.
         assert_eq!(expr("(-2) ^ 2"), "Double|4");
         assert_eq!(expr("(-2) ^ 3"), "Double|-8");
     }
 
     #[test]
     fn select_case_matches_a_numeric_case_against_a_string_subject() {
+        // `Select Case "10"` matches `Case 10`, but `Select Case ""` does not
+        // match `Case 0` -- the numeric-constant rule, not an error.
         let body = |x: &str| {
             format!(
                 "    Dim r\n    Select Case {x}\n    Case 0\n        r = \"zero\"\n    \
@@ -4429,6 +4844,7 @@ mod tests {
             run("    Dim c\n    For c = 1 To 3 Step 2\n    Next c\n    F = c"),
             "Integer|5"
         );
+        // A loop that never runs leaves the counter at its start value.
         assert_eq!(
             run("    Dim c\n    For c = 5 To 1\n    Next c\n    F = c"),
             "Integer|5"
@@ -4437,6 +4853,7 @@ mod tests {
             run("    Dim c\n    For c = 3 To 1 Step -1\n    Next c\n    F = c"),
             "Integer|0"
         );
+        // Exit For leaves it at the value the body was running with.
         assert_eq!(
             run("    Dim c\n    For c = 1 To 3\n        Exit For\n    Next c\n    F = c"),
             "Integer|1"
@@ -4445,6 +4862,7 @@ mod tests {
 
     #[test]
     fn count_arguments_round_rather_than_truncate() {
+        // Space(2.6) is three spaces, not two.
         assert_eq!(expr("Len(Space(2.6))"), "Long|3");
         assert_eq!(expr("Space(-1)"), "ERR|5");
         assert_eq!(expr("String(-1, \"x\")"), "ERR|5");
@@ -4454,8 +4872,14 @@ mod tests {
         assert_eq!(expr("String(2, 65)"), "String|AA");
     }
 
+    // ---- out of scope ---------------------------------------------------
+
     #[test]
     fn host_object_access_errors_rather_than_silently_doing_nothing() {
+        // The refusal that matters: a macro that skips a line it cannot
+        // understand and then reports success is wrong in the worst way.
+        // These run with no workbook attached, which is what `visi macro run`
+        // over a bare `.bas` file does.
         for body in [
             "    F = Range(\"A1\").Value",
             "    F = ThisWorkbook.Name",
@@ -4470,6 +4894,10 @@ mod tests {
 
     #[test]
     fn a_member_of_a_non_object_is_error_424() {
+        // Not 438: the construct *is* supported, the value just is not an
+        // object. VBA calls this "Object required", and distinguishing it
+        // from "not implemented" is the difference between a macro bug and a
+        // gap in this interpreter.
         assert_eq!(run("    With x\n        F = .a\n    End With"), "ERR|424");
         assert_eq!(expr("x.Name"), "ERR|424");
         assert_eq!(expr("x Is Nothing"), "ERR|424");
@@ -4617,6 +5045,7 @@ mod tests {
 
         let mut interp = Interpreter::from_modules(vec![p_cls, p_main], Some("Main"));
         let res = interp.run("TestDefault", Vec::new()).unwrap();
+        // m_val = 10 + 2 = 12; b(3) = 12 * 3 = 36
         assert_eq!(res, Variant::Integer(36));
     }
 

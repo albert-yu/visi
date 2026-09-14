@@ -189,6 +189,10 @@ impl Sheet {
     /// non-blank; otherwise falls back to a default "ColumnN" name (N is
     /// 1-based within the table).
     fn table_column_header(&self, header_row: usize, col_idx: usize, local_idx: usize) -> String {
+        // Prefer the cell's computed value (what a user actually sees) over
+        // its raw source text, in case a header cell happens to hold a
+        // formula rather than plain text; fall back to raw source for
+        // cells that haven't been committed/evaluated yet.
         let computed = self
             .columns
             .get(col_idx)
@@ -462,6 +466,7 @@ mod tests {
             cols: 3,
             ..Default::default()
         });
+        // Row 0: headers, rows 1-4: data, row 5: totals.
         let header = ["Name", "Amount", "Qty"];
         let data = [
             ["Widget", "10", "2"],
@@ -583,12 +588,14 @@ mod tests {
             .unwrap();
         assert_eq!(sheet.find_table("Sales").unwrap().columns.len(), 2);
 
+        // Grow to include the Qty column and one more row.
         sheet.resize_table("Sales", 4, 2).unwrap();
         let table = sheet.find_table("Sales").unwrap();
         assert_eq!(table.end_row, 4);
         assert_eq!(table.end_col, 2);
         assert_eq!(table.columns, vec!["Name", "Amount", "Qty"]);
 
+        // Shrink back down; existing column names are preserved by position.
         sheet.resize_table("Sales", 3, 0).unwrap();
         let table = sheet.find_table("Sales").unwrap();
         assert_eq!(table.end_row, 3);
@@ -608,6 +615,7 @@ mod tests {
             sheet.find_table("Sales").unwrap().columns,
             vec!["Name", "Total", "Qty"]
         );
+        // The header row's actual cell text is kept in sync.
         assert_eq!(sheet.columns[1].src[0], "Total");
     }
 
@@ -623,6 +631,12 @@ mod tests {
 
     #[test]
     fn an_insert_row_placeholder_means_zero_data_rows() {
+        // Excel's own shape for an emptied table, measured with
+        // `fuzz/vba_table_probe.py --empty`: deleting the only data row of an
+        // `A1:C2` table leaves the extent at `A1:C2` and sets `insertRow="1"`,
+        // so the flag is the *only* thing distinguishing this from a table
+        // with one blank data row. `ListObject.DataBodyRange` is `Nothing`
+        // for the former and `$A$2:$C$2` for the latter.
         let mut table = ExcelTable {
             id: 1,
             name: "Hollow".to_string(),
@@ -637,12 +651,16 @@ mod tests {
             style_name: None,
             has_insert_row: false,
         };
+        // One blank data row.
         assert_eq!(table.data_row_count(), 1);
         assert_eq!(table.data_start_row(), 1);
         assert_eq!(table.data_end_row(), 1);
 
+        // The same extent, sitting on its insert row: zero data rows.
         table.has_insert_row = true;
         assert_eq!(table.data_row_count(), 0);
+        // The end is now *below* the start, which is why `data_row_count`
+        // exists rather than callers subtracting the two.
         assert!(table.data_end_row() < table.data_start_row());
     }
 

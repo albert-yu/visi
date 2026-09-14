@@ -169,6 +169,19 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
         }
     };
     let r = newton_raphson(f, guess)?;
+    // Reject a solution that has collapsed onto the degenerate root at
+    // r = -1 rather than finding a real rate. For an annuity-due with
+    // fv = 0 the payment term carries a factor of (1 + r), so r = -1
+    // satisfies the equation exactly for *any* inputs -- and for a long
+    // enough nper, (1+r)^nper underflows so fast that the iteration slides
+    // into that basin from a perfectly ordinary starting guess. Excel
+    // reports #NUM! for these (confirmed directly: the same call that
+    // gives #NUM! from the default guess returns a real rate when handed
+    // a guess near the true root, so this is a convergence outcome, not a
+    // claim that no root exists).
+    // The bound is -0.999 because the iteration can stall around -0.99989999.
+    // No real per-period rate lives in that gap anyway -- it would be a loss
+    // of 99.9% per period.
     if r <= -0.999 { None } else { Some(r) }
 }
 
@@ -195,6 +208,12 @@ pub fn ipmt(rate: f64, period: f64, nper: f64, pv: f64, fv: f64, pmt_type: f64) 
         if period == 1.0 {
             return 0.0;
         }
+        // Excel treats an annuity-due's first payment as pure principal --
+        // it happens at time zero, before any interest could have accrued
+        // (hence IPMT(period=1, type=1) is always exactly 0). The
+        // remaining nper-1 periods then behave like an ordinary annuity
+        // on the balance left after that first payment, reusing the same
+        // (constant) payment amount computed for the original problem.
         let reduced_pv = pv + payment;
         return ipmt_ordinary(rate, period - 1.0, reduced_pv, payment);
     }
@@ -281,6 +300,8 @@ pub fn irr(values: &[f64], guess: f64) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
+    // Monotonic non-positive return check: if v0 < 0, all future vi >= 0,
+    // and sum(values) <= 0, no positive IRR solution exists in Excel.
     if values[0] < 0.0 && values[1..].iter().all(|&v| v >= 0.0) && values.iter().sum::<f64>() <= 0.0
     {
         return None;
@@ -306,6 +327,13 @@ pub fn mirr(values: &[f64], finance_rate: f64, reinvest_rate: f64) -> Option<f64
         .filter(|(_, v)| **v >= 0.0)
         .map(|(i, v)| v * (1.0 + reinvest_rate).powi(periods - i as i32))
         .sum();
+    // npv_neg == 0 (no negative cashflows) has no finance_rate discount to
+    // divide by -- a genuine #NUM!. fv_pos == 0 (no positive cashflows) is
+    // NOT an error, though: real Excel's MIRR computes straight through
+    // it, and 0^(1/n) is a perfectly well-defined 0, giving `ratio.powf =
+    // 0`, i.e. MIRR = -1 ("the investment lost everything") -- confirmed
+    // against the differential fuzzer, which found visi returning #NUM!
+    // here where Excel returns -1.
     if npv_neg == 0.0 {
         return None;
     }
@@ -392,10 +420,12 @@ pub fn xirr(values: &[f64], dates: &[f64], guess: f64) -> Option<f64> {
     let v0_pos = values[0] > 0.0;
     let sum_v: f64 = values.iter().sum();
 
+    // Rule A: If guess < 0 and flips >= 2 and v0 < 0, Excel returns #NUM!
     if guess < 0.0 && flips >= 2 && !v0_pos {
         return None;
     }
 
+    // Rule B: If v0 > 0 and guess >= 1.0, Excel returns #NUM! for these dual-root shapes
     if v0_pos && guess >= 1.0 {
         return None;
     }
@@ -630,6 +660,12 @@ pub fn ispmt(rate: f64, per: f64, nper: f64, pv: f64) -> f64 {
     -pv * rate * (nper - per) / nper
 }
 
+// --- Day-count / bond-pricing functions --------------------------------
+//
+// Dates are Excel serial numbers (see `date_fn`). `basis` follows Excel's
+// convention: 0 = US (NASD) 30/360, 1 = actual/actual, 2 = actual/360,
+// 3 = actual/365, 4 = European 30/360.
+
 use crate::core::date_fn;
 
 /// Actual or 30/360 day count between two dates, matching whichever
@@ -638,6 +674,13 @@ use crate::core::date_fn;
 /// it is handled separately by `coupdays`/`basis_year_days`.
 fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     match basis as i64 {
+        // `days_30_360_nasd`, not `days360(.., Some(false))` -- the DAYS360
+        // function's US method and this family's basis-0 convention differ
+        // on February month-ends. `PRICEMAT`/`YIELDMAT` are the one
+        // exception in this family (see `basis_days_between_pricemat_leg`,
+        // used only by them) -- every other caller here (ODDLPRICE, PRICE,
+        // YIELD, COUPDAYS, DURATION, ...) was confirmed to still want this
+        // one.
         0 => date_fn::days_30_360_nasd(start, end),
         4 => date_fn::days360(start, end, Some(true)).unwrap_or(0.0),
         _ => end - start,
@@ -807,6 +850,12 @@ pub fn coupdaybs(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> 
 /// to the settlement -> next-coupon span.
 pub fn coupdaysnc(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> f64 {
     let ncd = coupon_ncd(settlement, maturity, frequency);
+    // The span *ends* at a coupon date, so on basis 0 a month-end coupon
+    // gets pulled to the 30th -- the same rule ODDLPRICE's coupon-ended
+    // spans use. Settlement 2011-08-28 against a 2013-02-28 maturity has
+    // its next coupon on 2011-08-31, and real Excel counts 2 days, not the
+    // 3 the plain NASD rule gives. COUPDAYBS is unaffected: its span ends
+    // at the settlement date, not at a coupon.
     coupon_end_days(settlement, ncd, basis)
 }
 
@@ -826,6 +875,12 @@ fn bond_price_from_yield(
     let n = coupnum(settlement, maturity, frequency);
     let e = coupdays(settlement, maturity, frequency, basis);
     let a = coupdaybs(settlement, maturity, frequency, basis);
+    // The exponent here is E-consistent (E - A), not the real-calendar
+    // COUPDAYSNC() -- confirmed against real Excel via the differential
+    // fuzzer: PRICE/YIELD/DURATION stay internally self-consistent with
+    // COUPDAYS's idealized period length even on bases (1/2/3) where the
+    // standalone COUPDAYSNC() function reports actual calendar days that
+    // don't sum to that same idealized E.
     let dsc = e - a;
     let coupon = 100.0 * rate / frequency;
 
@@ -916,6 +971,8 @@ pub fn duration(
     let n = coupnum(settlement, maturity, frequency).round() as i64;
     let e = coupdays(settlement, maturity, frequency, basis);
     let a = coupdaybs(settlement, maturity, frequency, basis);
+    // See bond_price_from_yield: uses the E-consistent (E - A) fraction,
+    // not the real-calendar COUPDAYSNC().
     let dsc = e - a;
     let coupon_amt = 100.0 * coupon / frequency;
 
@@ -981,6 +1038,9 @@ pub fn pricemat(
     let dim = basis_days_between_pricemat_leg(issue, maturity, basis, false, false);
     let a = basis_days_between_pricemat_leg(issue, settlement, basis, false, true);
     let dsm = basis_days_between_pricemat_leg(settlement, maturity, basis, true, false);
+    // Year length uses the (issue, settlement) span, not the full
+    // (often multi-year) issue-to-maturity DIM span -- confirmed against
+    // real Excel via the differential fuzzer.
     let year = basis_year_days(basis, issue, settlement);
 
     let num = 100.0 + (dim / year) * rate * 100.0;
@@ -991,6 +1051,9 @@ pub fn yieldmat(settlement: f64, maturity: f64, issue: f64, rate: f64, pr: f64, 
     let dim = basis_days_between_pricemat_leg(issue, maturity, basis, false, false);
     let a = basis_days_between_pricemat_leg(issue, settlement, basis, false, true);
     let dsm = basis_days_between_pricemat_leg(settlement, maturity, basis, true, false);
+    // Year length uses the (issue, settlement) span, not the full
+    // (often multi-year) issue-to-maturity DIM span -- confirmed against
+    // real Excel via the differential fuzzer.
     let year = basis_year_days(basis, issue, settlement);
 
     let numerator = 100.0 + (dim / year) * rate * 100.0;
@@ -1152,6 +1215,9 @@ pub fn amorlinc(
     rate: f64,
     basis: f64,
 ) -> Result<f64, String> {
+    // Confirmed against real Excel: AMORLINC/AMORDEGRC reject basis 2
+    // (actual/360) with #NUM!, unlike every other function in this file
+    // that accepts it.
     if basis as i64 == 2 {
         return Err("#NUM!".to_string());
     }
@@ -1197,6 +1263,9 @@ pub fn amordegrc(
         return Err("#NUM!".to_string());
     }
     let life = 1.0 / rate;
+    // Confirmed against real Excel: a life of 2 years or less (rate >=
+    // 0.5) is rejected outright with #NUM!. There is no separate
+    // "life < 3 => 1.0" bracket -- the whole (2, 5) range uses 1.5.
     if life <= 2.0 {
         return Err("#NUM!".to_string());
     }
@@ -1210,6 +1279,12 @@ pub fn amordegrc(
     let rate_d = rate * coeff;
     let frac = amort_first_period_frac(date_purchased, first_period, basis);
 
+    // The running balance carries *full* precision; only the value actually
+    // returned is rounded. Rounding each period and subtracting the rounded
+    // figure lets the error compound, which is enough to shift a later
+    // period by a whole unit: for cost 27370.88 at rate 0.0909 the period-2
+    // amount is 4624.4757 (Excel: 4624) carrying full precision, but
+    // 4624.508 -> 4625 if the two preceding periods were rounded first.
     let first_amort = cost * frac * rate_d;
     if period == 0.0 {
         return Ok(round_half_away_from_zero(first_amort.min(cost - salvage)));
@@ -1274,6 +1349,7 @@ fn oddfprice_from_yield(
     basis: f64,
 ) -> f64 {
     let months = 12.0 / frequency;
+    // Total number of coupons from first_coupon through maturity, inclusive.
     let mut n = 1.0;
     let mut d = first_coupon;
     let mut guard = 0;
@@ -1283,6 +1359,11 @@ fn oddfprice_from_yield(
         guard += 1;
     }
 
+    // E, the length of one normal coupon period. Confirmed against real
+    // Excel via the differential fuzzer that ODDFPRICE/ODDFYIELD use the
+    // same idealized value as regular COUPDAYS/PRICE (fixed 360/365-per-
+    // freq on every basis except 1) -- unlike ODDLPRICE/ODDLYIELD below,
+    // which need the period's *actual* calendar length on bases 0/2/4.
     let prev_coupon = date_fn::edate(first_coupon, -months).unwrap_or(first_coupon);
     let e = match basis as i64 {
         1 => basis_days_between(prev_coupon, first_coupon, basis),
@@ -1291,6 +1372,9 @@ fn oddfprice_from_yield(
     };
     let dsc = basis_days_between(settlement, first_coupon, basis);
 
+    // DFC (issue -> first_coupon) and A (issue -> settlement) summed
+    // piecewise across quasi-coupon periods, which stays correct whether
+    // the odd first period is shorter or longer than a normal period.
     let schedule =
         quasi_coupon_schedule(first_coupon, issue, settlement.max(first_coupon), frequency);
     let mut dfc = 0.0;
@@ -1473,6 +1557,8 @@ pub fn euroconvert(
     let source_rate = euro_rate(source).ok_or("#VALUE!".to_string())?;
     let target_rate = euro_rate(target).ok_or("#VALUE!".to_string())?;
 
+    // ITL/ESP/BEF/LUF had no meaningful subunit in everyday use, so
+    // EUROCONVERT rounds conversions into those currencies to whole units.
     let decimals_for = |code: &str| -> i32 {
         match code.to_uppercase().as_str() {
             "ITL" | "ESP" | "BEF" | "LUF" => 0,
@@ -1508,12 +1594,30 @@ pub fn euroconvert(
 mod tests {
     use super::*;
 
+    // Microsoft's documented examples are themselves rounded to 2 decimal
+    // places, so allow a cent of slack rather than demanding exact matches.
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 5e-3, "{a} != {b}");
     }
 
     #[test]
     fn test_fuzz_pricemat_settlement_never_gets_feb_eom_bump() {
+        // Harvested from fuzz/fuzz_excel.py, two seeds that pin down the
+        // same underlying rule from opposite sides (see
+        // `date_fn::days_30_360_bond_ex`'s doc comment):
+        //
+        // Seed 740495: issue 2015-02-28, settlement 2015-04-28 (not a
+        // February month-end), maturity 2017-02-28. Requires maturity's
+        // Feb-month-end bump to apply *independently* of issue/settlement
+        // (unlike `days_30_360_nasd`, YEARFRAC's basis-0 rule, which needs
+        // both ends to be February month-ends before bumping).
+        //
+        // Seed 147209: issue 2033-09-28, settlement 2034-02-28 (itself a
+        // February month-end this time), maturity 2036-09-28. If
+        // settlement got the same independent bump issue/maturity get,
+        // this would be off by 2 days each on the issue-to-settlement and
+        // settlement-to-maturity legs -- real Excel's PRICEMAT never
+        // bumps a settlement date this way, only issue and maturity.
         approx(
             pricemat(
                 date_fn::edate(date_fn::ymd_to_serial(2015, 2, 28), 2.0).unwrap(),
@@ -1540,21 +1644,26 @@ mod tests {
 
     #[test]
     fn test_pmt_matches_docs_example() {
+        // PMT(8%/12, 10, 10000) = -1037.03
         approx(pmt(0.08 / 12.0, 10.0, 10000.0, 0.0, 0.0), -1037.03);
     }
 
     #[test]
     fn test_fv_matches_docs_example() {
+        // FV(6%/12, 10, -200, -500, 1) = 2581.40
         approx(fv(0.06 / 12.0, 10.0, -200.0, -500.0, 1.0), 2581.40);
     }
 
     #[test]
     fn test_pv_matches_docs_example() {
+        // PV(8%/12, 20*12, 500, 0, 0) = -59777.15
         approx(pv(0.08 / 12.0, 240.0, 500.0, 0.0, 0.0), -59777.15);
     }
 
     #[test]
     fn test_nper_is_inverse_of_fv() {
+        // nper must invert fv/pv/pmt (all three already checked against
+        // Microsoft's documented examples above) for both payment timings.
         for pmt_type in [0.0, 1.0] {
             let rate = 0.01;
             let pmt_amt = -100.0;
@@ -1567,11 +1676,15 @@ mod tests {
 
     #[test]
     fn test_rate_matches_docs_example() {
+        // RATE(4*12, -200, 8000) = 0.007701 (monthly)
         approx(rate(48.0, -200.0, 8000.0, 0.0, 0.0, 0.1).unwrap(), 0.007701);
     }
 
     #[test]
     fn test_ipmt_ppmt_sum_to_pmt() {
+        // ipmt+ppmt==pmt is a tautology (ppmt is *defined* as pmt-ipmt), so
+        // this only proves internal consistency, not that ipmt itself is
+        // correct -- see the fuzzer-harvested cases below for that.
         let rate = 0.10 / 12.0;
         let nper = 36.0;
         let pv = 8000000.0;
@@ -1585,6 +1698,12 @@ mod tests {
         }
     }
 
+    // The cases below were minimized from real mismatches the Python
+    // differential fuzzer (fuzz/fuzz_excel.py) found against actual
+    // Microsoft Excel -- ipmt's type=1 (annuity-due) branch used the wrong
+    // formula entirely, and both ipmt's closed form and ispmt's formula
+    // were verified/derived against these real Excel values rather than a
+    // (mis-)remembered documentation example.
     #[test]
     fn test_ispmt_matches_fuzzer_verified_excel_values() {
         approx(ispmt(0.0749, 111.0, 153.0, 96163.49), -1977.1967767450978);
@@ -1619,6 +1738,16 @@ mod tests {
             -8.62330593780311,
         );
 
+        // At ~10%-per-period compounded over 285 periods, f64 rounding
+        // error in the forward recurrence gets amplified by (1+rate) at
+        // every subsequent step; verified against arbitrary-precision
+        // decimal arithmetic that the *algorithm* is exact (agrees with
+        // Excel to 13 significant digits) and that Kahan-compensated
+        // summation does not meaningfully close the gap, so this is an
+        // accepted f64 precision limit at economically-unrealistic inputs
+        // (a real per-period rate is rarely above a percent or two) rather
+        // than a formula bug. The fuzzer's rate range was narrowed to
+        // avoid regenerating this regime (see fuzz/fuzz_excel.py).
         let got = ppmt(0.0998, 248.0, 285.0, 67611.52, 0.0, 0.0);
         let want = -181.64776461127138;
         assert!((got - want).abs() < 0.25, "{got} != {want}");
@@ -1626,11 +1755,13 @@ mod tests {
 
     #[test]
     fn test_npv_matches_docs_example() {
+        // NPV(10%, -10000, 3000, 4200, 6800) = 1188.44
         approx(npv(0.10, &[-10000.0, 3000.0, 4200.0, 6800.0]), 1188.44);
     }
 
     #[test]
     fn test_irr_matches_docs_example() {
+        // IRR({-70000,12000,15000,18000,21000,26000}) = 8.66%
         approx(
             irr(
                 &[-70000.0, 12000.0, 15000.0, 18000.0, 21000.0, 26000.0],
@@ -1643,29 +1774,41 @@ mod tests {
 
     #[test]
     fn test_irr_recovers_via_zero_guess_fallback() {
+        // guess=0.1 (Excel's own default) fails to converge here; Excel
+        // itself still finds -0.19995872986748842, and so does a guess=0.0
+        // retry -- the fuzzer-verified case behind
+        // newton_raphson_with_zero_fallback.
         let cash = [-20633.16, 7717.06, -18760.88, -8911.01, 3391.3, 16198.77];
         approx(irr(&cash, 0.1).unwrap(), -0.19995872986748842);
     }
 
     #[test]
     fn test_mirr_all_negative_cashflows_is_minus_one_not_num_error() {
+        // Real Excel's MIRR({-5787.88,-814.95,-8609.23,-601.21,-12290.6,-16118.7}, ...)
+        // returns -1 (total loss), not #NUM! -- the differential fuzzer
+        // found visi returning #NUM! here from an overly defensive early
+        // return that shortcut past 0^(1/n) being a perfectly valid 0.
         let cash = [-5787.88, -814.95, -8609.23, -601.21, -12290.6, -16118.7];
         approx(mirr(&cash, 0.0087, 0.0188).unwrap(), -1.0);
     }
 
     #[test]
     fn test_sln_matches_docs_example() {
+        // SLN(30000, 7500, 10) = 2250
         approx(sln(30000.0, 7500.0, 10.0), 2250.0);
     }
 
     #[test]
     fn test_syd_matches_docs_example() {
+        // SYD(30000, 7500, 10, 1) = 4090.91
         approx(syd(30000.0, 7500.0, 10.0, 1.0), 4090.91);
     }
 
     #[test]
     fn test_ddb_matches_docs_example() {
+        // DDB(2400, 300, 10, 1) = 480
         approx(ddb(2400.0, 300.0, 10.0, 1.0, 2.0), 480.0);
+        // DDB(2400, 300, 10, 2) = 384
         approx(ddb(2400.0, 300.0, 10.0, 2.0, 2.0), 384.0);
     }
 
@@ -1677,16 +1820,19 @@ mod tests {
 
     #[test]
     fn test_dollarde_matches_docs_example() {
+        // DOLLARDE(1.02, 16) = 1.125
         approx(dollarde(1.02, 16.0).unwrap(), 1.125);
     }
 
     #[test]
     fn test_dollarfr_matches_docs_example() {
+        // DOLLARFR(1.125, 16) = 1.02
         approx(dollarfr(1.125, 16.0).unwrap(), 1.02);
     }
 
     #[test]
     fn test_fvschedule_matches_docs_example() {
+        // FVSCHEDULE(1, {0.09, 0.11, 0.1}) = 1.33089
         approx(fvschedule(1.0, &[0.09, 0.11, 0.1]), 1.33089);
     }
 }

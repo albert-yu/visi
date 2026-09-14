@@ -127,15 +127,22 @@ impl From<Wrapped> for PyErr {
             CoreError::InvalidArgument(_) => PyErr::new::<InvalidArgumentError, _>((msg,)),
             CoreError::Xlsx(_) => PyErr::new::<XlsxError, _>((msg,)),
             CoreError::Vba(_) => PyErr::new::<VbaError, _>((msg,)),
+            // A subclass of VbaError, so `except VbaError` still catches it.
             CoreError::VbaSyntax { .. } => PyErr::new::<VbaSyntaxError, _>((msg,)),
             CoreError::VbaRuntime { .. } => PyErr::new::<VbaRuntimeError, _>((msg,)),
             CoreError::Eval(_) => PyErr::new::<EvaluationError, _>((msg,)),
             CoreError::EmptyWorkbook => PyErr::new::<EmptyWorkbookError, _>((msg,)),
             CoreError::LastSheetInWorkbook => PyErr::new::<LastSheetError, _>((msg,)),
             CoreError::DocumentModuleExists => PyErr::new::<DocumentModuleExistsError, _>((msg,)),
+            // `Error` is #[non_exhaustive]: widen to the base class rather than
+            // guessing at a subclass or panicking.
             _ => PyErr::new::<VisiError, _>((msg,)),
         };
 
+        // The structured payload goes on attributes, leaving `args` as
+        // `(message,)`. Attribute writes are best-effort: failing to attach a
+        // "did you mean" hint must not replace the real error with a different
+        // one.
         Python::attach(|py| {
             let v = err.value(py);
             match &e {
@@ -173,6 +180,8 @@ impl From<Wrapped> for PyErr {
                 CoreError::OutOfBounds { what, index, len } => {
                     let _ = v.setattr("what", *what);
                     let _ = v.setattr("index", *index);
+                    // Not `len`: shadowing the builtin on an exception object
+                    // reads badly at a REPL, and `len(exc)` is not a thing.
                     let _ = v.setattr("length", *len);
                 }
                 _ => {}

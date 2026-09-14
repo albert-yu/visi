@@ -98,6 +98,11 @@ fn test_information_logical_lookup_web_functions() {
 
 #[test]
 fn test_datevalue_and_timevalue_parse_common_formats() {
+    // DATEVALUE and TIMEVALUE were both wired to core::text::value (the
+    // generic VALUE() numeric-string parser), which doesn't understand
+    // date/time strings at all -- both always returned #VALUE! for any
+    // real date or time string. Found via differential fuzzing (every
+    // DATEVALUE/TIMEVALUE call mismatched real Excel on every run).
     let grid = [[
         "=DATEVALUE(\"2000-01-01\")",
         "=DATEVALUE(\"1/1/2000\")",
@@ -157,7 +162,12 @@ fn test_datevalue_text_cell_refs_report_days_between() {
 
 #[test]
 fn test_datevalue_and_timevalue_reject_typed_date_time_cells() {
-    let grid = [["2026-08-12", "=DATEVALUE(A1)", "12:00:00", "=TIMEVALUE(C1)"]];
+    let grid = [[
+        "2026-08-12",     // A1
+        "=DATEVALUE(A1)", // B1
+        "12:00:00",       // C1
+        "=TIMEVALUE(C1)", // D1
+    ]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
 
@@ -173,11 +183,11 @@ fn test_datevalue_and_timevalue_reject_typed_date_time_cells() {
 #[test]
 fn test_fuzz_datevalue_and_timevalue_reject_numeric_serials() {
     let grid = [[
-        "46195",
-        "=DATEVALUE(46195)",
-        "=DATEVALUE(A1)",
-        "=TIMEVALUE(46195.25)",
-        "=TIMEVALUE(A1)",
+        "46195",                // A1
+        "=DATEVALUE(46195)",    // B1
+        "=DATEVALUE(A1)",       // C1
+        "=TIMEVALUE(46195.25)", // D1
+        "=TIMEVALUE(A1)",       // E1
     ]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -193,6 +203,9 @@ fn test_fuzz_datevalue_and_timevalue_reject_numeric_serials() {
 
 #[test]
 fn test_address_mixed_reference_types_not_swapped() {
+    // abs_num 2 ("absolute row; relative column", e.g. "A$1") and 3
+    // ("relative row; absolute column", e.g. "$A1") were swapped in
+    // address_fn's match arms.
     let grid = [["=ADDRESS(1, 17, 2)", "=ADDRESS(1, 17, 3)"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -212,6 +225,14 @@ fn test_address_mixed_reference_types_not_swapped() {
 
 #[test]
 fn test_error_type_and_ifna_receive_the_actual_error() {
+    // ERROR.TYPE and IFNA both need to see the error value in their
+    // argument, not have it propagate past them before they get a
+    // chance to inspect it -- the generic "any error in an argument
+    // makes the whole call error" short-circuit didn't exclude them, so
+    // ERROR.TYPE(1/0) itself evaluated to #DIV/0! instead of 2, and
+    // IFNA's second argument was evaluated eagerly (not lazily, unlike
+    // IFERROR) so IFNA(5, 1/0) incorrectly propagated #DIV/0! instead of
+    // returning 5 without ever needing the second argument.
     let grid = [["=ERROR.TYPE(1/0)", "=IFNA(5, 1/0)", "=IFNA(NA(), 99)"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -237,6 +258,9 @@ fn test_error_type_and_ifna_receive_the_actual_error() {
 
 #[test]
 fn test_datedif_counts_only_completed_intervals() {
+    // DATEDIF counts *completed* intervals, so a short final month has to
+    // borrow the length of the month preceding the end date. Every expected
+    // value below was read out of real Excel.
     for (start, end, unit, expected) in [
         (40314.0, 45719.0, "M", 177.0),
         (42733.0, 45935.0, "M", 105.0),
@@ -257,11 +281,26 @@ fn test_datedif_counts_only_completed_intervals() {
 }
 
 #[test]
+// The expected values are the 30-digit reference evaluations the comment
+// below describes. They are kept at full width on purpose: the digits past
+// f64 are what make them checkable against the oracle, and truncating to
+// the shortest round-tripping literal would hide where they came from.
 #[allow(clippy::excessive_precision)]
 fn test_besselj_stays_accurate_where_excel_does_not() {
+    // Differential fuzzing flagged BESSELJ as a mismatch against real
+    // Excel for larger arguments -- but arbitrating the two against
+    // 60-significant-digit reference values (Decimal evaluation of the
+    // same ascending series) showed *visi* is the accurate one and Excel
+    // is not: at x = 9.59, order 1, visi's relative error is ~1e-13 while
+    // Excel's is ~1.3e-5. The fuzz generator therefore caps its Bessel
+    // arguments below where Excel degrades; this test pins visi's own
+    // accuracy.
     for (x, n, expected) in [
         (9.59_f64, 1.0_f64, 0.141754162508486556734783214599_f64),
         (8.72, 2.0, 0.079558608902434556482112499322),
+        // Excel is already off by 3.8e-7 here, at a modest argument --
+        // its accuracy degrades with the *order* as well as x, which is
+        // why no argument cap makes it usable as a reference.
         (2.95, 3.0, 0.300141005800689674499808380416),
     ] {
         let got = crate::core::engineering::besselj(x, n).expect("BESSELJ computes");
@@ -275,6 +314,8 @@ fn test_besselj_stays_accurate_where_excel_does_not() {
 
 #[test]
 fn test_present_but_non_numeric_optional_argument_is_value_error() {
+    // An *optional* numeric argument that is absent falls back to its
+    // default, but one that is present and non-numeric is #VALUE!.
     let sheet = Sheet::new(SheetInit::default());
     for f in ["=LOG(3.14, \"E\")", "=MOD(5, \"E\")", "=MOD(\"E\", 5)"] {
         let got = sheet.eval(f, None).unwrap().0;
@@ -283,11 +324,13 @@ fn test_present_but_non_numeric_optional_argument_is_value_error() {
             "{f} = {got:?}, want #VALUE!"
         );
     }
+    // An omitted base still defaults to 10.
     let got = sheet.eval("=LOG(1000)", None).unwrap().0;
     assert!(
         matches!(got, ResultData::Float(v) if (v - 3.0).abs() < 1e-9),
         "{got:?}"
     );
+    // And a zero divisor is #DIV/0!.
     let got = sheet.eval("=MOD(5, 0)", None).unwrap().0;
     assert!(
         matches!(got, ResultData::Error(ref e) if e == "#DIV/0!"),
@@ -297,6 +340,12 @@ fn test_present_but_non_numeric_optional_argument_is_value_error() {
 
 #[test]
 fn test_forecast_ets_reproduces_excel_on_well_posed_series() {
+    // Excel's alpha/beta/gamma come out of a proprietary optimizer that an
+    // independent implementation cannot be expected to reproduce digit for
+    // digit on noisy data. What *is* checkable -- and what these cases
+    // cover -- is a series the model fits perfectly, where the forecast is
+    // the same for any sane parameter triple and Excel's own answer is the
+    // exact continuation. Every expectation below was read from real Excel.
     let t8: Vec<f64> = (1..=8).map(|i| i as f64).collect();
     let linear: Vec<f64> = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0];
 
@@ -310,13 +359,17 @@ fn test_forecast_ets_reproduces_excel_on_well_posed_series() {
         let got = m.forecast(h);
         assert!((got - want).abs() < 1e-9, "h={h}: got {got}, want {want}");
     }
+    // A perfect fit leaves no error and no prediction interval.
     for stat in [4usize, 5, 6, 7] {
         assert!(m.stat(stat).expect("stat").abs() < 1e-9, "stat {stat}");
     }
     assert!(m.confint(1, 0.95).expect("confint").abs() < 1e-9);
+    // Excel reports exactly these for the degenerate (perfect-fit) case.
     assert!((m.alpha - 0.9).abs() < 1e-12, "alpha = {}", m.alpha);
     assert!((m.beta - 0.001).abs() < 1e-12, "beta = {}", m.beta);
 
+    // Trend plus a repeating period-4 season: Excel detects 4 and forecasts
+    // the exact continuation, 18 then 28.
     let t16: Vec<f64> = (1..=16).map(|i| i as f64).collect();
     let seasonal: Vec<f64> = vec![
         10.0, 20.0, 15.0, 5.0, 12.0, 22.0, 17.0, 7.0, 14.0, 24.0, 19.0, 9.0, 16.0, 26.0, 21.0, 11.0,
@@ -331,6 +384,7 @@ fn test_forecast_ets_reproduces_excel_on_well_posed_series() {
         );
     }
 
+    // A zigzag with no trend is period 2 (Excel agrees).
     let zig: Vec<f64> = vec![10.0, 14.0, 11.0, 17.0, 15.0, 20.0, 18.0, 24.0, 21.0, 27.0];
     assert_eq!(crate::core::ets::detect_period(&zig), 2);
 }
@@ -338,21 +392,25 @@ fn test_forecast_ets_reproduces_excel_on_well_posed_series() {
 #[test]
 fn test_forecast_ets_timeline_validation() {
     let vals = vec![1.0, 2.0, 3.0, 4.0];
+    // Irregular spacing has no constant step.
     let ragged = vec![1.0, 2.0, 4.5, 9.0];
     assert_eq!(
         crate::core::ets::build_series(&vals, &ragged, true).err(),
         Some("#NUM!".to_string())
     );
+    // Mismatched lengths.
     assert_eq!(
         crate::core::ets::build_series(&vals, &[1.0, 2.0], true).err(),
         Some("#N/A".to_string())
     );
+    // A gap is interpolated, not rejected: 1, 2, _, 4 over t = 1,2,4.
     let s = crate::core::ets::build_series(&[1.0, 2.0, 4.0], &[1.0, 2.0, 4.0], true)
         .expect("gap is completed");
     assert_eq!(s.values.len(), 4);
     assert!((s.values[2] - 3.0).abs() < 1e-9, "{:?}", s.values);
     assert!((s.step - 1.0).abs() < 1e-12);
 
+    // A target at or before the end of the timeline has no horizon.
     assert_eq!(
         crate::core::ets::horizon(1.0, 1.0, 4, 4.0).err(),
         Some("#NUM!".to_string())

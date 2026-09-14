@@ -16,6 +16,7 @@ pub fn generate_unique_id() -> u64 {
     } else {
         u64::from_le_bytes(buf)
     };
+    // Cap to JS Number.MAX_SAFE_INTEGER (2^53 - 1) to prevent serialization precision loss
     val & 0x001F_FFFF_FFFF_FFFF
 }
 

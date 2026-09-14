@@ -1,3 +1,10 @@
+// High-precision Engineering functions for visi-core
+// Implements Excel-compatible Bessel functions, bitwise operations, number base conversions (BIN/OCT/DEC/HEX with 2's complement), complex number math, unit conversions, delta & step functions.
+
+// ============================================================================
+// 1. Bitwise and Step/Delta Functions
+// ============================================================================
+
 pub fn bitand(number1: f64, number2: f64) -> Result<f64, String> {
     let n1 = number1.floor() as u64;
     let n2 = number2.floor() as u64;
@@ -39,6 +46,10 @@ pub fn gestep(number: f64, step: Option<f64>) -> Result<f64, String> {
     let s = step.unwrap_or(0.0);
     if number >= s { Ok(1.0) } else { Ok(0.0) }
 }
+
+// ============================================================================
+// 2. Base Conversions (BIN/OCT/DEC/HEX)
+// ============================================================================
 
 pub fn parse_twos_complement(text: &str, bits: usize, radix: u32) -> Result<i64, String> {
     let s = text.trim();
@@ -128,11 +139,15 @@ pub fn oct2hex(text: &str, places: Option<f64>) -> Result<String, String> {
     format_twos_complement(parse_twos_complement(text, 30, 8)?, 40, 16, places)
 }
 
+// ============================================================================
+// 3. Complex Number Operations
+// ============================================================================
+
 #[derive(Debug, Clone, Copy)]
 pub struct ComplexNum {
     pub re: f64,
     pub im: f64,
-    pub suffix: char,
+    pub suffix: char, // 'i' or 'j'
 }
 
 pub fn parse_complex(text: &str) -> Result<ComplexNum, String> {
@@ -144,6 +159,7 @@ pub fn parse_complex(text: &str) -> Result<ComplexNum, String> {
 
     let s_clean = s.trim_end_matches('i').trim_end_matches('j');
     if s_clean == s {
+        // Pure real number
         let re = s.parse::<f64>().map_err(|_| "#VALUE!".to_string())?;
         return Ok(ComplexNum {
             re,
@@ -167,6 +183,7 @@ pub fn parse_complex(text: &str) -> Result<ComplexNum, String> {
         });
     }
 
+    // Split on last '+' or '-' that is not an exponent (e or E)
     let bytes = s_clean.as_bytes();
     let mut split_idx = None;
     for i in (1..bytes.len()).rev() {
@@ -190,6 +207,7 @@ pub fn parse_complex(text: &str) -> Result<ComplexNum, String> {
         };
         Ok(ComplexNum { re, im, suffix })
     } else {
+        // Pure imaginary
         let im = s_clean.parse::<f64>().map_err(|_| "#VALUE!".to_string())?;
         Ok(ComplexNum {
             re: 0.0,
@@ -320,6 +338,11 @@ pub fn imdiv(in_str1: &str, in_str2: &str) -> Result<String, String> {
         suffix: c1.suffix,
     }))
 }
+
+// --- Complex transcendental functions -------------------------------------
+//
+// These all compute on `ComplexNum` end to end and format exactly once, at
+// the public boundary, avoiding intermediate string formatting and rounding.
 
 fn c_exp(c: ComplexNum) -> ComplexNum {
     let mag = c.re.exp();
@@ -475,6 +498,9 @@ pub fn imcosh(in_str: &str) -> Result<String, String> {
 fn c_tan_parts(c: ComplexNum, cotangent: bool) -> Result<ComplexNum, String> {
     let two_x = 2.0 * c.re;
     let two_y = 2.0 * c.im;
+    // cosh/sinh overflow to infinity past ~710; the ratio has long since
+    // saturated at +/-i by then, so report that limit directly instead of
+    // letting inf/inf produce a NaN.
     if two_y.abs() > 700.0 {
         return Ok(ComplexNum {
             re: 0.0,
@@ -532,6 +558,10 @@ pub fn imcsch(in_str: &str) -> Result<String, String> {
     Ok(format_complex(c_recip(c_sinh(parse_complex(in_str)?))?))
 }
 
+// ============================================================================
+// 4. Unit Conversion (CONVERT)
+// ============================================================================
+
 pub fn convert(val: f64, from_unit: &str, to_unit: &str) -> Result<f64, String> {
     let u1 = from_unit.trim();
     let u2 = to_unit.trim();
@@ -539,6 +569,7 @@ pub fn convert(val: f64, from_unit: &str, to_unit: &str) -> Result<f64, String> 
         return Ok(val);
     }
 
+    // Temperature
     if u1 == "C" && u2 == "F" {
         return Ok(val * 1.8 + 32.0);
     }
@@ -552,6 +583,7 @@ pub fn convert(val: f64, from_unit: &str, to_unit: &str) -> Result<f64, String> 
         return Ok(val - 273.15);
     }
 
+    // Length (meters)
     let length_factor = |u: &str| -> Option<f64> {
         match u {
             "m" => Some(1.0),
@@ -570,6 +602,7 @@ pub fn convert(val: f64, from_unit: &str, to_unit: &str) -> Result<f64, String> 
         return Ok(val * f1 / f2);
     }
 
+    // Mass (kg)
     let mass_factor = |u: &str| -> Option<f64> {
         match u {
             "kg" => Some(1.0),
@@ -588,8 +621,13 @@ pub fn convert(val: f64, from_unit: &str, to_unit: &str) -> Result<f64, String> 
     Err("#N/A".to_string())
 }
 
+// ============================================================================
+// 5. Bessel Functions
+// ============================================================================
+
 pub fn besseli(x: f64, n: f64) -> Result<f64, String> {
     let order = n.floor() as usize;
+    // Series for I_n(x) = sum_k (x/2)^(2k+n) / (k! * (k+n)!)
     let mut sum = 0.0;
     let mut term = (x / 2.0).powi(order as i32) / (1..=order).product::<usize>().max(1) as f64;
     sum += term;
@@ -602,6 +640,7 @@ pub fn besseli(x: f64, n: f64) -> Result<f64, String> {
 
 pub fn besselj(x: f64, n: f64) -> Result<f64, String> {
     let order = n.floor() as usize;
+    // Series for J_n(x) = sum_k (-1)^k * (x/2)^(2k+n) / (k! * (k+n)!)
     let mut sum = 0.0;
     let mut term = (x / 2.0).powi(order as i32) / (1..=order).product::<usize>().max(1) as f64;
     sum += term;

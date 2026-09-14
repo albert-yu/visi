@@ -93,6 +93,8 @@ pub(super) fn implemented_names() -> impl Iterator<Item = &'static str> {
 pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
     let lower = name.to_ascii_lowercase();
 
+    // How an intrinsic treats a `Null` argument, from a sweep of all 46 of
+    // them against real Excel (see docs/vba-error-ordering.md).
     if any_null(args) && !HANDLES_NULL.contains(&lower.as_str()) {
         if REJECTS_NULL.contains(&lower.as_str()) {
             return Err(VbaError::invalid_null());
@@ -101,6 +103,7 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
     }
 
     let v = match lower.as_str() {
+        // ---- type inspection --------------------------------------------
         "typename" => Variant::Str(arg(args, 0).type_name().to_string()),
         "vartype" => Variant::Integer(vartype(&arg(args, 0))),
         "isnull" => Variant::Boolean(arg(args, 0).is_null()),
@@ -108,10 +111,17 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         "isnumeric" => Variant::Boolean(is_numeric(&arg(args, 0))),
         "isdate" => Variant::Boolean(matches!(arg(args, 0), Variant::Date(_))),
         "isobject" => Variant::Boolean(matches!(arg(args, 0), Variant::Object(_))),
+        // Measured: `IsError(CVErr(2042))` and `IsError` of a cell holding
+        // `=1/0` are both True. This is the whole point of the error Variant
+        // -- `Application.VLookup` returning one is how a macro tests for a
+        // failed lookup without trapping a run-time error.
         "iserror" => Variant::Boolean(matches!(arg(args, 0), Variant::ErrValue(_))),
         "isarray" => Variant::Boolean(matches!(arg(args, 0), Variant::Array(_))),
         "cverr" => Variant::ErrValue(need(args, 0)?.to_f64()? as i32),
 
+        // ---- arrays ------------------------------------------------------
+        // Only a `Range.Value` read produces one of these, so the bounds are
+        // always 1-based and two-dimensional.
         "ubound" | "lbound" => {
             let Variant::Array(a) = need(args, 0)? else {
                 return Err(VbaError::type_mismatch());
@@ -128,6 +138,7 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
             }
         }
 
+        // ---- conversion --------------------------------------------------
         "cstr" => Variant::Str(need(args, 0)?.to_vba_string()?),
         "cint" => pack_int(numeric_arg(args, 0)?)?,
         "clng" => pack_long(numeric_arg(args, 0)?)?,
@@ -148,10 +159,16 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
             Variant::Currency(scaled as i64)
         }
         "cvar" => need(args, 0)?,
+        // Always a Double, whatever the argument: `Val(1%)`, `Val(255)` and
+        // `Val("100000")` are all Doubles.
         "val" => Variant::Double(val_of(&arg(args, 0))),
 
+        // ---- maths -------------------------------------------------------
+        // Abs and Sgn keep the argument's own numeric width, which is
+        // observable through TypeName.
         "abs" => same_width(&need(args, 0)?, f64::abs)?,
         "sgn" => Variant::Integer(sgn(need(args, 0)?.to_f64()?)),
+        // Int floors, Fix truncates: Int(-1.5) is -2 and Fix(-1.5) is -1.
         "int" => same_width(&need(args, 0)?, f64::floor)?,
         "fix" => same_width(&need(args, 0)?, f64::trunc)?,
         "sqr" => {
@@ -173,6 +190,7 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         "cos" => Variant::Double(need(args, 0)?.to_f64()?.cos()),
         "tan" => Variant::Double(need(args, 0)?.to_f64()?.tan()),
         "atn" => Variant::Double(need(args, 0)?.to_f64()?.atan()),
+        // VBA's Round is banker's, matching every other conversion.
         "round" => {
             let x = need(args, 0)?.to_f64()?;
             let places = match args.get(1) {
@@ -183,6 +201,7 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
             Variant::Double(value::bankers_round(x * factor) / factor)
         }
 
+        // ---- strings -----------------------------------------------------
         "len" => Variant::Long(chars(&need(args, 0)?)?.len() as i32),
         "left" => {
             let s = chars(&need(args, 0)?)?;
@@ -197,6 +216,7 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         }
         "mid" => {
             let s = chars(&need(args, 0)?)?;
+            // Mid is 1-based, and start < 1 is an error rather than a clamp.
             let start = need(args, 1)?.to_f64()?;
             if start < 1.0 {
                 return Err(VbaError::invalid_call());
@@ -254,6 +274,11 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
                 std::cmp::Ordering::Greater => 1,
             })
         }
+        // `RGB` composes the BGR `Long` that `Interior.Color` and
+        // `Font.Color` take -- the low byte is red, which is why `&HFF0000`
+        // is blue. See `vba::color`. Measured: a component above 255 clamps
+        // rather than carrying into the next byte (`RGB(300, 0, 0)` is 255),
+        // and a negative one is error 5 rather than clamping to zero.
         "rgb" => {
             let part = |i: usize| -> VResult<i64> {
                 let v = to_i64(need(args, i)?.to_f64()?)?;
@@ -268,6 +293,9 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         "hex" => Variant::Str(format!("{:X}", to_i64(need(args, 0)?.to_f64()?)?)),
         "oct" => Variant::Str(format!("{:o}", to_i64(need(args, 0)?.to_f64()?)?)),
 
+        // ---- logic -------------------------------------------------------
+        // IIf evaluates both arms, as VBA does -- it is a function call, not
+        // a conditional expression, which is a classic VBA footgun.
         "iif" => {
             let cond = need(args, 0)?;
             if !cond.is_null() && cond.to_bool()? {
@@ -294,6 +322,9 @@ fn vartype(v: &Variant) -> i16 {
         Variant::Date(_) => 7,
         Variant::Str(_) => 8,
         Variant::Boolean(_) => 11,
+        // The documented VarType constants: vbObject, vbError, and an array
+        // is vbArray (8192) added to its element type, which for a range read
+        // is always vbVariant (12).
         Variant::Object(_) => 9,
         Variant::ErrValue(_) => 10,
         Variant::Array(_) => 8192 + 12,
@@ -316,6 +347,13 @@ fn numeric_arg(args: &[Variant], i: usize) -> VResult<f64> {
 fn is_numeric(v: &Variant) -> bool {
     match v {
         Variant::Str(s) => value::parse_vba_number(s).is_ok() && !s.trim().is_empty(),
+        // `IsNumeric(Empty)` is **True** and `IsNumeric(Null)` is False.
+        // Measured; `Empty` behaves as the 0 it coerces to, where `Null` is
+        // the absence of a value and answers for nothing. `IsNumeric("")` is
+        // False despite `""` and `Empty` comparing equal, which is the same
+        // asymmetry `value.rs` records for `"" = 0` (error 13) against
+        // `Empty = 0` (True). Found by `fuzz/fuzz_vba.py` on seed 862021,
+        // through `(Not vc) Xor IsNumeric(Empty)`.
         Variant::Empty => true,
         Variant::Null => false,
         Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => false,
@@ -444,12 +482,18 @@ fn instr(args: &[Variant]) -> VResult<Variant> {
         )
     };
     let hay_chars: Vec<char> = hay.chars().collect();
+    // A zero-length string to search in is 0, whatever the needle -- so
+    // `InStr("", "")` is 0 while `InStr("a", "")` is 1. Measured; this used
+    // to report 1 for the empty/empty pair, on the reasoning that an empty
+    // needle matches at the start, which is true only when there is a string
+    // to match in. `Empty` reaches here as `""` and behaves the same way.
     if hay_chars.is_empty() {
         return Ok(Variant::Long(0));
     }
     if start >= hay_chars.len() {
         return Ok(Variant::Long(0));
     }
+    // Empty needle matches at the start position, as VBA has it.
     if needle.is_empty() {
         return Ok(Variant::Long(start as i32 + 1));
     }

@@ -164,6 +164,8 @@ impl ObjRef {
             ObjRef::Application => "Application",
             ObjRef::WorksheetFunction => "WorksheetFunction",
             ObjRef::Workbook => "Workbook",
+            // Not "Worksheets": the collection reports itself as `Sheets`
+            // whether it was reached through `.Worksheets` or `.Sheets`.
             ObjRef::Worksheets => "Sheets",
             ObjRef::Worksheet(_) => "Worksheet",
             ObjRef::Range(_) => "Range",
@@ -192,10 +194,14 @@ impl ObjRef {
             | (ObjRef::Workbook, ObjRef::Workbook)
             | (ObjRef::Worksheets, ObjRef::Worksheets) => true,
             (ObjRef::Worksheet(a), ObjRef::Worksheet(b)) => a == b,
+            // The handle *is* the identity, so a range that moved is still
+            // the same object and two ranges over the same cells are not.
             (ObjRef::Range(a), ObjRef::Range(b)) => a == b,
             (ObjRef::UserClass(a), ObjRef::UserClass(b)) => a == b,
             (ObjRef::Interior(a), ObjRef::Interior(b)) => a == b,
             (ObjRef::Font(a), ObjRef::Font(b)) => a == b,
+            // A table is identified by its id, so it stays the same object
+            // across a rename -- the same reasoning as a worksheet.
             (ObjRef::ListObjects(a), ObjRef::ListObjects(b))
             | (ObjRef::ListObject(a), ObjRef::ListObject(b))
             | (ObjRef::ListColumns(a), ObjRef::ListColumns(b))
@@ -348,6 +354,9 @@ impl<'w> Host<'w> {
             .sheets
             .iter()
             .position(|s| s.id == id)
+            // A sheet can only vanish mid-run if something deleted it, which
+            // is not in scope -- but "subscript out of range" is the right
+            // report if it ever does.
             .ok_or_else(VbaError::subscript)
     }
 
@@ -393,9 +402,12 @@ impl<'w> Host<'w> {
         }
     }
 
+    // -- entry points the interpreter calls -------------------------------
+
     /// A bare identifier that names a host object, or `None` if it does not.
     pub fn global(&mut self, name: &str) -> Option<ObjRef> {
         Some(match name.to_ascii_lowercase().as_str() {
+            // One workbook is open, so `ActiveWorkbook` is `ThisWorkbook`.
             "thisworkbook" | "activeworkbook" => ObjRef::Workbook,
             "application" => ObjRef::Application,
             "worksheets" | "sheets" => ObjRef::Worksheets,
@@ -464,6 +476,13 @@ impl<'w> Host<'w> {
                 self.enable_events = value.to_bool()?;
                 Ok(())
             }
+            // `ListObject.Name` is not a field write: names are unique
+            // workbook-wide and a rename cascades into formula *text*
+            // everywhere. Routing through `WorkbookManager` is what keeps
+            // `Sales[Amount]` pointing at the renamed table -- measured, the
+            // formula really does change. A name already in use is error
+            // 1004, also measured, and notably *not* the 9 that a failed
+            // lookup gives.
             (ObjRef::ListObject(id), "name") => {
                 let (_, t) = self.table(*id)?;
                 let new_name = value.to_vba_string()?;
@@ -481,6 +500,8 @@ impl<'w> Host<'w> {
                     return Ok(());
                 }
                 if on {
+                    // The totals row is a new row at the bottom of the
+                    // table's own columns, so it shifts what is under it.
                     self.wb
                         .insert_cells_shift_down(
                             sheet_idx,
@@ -512,6 +533,8 @@ impl<'w> Host<'w> {
                 self.stale = false;
                 Ok(())
             }
+            // Same cascade, for a column: renaming one rewrites every
+            // structured reference that names it.
             (ObjRef::ListColumn(id, idx), "name") => {
                 let (_, t) = self.table(*id)?;
                 let new_name = value.to_vba_string()?;
@@ -522,6 +545,12 @@ impl<'w> Host<'w> {
                 self.stale = false;
                 Ok(())
             }
+            // Measured: assigning re-renders the grid **immediately**, with
+            // no `RefreshTable` -- reading a pivot cell straight afterwards
+            // shows the filtered value. That is a deliberate exception to
+            // this crate's rule that nothing recomputes a pivot implicitly;
+            // the rule describes visi's CRUD, and here Excel's behaviour
+            // wins because a macro can observe the difference.
             (ObjRef::PivotField(id, idx), "currentpage") => {
                 let (_, p) = self.pivot(*id)?;
                 let columns = self.pivot_source_columns(&p)?;
@@ -540,6 +569,9 @@ impl<'w> Host<'w> {
                 let selection = if wanted == ALL_PAGES {
                     None
                 } else {
+                    // Measured: a value that is not one of the field's items
+                    // is 1004 rather than an empty selection, which would
+                    // silently blank the grid.
                     if !self.pivot_field_has_item(&p, &column, &wanted)? {
                         return Err(app_defined(
                             "Unable to set the CurrentPage property of the PivotField class",
@@ -550,6 +582,9 @@ impl<'w> Host<'w> {
                 self.wb
                     .set_pivot_filter(&p.name, &column, selection)
                     .map_err(|e| app_defined(e.to_string()))?;
+                // `CurrentPage` *is* the single-select page mode, which is
+                // what makes the page-field cell show the item's own name
+                // rather than `(Multiple Items)`.
                 if let Some(pivot) = self.wb.pivot_tables.iter_mut().find(|t| t.id == *id)
                     && let Some(f) = pivot
                         .filter_fields
@@ -577,6 +612,9 @@ impl<'w> Host<'w> {
             (ObjRef::Range(token), "numberformat") => {
                 let r = self.range(*token, name)?;
                 let format = value.to_vba_string()?;
+                // Measured: setting `General` on a date cell leaves the
+                // serial alone -- the value stays a number and only the
+                // rendering changes, which is exactly `core::date`'s model.
                 let stored =
                     (!format.eq_ignore_ascii_case(color::GENERAL_FORMAT)).then_some(format);
                 self.style_write(r, move |s| s.num_format = stored.clone())
@@ -599,6 +637,8 @@ impl<'w> Host<'w> {
                     .rename_sheet(&old, &new_name)
                     .map_err(|e| app_defined(e.to_string()))?;
                 self.mutated = true;
+                // A rename rewrites cross-sheet formula text, so anything
+                // read afterwards must see the rebuilt references.
                 self.stale = true;
                 Ok(())
             }
@@ -618,6 +658,9 @@ impl<'w> Host<'w> {
                 let key = args.first().ok_or_else(VbaError::subscript)?;
                 Ok(Variant::Object(self.worksheet_by_key(key)?))
             }
+            // `ws.Cells` is a Range over the whole grid, so `ws.Cells(2, 3)`
+            // is that range indexed -- which is exactly Excel's own model and
+            // gives `$C$2` without a second code path.
             ObjRef::Range(token) => {
                 let r = self.range(*token, "Item")?;
                 self.range_index(r, args)
@@ -727,6 +770,8 @@ impl<'w> Host<'w> {
         }
     }
 
+    // -- per-object members -----------------------------------------------
+
     fn workbook_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
         match name.to_ascii_lowercase().as_str() {
             "worksheets" | "sheets" => {
@@ -736,7 +781,14 @@ impl<'w> Host<'w> {
                     self.call_object(&ObjRef::Worksheets, args)
                 }
             }
+            // The workbook has no filename until something saves it, and this
+            // layer has none to offer -- the CLI decides the output path, and
+            // `visi-core` never sees it. Reporting the sheet-less placeholder
+            // Excel uses for an unsaved book is the honest answer.
             "name" => Ok(Variant::Str("Book1".to_string())),
+            // `.Save` is in scope as a no-op with a real meaning: the CLI
+            // writes the file when the run finishes, so a macro asking for a
+            // save gets one. What it must not do is fail.
             "save" => Ok(Variant::Empty),
             _ => Err(unsupported(&format!("Workbook.{name}"))),
         }
@@ -785,6 +837,10 @@ impl<'w> Host<'w> {
                 }
                 self.call_object(&whole, args)
             }
+            // `ws.Rows(3)` is a whole-row Range -- measured:
+            // `TypeName(ws.Rows(3))` is `"Range"` and its `.Address` is
+            // `$3:$3`, which `format_address` already renders from a
+            // full-width rectangle.
             "listobjects" => {
                 if args.is_empty() {
                     return Ok(Variant::Object(ObjRef::ListObjects(id)));
@@ -869,16 +925,25 @@ impl<'w> Host<'w> {
                 self.recalculate();
                 let sheet = self.sheet(r.sheet_id)?;
                 let cell = CellRef::new(r.row as usize, r.col as usize);
+                // Measured: `.Text` on a cell holding `=1/0` is `#DIV/0!`,
+                // the string Excel puts on screen -- not `ResultData`'s
+                // human-readable `Error: #DIV/0!` rendering, which is for a
+                // terminal rather than for a cell.
                 Ok(Variant::Str(match sheet.get_result_data(&cell) {
                     ResultData::Error(e) => e,
                     _ => sheet.get_display_string(&cell),
                 }))
             }
+            // `.Row` and `.Column` report the *top-left* cell of a
+            // multi-cell range: measured, `ws.Range("B2:C4").Row` is 2.
             "row" => Ok(Variant::Long(r.row as i32 + 1)),
             "column" => Ok(Variant::Long(r.col as i32 + 1)),
             "count" => {
                 let n = r.count();
                 if n > i32::MAX as u64 {
+                    // Measured: `ws.Cells.Count` really is error 6 in Excel,
+                    // because the property is typed `Long` and the whole grid
+                    // does not fit in one.
                     return Err(VbaError::overflow());
                 }
                 Ok(Variant::Long(n as i32))
@@ -911,6 +976,8 @@ impl<'w> Host<'w> {
                 )))
             }
             "resize" => {
+                // An omitted dimension keeps the current one, which is what
+                // makes `.Resize(, 3)` mean "same rows, three columns".
                 let height = match args.first() {
                     Some(v) if !v.is_empty() => positive_dim(v)?,
                     _ => r.height,
@@ -936,13 +1003,22 @@ impl<'w> Host<'w> {
                 }
                 self.range_index(r, args)
             }
+            // Measured: `ws.Range("B5").EntireRow.Address` is `$5:$5` and
+            // `.EntireColumn` is `$B:$B`, so each widens one axis to the
+            // whole grid and leaves the other alone.
+            // Measured: the table containing the range's top-left, or
+            // `Nothing` for a cell outside every table.
             "listobject" => Ok(Variant::Object(
                 self.table_at(r.sheet_id, r.row, r.col)
                     .map(ObjRef::ListObject)
                     .unwrap_or(ObjRef::Nothing),
             )),
+            // A view onto the same cells, riding on this range's handle, so
+            // it tracks a structural edit exactly as the range does.
             "interior" => Ok(Variant::Object(ObjRef::Interior(token))),
             "font" => Ok(Variant::Object(ObjRef::Font(token))),
+            // Measured: `General` on a cell carrying no format, and `Null`
+            // over a range whose cells disagree.
             "numberformat" => self.style_fold(
                 r,
                 Variant::Null,
@@ -960,11 +1036,19 @@ impl<'w> Host<'w> {
             )),
             "insert" | "delete" => {
                 self.structural_edit(r, name.eq_ignore_ascii_case("insert"), name)?;
+                // Excel's `Insert`/`Delete` do return a value, but a macro
+                // calls them as statements and this is not measured, so
+                // nothing is claimed about it.
                 Ok(Variant::Empty)
             }
+            // `name`, not the lowercased match binding: the message is
+            // user-facing and `Range.interior` reads like a typo where
+            // `Range.Interior` reads like the refusal it is.
             _ => Err(unsupported(&format!("Range.{name}"))),
         }
     }
+
+    // -- Excel Tables (`ListObjects`) --------------------------------------
 
     /// The sheet index and a snapshot of the table with this id.
     ///
@@ -1068,6 +1152,8 @@ impl<'w> Host<'w> {
                 let rows = t.header_row().map(|r| (r, r));
                 Ok(self.table_part(&t, rows))
             }
+            // Measured: `Nothing` when the table has no data rows, which is
+            // *not* the same as an empty range -- see `ExcelTable::has_insert_row`.
             "databodyrange" => {
                 let rows = (t.data_row_count() > 0).then(|| (t.data_start_row(), t.data_end_row()));
                 Ok(self.table_part(&t, rows))
@@ -1129,6 +1215,7 @@ impl<'w> Host<'w> {
                 t.columns.get(idx).cloned().unwrap_or_default(),
             )),
             "index" => Ok(Variant::Long(idx as i32 + 1)),
+            // Measured: `.Range` on a column includes the header row.
             "range" => Ok(Variant::Object(self.new_range(
                 t.sheet_id,
                 t.start_row as u32,
@@ -1186,6 +1273,8 @@ impl<'w> Host<'w> {
                 t.col_count() as u32,
             ))),
             "delete" => {
+                // Deleting a table row shifts only the table's own columns
+                // up, exactly as adding one shifts them down.
                 self.wb
                     .delete_cells_shift_up(sheet_idx, row, t.start_col, t.end_col, 1)
                     .map_err(|e| app_defined(e.to_string()))?;
@@ -1219,6 +1308,7 @@ impl<'w> Host<'w> {
         };
 
         if t.has_insert_row {
+            // The placeholder row is already there and already blank.
             if let Some(table) = self.wb.sheets[sheet_idx]
                 .tables
                 .iter_mut()
@@ -1255,12 +1345,20 @@ impl<'w> Host<'w> {
             return Err(VbaError::subscript());
         };
         table.end_row = old_end_row.saturating_add_signed(delta);
+        // Removing the last data row leaves the extent alone and raises the
+        // insert-row flag, which is what Excel writes to the file.
         if delta < 0 && table.data_row_count() == 0 && !table.has_insert_row {
             table.end_row = old_end_row;
             table.has_insert_row = true;
         }
         Ok(())
     }
+
+    // -- Pivot tables ------------------------------------------------------
+    //
+    // Every failure in this surface is **1004**, not the 9 the `ListObjects`
+    // collection uses for the same shape of mistake. Measured, and the two
+    // are easy to conflate.
 
     /// Whether a pivot field actually has an item with this value, matched
     /// the way the pivot engine merges them (case-insensitively).
@@ -1295,6 +1393,9 @@ impl<'w> Host<'w> {
     }
 
     fn pivot_by_key(&mut self, sheet_id: u64, key: &Variant) -> VResult<ObjRef> {
+        // Excel scopes `PivotTables` to a worksheet by where the pivot is
+        // *drawn*, which is `dest_sheet_id` here -- a pivot's source may be
+        // on another sheet entirely.
         let on_sheet: Vec<&PivotTable> = self
             .wb
             .pivot_tables
@@ -1339,6 +1440,7 @@ impl<'w> Host<'w> {
         let (_, p) = self.pivot(id)?;
         match name.to_ascii_lowercase().as_str() {
             "name" => Ok(Variant::Str(p.name.clone())),
+            // Measured: returns the Boolean True.
             "refreshtable" => {
                 self.wb
                     .refresh_pivot_table(&p.name)
@@ -1353,12 +1455,17 @@ impl<'w> Host<'w> {
                 }
                 self.call_object(&ObjRef::PivotFields(id), args)
             }
+            // Measured: `TableRange1` is the grid alone and `TableRange2`
+            // includes the page-field rows above it -- `$F$3:$G$7` and
+            // `$F$1:$G$7` for the same pivot at `F1` with one filter.
             "tablerange1" | "tablerange2" => {
                 let (end_row, end_col) = self.pivot_extent(&p)?;
                 let with_pages = name.eq_ignore_ascii_case("tablerange2");
                 let offset = if with_pages || p.filter_fields.is_empty() {
                     0
                 } else {
+                    // One row per filter field plus the blank one under them,
+                    // the same reservation `pivot_xlsx` makes on export.
                     p.filter_fields.len() + 1
                 };
                 let top = p.dest_row + offset;
@@ -1438,6 +1545,10 @@ impl<'w> Host<'w> {
         let matches = |c: &String| c.eq_ignore_ascii_case(&column);
         match name.to_ascii_lowercase().as_str() {
             "name" => Ok(Variant::Str(column)),
+            // xlRowField 1, xlColumnField 2, xlPageField 3, xlHidden 0.
+            // Measured: a *data* field reports 0, not xlDataField -- the
+            // orientation belongs to the source field, and aggregating one
+            // leaves it unoriented.
             "orientation" => Ok(Variant::Long(
                 if p.row_fields.iter().any(|f| matches(&f.column)) {
                     1
@@ -1449,6 +1560,9 @@ impl<'w> Host<'w> {
                     0
                 },
             )),
+            // Measured: `(All)` when nothing is filtered *and* when several
+            // items are selected -- `CurrentPage` only ever reflects a single
+            // selection. On a field that is not a page field it raises.
             "currentpage" => {
                 let field = p
                     .filter_fields
@@ -1513,9 +1627,15 @@ impl<'w> Host<'w> {
     fn interior_member(&mut self, token: u64, name: &str) -> VResult<Variant> {
         let r = self.range(token, name)?;
         match name.to_ascii_lowercase().as_str() {
+            // Measured: an unfilled cell reports white (16777215), and a
+            // range whose fills differ reports 0 rather than Null -- the one
+            // property that breaks the Null rule.
             "color" => self.style_fold(r, Variant::Double(0.0), color::interior_color, |c| {
                 Variant::Double(f64::from(c))
             }),
+            // Measured: an *unfilled* cell is `xlNone` (-4142), but a fill
+            // that is not one of the 56 slots reports the **nearest** slot
+            // rather than `xlNone` -- `RGB(250, 10, 10)` reports 3.
             "colorindex" => self.style_fold(
                 r,
                 Variant::Null,
@@ -1545,6 +1665,9 @@ impl<'w> Host<'w> {
                 |s| s.and_then(|s| s.italic).unwrap_or(false),
                 Variant::Boolean,
             ),
+            // Measured: `Font.Size` is a `Double`, not a `Long`, and a
+            // half-point size round-trips -- which is why `CellStyle`'s is an
+            // `f64`.
             "size" => self.style_fold(
                 r,
                 Variant::Null,
@@ -1567,6 +1690,8 @@ impl<'w> Host<'w> {
             "color" => self.style_fold(r, Variant::Null, color::font_color, |c| {
                 Variant::Double(f64::from(c))
             }),
+            // Measured: a cell with no explicit font colour reports slot 1
+            // (black), not `xlNone` -- the opposite of `Interior.ColorIndex`.
             "colorindex" => self.style_fold(
                 r,
                 Variant::Null,
@@ -1592,6 +1717,7 @@ impl<'w> Host<'w> {
         let r = self.range(token, name)?;
         let lower = name.to_ascii_lowercase();
 
+        // `Color` is a BGR `Long`; `CellStyle` stores `"#RRGGBB"`.
         if lower == "color" {
             let hex = color::bgr_to_hex(long_arg(value)?);
             return self.style_write(r, move |s| {
@@ -1604,6 +1730,8 @@ impl<'w> Host<'w> {
         }
         if lower == "colorindex" {
             let index = long_arg(value)?;
+            // Measured: setting `xlNone` clears the fill, after which
+            // `Interior.Color` reads white again.
             let hex = if index == color::COLOR_INDEX_NONE {
                 None
             } else {
@@ -1676,7 +1804,14 @@ impl<'w> Host<'w> {
             (sheet.row_count(), sheet.col_count())
         };
 
+        // How many the *grid* has to change by. Deleting past the end of the
+        // allocated grid is a no-op there but still moves anything below it,
+        // so the clamp applies to the workbook ops and not to the shift.
         let grid_count = if insert {
+            // A dense column vector per sheet column means inserting a
+            // million rows really would allocate them, where Excel's sparse
+            // grid would shrug. Same guard, and same error 7, as a write to
+            // a far-off cell.
             let added = u64::from(count)
                 * match axis {
                     Axis::Row => cols as u64,
@@ -1698,6 +1833,9 @@ impl<'w> Host<'w> {
         };
 
         for _ in 0..grid_count {
+            // Each call rewrites the formulas in the whole workbook and
+            // re-evaluates, so the result is the same as one wider edit; see
+            // `WorkbookManager::apply_grid_edit`.
             let done = match (axis, insert) {
                 (Axis::Row, true) => self.wb.insert_row(sheet_idx, at as usize),
                 (Axis::Row, false) => self.wb.delete_row(sheet_idx, at as usize),
@@ -1705,6 +1843,8 @@ impl<'w> Host<'w> {
                 (Axis::Col, false) => self.wb.delete_col(sheet_idx, at as usize),
             };
             if done.is_err() {
+                // Only `OutOfBounds`, which the clamp above already means we
+                // do not expect; nothing is left to remove either way.
                 break;
             }
         }
@@ -1719,6 +1859,8 @@ impl<'w> Host<'w> {
         });
 
         self.mutated = true;
+        // `insert_row` and friends re-evaluate the workbook themselves, so
+        // nothing is outstanding once they return.
         self.stale = false;
         Ok(())
     }
@@ -1742,6 +1884,10 @@ impl<'w> Host<'w> {
                 Axis::Row => (r.row, r.height),
                 Axis::Col => (r.col, r.width),
             };
+            // A whole-row or whole-column band already spans the axis it is
+            // unbounded on, so an edit along that axis cannot move it -- and
+            // `start + len - 1` would be the grid maximum, which shifting
+            // would push past the end.
             let unbounded = match edit.axis {
                 Axis::Row => r.height == MAX_ROWS,
                 Axis::Col => r.width == MAX_COLS,
@@ -1764,6 +1910,8 @@ impl<'w> Host<'w> {
                         }
                     }
                 }
+                // Every cell it covered is gone. Measured: the object stays a
+                // `Range` and is not `Nothing`, but every member now raises.
                 None => *state = RangeState::Dead,
             }
         }
@@ -1788,6 +1936,8 @@ impl<'w> Host<'w> {
             self.new_range(r.sheet_id, row as u32, col as u32, 1, 1),
         ))
     }
+
+    // -- reading and writing cells ----------------------------------------
 
     /// `.Value` / `.Value2`.
     ///
@@ -1859,6 +2009,9 @@ impl<'w> Host<'w> {
         };
         let src = cell_src(&scalar)?;
         let date_format = match &scalar {
+            // Measured: `.Value = #6/22/2026#` leaves the cell formatted
+            // `m/d/yy`, so writing a Date writes the notation too -- which is
+            // exactly how `core/date.rs` models a date in the first place.
             Variant::Date(serial) => Some(if serial.fract() == 0.0 {
                 "m/d/yy"
             } else {
@@ -1902,6 +2055,8 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
+    // -- the WorksheetFunction bridge --------------------------------------
+
     /// `Application.<name>`, which is either an object or a non-raising
     /// worksheet function.
     fn application_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
@@ -1911,6 +2066,9 @@ impl<'w> Host<'w> {
         if name.eq_ignore_ascii_case("enableevents") {
             return Ok(Variant::Boolean(self.enable_events));
         }
+        // `Application.Sum(...)` works and returns 6, exactly as
+        // `WorksheetFunction.Sum` does -- the two only part company on
+        // failure. Measured.
         self.worksheet_function(name, args, false)
     }
 
@@ -1932,6 +2090,8 @@ impl<'w> Host<'w> {
 
         let mut exprs = Vec::with_capacity(args.len());
         for a in args {
+            // An error value handed in directly short-circuits, matching what
+            // the engine does with an error inside a range.
             if let Some(n) = a.error_number() {
                 return self.function_failure(raises, name, error_text(n));
             }
@@ -1941,6 +2101,11 @@ impl<'w> Host<'w> {
         match self.wb.call_worksheet_function(&upper, &exprs) {
             Ok(ResultData::Error(e)) => self.function_failure(raises, name, &e),
             Ok(value) => Ok(result_to_variant(&value)),
+            // The engine reports an unknown name as an evaluation failure.
+            // Excel makes that a *compile* error for `WorksheetFunction`,
+            // which nothing here can reproduce, so 438 -- the late-bound
+            // equivalent, and the number every other out-of-scope construct
+            // reports -- names it rather than inventing a 1004.
             Err(_) => Err(unsupported(&format!("WorksheetFunction.{name}"))),
         }
     }
@@ -2000,6 +2165,8 @@ fn scalar_expr(v: &Variant) -> VResult<FExpr> {
     Ok(match v {
         Variant::Boolean(b) => FExpr::Boolean(*b),
         Variant::Str(s) => FExpr::String(s.clone()),
+        // Excel has no blank literal in a formula, and a blank argument is
+        // treated as zero by every function that accepts one.
         Variant::Empty | Variant::Null => FExpr::Number(0.0),
         other => FExpr::Number(other.to_f64()?),
     })
@@ -2110,6 +2277,8 @@ fn parse_address(text: &str) -> Option<(u32, u32, u32, u32)> {
         Some((a, b)) => (a, Some(b)),
         None => (text, None),
     };
+    // Whole columns (`A:B`) and whole rows (`3:5`) are the two forms where a
+    // part carries only half a coordinate; both are all-or-nothing.
     if let Some(b) = b
         && let (Some(c1), Some(c2)) = (parse_col(a), parse_col(b))
     {
@@ -2193,6 +2362,9 @@ fn cell_value(sheet: &Sheet, row: u32, col: u32, value2: bool) -> Variant {
         ResultData::Float(f) => Variant::Double(f),
         ResultData::String(s) => Variant::Str(s),
         ResultData::Error(e) => Variant::ErrValue(error_code(&e)),
+        // `List` and `Dict` are engine-internal shapes with no VBA analogue
+        // (nothing Excel-compatible puts one in a cell). Rendering rather
+        // than erroring keeps a macro that stumbles onto one readable.
         other => Variant::Str(other.to_string()),
     }
 }
@@ -2231,8 +2403,17 @@ fn cell_src(v: &Variant) -> VResult<String> {
         Variant::Str(s) => s.clone(),
         Variant::ErrValue(n) => error_text(*n).to_string(),
         Variant::Object(_) | Variant::Array(_) => return Err(VbaError::type_mismatch()),
+        // Rust's shortest-round-trip float formatting, not VBA's `CStr`:
+        // this text is re-parsed by `Sheet::commit`, so it has to survive the
+        // round trip exactly rather than look like VBA.
         other => {
             let f = other.to_f64()?;
+            // Excel has no infinities and no NaNs: assigning one stores
+            // `#NUM!`. Measured -- `wsh.Cells(2, 5).Value = (-2.5 ^ va)` with
+            // `va = 1000` leaves an error cell, not a number. (Between
+            // *constants* the same expression is error 6 before the
+            // assignment is ever reached, which is `value::ArithMode`'s doing
+            // rather than this.)
             if !f.is_finite() {
                 "#NUM!".to_string()
             } else if f == f.trunc() && f.abs() < 1e15 {
@@ -2278,6 +2459,9 @@ fn error_code(text: &str) -> i32 {
         .iter()
         .find(|(s, _)| text.starts_with(s))
         .map(|(_, n)| *n)
+        // `#SPILL!`, `#CALC!` and friends postdate the `xlErr*` constants and
+        // have no `CVErr` number at all; `#VALUE!`'s is the closest thing to
+        // "something is wrong with this value" the enumeration offers.
         .unwrap_or(2015)
 }
 
@@ -2373,6 +2557,10 @@ mod tests {
         }
     }
 
+    // Every expectation below is what `fuzz/vba_host_probe.py` returned from
+    // Excel for Mac 16.112 for the same expression, minus the `OK|` prefix
+    // the harness adds. Do not "correct" one from memory -- re-measure.
+
     #[test]
     fn objects_report_the_type_names_excel_reports() {
         assert_eq!(probe("TypeName(wb)"), "String|Workbook");
@@ -2411,6 +2599,8 @@ mod tests {
             probe("ws.Range(\"A1:B2\").Resize(3, 1).Address"),
             "String|$A$1:$A$3"
         );
+        // Measured: `ws.Cells.Address` renders as whole rows, not
+        // `$A$1:$XFD$1048576`.
         assert_eq!(probe("ws.Cells.Address"), "String|$1:$1048576");
         assert_eq!(probe("CStr(ws.Range(\"A1:B2\").Count)"), "String|4");
         assert_eq!(probe("TypeName(ws.Range(\"A1:B2\").Count)"), "String|Long");
@@ -2418,6 +2608,7 @@ mod tests {
             probe("ws.Range(\"A1\").Row & \",\" & ws.Range(\"B2\").Column"),
             "String|1,2"
         );
+        // `.Row`/`.Column` report the top-left of a multi-cell range.
         assert_eq!(
             probe("ws.Range(\"B2:C4\").Row & \",\" & ws.Range(\"B2:C4\").Column"),
             "String|2,2"
@@ -2426,6 +2617,8 @@ mod tests {
 
     #[test]
     fn a_whole_sheet_count_overflows_a_long_exactly_as_in_excel() {
+        // Not an implementation limit: `Range.Count` is typed `Long` and the
+        // grid does not fit in one, so Excel itself reports error 6.
         assert_eq!(probe("CStr(ws.Cells.Count)"), "ERR|6");
     }
 
@@ -2441,6 +2634,7 @@ mod tests {
 
     #[test]
     fn for_each_over_a_range_is_row_major() {
+        // Excel walks left-to-right, then down.
         assert_eq!(
             probe(
                 "For Each c In ws.Range(\"A1:B2\")\\n s = s & c.Address(False, False) & \" \"\\nNext :: s"
@@ -2455,6 +2649,7 @@ mod tests {
 
     #[test]
     fn a_numeric_cell_always_reads_back_as_a_double() {
+        // Even a cell holding `1`: there is no `Integer` on this path.
         assert_eq!(probe("TypeName(ws.Range(\"A1\").Value)"), "String|Double");
         assert_eq!(probe("CStr(ws.Range(\"A1\").Value)"), "String|1");
         assert_eq!(probe("TypeName(ws.Range(\"D1\").Value)"), "String|Double");
@@ -2467,10 +2662,13 @@ mod tests {
 
     #[test]
     fn a_date_formatted_cell_reads_as_date_through_value_and_double_through_value2() {
+        // The whole reason `Variant::Date` exists. The engine stores only the
+        // serial; the notation is the cell's number format.
         assert_eq!(probe("TypeName(ws.Range(\"C1\").Value)"), "String|Date");
         assert_eq!(probe("CStr(ws.Range(\"C1\").Value)"), "String|6/22/26");
         assert_eq!(probe("TypeName(ws.Range(\"C1\").Value2)"), "String|Double");
         assert_eq!(probe("CStr(ws.Range(\"C1\").Value2)"), "String|46195");
+        // A fractional serial is still a Date, and CStr shows the time.
         assert_eq!(probe("TypeName(ws.Range(\"C2\").Value)"), "String|Date");
         assert_eq!(
             probe("CStr(ws.Range(\"C2\").Value)"),
@@ -2497,6 +2695,7 @@ mod tests {
             probe("CStr(IsError(ws.Range(\"F1\").Value))"),
             "String|True"
         );
+        // ... but arithmetic on one is a type mismatch, not a propagation.
         assert_eq!(probe("v = ws.Range(\"F1\").Value :: CStr(v + 1)"), "ERR|13");
     }
 
@@ -2516,10 +2715,12 @@ mod tests {
             ),
             "String|3,1"
         );
+        // Reading a Range without `.Value` takes the same default member.
         assert_eq!(
             probe("v = ws.Range(\"A1:A3\") :: TypeName(v)"),
             "String|Variant()"
         );
+        // And an array is not a scalar.
         assert_eq!(probe("v = ws.Range(\"A1:B2\").Value :: CStr(v)"), "ERR|13");
         assert_eq!(
             probe("v = ws.Range(\"A1\").Value :: TypeName(v)"),
@@ -2529,6 +2730,8 @@ mod tests {
 
     #[test]
     fn is_compares_object_identity_not_coordinates() {
+        // The measurement that decided the design: two `Range()` calls over
+        // the same cell are different objects, while a worksheet is cached.
         assert_eq!(
             probe("CStr(ws.Range(\"A1\") Is ws.Range(\"A1\"))"),
             "String|False"
@@ -2536,6 +2739,8 @@ mod tests {
         assert_eq!(probe("CStr(ws Is wb.Worksheets(1))"), "String|True");
         assert_eq!(probe("CStr(ws Is wb.Worksheets(2))"), "String|False");
         assert_eq!(probe("CStr(ws Is Nothing)"), "String|False");
+        // Copying preserves identity, which is what makes `Is` on a Range
+        // usable at all.
         assert_eq!(
             probe("Dim r As Range :: Set r = ws.Range(\"A1\") :: CStr(r Is r)"),
             "String|True"
@@ -2576,6 +2781,9 @@ mod tests {
             probe("TypeName(Application.WorksheetFunction.Sum(ws.Range(\"A1:A3\")))"),
             "String|Double"
         );
+        // A direct string argument coerces; text and booleans *inside a
+        // range* do not. Both measured, and both fall out of reusing the
+        // formula path rather than being written twice.
         assert_eq!(
             probe("CStr(Application.WorksheetFunction.Sum(\"1\", 2))"),
             "String|3"
@@ -2596,6 +2804,7 @@ mod tests {
             probe("Application.WorksheetFunction.Text(ws.Range(\"C1\").Value, \"yyyy-mm-dd\")"),
             "String|2026-06-22"
         );
+        // A mixed range-and-scalar argument list, and an array argument.
         assert_eq!(
             probe("CStr(Application.WorksheetFunction.Sum(ws.Range(\"A1\"), 5))"),
             "String|6"
@@ -2604,6 +2813,7 @@ mod tests {
             probe("v = ws.Range(\"A1:A3\").Value :: CStr(Application.WorksheetFunction.Sum(v))"),
             "String|6"
         );
+        // `Application.X` is the same implementation.
         assert_eq!(
             probe("CStr(Application.Sum(ws.Range(\"A1:A3\")))"),
             "String|6"
@@ -2612,6 +2822,8 @@ mod tests {
 
     #[test]
     fn worksheet_function_raises_where_application_returns_an_error() {
+        // Two call paths over one implementation, and the difference is
+        // entirely in what failure looks like.
         assert_eq!(
             probe(
                 "CStr(Application.WorksheetFunction.VLookup(\"zzz\", ws.Range(\"A1:B3\"), 2, False))"
@@ -2632,6 +2844,7 @@ mod tests {
             ),
             "String|2042"
         );
+        // An error inside the data raises rather than propagating.
         assert_eq!(
             probe("CStr(Application.WorksheetFunction.Sum(ws.Range(\"F1\")))"),
             "ERR|1004"
@@ -2651,6 +2864,7 @@ mod tests {
     fn worksheets_are_reachable_by_name_index_and_count() {
         assert_eq!(probe("CStr(wb.Worksheets.Count)"), "String|2");
         assert_eq!(probe("wb.Worksheets(1).Name"), "String|Sheet1");
+        // Case-insensitive, as every VBA name lookup is.
         assert_eq!(
             probe("CStr(wb.Worksheets(\"SHEET1\").Name)"),
             "String|Sheet1"
@@ -2661,20 +2875,25 @@ mod tests {
         );
     }
 
+    // -- writes ----------------------------------------------------------
+
     #[test]
     fn a_write_is_visible_to_the_next_read() {
         assert_eq!(
             probe("ws.Range(\"G1\").Value = 5 :: CStr(ws.Range(\"G1\").Value)"),
             "String|5"
         );
+        // The default member: no `.Value` on the left.
         assert_eq!(
             probe("ws.Range(\"G2\") = 7 :: CStr(ws.Range(\"G2\").Value)"),
             "String|7"
         );
+        // Assigning to a multi-cell range fills all of it.
         assert_eq!(
             probe("ws.Range(\"G3:H4\").Value = 3 :: CStr(ws.Range(\"H4\").Value)"),
             "String|3"
         );
+        // An array assigned to one cell writes its first element.
         assert_eq!(
             probe(
                 "ws.Range(\"G5\").Value = ws.Range(\"A1:A3\").Value :: TypeName(ws.Range(\"G5\").Value) & \"|\" & CStr(ws.Range(\"G5\").Value)"
@@ -2685,10 +2904,14 @@ mod tests {
 
     #[test]
     fn a_write_recalculates_before_the_next_read_that_could_see_it() {
+        // `D1` holds `=A1*2`. This is the behaviour the lazy-recalculation
+        // design exists to preserve: Excel in automatic mode would have
+        // recalculated at the assignment, and the difference is invisible.
         assert_eq!(
             probe("ws.Range(\"A1\").Value = 5 :: CStr(ws.Range(\"D1\").Value)"),
             "String|10"
         );
+        // A formula written by the macro evaluates too.
         assert_eq!(
             probe(
                 "ws.Range(\"G1\").Value = 5\\nws.Range(\"G2\").Formula = \"=G1*2\" :: CStr(ws.Range(\"G2\").Value)"
@@ -2699,6 +2922,9 @@ mod tests {
 
     #[test]
     fn writing_a_string_parses_it_the_way_typing_it_would() {
+        // Measured, and the reason the writer hands the raw text to
+        // `Sheet::commit` rather than deciding for itself: a leading `=`
+        // makes a formula, and date-looking text makes a date.
         assert_eq!(
             probe(
                 "ws.Range(\"G4\").Value = \"=1+2\" :: ws.Range(\"G4\").Formula & \"|\" & CStr(ws.Range(\"G4\").Value)"
@@ -2721,6 +2947,8 @@ mod tests {
 
     #[test]
     fn writing_a_date_writes_the_notation_too() {
+        // A date is a serial plus a number format, so writing one has to set
+        // both -- otherwise `.Text` would show 46195.
         assert_eq!(
             probe(
                 "ws.Range(\"G8\").Value = #6/22/2026# :: TypeName(ws.Range(\"G8\").Value) & \"|\" & ws.Range(\"G8\").Text"
@@ -2731,12 +2959,17 @@ mod tests {
 
     #[test]
     fn writing_whitespace_padded_numeric_text_stores_a_number() {
+        // Entering `"  3  "` into a cell gives the *number* 3, in Excel and
+        // through `Range.Value`. Found by `fuzz/fuzz_vba.py`'s cell
+        // comparison on two independent cases, where the return value agreed
+        // and only the cell differed.
         assert_eq!(
             probe(
                 "ws.Range(\"H5\").Value = \"  3  \" :: TypeName(ws.Range(\"H5\").Value) & \"|\" & CStr(ws.Range(\"H5\").Value)"
             ),
             "String|Double|3"
         );
+        // Text that merely has spaces around it is still text.
         assert_eq!(
             probe("ws.Range(\"H6\").Value = \"  x  \" :: TypeName(ws.Range(\"H6\").Value)"),
             "String|String"
@@ -2745,12 +2978,16 @@ mod tests {
 
     #[test]
     fn overflowing_pow_raises_before_a_cell_write() {
+        // Measured after fuzz/fuzz_vba.py found that runtime `^` overflows
+        // rather than producing an infinity that can be assigned to a cell.
         assert_eq!(
             probe(
                 "v = 1000\nws.Range(\"G9\").Value = (-2.5 ^ v) :: TypeName(ws.Range(\"G9\").Value)"
             ),
             "ERR|6"
         );
+        // An error value assigned as text is the error too, which is what
+        // Excel does with the same assignment.
         assert_eq!(
             probe(
                 "ws.Range(\"H1\").Value = \"#N/A\" :: TypeName(ws.Range(\"H1\").Value) & \"|\" & ws.Range(\"H1\").Formula"
@@ -2793,6 +3030,8 @@ mod tests {
 
     #[test]
     fn a_macro_that_raises_after_writing_still_leaves_the_write() {
+        // Excel does not roll back. Reporting the error while discarding the
+        // writes would be a quieter kind of wrong.
         let mut wb = fixture();
         wb.ensure_vba_project().unwrap();
         wb.add_vba_module(
@@ -2832,12 +3071,18 @@ mod tests {
 
     #[test]
     fn a_write_far_outside_the_sheet_is_refused_rather_than_allocated() {
+        // Excel's grid is sparse and `visi`'s is dense, so the honest answer
+        // to `XFD1048576` is error 7 rather than seventeen billion cells.
         assert_eq!(probe("ws.Range(\"XFD1048576\").Value = 1 :: \"\""), "ERR|7");
         assert_eq!(probe("CStr(ws.Range(\"A1000000\").Value)"), "String|");
     }
 
     #[test]
     fn out_of_scope_members_still_name_themselves() {
+        // The refusal is the feature. Each of these is a real Excel member
+        // that is still out of scope; `Interior.Color`, `Font.Bold` and
+        // `NumberFormat` have left this list because they are now
+        // implemented, which is the only reason a member may leave it.
         for case in [
             "wb.PivotTables(1).Name",
             "ws.Range(\"A1:B2\").Sort",
@@ -2849,6 +3094,16 @@ mod tests {
             assert_eq!(probe(case), "ERR|438", "{case}");
         }
     }
+
+    // ---------------------------------------------------------------
+    // Range tracking under a structural edit.
+    //
+    // These run against `tracking_fixture`, which is the *same* grid
+    // `fuzz/vba_range_tracking_probe.py` builds, so every expectation below
+    // is literally the string Excel for Mac 16.112 returned for the same
+    // expression (minus the harness's `OK|` prefix). Re-run the probe rather
+    // than adjusting one from memory.
+    // ---------------------------------------------------------------
 
     /// 1..10 down column A, 101..110 down B, 201..210 down C, plus an empty
     /// `Sheet2` -- distinct per row so a tracked range can be asked what it
@@ -2921,10 +3176,13 @@ mod tests {
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(1).Insert :: r.Address"#),
             "String|$A$6"
         );
+        // It follows the *data*, not just the coordinates: A5 held 5, and
+        // after the insert that 5 is at A6 and `r` still reads it.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(1).Insert :: CStr(r.Value)"#),
             "String|5"
         );
+        // An insert below it changes nothing.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(9).Insert :: r.Address"#),
             "String|$A$5"
@@ -2933,6 +3191,9 @@ mod tests {
 
     #[test]
     fn inserting_at_a_held_spans_first_row_moves_it_and_inserting_inside_grows_it() {
+        // The same asymmetry `core::grid_edit` encodes for a formula's range
+        // reference, and measured separately here because there was no
+        // reason a priori for Excel to treat the two the same way.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5:A7") :: ws.Rows(5).Insert :: r.Address"#),
             "String|$A$6:$A$8"
@@ -2957,6 +3218,9 @@ mod tests {
             tracking_probe(r#"Set r = ws.Range("A5:A7") :: ws.Rows(6).Delete :: r.Address"#),
             "String|$A$5:$A$6"
         );
+        // Deleting the span's own first row shrinks it from the bottom, not
+        // the top -- the start stays where it is because everything below
+        // moved up into it.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5:A7") :: ws.Rows(5).Delete :: r.Address"#),
             "String|$A$5:$A$6"
@@ -2965,6 +3229,8 @@ mod tests {
 
     #[test]
     fn a_range_whose_cells_are_all_deleted_is_dead_but_not_nothing() {
+        // Measured: the object is *not* `Nothing` and still calls itself a
+        // `Range`, but every member access raises.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(5).Delete :: CStr(r Is Nothing)"#),
             "String|False"
@@ -2973,6 +3239,11 @@ mod tests {
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(5).Delete :: TypeName(r)"#),
             "String|Range"
         );
+        // The *number* is a deliberate divergence: Excel for Mac's is not
+        // reproducible (the same case gave -1667945984 and then -1667949824),
+        // so visi raises 1004 -- the number Excel on Windows documents for
+        // this message, and the one the rest of this module already uses.
+        // See `docs/excel-discrepancies.md`.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(5).Delete :: r.Address"#),
             "ERR|1004"
@@ -2981,6 +3252,7 @@ mod tests {
             tracking_probe(r#"Set r = ws.Range("A5") :: ws.Rows(5).Delete :: CStr(r.Value)"#),
             "ERR|1004"
         );
+        // A multi-row span loses every row it had.
         assert_eq!(
             tracking_probe(r#"Set r = ws.Range("A5:A7") :: ws.Rows("5:7").Delete :: r.Address"#),
             "ERR|1004"
@@ -3015,6 +3287,8 @@ mod tests {
 
     #[test]
     fn every_copy_of_a_range_tracks_the_edit_and_stays_the_same_object() {
+        // This is the case that forced interning: `q` was copied *before* the
+        // edit, and Excel moves it too, which a by-value Range cannot do.
         assert_eq!(
             tracking_probe(
                 r#"Set r = ws.Range("A5") :: Set q = r :: ws.Rows(1).Insert :: CStr(q Is r) & "/" & q.Address"#
@@ -3068,6 +3342,10 @@ mod tests {
 
     #[test]
     fn a_partial_range_insert_is_refused_rather_than_guessed_at() {
+        // Excel accepts this and picks the shift direction from the range's
+        // shape -- measured, `Range("A2:A3").Insert` shifts *right*. Picking
+        // one here would silently move a macro's data the wrong way, so 438
+        // names the construct instead, as everywhere else in this module.
         assert_eq!(
             tracking_probe(r#"ws.Range("A2:A3").Insert :: "unreachable""#),
             "ERR|438"
@@ -3076,6 +3354,8 @@ mod tests {
 
     #[test]
     fn a_structural_edit_from_a_macro_shifts_the_formulas_too() {
+        // The engine-level rewrite and the range tracking are separate
+        // mechanisms; this is the one case that exercises both at once.
         assert_eq!(
             tracking_probe(
                 r#"ws.Range("E1").Formula = "=A5" :: ws.Rows(1).Insert :: ws.Range("E2").Formula"#
@@ -3084,6 +3364,17 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------
+    // Styles: `.Interior`, `.Font` and `.NumberFormat`.
+    //
+    // Every expectation is what `fuzz/vba_style_probe.py` returned from Excel
+    // for Mac 16.112 for the same expression. The colour cases are also
+    // pinned from the *other* side by that probe's `--paint` channel, which
+    // has Excel save the workbook and reads the real ARGB back with openpyxl
+    // -- the VBA channel alone cannot catch a consistent-but-wrong
+    // convention, since both engines would round-trip the same wrong Long.
+    // ---------------------------------------------------------------
+
     #[test]
     fn rgb_is_a_builtin_returning_the_long_excel_returns() {
         assert_eq!(probe("CStr(RGB(255, 0, 0))"), "String|255");
@@ -3091,12 +3382,17 @@ mod tests {
         assert_eq!(probe("CStr(RGB(0, 0, 255))"), "String|16711680");
         assert_eq!(probe("CStr(RGB(1, 2, 3))"), "String|197121");
         assert_eq!(probe("TypeName(RGB(1, 2, 3))"), "String|Long");
+        // Measured: clamps rather than carrying into the next byte, which
+        // would have made `RGB(300, 0, 0)` green.
         assert_eq!(probe("CStr(RGB(300, 0, 0))"), "String|255");
+        // Measured: a negative component is error 5, not a clamp to zero.
         assert_eq!(probe("CStr(RGB(-1, 0, 0))"), "ERR|5");
     }
 
     #[test]
     fn interior_color_is_bgr_so_ff0000_is_blue() {
+        // `&HFF0000` must land in the *blue* channel of the stored style,
+        // not the red one.
         assert_eq!(
             probe(
                 r#"ws.Range("G2").Interior.Color = &HFF0000 :: CStr(ws.Range("G2").Interior.Color)"#
@@ -3109,6 +3405,8 @@ mod tests {
             ),
             "String|255"
         );
+        // And the same read through the stored representation, which is where
+        // a byte swap would show up rather than cancelling out.
         let mut wb = fixture();
         wb.ensure_vba_project().unwrap();
         wb.add_vba_module(
@@ -3150,6 +3448,7 @@ mod tests {
             "String|Interior"
         );
         assert_eq!(probe(r#"TypeName(ws.Range("A1").Font)"#), "String|Font");
+        // White, not zero -- an unfilled cell is not "no colour" to Excel.
         assert_eq!(
             probe(r#"CStr(ws.Range("A1").Interior.Color)"#),
             "String|16777215"
@@ -3161,12 +3460,15 @@ mod tests {
         assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Bold)"#), "String|False");
         assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Italic)"#), "String|False");
         assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Size)"#), "String|11");
+        // A `Double`, not a `Long` -- which is why `CellStyle::font_size` is
+        // an `f64`.
         assert_eq!(
             probe(r#"TypeName(ws.Range("A1").Font.Size)"#),
             "String|Double"
         );
         assert_eq!(probe(r#"ws.Range("A1").Font.Name"#), "String|Calibri");
         assert_eq!(probe(r#"CStr(ws.Range("A1").Font.Color)"#), "String|0");
+        // Slot 1 (black), *not* xlNone -- the opposite of Interior's default.
         assert_eq!(probe(r#"CStr(ws.Range("A1").Font.ColorIndex)"#), "String|1");
         assert_eq!(probe(r#"ws.Range("A1").NumberFormat"#), "String|General");
     }
@@ -3185,6 +3487,8 @@ mod tests {
             probe(r#"ws.Range("H3").Font.Size = 14 :: CStr(ws.Range("H3").Font.Size)"#),
             "String|14"
         );
+        // A half-point size survives, which an integer `font_size` could not
+        // have stored.
         assert_eq!(
             probe(r#"ws.Range("M1").Font.Size = 10.5 :: CStr(ws.Range("M1").Font.Size)"#),
             "String|10.5"
@@ -3203,18 +3507,23 @@ mod tests {
 
     #[test]
     fn color_index_is_the_palette_excel_reported() {
+        // Setting a colour reports the slot it occupies...
         assert_eq!(
             probe(
                 r#"ws.Range("G4").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("G4").Interior.ColorIndex)"#
             ),
             "String|3"
         );
+        // ...and setting the slot gives back the colour.
         assert_eq!(
             probe(
                 r#"ws.Range("G5").Interior.ColorIndex = 3 :: CStr(ws.Range("G5").Interior.Color)"#
             ),
             "String|255"
         );
+        // An off-palette colour reports the *nearest* slot, not xlNone. The
+        // first implementation here guessed xlNone and was wrong; these three
+        // are what Excel actually returned.
         assert_eq!(
             probe(
                 r#"ws.Range("G7").Interior.Color = RGB(250, 10, 10) :: CStr(ws.Range("G7").Interior.ColorIndex)"#
@@ -3233,6 +3542,7 @@ mod tests {
             ),
             "String|1"
         );
+        // xlNone clears the fill, after which Color reads white again.
         assert_eq!(
             probe(
                 "ws.Range(\"G6\").Interior.Color = RGB(255, 0, 0)\\n\
@@ -3244,6 +3554,9 @@ mod tests {
 
     #[test]
     fn a_mixed_range_reads_null_except_interior_color_which_reads_zero() {
+        // Excel's own asymmetry, and the reason `style_fold` takes the
+        // mixed-value rather than inferring it: 0 is also a legitimate
+        // uniform answer, so it cannot double as a sentinel.
         assert_eq!(
             probe(
                 r#"ws.Range("K1").Font.Bold = True :: CStr(IsNull(ws.Range("K1:K2").Font.Bold))"#
@@ -3266,12 +3579,14 @@ mod tests {
             ),
             "String|Null"
         );
+        // The exception.
         assert_eq!(
             probe(
                 r#"ws.Range("L1").Interior.Color = RGB(255, 0, 0) :: CStr(ws.Range("L1:L2").Interior.Color)"#
             ),
             "String|0"
         );
+        // A range whose cells *agree* reports the value, not the sentinel.
         assert_eq!(
             probe(
                 "ws.Range(\"N1\").Interior.Color = RGB(255, 0, 0)\\n\
@@ -3297,6 +3612,10 @@ mod tests {
 
     #[test]
     fn number_format_changes_the_rendering_and_leaves_the_serial_alone() {
+        // Writing `NumberFormat` from a macro can turn a date cell into
+        // a plain number *visually* while the serial stays put, which is
+        // correct and is exactly `core::date`'s model -- there is no date
+        // value type to lose.
         assert_eq!(
             probe(
                 "ws.Range(\"I1\").Value = 46195\\n\
@@ -3324,6 +3643,9 @@ mod tests {
 
     #[test]
     fn a_styled_range_tracks_a_structural_edit_like_any_other() {
+        // `Interior` and `Font` ride on the range's handle rather than
+        // carrying coordinates, so this falls out rather than needing its own
+        // mechanism -- but it would be silently wrong if they did carry them.
         assert_eq!(
             tracking_probe(
                 r#"Set r = ws.Range("A5") :: r.Interior.Color = RGB(255, 0, 0)\nws.Rows(1).Insert :: r.Address & "/" & CStr(r.Interior.Color)"#
@@ -3331,6 +3653,15 @@ mod tests {
             "String|$A$6/255"
         );
     }
+
+    // ---------------------------------------------------------------
+    // Excel Tables (`ListObjects`).
+    //
+    // `table_fixture` is the grid `fuzz/vba_table_probe.py` builds, so every
+    // expectation is what Excel for Mac 16.112 returned for the same
+    // expression. `Sales` is A1:C4 with a header row and no totals row, and
+    // `E1` holds `=SUM(Sales[Amount])` so a rename's cascade is observable.
+    // ---------------------------------------------------------------
 
     fn table_fixture() -> WorkbookManager {
         let mut wb = WorkbookManager {
@@ -3356,6 +3687,7 @@ mod tests {
                 wb.sheets[0].set_cell_src(r, c, v.to_string());
             }
         }
+        // A second table, so the duplicate-name case has a real collision.
         wb.sheets[0].set_cell_src(7, 0, "Key".to_string());
         wb.sheets[0].set_cell_src(7, 1, "Val".to_string());
         wb.sheets[0].set_cell_src(8, 0, "k".to_string());
@@ -3441,6 +3773,7 @@ mod tests {
             table_probe("ws.ListObjects(1).DataBodyRange.Address"),
             "String|$A$2:$C$4"
         );
+        // No totals row: `Nothing`, not an empty range and not an error.
         assert_eq!(
             table_probe("TypeName(ws.ListObjects(1).TotalsRowRange)"),
             "String|Nothing"
@@ -3469,6 +3802,8 @@ mod tests {
             table_probe("ws.ListObjects(1).ListColumns(3).Name"),
             "String|Amount"
         );
+        // A column's `.Range` includes the header row; its `.DataBodyRange`
+        // does not.
         assert_eq!(
             table_probe("ws.ListObjects(1).ListColumns(3).Range.Address"),
             "String|$C$1:$C$4"
@@ -3485,6 +3820,7 @@ mod tests {
             table_probe("CStr(ws.ListObjects(1).ListColumns(3).Index)"),
             "String|3"
         );
+        // `ListRows` counts data rows only.
         assert_eq!(
             table_probe("CStr(ws.ListObjects(1).ListRows.Count)"),
             "String|3"
@@ -3505,6 +3841,7 @@ mod tests {
             table_probe(r#"ws.Range("A2").ListObject.Name"#),
             "String|Sales"
         );
+        // Outside every table: `Nothing`.
         assert_eq!(
             table_probe(r#"TypeName(ws.Range("G1").ListObject)"#),
             "String|Nothing"
@@ -3513,6 +3850,8 @@ mod tests {
 
     #[test]
     fn a_missing_table_is_error_9_not_1004() {
+        // Measured, and worth pinning: every *lookup* failure is 9, while a
+        // duplicate name on assignment is 1004. The two are easy to conflate.
         assert_eq!(table_probe(r#"ws.ListObjects("nope").Name"#), "ERR|9");
         assert_eq!(table_probe("ws.ListObjects(5).Name"), "ERR|9");
         assert_eq!(
@@ -3527,16 +3866,20 @@ mod tests {
 
     #[test]
     fn renaming_a_table_cascades_into_formula_text() {
+        // The reason `.Name` routes through `WorkbookManager` rather than
+        // writing the field: measured, Excel rewrites the formula too.
         assert_eq!(
             table_probe(
                 r#"ws.ListObjects(1).Name = "Revenue" :: ws.ListObjects(1).Name & "|" & ws.Range("E1").Formula"#
             ),
             "String|Revenue|=SUM(Revenue[Amount])"
         );
+        // A name already taken workbook-wide is 1004.
         assert_eq!(
             table_probe(r#"ws.ListObjects(1).Name = "Other" :: "unreachable""#),
             "ERR|1004"
         );
+        // Renaming a column cascades the same way.
         assert_eq!(
             table_probe(
                 r#"ws.ListObjects(1).ListColumns(3).Name = "Total" :: ws.ListObjects(1).ListColumns(3).Name & "|" & ws.Range("E1").Formula"#
@@ -3561,6 +3904,8 @@ mod tests {
             table_probe("Set v = ws.ListObjects(1).ListRows.Add :: v.Range.Address"),
             "String|$A$5:$C$5"
         );
+        // Adding at a position pushes the existing rows down, and the new row
+        // is blank.
         assert_eq!(
             table_probe(
                 r#"Set v = ws.ListObjects(1).ListRows.Add(1) :: v.Range.Address & "/" & CStr(ws.Range("A2").Value)"#
@@ -3571,6 +3916,8 @@ mod tests {
 
     #[test]
     fn adding_a_table_row_shifts_only_the_tables_own_columns() {
+        // The measurement that forced the band operation to exist: content
+        // below the table in its columns moves, content beside it does not.
         assert_eq!(
             table_probe(
                 "ws.Range(\"A8\").Value = \"BELOW\"\\n\
@@ -3584,6 +3931,9 @@ mod tests {
 
     #[test]
     fn a_table_with_no_data_rows_has_no_data_body_range() {
+        // Measured: deleting the only data row leaves the extent alone --
+        // the table keeps its insert-row placeholder -- while `DataBodyRange`
+        // becomes `Nothing` and `ListRows.Count` becomes 0.
         assert_eq!(
             table_probe(
                 r#"ws.ListObjects("Other").ListRows(1).Delete :: TypeName(ws.ListObjects("Other").DataBodyRange)"#
@@ -3626,6 +3976,8 @@ mod tests {
             ),
             "String|Nothing"
         );
+        // Adding a row back reuses the reserved row rather than growing the
+        // extent -- measured, `$A$8:$B$9` again, not `$A$8:$B$10`.
         assert_eq!(
             table_probe(
                 "ws.ListObjects(\"Other\").ListRows(1).Delete\\n\
@@ -3656,6 +4008,18 @@ mod tests {
             "String|999"
         );
     }
+
+    // ---------------------------------------------------------------
+    // Pivot tables.
+    //
+    // `pivot_fixture` is the grid `fuzz/vba_pivot_probe.py` builds, and the
+    // pivot has the same shape: Region down the rows, Sum of Amount as the
+    // value, Product as a page field, drawn at F1. Every expectation is what
+    // Excel for Mac 16.112 returned for the same expression.
+    //
+    // Note the error number: **1004** throughout, where the `ListObjects`
+    // collection uses 9 for the same shape of mistake. Both measured.
+    // ---------------------------------------------------------------
 
     fn pivot_fixture() -> WorkbookManager {
         use crate::core::pivot::{PivotAggregation, PivotArea};
@@ -3755,6 +4119,7 @@ mod tests {
         );
         assert_eq!(pivot_probe("CStr(ws.PivotTables.Count)"), "String|1");
         assert_eq!(pivot_probe("pt.Name"), "String|P1");
+        // One entry per *source column*, whatever area it occupies.
         assert_eq!(pivot_probe("CStr(pt.PivotFields.Count)"), "String|3");
     }
 
@@ -3770,6 +4135,9 @@ mod tests {
 
     #[test]
     fn orientation_is_the_area_and_a_data_field_reports_hidden() {
+        // xlRowField 1, xlPageField 3, xlHidden 0. The surprise is `Amount`:
+        // it is the value field, yet reports 0 rather than xlDataField --
+        // aggregating a column leaves the *source* field unoriented.
         assert_eq!(
             pivot_probe(r#"CStr(pt.PivotFields("Region").Orientation)"#),
             "String|1"
@@ -3796,10 +4164,13 @@ mod tests {
             ),
             "String|Widget"
         );
+        // Reading it on a field that is not a page field raises.
         assert_eq!(
             pivot_probe(r#"pt.PivotFields("Region").CurrentPage"#),
             "ERR|1004"
         );
+        // A value the field does not have raises rather than blanking the
+        // grid with an empty selection.
         assert_eq!(
             pivot_probe(r#"pt.PivotFields("Product").CurrentPage = "Nonesuch" :: "unreachable""#),
             "ERR|1004"
@@ -3808,12 +4179,17 @@ mod tests {
 
     #[test]
     fn setting_current_page_rerenders_without_an_explicit_refresh() {
+        // The deliberate exception to "nothing recomputes a pivot
+        // implicitly": measured, the grid is already filtered on the very
+        // next read, with no `RefreshTable` in between. G5 is the second
+        // data row -- North, which is 3 for Widget alone and 10 overall.
         assert_eq!(
             pivot_probe(
                 r#"pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G5").Value)"#
             ),
             "String|3"
         );
+        // An explicit refresh afterwards changes nothing.
         assert_eq!(
             pivot_probe(
                 "pt.PivotFields(\"Product\").CurrentPage = \"Widget\"\\n\
@@ -3821,12 +4197,14 @@ mod tests {
             ),
             "String|3"
         );
+        // The page-field cell shows the selection.
         assert_eq!(
             pivot_probe(
                 r#"pt.PivotFields("Product").CurrentPage = "Widget" :: CStr(ws.Range("G1").Value)"#
             ),
             "String|Widget"
         );
+        // And `(All)` puts it back.
         assert_eq!(
             pivot_probe(
                 "pt.PivotFields(\"Product\").CurrentPage = \"Widget\"\\n\
@@ -3845,6 +4223,8 @@ mod tests {
 
     #[test]
     fn table_range_1_is_the_grid_and_2_includes_the_page_rows() {
+        // Measured for a pivot at F1 with one filter field: the filter row
+        // and the blank under it sit above the grid.
         assert_eq!(pivot_probe("pt.TableRange1.Address"), "String|$F$3:$G$7");
         assert_eq!(pivot_probe("pt.TableRange2.Address"), "String|$F$1:$G$7");
     }

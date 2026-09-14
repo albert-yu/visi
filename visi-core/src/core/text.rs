@@ -1,3 +1,6 @@
+// High-precision Text functions for visi-core
+// Implements Excel-compatible string manipulation, unicode, formatting, splitting, joining, and search routines.
+
 pub fn arraytotext(items: &[String], format: Option<f64>) -> Result<String, String> {
     let fmt = format.unwrap_or(0.0).round() as i32;
     if fmt == 1 {
@@ -163,6 +166,7 @@ pub fn dbcs(text: &str) -> Result<String, String> {
 }
 
 pub fn detectlanguage(_text: &str) -> Result<String, String> {
+    // Real language detection isn't implemented; always report English.
     Ok("en".to_string())
 }
 
@@ -176,6 +180,8 @@ pub fn detectlanguage(_text: &str) -> Result<String, String> {
 fn round_half_away_from_zero(value: f64, decimals: usize) -> f64 {
     let factor = 10f64.powi(decimals as i32);
     let scaled = value * factor;
+    // Nudge by one ulp-ish epsilon so a value that is only *just* below
+    // the .5 boundary because of binary representation still rounds up.
     let eps = scaled.abs() * f64::EPSILON * 4.0;
     let adjusted = if scaled >= 0.0 {
         scaled + eps
@@ -361,6 +367,7 @@ pub fn search(find_text: &str, within_text: &str, start_num: Option<f64>) -> Res
     }
     let search_slice: String = chars[start - 1..].iter().collect();
 
+    // Simple wildcard handling for ? and *
     let clean_find = lower_find.replace(['?', '*'], "");
     if clean_find.is_empty() {
         return Ok(start as f64);
@@ -430,6 +437,8 @@ fn format_date_text(val: f64, format_text: &str) -> Result<String, String> {
     if val < 0.0 {
         return Err("#VALUE!".to_string());
     }
+    // Shared with `date::format_date`, so a date renders the same whether it
+    // reaches here through TEXT() or through a date-formatted cell.
     Ok(crate::core::date::render_date_code(
         crate::core::date::excel_serial_to_date(val),
         format_text,
@@ -466,6 +475,10 @@ pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
 
     let scaled = if has_percent { val * 100.0 } else { val };
     let is_negative = scaled < 0.0;
+    // Excel rounds half away from zero on the decimal it shows, whereas
+    // Rust's `{:.N}` rounds the underlying *binary* value to nearest-even:
+    // TEXT(-3873.705, "0.00") is -3873.71 in Excel but formats as -3873.70
+    // here without this. Same rule DOLLAR/FIXED needed.
     let formatted = format!(
         "{:.*}",
         dec_count,

@@ -528,6 +528,7 @@ impl DataColumn {
                 self.src[index].insert_str(char_offset, input);
             }
         } else {
+            // Grow to cover `index`, then write into the new last row.
             self.resize_rows(index + 1);
             self.src[index] = input.to_string();
         }

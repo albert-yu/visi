@@ -338,6 +338,8 @@ fn approx_float(source: &str, expected: f64) {
 
 #[test]
 fn test_financial_functions() {
+    // These mirror the pure-math tests in `core::finance` but go through
+    // the parser/dispatch path end-to-end.
     approx_float("=PMT(0.08/12, 10, 10000)", -1037.03);
     approx_float("=FV(0.06/12, 10, -200, -500, 1)", 2581.40);
     approx_float("=PV(0.08/12, 20*12, 500)", -59777.15);
@@ -360,6 +362,9 @@ fn test_financial_functions() {
     approx_float("=CUMIPMT(0.09/12, 30*12, 125000, 13, 24, 0)", -11135.23);
     approx_float("=CUMPRINC(0.09/12, 30*12, 125000, 13, 24, 0)", -934.11);
 
+    // No `{...}` array-literal syntax in the parser, so exercise the
+    // range-argument financial functions (IRR/FVSCHEDULE/XNPV) against
+    // real cells instead of inline arrays.
     let mut fin_sheet = Sheet::new(SheetInit {
         name: Some("fin".to_string()),
         rows: 6,
@@ -378,6 +383,7 @@ fn test_financial_functions() {
     for (i, v) in [-10000, 2750, 4250, 3250, 2750].iter().enumerate() {
         fin_sheet.set_cell_src(i, 2, v.to_string());
     }
+    // Excel serials for 2008-01-01, 2008-03-01, 2008-10-30, 2009-02-15, 2009-04-01
     for (i, v) in [39448, 39508, 39751, 39859, 39904].iter().enumerate() {
         fin_sheet.set_cell_src(i, 3, v.to_string());
     }
@@ -562,7 +568,7 @@ fn test_builtin_math_functions() {
 
     let (result, _) = sheet.eval("=abs(-3.14)", None).unwrap();
     #[allow(clippy::approx_constant)]
-    let expected = 3.14;
+    let expected = 3.14; // ABS(-3.14), not an approximation of PI
     assert_eq!(get_float_val(&result), Some(expected));
 
     let (result, _) = sheet.eval("=sqrt(16)", None).unwrap();
@@ -730,6 +736,9 @@ fn test_cross_table_dependency_propagation() {
     let updated_cells_1 = sheet1.commit(None).unwrap();
     assert!(updated_cells_1.contains(&CellRef::new(0, 0)));
 
+    // `commit` propagates local dependencies only, so Sheet2 has no idea
+    // Sheet1 moved. Marking it wholesale is how `WorkbookManager::evaluate`
+    // drives cross-sheet propagation.
     sheet2.mark_all_dirty();
 
     let mut context = Context::new();
@@ -826,7 +835,9 @@ fn test_structured_reference_basic_column() {
     sheet.set_cell_src(0, 0, "10".to_string());
     sheet.set_cell_src(1, 0, "20".to_string());
     sheet.set_cell_src(2, 0, "30".to_string());
+    // Unqualified structured reference (same sheet).
     sheet.set_cell_src(0, 2, "=SUM([Sales])".to_string());
+    // Qualified with the table (sheet) name.
     sheet.set_cell_src(1, 2, "=SUM(table_1[Sales])".to_string());
     sheet.commit(None).unwrap();
 
@@ -888,6 +899,8 @@ fn test_structured_reference_headers_and_totals_sections() {
     let (res_bare, _) = sheet.eval("=[[#Headers],[Cost]]", None).unwrap();
     assert_eq!(get_string_val(&res_bare), Some("Cost".to_string()));
 
+    // No totals row concept exists on the underlying table, so a totals
+    // reference resolves to an empty/None result rather than erroring.
     let (res_totals, _) = sheet.eval("=[[#Totals],[Sales]]", None).unwrap();
     assert!(matches!(res_totals, ResultData::None));
 }
@@ -940,6 +953,8 @@ fn test_structured_reference_aggregates_ignore_text_like_a_range() {
     sheet.set_cell_src(1, 1, "=AVERAGE([Sales])".to_string());
     sheet.commit(None).unwrap();
 
+    // A structured reference behaves like a range reference: non-numeric
+    // text cells are ignored rather than raising #VALUE!.
     assert_eq!(
         get_float_val(&sheet.get_result_data(&CellRef::new(0, 1))),
         Some(30.0)
@@ -952,6 +967,10 @@ fn test_structured_reference_aggregates_ignore_text_like_a_range() {
 
 #[test]
 fn test_structured_reference_this_row_used_directly_in_sum_ignores_text() {
+    // `[@Column]` evaluates to a single scalar cell value (like a plain
+    // `CellRef`), not a `List`. When passed directly as a function argument
+    // (e.g. `SUM([@Sales])`), a non-numeric text cell must be ignored just
+    // like `SUM(A1)` would ignore a text cell in A1 -- not raise #VALUE!.
     let mut sheet = Sheet::new(SheetInit {
         name: Some("table_1".to_string()),
         rows: 2,
@@ -998,6 +1017,7 @@ fn test_structured_reference_whole_table_data_section() {
         cols: 1,
         ..Default::default()
     });
+    // `[#Data]` with no column name spans every column in the table.
     sheet1.set_cell_src(0, 0, "=SUM(Sheet2[#Data])".to_string());
 
     let mut context = Context::default();
@@ -1027,6 +1047,7 @@ fn test_structured_reference_whole_row_no_column() {
     sheet.set_cell_src(0, 2, "2".to_string());
     sheet.commit(None).unwrap();
 
+    // `[@]` (this row, no column) spans every column of the current row.
     let (res, _) = sheet
         .eval_with_row("=SUM([@])", None, Some(0), None)
         .unwrap();
@@ -1074,6 +1095,8 @@ fn test_structured_reference_recomputes_on_column_change() {
         Some(30.0)
     );
 
+    // Changing a cell elsewhere in the referenced column should invalidate
+    // and recompute the dependent structured-reference formula.
     sheet.set_cell_src(1, 0, "50".to_string());
     sheet.commit(None).unwrap();
     assert_eq!(
@@ -1084,17 +1107,20 @@ fn test_structured_reference_recomputes_on_column_change() {
 
 #[test]
 fn test_excel_table_structured_reference_respects_table_row_bounds() {
+    // Column 0 has data both above and below the defined table's row range;
+    // a structured reference into the table must only see the table's own
+    // rows, unlike the legacy whole-sheet fallback which scans every row.
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 5,
         cols: 2,
         ..Default::default()
     });
-    sheet.set_cell_src(0, 0, "999".to_string());
-    sheet.set_cell_src(1, 0, "Amount".to_string());
+    sheet.set_cell_src(0, 0, "999".to_string()); // above the table
+    sheet.set_cell_src(1, 0, "Amount".to_string()); // header row
     sheet.set_cell_src(2, 0, "10".to_string());
     sheet.set_cell_src(3, 0, "20".to_string());
-    sheet.set_cell_src(4, 0, "888".to_string());
+    sheet.set_cell_src(4, 0, "888".to_string()); // below the table
     sheet.commit(None).unwrap();
 
     sheet
@@ -1140,6 +1166,7 @@ fn test_excel_table_totals_section_without_totals_row_is_none() {
     sheet.set_cell_src(2, 0, "20".to_string());
     sheet.commit(None).unwrap();
 
+    // has_totals_row = false: no totals row is reserved at all.
     sheet
         .add_table("Sales".to_string(), 0, 0, 2, 0, true, false)
         .unwrap();
@@ -1203,6 +1230,9 @@ fn test_excel_table_cross_sheet_reference() {
 
 #[test]
 fn test_excel_table_structured_reference_survives_commit() {
+    // `commit()` re-derives each formula's evaluated source text via
+    // `compile_formula`/`serialize_formula` on every run (see Sheet::commit).
+    // That recompilation step recognizes a real ExcelTable's columns.
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 4,
@@ -1234,6 +1264,9 @@ fn test_excel_table_structured_reference_survives_commit() {
         Some("Amount".to_string())
     );
 
+    // Committing again (as e.g. re-evaluating an already-saved workbook
+    // would) must keep working -- this is what actually exercises the
+    // repeated compile_formula/serialize_formula round-trip.
     sheet.mark_all_dirty();
     sheet.commit(None).unwrap();
     assert_eq!(
@@ -1244,6 +1277,13 @@ fn test_excel_table_structured_reference_survives_commit() {
 
 #[test]
 fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column() {
+    // A structured column reference must depend on only the table's own
+    // data rows (like a bounded range reference, e.g. A1:A100), not the
+    // whole sheet column. Verified against real Excel: placing a summary
+    // formula like `=SUM(Inventory[Price])` in the same column as the
+    // table but outside its rows is NOT circular there, and changing it
+    // doesn't need a whole-column dependency to invalidate correctly --
+    // only per-row dependencies on the table's own rows do.
     let mut sheet = Sheet::new(SheetInit {
         name: Some("Sheet1".to_string()),
         rows: 6,
@@ -1264,6 +1304,8 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
         .add_table("Inventory".to_string(), 0, 0, 3, 1, true, false)
         .unwrap();
 
+    // Row 5 (0-based): same "Price" column (1) as the table, but well
+    // outside the table's own rows (0..=3).
     sheet.set_cell_src(5, 1, "=SUM(Inventory[Price])".to_string());
     sheet.commit(None).unwrap();
 
@@ -1272,6 +1314,12 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
         Some(34.48)
     );
 
+    // No whole-column dependency should exist for column 1 -- only
+    // per-row dependencies on the table's own data rows (1..=3; row 0 is
+    // the header, excluded). If this ever regresses to a whole-column
+    // dependency, the summary formula would depend on its own cell (since
+    // it also lives in column 1) and false-positive as circular, which
+    // real Excel does not do.
     assert!(
         !sheet.dependencies.contains_key(&Dependency::LocalColumn(1)),
         "structured table reference must not register a whole-column dependency"
@@ -1285,6 +1333,8 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
         );
     }
 
+    // Changing an in-table cell must still correctly invalidate and
+    // recompute the summary formula.
     sheet.set_cell_src(1, 1, "100".to_string());
     sheet.commit(None).unwrap();
     assert_eq!(
@@ -1331,6 +1381,7 @@ fn test_multi_cell_circular_chain_terminates_without_hanging() {
         rows: 1,
         cols: 3,
     });
+    // A1 -> B1 -> C1 -> A1
     sheet.set_cell_src(0, 0, "=B1+1".to_string());
     sheet.set_cell_src(0, 1, "=C1+1".to_string());
     sheet.set_cell_src(0, 2, "=A1+1".to_string());
@@ -1367,6 +1418,8 @@ fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
     sheet.set_cell_src(1, 0, "2".to_string());
     sheet.set_cell_src(0, 1, "3.5".to_string());
 
+    // Column K (index 10) is squarely inside the C..P (2..15) span this
+    // formula itself references.
     sheet.set_cell_src(10, 10, "=C:P".to_string());
 
     let start = std::time::Instant::now();
@@ -1377,6 +1430,9 @@ fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
     );
     assert!(result.is_ok());
 
+    // The formula's own cell must not have grown into a deeply-nested
+    // List -- it should still just be the (blank-for-self, per the fix)
+    // range's List, one level deep.
     match sheet.get_result_data(&CellRef::new(10, 10)) {
         ResultData::List(items) => {
             assert!(
@@ -1411,6 +1467,7 @@ fn test_date_literal_becomes_a_serial_with_a_number_format() {
         Some(2026.0)
     );
 
+    // ... and displays back in the notation it was typed in.
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "6/22/26");
     assert_eq!(sheet.get_display_string(&CellRef::new(1, 0)), "22-Jun-2026");
     assert_eq!(
@@ -1453,7 +1510,9 @@ fn test_date_format_inheritance_is_limited_to_single_cell_formulas() {
 
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 1)), "6/23/26");
     assert_eq!(sheet.get_display_string(&CellRef::new(1, 1)), "2-Jul-2026");
+    // Two cell references: a day count, left as a number.
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 2)), "0");
+    // A range reference: also left alone.
     assert_eq!(sheet.get_display_string(&CellRef::new(1, 2)), "92390");
 }
 
@@ -1550,6 +1609,7 @@ fn test_extend_up_keeps_styles_aligned() {
     sheet.extend(Direction::Up);
     assert_columns_aligned(&sheet, "after extend(Up)");
 
+    // The styled row moved down one; the inserted row is unstyled.
     assert_eq!(sheet.get_cell_style(0, 0).and_then(|s| s.bold), None);
     assert_eq!(
         sheet.get_cell_style(1, 0).and_then(|s| s.bold),
@@ -1584,6 +1644,7 @@ fn test_delete_rows_keeps_styles_aligned() {
     );
     assert_columns_aligned(&sheet, "after delete of rows 0..=1");
 
+    // Two rows went, so the styled row 3 is now row 1.
     assert_eq!(
         sheet.get_cell_style(1, 0).and_then(|s| s.bold),
         Some(true),
@@ -1600,11 +1661,11 @@ fn test_insert_and_delete_row_keep_columns_aligned() {
     });
     sheet.insert_row(1);
     assert_columns_aligned(&sheet, "after insert_row(1)");
-    sheet.insert_row(99);
+    sheet.insert_row(99); // past the end: appends
     assert_columns_aligned(&sheet, "after appending insert_row");
     sheet.delete_row(0);
     assert_columns_aligned(&sheet, "after delete_row(0)");
-    sheet.delete_row(99);
+    sheet.delete_row(99); // past the end: ignored
     assert_columns_aligned(&sheet, "after out-of-range delete_row");
 }
 
@@ -1629,6 +1690,7 @@ fn test_setup_after_deserialization_restores_styles_length() {
         cols: 2,
         ..Default::default()
     });
+    // Simulate a payload that carried no styles at all.
     for col in &mut sheet.columns {
         col.styles = Vec::new().into();
         col.cell_types = Vec::new().into();
@@ -1669,7 +1731,7 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
             .and_then(|s| s.num_format.clone()),
         None
     );
-    assert!(matches!(sheet.get_result_data(&CellRef::new(0, 1)), ResultData::Float(f) if f == 2.0));
+    assert!(matches!(sheet.get_result_data(&CellRef::new(0, 1)), ResultData::Float(f) if f == 2.0)); // TYPE 2 = text
 
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(1, 0)),
@@ -1690,7 +1752,7 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
         ResultData::String(ref s) if s == "6/22/26"
     ));
     assert_eq!(sheet.get_cell_type(&CellRef::new(3, 0)), CellType::String);
-    assert_eq!(sheet.columns[0].src[3], "6/22/26");
+    assert_eq!(sheet.columns[0].src[3], "6/22/26"); // stripped apostrophe
     assert!(matches!(sheet.get_result_data(&CellRef::new(3, 1)), ResultData::Float(f) if f == 2.0));
 
     assert!(matches!(
@@ -1704,7 +1766,7 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
             .and_then(|s| s.num_format.clone())
             .is_some()
     );
-    assert!(matches!(sheet.get_result_data(&CellRef::new(4, 1)), ResultData::Float(f) if f == 1.0));
+    assert!(matches!(sheet.get_result_data(&CellRef::new(4, 1)), ResultData::Float(f) if f == 1.0)); // TYPE 1 = number
 }
 
 #[test]

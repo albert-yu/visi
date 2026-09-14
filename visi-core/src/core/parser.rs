@@ -6,13 +6,13 @@ pub enum Op {
     Sub,
     Mul,
     Div,
-    Exp,
-    Eq,
-    Ne,
-    Lt,
-    Gt,
-    Le,
-    Ge,
+    Exp, // ^
+    Eq,  // =
+    Ne,  // <> or !=
+    Lt,  // <
+    Gt,  // >
+    Le,  // <=
+    Ge,  // >=
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -346,7 +346,7 @@ fn parse_bracketed_term(chars: &[char], mut idx: usize) -> Option<(String, usize
     if idx >= chars.len() || chars[idx] != '[' {
         return None;
     }
-    idx += 1;
+    idx += 1; // consume '['
     while idx < chars.len() && chars[idx].is_whitespace() {
         idx += 1;
     }
@@ -396,7 +396,7 @@ fn parse_structured_specifier(
     if idx >= chars.len() || chars[idx] != '[' {
         return None;
     }
-    idx += 1;
+    idx += 1; // consume outer '['
 
     while idx < chars.len() && chars[idx].is_whitespace() {
         idx += 1;
@@ -723,6 +723,11 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
         let c = chars[i];
         if let Some(q) = in_quote {
             if c == '\\' {
+                // A `\` as the last character of an unterminated quoted
+                // string (e.g. `="\`) would otherwise push `i` one past
+                // `chars.len()`, so the final `chars[last_idx..i]` slice
+                // below panics -- clamp instead of blindly skipping two
+                // chars.
                 i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
@@ -835,6 +840,16 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                     is_this_row,
                     section,
                 } => {
+                    // A structured reference whose leading name matches a real
+                    // ExcelTable is left as plain, uncompiled text: its column
+                    // lookup is scoped to that table's own row/column range and
+                    // resolved dynamically by name at eval time (see
+                    // Sheet::evaluate_ast), not by a per-column id the way the
+                    // legacy whole-sheet-as-table StructuredReference below is.
+                    // `sheets[0]` is always the sheet this formula belongs to
+                    // (see get_all_sheets_for_compilation), matching the
+                    // fallback convention used for unqualified refs elsewhere
+                    // in this function.
                     let default_sheet_name = sheets.first().map(|s| s.name.clone());
                     let ref_name = sheet.clone().or(default_sheet_name);
                     let matches_real_table = ref_name.is_some_and(|name| {
@@ -1220,6 +1235,14 @@ pub fn rewrite_structured_table_reference(
         let c = chars[i];
         if let Some(q) = in_quote {
             if c == '\\' {
+                // Same unbounded-overshoot shape as compile_formula's
+                // identical loop above (a trailing `\` in an unterminated
+                // quoted string can push `i` one past chars.len()). This
+                // function's own final slice is the open-ended
+                // `chars[last_idx..]` rather than `chars[last_idx..i]`, so
+                // it doesn't actually panic today -- clamped anyway, so
+                // this loop can't become a live crash the same way if
+                // that ever changes.
                 i = (i + 2).min(chars.len());
                 continue;
             } else if c == q {
@@ -1258,6 +1281,10 @@ pub fn rewrite_structured_table_reference(
                         *section,
                     );
 
+                    // Only treat this as an actual edit if the re-rendered
+                    // text differs from what was already there -- e.g. a
+                    // column rename shouldn't mark every reference to this
+                    // table as "changed", only ones naming the old column.
                     let original: String = chars[i..next_i].iter().collect();
                     if rendered != original {
                         result.push_str(&chars[last_idx..i].iter().collect::<String>());
@@ -1386,6 +1413,9 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
             continue;
         }
 
+        // An Excel error written literally in a formula, as in `=#REF!` or
+        // `=1+#N/A`. Lexed before the operator table so `#DIV/0!`'s embedded
+        // `/` is not taken as division.
         if c == '#'
             && let Some(code) = match_error_code(&chars, i)
         {
@@ -1675,7 +1705,7 @@ impl<'a> Parser<'a> {
         while let Some(tok) = self.peek() {
             match tok {
                 EvalToken::OpenBracket => {
-                    self.next();
+                    self.next(); // consume `[`
                     let mut inner_tokens = Vec::new();
                     let mut depth = 1;
                     while let Some(t) = self.next() {
@@ -1769,7 +1799,7 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            self.next();
+            self.next(); // consume operator
 
             let rhs = self.parse_binary(prec + 1)?;
             lhs = Expr::BinaryOp {
@@ -2110,6 +2140,7 @@ mod tests {
             3,
             "A1:E5 must stay ident/colon/ident, got {tokens:?}"
         );
+        // A trailing `E` with no digits after it is not an exponent either.
         assert!(matches!(
             lex_eval("1E").unwrap().as_slice(),
             [EvalToken::Number(n), _] if *n == 1.0
@@ -2514,6 +2545,8 @@ mod tests {
         sheet1.columns[1].id = 2;
         let sheets = vec![sheet1];
 
+        // `[@]` (this row, no specific column) should parse with column = None,
+        // not a column literally named "".
         let f = compile_formula("=[@]", &sheets);
         match &f.parts[1] {
             FormulaPart::StructuredReference {
@@ -2579,6 +2612,7 @@ mod tests {
                     f.parts[1]
                 ),
             }
+            // Round-trips back to the same whole-section syntax.
             assert_eq!(serialize_formula(&f, &sheets), input);
         }
     }
@@ -2621,6 +2655,8 @@ mod tests {
 
     #[test]
     fn test_rewrite_structured_table_reference_ignores_other_tables_and_columns() {
+        // A different table's structured ref, and a plain (non-structured)
+        // cell ref, must be left byte-for-byte untouched.
         let rewritten = rewrite_structured_table_reference(
             "=SUM(Other[Amount]) + A1",
             "Sales",
@@ -2629,6 +2665,8 @@ mod tests {
         );
         assert_eq!(rewritten, None);
 
+        // Same table, but a column name that doesn't match the rename must
+        // also be left alone.
         let rewritten2 = rewrite_structured_table_reference(
             "=Sales[Quantity]",
             "Sales",
@@ -2640,6 +2678,8 @@ mod tests {
 
     #[test]
     fn test_rewrite_structured_table_reference_ignores_non_formula_cells() {
+        // A plain text cell that happens to contain matching-looking text
+        // is not a formula and must not be touched.
         let rewritten = rewrite_structured_table_reference(
             "Sales[Amount] is a great product",
             "Sales",
@@ -2651,24 +2691,36 @@ mod tests {
 
     #[test]
     fn test_compile_formula_never_panics_on_unterminated_quote_ending_in_backslash() {
+        // Unterminated quoted strings ending in a backslash (e.g. `="\"`)
+        // must not crash on malformed input.
         let _ = compile_formula("=\"\\", &[]);
         let _ = compile_formula("=\"unterminated\\", &[]);
     }
 
     #[test]
     fn test_rewrite_structured_table_reference_never_panics_on_unterminated_quote() {
+        // Defensive check that unterminated quotes ending in a backslash
+        // do not panic.
         let _ = rewrite_structured_table_reference("=Sales[Amount]&\"\\", "Sales", None, None);
     }
 
     #[test]
     fn an_error_value_lexes_as_a_literal_rather_than_as_punctuation() {
+        // Excel accepts an error written out in a formula, and a structural
+        // edit produces one (`=A3` less row 3 is `=#REF!`), so this has to
+        // lex or a broken reference would turn into a broken formula.
         assert_eq!(lex_eval("#REF!").unwrap(), vec![EvalToken::Error("#REF!")]);
+        // `#DIV/0!` has to beat the operator table to its `/`, and `#N/A` its
+        // own -- both are matched whole before any operator is considered.
         assert_eq!(
             lex_eval("#DIV/0!").unwrap(),
             vec![EvalToken::Error("#DIV/0!")]
         );
         assert_eq!(lex_eval("#N/A").unwrap(), vec![EvalToken::Error("#N/A")]);
+        // Recognition is case-insensitive but the token carries the canonical
+        // spelling, so `serialize_formula` cannot reintroduce a variant.
         assert_eq!(lex_eval("#ref!").unwrap(), vec![EvalToken::Error("#REF!")]);
+        // It composes like any other operand.
         assert_eq!(
             lex_eval("1+#REF!").unwrap(),
             vec![
@@ -2681,7 +2733,11 @@ mod tests {
 
     #[test]
     fn a_hash_that_starts_nothing_recognisable_is_left_alone() {
+        // `#NOPE` is not in the closed set, so the lexer must not swallow it
+        // as an error -- it stays whatever it was, which is an error at a
+        // later stage rather than a silently wrong value.
         assert!(match_error_code(&"#NOPE".chars().collect::<Vec<_>>(), 0).is_none());
+        // A prefix of a real code with nothing after it, likewise.
         assert!(match_error_code(&"#RE".chars().collect::<Vec<_>>(), 0).is_none());
     }
 

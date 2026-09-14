@@ -175,11 +175,18 @@ pub(crate) fn shift_span(
 ) -> Option<(usize, usize)> {
     debug_assert!(end < usize::MAX, "unbounded span reached shift_span");
     if insert {
+        // Each endpoint moves on its own, which is what makes an insert at
+        // the span's first index move the span and an insert inside it grow
+        // the span, with no special case for either.
         let new_start = if start >= at { start + count } else { start };
         let new_end = if end >= at { end + count } else { end };
         return Some((new_start, new_end));
     }
 
+    // Work in half-open `[start, end + 1)` so the two ends use the same rule:
+    // subtract however many deleted indices lie below each bound. An
+    // inclusive `end` cannot, since the index it names may be one of the
+    // deleted ones.
     let removed_below = |bound: usize| count.min(bound.saturating_sub(at));
     let new_start = start - removed_below(start);
     let new_end_exclusive = (end + 1) - removed_below(end + 1);
@@ -252,12 +259,17 @@ fn shift_part(part: &FormulaPart, edit: &GridEdit, deleted_col_ids: &[u64]) -> (
     match part {
         FormulaPart::Text(_) | FormulaPart::StructuredReference { .. } => unchanged(),
 
+        // A structured reference names its table and column, and a table
+        // tracks its own extent, so it needs no coordinate fix-up here --
+        // shifting the `ExcelTable` rectangle is what keeps it correct.
         FormulaPart::ColumnReference { sheet_id, col_id } => {
             if *sheet_id != edit.sheet_id {
                 unchanged()
             } else if deleted_col_ids.contains(col_id) {
                 broken()
             } else {
+                // Held by id, so an insert or a delete elsewhere on the sheet
+                // moves the column without changing what the reference means.
                 unchanged()
             }
         }
@@ -311,9 +323,17 @@ fn shift_part(part: &FormulaPart, edit: &GridEdit, deleted_col_ids: &[u64]) -> (
             if *sheet_id != edit.sheet_id || !edit.covers_columns(*start_col, *end_col) {
                 return unchanged();
             }
+            // `A:C` compiles to a range whose `end_row` is the unbounded
+            // sentinel (see `parser::serialize_formula`, which renders it back
+            // without any row part). It already covers every row, so a row
+            // edit leaves it alone -- and must, since `end_row + 1` would
+            // overflow. A *column* edit still moves its column bounds.
             if *end_row == usize::MAX && edit.axis == Axis::Row {
                 return unchanged();
             }
+            // `1:3` is the mirrored whole-row form: every column is already
+            // covered, so a column edit leaves it alone and a row edit moves
+            // or shrinks its row bounds.
             if *end_col == usize::MAX && edit.axis == Axis::Col {
                 return unchanged();
             }
@@ -348,6 +368,9 @@ mod tests {
     use super::*;
     use crate::core::RefType;
 
+    // Every case below names the Excel behaviour it encodes. `at` is 0-based,
+    // so "insert at 1" is Excel's "insert before row 2".
+
     #[test]
     fn an_insert_moves_what_is_at_or_below_it() {
         assert_eq!(shift_point(0, 1, 1, true), Some(0));
@@ -366,28 +389,39 @@ mod tests {
 
     #[test]
     fn inserting_at_a_spans_start_moves_it_and_inserting_inside_grows_it() {
+        // SUM(A2:A4) -> SUM(A3:A5): insert at the first row moves the span.
         assert_eq!(shift_span(1, 3, 1, 1, true), Some((2, 4)));
+        // SUM(A2:A4) -> SUM(A2:A5): insert inside grows it.
         assert_eq!(shift_span(1, 3, 2, 1, true), Some((1, 4)));
+        // Insert below the span leaves it alone.
         assert_eq!(shift_span(1, 3, 4, 1, true), Some((1, 3)));
     }
 
     #[test]
     fn deleting_inside_a_span_shrinks_it() {
+        // SUM(A2:A4) -> SUM(A2:A3).
         assert_eq!(shift_span(1, 3, 2, 1, false), Some((1, 2)));
+        // Deleting the span's first row keeps the start where it is.
         assert_eq!(shift_span(1, 3, 1, 1, false), Some((1, 2)));
+        // Deleting above the span slides the whole thing up.
         assert_eq!(shift_span(1, 3, 0, 1, false), Some((0, 2)));
+        // Deleting below it changes nothing.
         assert_eq!(shift_span(1, 3, 4, 1, false), Some((1, 3)));
     }
 
     #[test]
     fn a_span_deleted_in_full_is_gone() {
+        // A single-cell reference is a span of one.
         assert_eq!(shift_span(2, 2, 2, 1, false), None);
+        // A multi-row span entirely inside the deleted run.
         assert_eq!(shift_span(2, 4, 1, 5, false), None);
+        // Overlapping only part of it survives as that part.
         assert_eq!(shift_span(2, 4, 3, 5, false), Some((2, 2)));
     }
 
     #[test]
     fn a_dollar_sign_does_not_pin_a_reference_against_a_structural_edit() {
+        // $A$3 and A3 shift identically; the ref types ride along untouched.
         let formula = CompiledFormula {
             parts: vec![
                 FormulaPart::Text("=".to_string()),
@@ -429,6 +463,7 @@ mod tests {
 
     #[test]
     fn only_the_deleted_reference_becomes_ref_error() {
+        // `=A3+1` less row 3 is `=#REF!+1`, not a wholly destroyed formula.
         let formula = CompiledFormula {
             parts: vec![
                 FormulaPart::Text("=".to_string()),
@@ -461,14 +496,20 @@ mod tests {
                 col_id: 7,
             }],
         };
+        // Held by id, so inserting a column beside it changes nothing.
         assert!(shift_formula(&formula, &GridEdit::insert_col(1, 0), &[]).is_none());
+        // Deleting some other column likewise.
         assert!(shift_formula(&formula, &GridEdit::delete_col(1, 0), &[9]).is_none());
+        // Deleting the column it names is the one case that breaks it.
         let shifted = shift_formula(&formula, &GridEdit::delete_col(1, 0), &[7]).unwrap();
         assert_eq!(shifted.parts, vec![FormulaPart::Text("#REF!".to_string())]);
     }
 
     #[test]
     fn an_unbounded_row_range_survives_a_row_edit_and_still_tracks_columns() {
+        // `A:C` compiles to a range with `end_row: usize::MAX`. A row edit
+        // must leave it alone -- it already covers every row, and the
+        // arithmetic would overflow. A column edit still has to move it.
         let unbounded = |start_col, end_col| CompiledFormula {
             parts: vec![FormulaPart::RangeReference {
                 sheet_id: 1,
@@ -491,6 +532,9 @@ mod tests {
 
     #[test]
     fn an_unbounded_col_range_survives_a_col_edit_and_still_tracks_rows() {
+        // `1:3` compiles to a range with `end_col: usize::MAX`. A column edit
+        // must leave it alone -- it already covers every column. A row edit
+        // still has to move or resize it.
         let unbounded = |start_row, end_row| CompiledFormula {
             parts: vec![FormulaPart::RangeReference {
                 sheet_id: 1,
@@ -530,6 +574,10 @@ mod tests {
 
     #[test]
     fn a_band_edit_moves_only_references_wholly_inside_the_band() {
+        // `ListRows.Add` is an insert over the table's columns, not a row
+        // insert, so a formula beside the table must not move. Every case
+        // here is from `fuzz/band_insert_probe.py` with the band A:C and the
+        // insert at row 2 (0-based row 1, cols 0..=2).
         let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
         let cell = |row, col| CompiledFormula {
             parts: vec![FormulaPart::SheetReference {
@@ -540,20 +588,28 @@ mod tests {
                 col_ref_type: RefType::Relative,
             }],
         };
+        // `=A5` -> `=A6`: inside the band, below the insert.
         assert_eq!(
             shift_formula(&cell(4, 0), &edit, &[]).unwrap().parts,
             cell(5, 0).parts
         );
+        // `=A2` -> `=A3`: the insert point itself moves.
         assert_eq!(
             shift_formula(&cell(1, 0), &edit, &[]).unwrap().parts,
             cell(2, 0).parts
         );
+        // `=A1`: above the insert, untouched.
         assert!(shift_formula(&cell(0, 0), &edit, &[]).is_none());
+        // `=E5`: outside the band, untouched even though it is below.
         assert!(shift_formula(&cell(4, 4), &edit, &[]).is_none());
     }
 
     #[test]
     fn a_range_straddling_the_bands_edge_does_not_move_at_all() {
+        // The case with no obvious answer, and the reason `covers_columns`
+        // tests the *whole* span: `=SUM(A5:E5)` cannot both shift (its A part
+        // is inside the band) and not shift (its E part is not), and Excel
+        // resolves that by leaving it alone. Measured.
         let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
         let range = |start_col, end_col| CompiledFormula {
             parts: vec![FormulaPart::RangeReference {
@@ -568,7 +624,9 @@ mod tests {
                 end_col_ref_type: RefType::Relative,
             }],
         };
+        // A5:E6 straddles the edge -- unchanged.
         assert!(shift_formula(&range(0, 4), &edit, &[]).is_none());
+        // A5:C6 is wholly inside -- moves.
         let moved = shift_formula(&range(0, 2), &edit, &[]).unwrap();
         let FormulaPart::RangeReference {
             start_row, end_row, ..
@@ -577,11 +635,14 @@ mod tests {
             panic!("expected a range");
         };
         assert_eq!((start_row, end_row), (5, 6));
+        // E5:F6 is wholly outside -- unchanged.
         assert!(shift_formula(&range(4, 5), &edit, &[]).is_none());
     }
 
     #[test]
     fn a_band_edit_grows_a_range_that_spans_its_insert_point() {
+        // Inside the band the ordinary rules apply unchanged, which is the
+        // point of reusing `shift_span`: `=SUM(A1:A6)` becomes `=SUM(A1:A7)`.
         let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
         let formula = CompiledFormula {
             parts: vec![FormulaPart::RangeReference {
@@ -608,6 +669,8 @@ mod tests {
 
     #[test]
     fn a_whole_column_reference_ignores_a_band_edit() {
+        // Measured: `=SUM(A:A)` is unchanged by an insert inside A:C, since
+        // it already spans every row.
         let edit = GridEdit::band_rows(1, 1, 1, 0, 2, true);
         let whole = CompiledFormula {
             parts: vec![FormulaPart::ColumnReference {

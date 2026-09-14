@@ -17,6 +17,8 @@ use visi_engine::core::ResultData;
 /// normalizes a `t="e"` cell to the upper-cased code string, i.e. the oracle
 /// has always compared errors and text by value. `CellError` adds information
 /// on top of that; it does not change the comparison.
+// `from_py_object` is opted into deliberately: `__eq__` extracts a `CellError`
+// from its argument to compare two of them.
 #[pyclass(module = "visi_core", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct CellError {
@@ -40,6 +42,9 @@ impl CellError {
         format!("CellError({:?})", self.code)
     }
 
+    // Hand-written rather than `#[pyclass(eq)]`: comparing equal to a bare
+    // `str` is the point, and the derived version only compares against its
+    // own type.
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
         if let Ok(s) = other.extract::<String>() {
             return self.code == s;
@@ -50,6 +55,9 @@ impl CellError {
             .unwrap_or(false)
     }
 
+    // Must agree with `__eq__`: a CellError and its code string compare equal,
+    // so they have to hash equal too, or dict/set membership disagrees with
+    // `==`.
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
         self.code.as_str().into_pyobject(py)?.hash()
     }

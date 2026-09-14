@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Cell formatting style attributes (font color, background color, font styles, font family, font size).
+// No `Eq`: `font_size` is an `f64`, matching Excel's `Double`-typed
+// `Font.Size`. `PartialEq` is what the codebase actually uses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CellStyle {
     /// Font color as Hex (e.g. "#FF0000" or "FF0000") or standard color name ("red", "blue", etc.)

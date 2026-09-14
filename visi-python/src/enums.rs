@@ -78,6 +78,9 @@ pub fn parse_vba_module_kind(s: &str) -> PyResult<VbaModuleKind> {
 mod tests {
     use super::*;
 
+    // These lists are the fuzz harness's own (fuzz_chart.py:75,
+    // fuzz_pivot.py:93). If a spelling here stops matching, the bindings and
+    // the CLI diverge for inputs the fuzzer generates every run.
     #[test]
     fn accepts_every_spelling_the_fuzz_harness_emits() {
         for s in ["column", "bar", "line", "pie", "scatter", "area"] {
@@ -115,8 +118,11 @@ mod tests {
         assert!(parse_chart_type("doughnut").is_err());
         assert!(parse_cell_type("unknown").is_err());
         assert!(parse_pivot_area("page").is_err());
+        // Excel's own name for it, but not the spelling the CLI takes.
         assert!(parse_pivot_agg("counta").is_err());
+        // Underscores are not an accepted alias -- the CLI renders kebab-case.
         assert!(parse_pivot_agg("count_numbers").is_err());
+        // The file extensions, not the kinds -- the CLI takes neither.
         assert!(parse_vba_module_kind("bas").is_err());
         assert!(parse_vba_module_kind("cls").is_err());
     }
@@ -162,6 +168,8 @@ mod tests {
         }
     }
 
+    // A guard on exhaustiveness: if `ChartType` gains a variant, this match
+    // stops compiling, which is the signal to add a spelling above.
     #[test]
     fn every_chart_type_has_a_spelling() {
         for ct in [

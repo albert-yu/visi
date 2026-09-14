@@ -198,6 +198,10 @@ fn collect_decl_stmt(stmt: &Stmt, syms: &mut HashMap<String, Kind>) {
         Stmt::Declare { name, .. } => {
             syms.insert(norm(name), Kind::Callable);
         }
+        // A `Type`/`Enum` name and an enum's members are all `Opaque`: they
+        // are names that exist, which is all the undeclared-name rule needs
+        // to know, and none of them is a plain scalar this pass would
+        // reject a call on.
         Stmt::TypeDef { name, .. } => {
             syms.insert(norm(name), Kind::Opaque);
         }
@@ -226,6 +230,8 @@ fn check_procedure(
     scope: &Scope<'_>,
 ) -> Result<(), ParseError> {
     let mut locals = HashMap::new();
+    // A `Function`'s own name is assignable inside it (`Harness = "OK"`) and
+    // is also a legitimate recursive call target.
     locals.insert(norm(&proc.name), Kind::Callable);
     for param in &proc.params {
         locals.insert(
@@ -276,6 +282,13 @@ fn collect_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
         match stmt {
             Stmt::Dim { vars, .. } => insert_var_decls(vars, locals),
             Stmt::Const { vars, .. } => insert_var_decls(vars, locals),
+            // A plain `ReDim arr(1 To 5)` **declares** `arr` when nothing
+            // else did -- measured, it compiles with no `Dim` in sight.
+            // `ReDim Preserve` does not: it needs an array already there to
+            // preserve, and Excel rejects it outright on an unknown name
+            // (`fuzz/vba_compile_probe.py --only redim`). So only the
+            // non-`Preserve` form contributes a symbol; the `Preserve` form
+            // is *checked* instead, in `check_stmt`.
             Stmt::ReDim {
                 preserve: false,
                 vars,
@@ -339,6 +352,10 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
                 set,
                 ..
             } => {
+                // A plain assignment makes a plain scalar; `Set` makes an
+                // object reference, which may have a default member and so
+                // is `Opaque` -- it exists, but nothing here can say it is
+                // uncallable.
                 let kind = if *set {
                     Kind::Opaque
                 } else {
@@ -352,6 +369,8 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
                 }
                 collect_implicit_locals(body, locals);
             }
+            // `For Each c In rng` introduces `c`. It is whatever the
+            // collection yields -- very often an object -- so `Opaque`.
             Stmt::ForEach { var, body, .. } => {
                 if let Expr::Ident { name, .. } = var {
                     locals.entry(norm(name)).or_insert(Kind::Opaque);
@@ -452,12 +471,17 @@ fn walk_declarations(
                     }
                 }
             }
+            // `Set x = ...` counts as much as `x = ...` does -- measured,
+            // both create the variable when nothing declared it.
             Stmt::Assign {
                 target: Expr::Ident { name, .. },
                 ..
             } => {
                 in_scope.insert(norm(name));
             }
+            // A plain `ReDim arr(...)` declares `arr`, but is not itself a
+            // redeclaration when `arr` is already there -- see the pair of
+            // measured `ReDim`/`Dim` orderings above.
             Stmt::ReDim { vars, .. } => {
                 for v in vars {
                     in_scope.insert(norm(&v.name));
@@ -485,6 +509,10 @@ fn walk_declarations(
                     walk_declarations(b, in_scope)?;
                 }
             }
+            // A loop variable enters scope at the `For`, before its body:
+            // `For x = 1 To 3 ... Next x` then `Dim x` is the error, so the
+            // insert has to happen on the way in. `For obj.i` parses too,
+            // and names nothing local, hence the `Ident` match.
             Stmt::For { var, body, .. } | Stmt::ForEach { var, body, .. } => {
                 if let Expr::Ident { name, .. } = var {
                     in_scope.insert(norm(name));
@@ -509,6 +537,16 @@ fn check_block(body: &[Stmt], ctx: &Ctx<'_>) -> Result<(), ParseError> {
 
 fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     match stmt {
+        // A bare identifier standing as a whole statement is still a call --
+        // VBA reads `x` as "call x, no arguments" -- so it resolves by the
+        // same rule as `x 5` does. Measured: `x` alone is rejected whether
+        // `x` is undeclared, `Dim`'d as a Long, or created by assignment,
+        // while a declared Sub (`Helper`) and a built-in (`Beep`) are
+        // accepted (`fuzz/vba_compile_probe.py --only bare:`).
+        //
+        // Statement position only. A bare `x` *inside* an expression is an
+        // ordinary implicit-Variant read and stays unchecked -- also
+        // measured, `x = a + b` with nothing declared compiles.
         Stmt::Call {
             expr: Expr::Ident { name, pos },
             ..
@@ -518,6 +556,9 @@ fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
             check_expr(target, ctx)?;
             check_expr(value, ctx)
         }
+        // `ReDim Preserve arr(...)` needs `arr` to already exist -- measured;
+        // the plain form declares it instead (see `collect_locals`). The
+        // bounds are ordinary expressions either way.
         Stmt::ReDim { preserve, vars, .. } => {
             for v in vars {
                 if *preserve && ctx.scope.complete_project {
@@ -687,11 +728,15 @@ fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
 fn check_call_name(name: &str, pos: super::lexer::Pos, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     let lower = norm(name);
     match ctx.kind_of(&lower) {
+        // Declared, and definitely not callable or indexable.
         Some(Kind::PlainScalar) => Err(ParseError {
             message: format!("Sub or Function not defined: {name}"),
             pos,
         }),
         Some(_) => Ok(()),
+        // Nowhere in this module. Only a scope that can see the whole
+        // project may conclude anything from that -- otherwise the name may
+        // perfectly well live in a module this pass was not given.
         None if ctx.scope.complete_project && !ctx.scope.knows(&lower) => Err(ParseError {
             message: format!("Sub or Function not defined: {name}"),
             pos,
@@ -734,6 +779,7 @@ mod tests {
         check_module(&module, &scope).map_err(|e| e.message)
     }
 
+    // `Dim x : x y` -- a locally declared plain-scalar local used as a call target.
     #[test]
     fn rejects_local_plain_scalar_as_call_target() {
         let err = check("Sub Test()\n    Dim x As Long\n    x 5\nEnd Sub\n").unwrap_err();
@@ -749,6 +795,8 @@ mod tests {
 
     #[test]
     fn rejects_untyped_dim_as_call_target() {
+        // An untyped `Dim` defaults to `Variant`, and Variant is still
+        // rejected here -- measured directly, not a guess.
         let err = check("Sub Test()\n    Dim x\n    x 5\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Sub or Function not defined: x"), "{err}");
     }
@@ -765,6 +813,8 @@ mod tests {
         assert!(check(src).is_ok());
     }
 
+    // `MsgBox "hi"` -- a real VBA intrinsic this module never declares. It
+    // resolves through the built-in registry, not the module's own text.
     #[test]
     fn accepts_call_to_a_builtin_name() {
         assert!(check("Sub Test()\n    MsgBox \"hi\"\nEnd Sub\n").is_ok());
@@ -780,12 +830,17 @@ mod tests {
 
     #[test]
     fn accepts_object_shaped_local_as_call_target() {
+        // Could have a default member -- this pass cannot resolve
+        // user-defined class shapes, so it stays silent rather than guess.
         let src = "Sub Test()\n    Dim obj As Collection\n    obj 3\nEnd Sub\n";
         assert!(check(src).is_ok());
     }
 
     #[test]
     fn rejects_a_bare_identifier_statement_that_is_not_callable() {
+        // This shape was left unchecked at first as unmeasured; a later fuzz
+        // run found Excel rejecting it, and the probe then settled every
+        // variant. All three of these are compile errors in real Excel.
         for src in [
             "Sub Test()\n    x\nEnd Sub\n",
             "Sub Test()\n    Dim x As Long\n    x\nEnd Sub\n",
@@ -803,18 +858,27 @@ mod tests {
 
     #[test]
     fn a_type_suffix_does_not_hide_a_name() {
+        // The lexer folds `$` into the identifier's spelling, so a lookup
+        // that does not strip it fails to find `Trim`. That rejected every
+        // `$` string intrinsic there is; found with hand-written VBA, since
+        // the generated fuzz grammar never emits one.
         assert!(check("Sub Test()\n    x = Trim$(\" a \")\nEnd Sub\n").is_ok());
         assert!(check("Sub Test()\n    x = Left$(\"ab\", 1)\nEnd Sub\n").is_ok());
+        // It has to be stripped on the *declaring* side too, or a name
+        // written one way and used the other stops matching.
         assert!(check("Sub Test()\n    Dim s$\n    s = Trim(s$)\nEnd Sub\n").is_ok());
         let src =
             "Function F$(a%)\n    F = CStr(a)\nEnd Function\n\nSub T()\n    x = F(1)\nEnd Sub\n";
         assert!(check(src).is_ok());
+        // ...and a suffixed plain scalar is still not callable.
         let err = check("Sub Test()\n    Dim s$\n    s$ 5\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Sub or Function not defined"), "{err}");
     }
 
     #[test]
     fn rejects_a_duplicate_declaration() {
+        // All measured. The last is the shape every remaining false negative
+        // on fuzz seed 91177 turned out to be.
         for src in [
             "Sub T()\n    Dim x As Long\n    Dim x As Long\nEnd Sub\n",
             "Sub T()\n    x = 1\n    Dim x As Long\nEnd Sub\n",
@@ -827,6 +891,8 @@ mod tests {
 
     #[test]
     fn every_route_into_scope_collides_with_a_later_dim() {
+        // All five measured against Excel, which rejects each
+        // (`fuzz/vba_compile_probe.py --only dup:`).
         for src in [
             "Sub T(ByVal x As Long)\n    Dim x As Long\nEnd Sub\n",
             "Sub T()\n    For x = 1 To 3\n        y = x\n    Next x\n    Dim x As Long\nEnd Sub\n",
@@ -841,11 +907,17 @@ mod tests {
 
     #[test]
     fn a_route_into_scope_is_not_itself_a_declaration_error() {
+        // The controls that make the test above readable: each route
+        // *without* the trailing `Dim` compiles in Excel, so a rejection
+        // there is the duplicate and not the route statement itself.
         for src in [
             "Sub T(ByVal x As Long)\n    y = x\nEnd Sub\n",
             "Sub T()\n    For x = 1 To 3\n        y = x\n    Next x\nEnd Sub\n",
             "Sub T()\n    For Each x In rng\n        y = 1\n    Next\nEnd Sub\n",
             "Sub T()\n    Set x = New Collection\nEnd Sub\n",
+            // A `ReDim` of a name already in scope is the ordinary resize,
+            // not a redeclaration -- measured accept, and the reason the
+            // routes only add to the set rather than reporting.
             "Sub T()\n    Dim arr()\n    ReDim arr(1 To 5)\nEnd Sub\n",
         ] {
             assert!(check(src).is_ok(), "should have been accepted: {src}");
@@ -854,7 +926,11 @@ mod tests {
 
     #[test]
     fn declaring_before_assigning_is_ordinary_code() {
+        // The other order is what every well-written procedure does, and it
+        // must stay legal -- measured accept. This is why the pass has to be
+        // order-sensitive rather than just counting names.
         assert!(check("Sub T()\n    Dim x As Long\n    x = 1\nEnd Sub\n").is_ok());
+        // Nested bodies are walked in source order too.
         let src =
             "Sub T()\n    Dim x As Long\n    If True Then\n        x = 1\n    End If\nEnd Sub\n";
         assert!(check(src).is_ok());
@@ -862,22 +938,31 @@ mod tests {
 
     #[test]
     fn a_duplicate_is_caught_across_block_boundaries() {
+        // VBA has no block scope, so two `Dim`s in opposite branches of one
+        // `If` still collide.
         let src = "Sub T()\n    If True Then\n        Dim x As Long\n    Else\n        Dim x As Long\n    End If\nEnd Sub\n";
         assert!(check(src).unwrap_err().contains("Duplicate declaration"));
+        // ...and an assignment buried in a loop body counts as creating the
+        // name, which is fuzz iter_11's shape.
         let src = "Sub T()\n    Do While x < 10\n        x = x + 1\n    Loop\n    Dim x As Long\nEnd Sub\n";
         assert!(check(src).unwrap_err().contains("Duplicate declaration"));
     }
 
     #[test]
     fn a_module_level_name_is_not_a_duplicate_of_a_local() {
+        // Procedure scope shadows module scope in VBA; only same-scope
+        // redeclaration is the error.
         let src = "Dim x As Long\n\nSub T()\n    Dim x As Long\nEnd Sub\n";
         assert!(check(src).is_ok());
+        // And two procedures may each declare the same local name.
         let src = "Sub A()\n    Dim x As Long\nEnd Sub\n\nSub B()\n    Dim x As Long\nEnd Sub\n";
         assert!(check(src).is_ok());
     }
 
     #[test]
     fn a_bare_name_inside_an_expression_stays_unchecked() {
+        // The counterpart to the rule above: only *statement* position is a
+        // call. Measured -- `x = a + b` with nothing declared compiles.
         assert!(check("Sub Test()\n    x = a + b\nEnd Sub\n").is_ok());
     }
 
@@ -889,6 +974,8 @@ mod tests {
 
     #[test]
     fn rejects_local_shadowing_a_module_procedure_name() {
+        // A local `Dim` with the same name as a real procedure shadows it,
+        // and using the local as a call target is still an error.
         let src = "Sub Foo()\nEnd Sub\n\nSub Test()\n    Dim Bar As Long\n    Bar 5\nEnd Sub\n";
         let err = check(src).unwrap_err();
         assert!(err.contains("Sub or Function not defined: Bar"), "{err}");
@@ -896,6 +983,10 @@ mod tests {
 
     #[test]
     fn rejects_a_name_implicitly_declared_by_plain_assignment() {
+        // No `Dim` anywhere -- `x` becomes a plain-Variant local purely by
+        // being assigned to, which is how VBA creates one when `Option
+        // Explicit` is off. Minimized from
+        // fuzz_results/failures/vba_parse_iter_12/source.bas.
         let src = "Sub Test()\n    x = 1\n    x 5\nEnd Sub\n";
         let err = check(src).unwrap_err();
         assert!(err.contains("Sub or Function not defined: x"), "{err}");
@@ -903,6 +994,9 @@ mod tests {
 
     #[test]
     fn rejects_a_name_implicitly_declared_before_its_first_assignment() {
+        // Same rule, but the assignment establishing `x` as a plain local
+        // comes *after* the offending call textually -- VBA scoping is not
+        // sensitive to statement order within a procedure.
         let src = "Sub Test()\n    x 5\n    x = 1\nEnd Sub\n";
         let err = check(src).unwrap_err();
         assert!(err.contains("Sub or Function not defined: x"), "{err}");
@@ -917,6 +1011,9 @@ mod tests {
 
     #[test]
     fn rejects_an_undeclared_name_used_with_call_syntax() {
+        // `arr` appears nowhere and is no built-in. Excel refuses to compile
+        // this; measured with `fuzz/vba_compile_probe.py --only undeclared`.
+        // Minimized from vba_parse_iter_50 and iter_22 respectively.
         let err = check("Sub Test()\n    arr 5\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Sub or Function not defined: arr"), "{err}");
         let err = check("Sub Test()\n    d #1/1/2000#\nEnd Sub\n").unwrap_err();
@@ -925,12 +1022,18 @@ mod tests {
 
     #[test]
     fn rejects_an_undeclared_call_in_expression_position() {
+        // Not a statement -- the call is inside the assigned value.
+        // Minimized from vba_parse_iter_40 / 64 / 93.
         let err = check("Sub Test()\n    x = arr(1, 2)\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Sub or Function not defined: arr"), "{err}");
     }
 
     #[test]
     fn name_resolution_skips_statically_false_if_bodies() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 964686, iter 16:
+        // Excel compiles this when the unresolved indexed name lives only in
+        // an `If False` branch, while true syntax errors in the branch are
+        // still caught by the parser before this resolution pass runs.
         assert!(
             check("Sub Test()\n    If False Then\n        x = arr(1, 2)\n    End If\nEnd Sub\n")
                 .is_ok()
@@ -939,8 +1042,14 @@ mod tests {
 
     #[test]
     fn a_partial_scope_never_rejects_an_unresolvable_name() {
+        // The same source, checked as one module of a project whose others
+        // were not supplied: `arr` may live in a sibling, so it must be
+        // accepted. This is the false-positive guard the whole design turns
+        // on.
         assert!(check_partial("Sub Test()\n    arr 5\nEnd Sub\n").is_ok());
         assert!(check_partial("Sub Test()\n    x = arr(1, 2)\nEnd Sub\n").is_ok());
+        // ...but a name that *is* declared here, as a plain scalar, is still
+        // rejected -- a sibling cannot make a local Long callable.
         let err = check_partial("Sub Test()\n    Dim x As Long\n    x 5\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Sub or Function not defined: x"), "{err}");
     }
@@ -953,6 +1062,10 @@ mod tests {
 
     #[test]
     fn rejects_redim_preserve_on_an_undeclared_name() {
+        // Measured: `ReDim Preserve arr(1 To 5)` with no `Dim` is a compile
+        // error, while the plain form below declares the array and is fine
+        // (`fuzz/vba_compile_probe.py --only redim`). Minimized from
+        // vba_parse_iter_14 and iter_57.
         let err = check("Sub Test()\n    ReDim Preserve arr(1 To 5)\nEnd Sub\n").unwrap_err();
         assert!(err.contains("Variable not defined: arr"), "{err}");
     }
@@ -960,14 +1073,18 @@ mod tests {
     #[test]
     fn accepts_plain_redim_which_declares_the_array() {
         assert!(check("Sub Test()\n    ReDim arr(1 To 5)\nEnd Sub\n").is_ok());
+        // ...and having declared it, a later `Preserve` is fine.
         let src = "Sub Test()\n    ReDim arr(1 To 5)\n    ReDim Preserve arr(1 To 9)\nEnd Sub\n";
         assert!(check(src).is_ok());
+        // As is `Preserve` after an explicit `Dim`.
         let src = "Sub Test()\n    Dim arr()\n    ReDim Preserve arr(1 To 5)\nEnd Sub\n";
         assert!(check(src).is_ok());
     }
 
     #[test]
     fn accepts_an_undeclared_bare_name_with_no_call_syntax() {
+        // Measured accept: with `Option Explicit` off these are implicit
+        // Variants. Only *call syntax* forces resolution.
         assert!(check("Sub Test()\n    x = a + b\nEnd Sub\n").is_ok());
         let src = "Sub Test()\n    For Each c In rng\n        x = 1\n    Next\nEnd Sub\n";
         assert!(check(src).is_ok());
@@ -975,12 +1092,17 @@ mod tests {
 
     #[test]
     fn accepts_a_set_assignment_target_as_a_call_target() {
+        // `Set` binds an object reference; unlike a plain assignment this
+        // does not prove the name is a non-callable scalar, so it must not
+        // be treated the same as an implicit `Dim`.
         let src = "Sub Test()\n    Set x = Nothing\n    x 5\nEnd Sub\n";
         assert!(check(src).is_ok());
     }
 
     #[test]
     fn accepts_a_for_each_element_variable_as_a_call_target() {
+        // Could legitimately be an object with a default member -- left
+        // alone for the same reason a `Set` target is.
         let src = "Sub Test()\n    For Each c In rng\n        c 5\n    Next c\nEnd Sub\n";
         assert!(check(src).is_ok());
     }

@@ -1,3 +1,9 @@
+// FILTERXML support: a minimal DOM built with quick_xml plus a hand-rolled
+// evaluator for the small XPath subset Excel's own FILTERXML documents
+// (absolute child/descendant paths, `*`, `@attr`, `text()`, `[n]` and
+// `[@attr='val']` predicates). Full XPath 1.0 is out of scope -- Excel
+// itself rejects anything outside this subset.
+
 #[derive(Debug, Clone)]
 struct XmlNode {
     name: String,
@@ -194,7 +200,7 @@ fn parse_path(path: &str) -> Result<Vec<Step>, String> {
         if chars.peek().is_none() {
             break;
         }
-        chars.next();
+        chars.next(); // consume '/'
         axis = if chars.peek() == Some(&'/') {
             chars.next();
             Axis::Descendant
@@ -247,6 +253,8 @@ fn step_nodes<'a>(input: &[&'a XmlNode], step: &Step, is_first: bool) -> Vec<&'a
                 .filter(|n| matches_test(n, &step.test))
                 .copied()
                 .collect(),
+            // A leading `//` searches the whole document, including the
+            // root element itself, not just its children.
             Axis::Descendant => {
                 let mut group = Vec::new();
                 for node in input {
@@ -288,6 +296,8 @@ fn evaluate(root: &XmlNode, xpath: &str) -> Result<String, String> {
     let mut nodes: Vec<&XmlNode> = vec![root];
     for (i, step) in steps[..steps.len() - 1].iter().enumerate() {
         if matches!(step.test, Test::Attr(_) | Test::Text) {
+            // Only supported as the final step, matching the common
+            // FILTERXML usage of `@attr`/`text()` at the end of a path.
             return Err("#VALUE!".to_string());
         }
         nodes = step_nodes(&nodes, step, i == 0);

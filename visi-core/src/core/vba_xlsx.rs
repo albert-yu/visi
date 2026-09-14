@@ -18,6 +18,10 @@ use std::io::{Read, Write};
 /// `vbaProject.bin` part with the workbook as its VBA project.
 const REL_VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
+// ---------------------------------------------------------------------------
+// Import
+// ---------------------------------------------------------------------------
+
 /// Reads `xl/vbaProject.bin` out of an xlsx zip, if present, and reconstructs
 /// a `VbaProject`. Returns `Ok(None)` if the workbook has no VBA project --
 /// never an error, matching how a plain `.xlsx` is the overwhelmingly common
@@ -81,6 +85,12 @@ pub fn parse_vba_project_from_cfb_bytes(
         let kind = if spec.name == "ThisWorkbook" || document_module_names.contains(&spec.name) {
             VbaModuleKind::Document
         } else if spec.is_document_shaped {
+            // MODULETYPE 0x0022 without a matching PROJECT-stream
+            // "Document=" line: per spec this bit also covers class
+            // modules. Class modules were never validated end-to-end
+            // against real Excel by this feature's proof-of-concept --
+            // best-effort import so an existing file isn't corrupted by a
+            // no-op round-trip, not a fully-supported module kind.
             VbaModuleKind::Class
         } else {
             VbaModuleKind::Standard
@@ -273,6 +283,7 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
     }
     let count = u16::from_le_bytes([data[0], data[1]]) as usize;
 
+    // PROJECTCOOKIE (0x0013) follows unconditionally.
     let (id, _, next) = read_dir_record(dir, pos)?;
     if id != 0x0013 {
         return Err("expected PROJECTCOOKIE record after PROJECTMODULES".to_string());
@@ -287,7 +298,7 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
     while pos + 6 <= dir.len() {
         let (id, data, next) = read_dir_record(dir, pos)?;
         match id {
-            0x0010 => break,
+            0x0010 => break, // PROJECTTERMINATOR
             0x0019 => cur_name = Some(String::from_utf8_lossy(data).into_owned()),
             0x0031 => {
                 if data.len() >= 4 {
@@ -303,6 +314,7 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
                 }
             }
             0x002B => {
+                // MODULETERMINATOR: flush the accumulated module.
                 let name = cur_name
                     .take()
                     .ok_or("MODULETERMINATOR reached with no MODULENAME seen")?;
@@ -320,6 +332,10 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
     Ok(specs)
 }
 
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
 /// Splices a rebuilt `vbaProject.bin` into an already-produced xlsx zip
 /// (patching `[Content_Types].xml`/`workbook.xml.rels`/`workbook.xml` as
 /// needed), or returns `xlsx_bytes` unchanged if `vba` is `None`.
@@ -335,6 +351,13 @@ pub fn export_vba_project(
 
     let new_vba_bin = build_vba_project_bin(project)?;
 
+    // `xlsx_bytes` is always a buffer `xlsx::export_xlsx_data` just built
+    // fresh via rust_xlsxwriter (optionally patched by
+    // `pivot_xlsx::inject_pivot_tables`) -- neither of those knows anything
+    // about VBA, so it can never already contain `xl/vbaProject.bin`, a
+    // `<workbookPr codeName>`, or a vbaProject content-type/relationship
+    // entry. Every part added below is therefore unconditional, not a
+    // donor-vs-fresh distinction.
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&xlsx_bytes[..]))
         .map_err(|e| format!("Failed to open generated xlsx zip for VBA export: {}", e))?;
     let workbook_xml =
@@ -455,6 +478,10 @@ fn rewrite_zip_with_vba_part(
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
 
+    // `original` is the same fresh, VBA-agnostic buffer `export_vba_project`
+    // read the three XML parts out of -- it never contains
+    // `xl/vbaProject.bin` (see the comment there), so that part is always
+    // appended below rather than found and overwritten during this loop.
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = file.name().to_string();
@@ -514,7 +541,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         0x000F,
         &(project.modules.len() as u16).to_le_bytes(),
     );
-    write_record(&mut new_dir, 0x0013, &0xFFFFu16.to_le_bytes());
+    write_record(&mut new_dir, 0x0013, &0xFFFFu16.to_le_bytes()); // PROJECTCOOKIE (value doesn't matter -- verified against real Excel)
     for module in &project.modules {
         write_record(&mut new_dir, 0x0019, module.name.as_bytes());
         write_record(&mut new_dir, 0x0047, &utf16le(&module.name));
@@ -528,7 +555,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
             &(module.prefix_bytes.len() as u32).to_le_bytes(),
         );
         write_record(&mut new_dir, 0x001E, &0u32.to_le_bytes());
-        write_record(&mut new_dir, 0x002C, &module.module_cookie.to_le_bytes());
+        write_record(&mut new_dir, 0x002C, &module.module_cookie.to_le_bytes()); // MODULECOOKIE
         let module_type_id = match module.kind {
             VbaModuleKind::Standard => 0x0021,
             VbaModuleKind::Document | VbaModuleKind::Class => 0x0022,
@@ -536,7 +563,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         write_record(&mut new_dir, module_type_id, &[]);
         write_record(&mut new_dir, 0x002B, &[]);
     }
-    write_record(&mut new_dir, 0x0010, &[]);
+    write_record(&mut new_dir, 0x0010, &[]); // PROJECTTERMINATOR
     let new_dir_compressed = ovba::compress(&new_dir)?;
 
     let new_project_text = build_project_stream(project);
@@ -551,6 +578,10 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
         .and_then(|mut s| s.write_all(&new_dir_compressed))
         .map_err(|e| format!("Failed to write dir stream: {}", e))?;
     for module in &project.modules {
+        // Reuse the compressed bytes read back on import when this module's
+        // source hasn't changed since (see `VbaModule::cached_compressed_source`)
+        // instead of paying LZ77 compression again for every module on
+        // every save, most of which a given CRUD operation never touches.
         let compressed_source = match &module.cached_compressed_source {
             Some(cached) => cached.clone(),
             None => ovba::compress(module.source.as_bytes())?,

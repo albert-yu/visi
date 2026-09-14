@@ -105,7 +105,10 @@ impl Parser {
         }
     }
 
+    // ---- token access ---------------------------------------------------
+
     fn peek(&self) -> &Token {
+        // `lex` always terminates the stream with Eof, so this never wraps.
         self.toks.get(self.i).unwrap_or_else(|| self.eof_token())
     }
 
@@ -241,6 +244,8 @@ impl Parser {
         }
     }
 
+    // ---- separators -----------------------------------------------------
+
     fn skip_newlines(&mut self) {
         while matches!(self.peek().kind, TokenKind::Newline) || self.peek().is_punct(":") {
             self.i += 1;
@@ -283,6 +288,8 @@ impl Parser {
             self.i += 1;
         }
     }
+
+    // ---- module ---------------------------------------------------------
 
     fn parse_module(mut self) -> Result<Module, ParseError> {
         let items = self.parse_module_items(false)?;
@@ -357,6 +364,8 @@ impl Parser {
             return self.parse_conditional();
         }
 
+        // A visibility keyword can lead either a procedure or a declaration,
+        // so it is read here and handed to whichever follows.
         let visibility = self.eat_visibility();
         let is_static = self.eat_kw("static");
 
@@ -444,9 +453,13 @@ impl Parser {
         } else {
             return None;
         };
+        // `Private` also leads `Private Module` in an Option line, but that
+        // is handled before this is reached.
         self.i += 1;
         Some(v)
     }
+
+    // ---- procedures -----------------------------------------------------
 
     fn parse_procedure(
         &mut self,
@@ -538,6 +551,7 @@ impl Parser {
         } else {
             None
         };
+        // `Optional ByVal x` -- either order appears in real code.
         let optional = optional || self.eat_kw("optional");
 
         let (name, _) = self.expect_declarable_ident()?;
@@ -575,6 +589,7 @@ impl Parser {
             self.i += 1;
             path.push(self.expect_ident()?.0);
         }
+        // `As String * 10` -- a fixed-length string.
         let string_length = if self.peek().is_punct("*") {
             self.i += 1;
             Some(Box::new(self.parse_expr()?))
@@ -599,6 +614,8 @@ impl Parser {
         Ok((name, pos))
     }
 
+    // ---- statements -----------------------------------------------------
+
     fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut out = Vec::new();
         loop {
@@ -622,6 +639,8 @@ impl Parser {
             let is_label = matches!(stmt, Stmt::Label { .. });
             out.push(stmt);
             if is_label {
+                // A label's `:` already terminated it; a statement may follow
+                // on the same line.
                 continue;
             }
             if self.at_stmt_end() {
@@ -637,6 +656,7 @@ impl Parser {
         let pos = self.pos();
         let t = self.peek().clone();
 
+        // A line number is a jump target, exactly like a label.
         if self.at_physical_line_start()
             && let TokenKind::Number { value, base, .. } = &t.kind
             && *base == NumBase::Decimal
@@ -650,6 +670,8 @@ impl Parser {
             });
         }
 
+        // `Failed:` -- a label. `:=` lexes as one token, so a named argument
+        // cannot be mistaken for one.
         if self.at_physical_line_start() && t.ident().is_some() && self.at(1).is_punct(":") {
             let (name, _) = self.expect_ident()?;
             self.expect_punct(":")?;
@@ -754,10 +776,16 @@ impl Parser {
                 }
                 "end" => {
                     self.i += 1;
+                    // `End Sub` and friends are consumed by their block; an
+                    // `End` reaching here is the halt statement.
                     return Ok(Stmt::End { pos });
                 }
                 "set" => {
                     self.i += 1;
+                    // `parse_postfix`, not `parse_expr`: `=` is a comparison
+                    // operator in an expression, so parsing the target with
+                    // the full grammar would swallow `a = b` whole and then
+                    // find no `=` left for the assignment.
                     let target = self.parse_postfix()?;
                     self.expect_punct("=")?;
                     let value = self.parse_expr()?;
@@ -931,6 +959,7 @@ impl Parser {
         let bounds = if self.peek().is_punct("(") {
             self.i += 1;
             if self.eat_punct(")") {
+                // `x()` -- a dynamic array, distinct from not an array.
                 Some(Vec::new())
             } else {
                 let mut list = Vec::new();
@@ -1046,6 +1075,7 @@ impl Parser {
 
     fn parse_declare(&mut self, pos: Pos) -> Result<Stmt, ParseError> {
         self.expect_kw("declare")?;
+        // 64-bit Office writes `Declare PtrSafe`.
         self.eat_kw("ptrsafe");
         let is_function = if self.eat_kw("function") {
             true
@@ -1098,6 +1128,7 @@ impl Parser {
         let cond = self.parse_expr()?;
         self.expect_kw("then")?;
 
+        // Single-line form: something other than a line break follows `Then`.
         if !self.at_stmt_end() {
             let then_body = self.parse_inline_stmts()?;
             let else_body = if self.eat_kw("else") {
@@ -1386,6 +1417,8 @@ impl Parser {
                 OnErrorKind::ResumeNext
             } else if self.eat_kw("goto") {
                 let label = self.parse_label_ref()?;
+                // `On Error GoTo 0` turns the handler off rather than jumping
+                // to a label named "0".
                 if label == "0" {
                     OnErrorKind::Disable
                 } else {
@@ -1446,9 +1479,12 @@ impl Parser {
             return Ok(Stmt::Call { expr: target, pos });
         }
 
+        // A `Print` method's output list is its own grammar, not an
+        // argument list -- see `parse_print_output_list`.
         let args = if is_print_member(&target) {
             self.parse_print_output_list()?
         } else {
+            // `Debug.Print a, b` -- arguments without parentheses.
             let mut args = Vec::new();
             loop {
                 args.push(self.parse_arg()?);
@@ -1492,11 +1528,16 @@ impl Parser {
         let mut args = Vec::new();
         while !self.at_stmt_end() && !self.peek().is_kw("else") {
             let arg = if self.peek().is_punct(";") || self.peek().is_punct(",") {
+                // An empty item, when a separator comes first.
                 Arg {
                     name: None,
                     value: None,
                 }
             } else if self.peek().ident().is_some() && self.at(1).is_punct(":=") {
+                // Nothing says the `Print` here is VBA's: a class module may
+                // define one, and a named argument to it parsed before this
+                // path existed. Keeping it is the same no-false-positives
+                // rule that motivated the rest of this function.
                 self.parse_arg()?
             } else {
                 Arg {
@@ -1505,10 +1546,13 @@ impl Parser {
                 }
             };
             args.push(arg);
+            // At most one separator, and it may be absent altogether.
             let _ = self.eat_punct(";") || self.eat_punct(",");
         }
         Ok(args)
     }
+
+    // ---- expressions ----------------------------------------------------
 
     /// Entry point; see this module's docs for the precedence table.
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1790,6 +1834,8 @@ impl Parser {
     }
 
     fn parse_arg(&mut self) -> Result<Arg, ParseError> {
+        // An omitted positional argument: `f(1, , 3)`. Not the same as
+        // passing Empty, so it is modelled as an absent value.
         if self.peek().is_punct(",") || self.peek().is_punct(")") {
             return Ok(Arg {
                 name: None,
@@ -1846,6 +1892,7 @@ impl Parser {
                     pos,
                 })
             }
+            // A leading `.` inside a `With` block.
             TokenKind::Punct(".") => {
                 if self.with_depth == 0 {
                     return Err(ParseError {
@@ -1982,6 +2029,8 @@ mod tests {
     }
 
     fn expr(src: &str) -> Expr {
+        // Wrap in a body so the statement parser is exercised the same way it
+        // is in real code.
         let m = parse(&format!("Sub S()\n    x = {src}\nEnd Sub\n"));
         match &m.procedures()[0].body[0] {
             Stmt::Assign { value, .. } => value.clone(),
@@ -2028,13 +2077,21 @@ mod tests {
         }
     }
 
+    // ---- precedence, as confirmed against real Excel --------------------
+    //
+    // Each case below is one this parser could plausibly get wrong, and each
+    // was run through Excel 16.112 to get the answer rather than assumed.
+    // The comment gives the value Excel produced.
+
     #[test]
     fn pow_is_left_associative() {
+        // Excel: 2 ^ 3 ^ 2 = 64. Right-associativity would give 512.
         assert_eq!(shape(&expr("2 ^ 3 ^ 2")), "(Pow (Pow 2 3) 2)");
     }
 
     #[test]
     fn pow_binds_tighter_than_unary_minus() {
+        // Excel: -2 ^ 2 = -4.
         assert_eq!(shape(&expr("-2 ^ 2")), "(Neg (Pow 2 2))");
     }
 
@@ -2045,21 +2102,26 @@ mod tests {
 
     #[test]
     fn concat_binds_looser_than_addition() {
+        // Excel: 2 + 3 & 4 = "54".
         assert_eq!(shape(&expr("2 + 3 & 4")), "(Concat (Add 2 3) 4)");
     }
 
     #[test]
     fn comparison_binds_tighter_than_and() {
+        // Excel: 1 = 1 And 1 = 0 -> False.
         assert_eq!(shape(&expr("1 = 1 And 1 = 0")), "(And (Eq 1 1) (Eq 1 0))");
     }
 
     #[test]
     fn not_binds_looser_than_comparison() {
+        // Excel: Not 1 = 0 -> True, i.e. Not (1 = 0).
         assert_eq!(shape(&expr("Not 1 = 0")), "(Not (Eq 1 0))");
     }
 
     #[test]
     fn the_three_division_operators_nest_correctly() {
+        // Excel: 2 * 10 \ 3 = 6, 10 \ 3 * 2 = 1, 20 \ 3 Mod 4 = 2,
+        //        1 + 7 Mod 3 = 2.
         assert_eq!(shape(&expr("2 * 10 \\ 3")), "(IntDiv (Mul 2 10) 3)");
         assert_eq!(shape(&expr("10 \\ 3 * 2")), "(IntDiv 10 (Mul 3 2))");
         assert_eq!(shape(&expr("20 \\ 3 Mod 4")), "(Mod (IntDiv 20 3) 4)");
@@ -2068,6 +2130,9 @@ mod tests {
 
     #[test]
     fn the_logical_operators_nest_correctly() {
+        // Excel: True Xor True Eqv False -> True (so Xor binds tighter),
+        //        False And False Or True -> True,
+        //        False Imp False Eqv False -> True (so Eqv binds tighter).
         assert_eq!(
             shape(&expr("True Xor True Eqv False")),
             "(Eqv (Xor true true) false)"
@@ -2084,9 +2149,12 @@ mod tests {
 
     #[test]
     fn arithmetic_is_left_associative() {
+        // Excel: 2 - 3 - 4 = -5, 8 / 4 / 2 = 1.
         assert_eq!(shape(&expr("2 - 3 - 4")), "(Sub (Sub 2 3) 4)");
         assert_eq!(shape(&expr("8 / 4 / 2")), "(Div (Div 8 4) 2)");
     }
+
+    // ---- expressions ----------------------------------------------------
 
     #[test]
     fn member_index_and_dictionary_access_chain() {
@@ -2117,6 +2185,8 @@ mod tests {
         );
         assert_eq!(shape(&expr("AddressOf Foo")), "AddressOf Foo");
     }
+
+    // ---- statements -----------------------------------------------------
 
     #[test]
     fn a_call_can_have_bare_arguments() {
@@ -2203,6 +2273,8 @@ mod tests {
 
     #[test]
     fn one_next_can_close_several_for_loops() {
+        // `Next j, i` closes both loops; a parser that consumed it once would
+        // then look for a second `Next` that isn't there.
         let m = parse(
             "Sub S()\n\
              For i = 1 To 2\n\
@@ -2268,6 +2340,7 @@ mod tests {
                 ..
             }
         ));
+        // `GoTo 0` disables the handler; it is not a jump to a label "0".
         assert!(matches!(
             body[2],
             Stmt::OnError {
@@ -2280,6 +2353,8 @@ mod tests {
 
     #[test]
     fn a_label_and_a_named_argument_are_not_confused() {
+        // Both are an identifier followed by a colon; `:=` lexing as one
+        // token is what separates them.
         let m = parse("Sub S()\n    Foo bar:=1\nBaz:\n    a = 1\nEnd Sub\n");
         let body = &m.procedures()[0].body;
         assert!(matches!(body[0], Stmt::Call { .. }));
@@ -2302,22 +2377,31 @@ mod tests {
 
     #[test]
     fn labels_cannot_start_after_a_colon_separator() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 367946, iter 87:
+        // real Excel refuses a line number in the middle of a colon-separated
+        // statement list (`x = 1: 1: y = 2`).
         assert!(parse_module("Sub S()\n    x = 1: 1: y = 2\nEnd Sub\n").is_err());
+        // Harvested from run seed 612052, iter 16: a bare number on its own
+        // line is not a valid statement just because line numbers exist.
         assert!(parse_module("Sub S()\n3\nEnd Sub\n").is_err());
     }
 
     #[test]
     fn leading_dot_requires_a_with_block() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 612052, iter 33.
         assert!(parse_module("Sub S()\n    x = .x + 1\nEnd Sub\n").is_err());
     }
 
     #[test]
     fn loop_keyword_is_not_an_expression() {
+        // Harvested from fuzz/fuzz_vba_parse.py run seed 216847, iter 34.
         assert!(
             parse_module("Sub S()\n    With obj\n        .a = Loop .b(1)\n    End With\nEnd Sub\n")
                 .is_err()
         );
     }
+
+    // ---- declarations ---------------------------------------------------
 
     #[test]
     fn declarations_cover_the_shapes_real_modules_use() {
@@ -2366,6 +2450,7 @@ mod tests {
 
     #[test]
     fn attribute_lines_are_syntax_not_metadata() {
+        // Every module stream real Excel writes starts with one.
         let m = parse("Attribute VB_Name = \"Module1\"\nSub S()\nEnd Sub\n");
         assert!(matches!(&m.items[0], ModuleItem::Attribute { name, .. } if name == "VB_Name"));
     }
@@ -2380,6 +2465,8 @@ mod tests {
 
     #[test]
     fn conditional_compilation_parses_both_branches() {
+        // Excel reports a syntax error inside an inactive branch, so this
+        // must not skip them.
         let m = parse(
             "#Const DEBUGGING = 1\n\
              #If VBA7 Then\n\
@@ -2403,6 +2490,8 @@ mod tests {
         assert_eq!(m.procedures()[0].params.len(), 2);
     }
 
+    // ---- opaque statements ----------------------------------------------
+
     #[test]
     fn file_io_statements_are_recorded_rather_than_modelled() {
         let m = parse(
@@ -2421,6 +2510,8 @@ mod tests {
 
     #[test]
     fn the_opaque_keywords_stay_usable_as_ordinary_names() {
+        // The reason each opaque guard is narrow: every one of these words is
+        // also a property or a variable somewhere in real code.
         let m = parse(
             "Sub S()\n\
              Application.Width = 100\n\
@@ -2434,6 +2525,8 @@ mod tests {
         assert_eq!(body.len(), 5);
         assert!(!body.iter().any(|s| matches!(s, Stmt::Opaque { .. })));
     }
+
+    // ---- Print output lists ---------------------------------------------
 
     /// Shapes the single statement of a one-line `Sub`.
     fn stmt_shape(src: &str) -> String {
@@ -2451,20 +2544,28 @@ End Sub
 
     #[test]
     fn print_output_lists_accept_every_separator_excel_does() {
+        // `;` is a `Print` output separator. Every case here is one
+        // `fuzz/vba_compile_probe.py` measurement that real Excel compiled;
+        // `_` is an empty output item.
         for (src, want) in [
             (r#"Debug.Print "a"; 1"#, r#"Debug.Print("a", 1)"#),
             (r#"Debug.Print "a"; "b"; 1"#, r#"Debug.Print("a", "b", 1)"#),
             (r#"Debug.Print "a", 1"#, r#"Debug.Print("a", 1)"#),
+            // A trailing separator suppresses the newline, so it is legal
+            // and load-bearing -- in either spelling.
             (r#"Debug.Print "a";"#, r#"Debug.Print("a")"#),
             (r#"Debug.Print "a","#, r#"Debug.Print("a")"#),
+            // A leading or repeated separator prints an empty item.
             (r#"Debug.Print , "a""#, r#"Debug.Print(_, "a")"#),
             (r#"Debug.Print ; "a""#, r#"Debug.Print(_, "a")"#),
             (r#"Debug.Print "a";; "b""#, r#"Debug.Print("a", _, "b")"#),
+            // No separator at all between two items also compiles.
             (r#"Debug.Print "a" "b""#, r#"Debug.Print("a", "b")"#),
             (
                 r#"Debug.Print Spc(3); "a"; Tab(10); "b""#,
                 r#"Debug.Print(Spc(3), "a", Tab(10), "b")"#,
             ),
+            // The gate is the member name, not the `Debug` object.
             (r#"x.Print "a"; 1"#, r#"x.Print("a", 1)"#),
         ] {
             assert_eq!(stmt_shape(src), want, "{src}");
@@ -2473,6 +2574,9 @@ End Sub
 
     #[test]
     fn a_trailing_print_separator_can_be_followed_by_else() {
+        // `If True Then Debug.Print "a"; Else Debug.Print "b"` compiles in
+        // Excel, so the output list has to stop at `Else` the way the
+        // bare-argument list it replaced did.
         let m = parse(
             "Sub S()
 If True Then Debug.Print \"a\"; Else Debug.Print \"b\"
@@ -2484,6 +2588,9 @@ End Sub
 
     #[test]
     fn a_semicolon_separator_is_only_a_print_thing() {
+        // Measured: Excel rejects all three. `;` is not a general
+        // bare-argument separator, and unqualified `Print` is a statement
+        // only before a `#` -- which `try_parse_opaque` takes first.
         for src in [
             "Sub S()
 MsgBox \"a\"; 1
@@ -2504,6 +2611,8 @@ End Sub
 
     #[test]
     fn a_user_defined_print_keeps_its_named_arguments() {
+        // A class module may define its own `Print`, and a named argument to
+        // it parsed before the output-list path existed.
         assert_eq!(
             stmt_shape("obj.Print value:=1, style:=2"),
             "obj.Print(value:=1, style:=2)"
@@ -2512,6 +2621,17 @@ End Sub
 
     #[test]
     fn fuzz_reserved_type_names_cannot_be_declared() {
+        // Harvested from fuzz/fuzz_vba_parse.py: `Dim Long As x` compiled
+        // under check_syntax but real Excel refuses it. Measured directly
+        // (win32com, real Windows Excel) which half of that is the real,
+        // fixable gap: `Dim Long As Integer`, `Const Long = 5`, and a
+        // parameter named `Long` all fail to compile in Excel too -- `Long`
+        // (like the rest of `RESERVED_TYPE_NAMES`) can never be a declared
+        // name, unlike most VBA keywords (contextual and reusable
+        // elsewhere, see `the_opaque_keywords_stay_usable_as_ordinary_names`
+        // above). `Dim Long As x` itself is left accepting: whether `x` is a
+        // valid type needs name resolution Phase 0 doesn't do, so that half
+        // of the original case is correctly out of scope, not fixed here.
         for src in [
             "Sub S()\nDim Long As Integer\nEnd Sub\n",
             "Sub S()\nConst Long = 5\nEnd Sub\n",
@@ -2521,9 +2641,16 @@ End Sub
             let err = parse_module(src).unwrap_err();
             assert!(err.message.contains("built-in type name"), "{src:?}: {err}");
         }
+        // `Object` is not in the reserved set -- it compiles as a name even
+        // though it's also a valid type in an `As` clause (measured: `Dim
+        // Object As Long` compiles in real Excel).
         parse_module("Sub S()\nDim Object As Long\nEnd Sub\n").unwrap();
+        // The unresolvable-type half of the original case stays accepted,
+        // deliberately -- Phase 0 does no name resolution.
         parse_module("Sub S()\nDim y As x\nEnd Sub\n").unwrap();
     }
+
+    // ---- errors ---------------------------------------------------------
 
     #[test]
     fn errors_point_at_the_offending_line() {
@@ -2537,6 +2664,7 @@ End Sub
     /// arrived where the closer was due, which is usually a correct line.
     #[test]
     fn an_unclosed_block_is_blamed_on_its_opener() {
+        // (source, expected message, expected line)
         let cases = [
             ("Sub S()\n    a = 1\n", "Expected End Sub", 1),
             ("Function F()\n    a = 1\n", "Expected End Function", 1),
@@ -2592,6 +2720,8 @@ End Sub
 
     #[test]
     fn a_mismatched_block_closer_is_reported() {
+        // `End Function` does not close a `Sub`, so the Sub is unclosed and
+        // is what gets blamed -- again matching VBA's "Expected End Sub".
         let err = parse_module("Sub S()\nEnd Function\n").unwrap_err();
         assert_eq!(err.message, "Expected End Sub");
         assert_eq!(err.pos.line, 1);
@@ -2603,6 +2733,8 @@ End Sub
 
     #[test]
     fn the_innermost_unclosed_block_is_the_one_blamed() {
+        // Both the For and the If are unclosed; the If is nearer, and fixing
+        // it is what lets the next error surface.
         let err = parse_module(
             "Sub S()\n    For i = 1 To 2\n        If a Then\n            b = 1\nEnd Sub\n",
         )
@@ -2611,8 +2743,12 @@ End Sub
         assert_eq!(err.pos.line, 3);
     }
 
+    // ---- real-world corpus ----------------------------------------------
+
     #[test]
     fn parses_the_repos_own_pivot_fuzzing_macro() {
+        // ~300 lines of real, Excel-authored VBA: the best available check
+        // that this grammar covers what people actually write.
         let src = include_str!("../../../../fuzz/BuildFuzzPivot.bas");
         let m = parse(src);
         assert!(
