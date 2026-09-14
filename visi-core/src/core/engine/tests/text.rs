@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn test_upper_rounddown_combo() {
     let sheet_src = [
-        // A   B   C     D   E
         ["-60", "", "-6", "", "1"],
         ["cJsjkQ", "183.83", "", "TRUE", "FALSE"],
         ["32", "", "-96", "-25", "-205.145"],
@@ -26,7 +25,6 @@ fn test_upper_rounddown_combo() {
     ];
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
-    // A7
     let cell_ref = CellRef::new(6, 0);
     let target = sheet.get_result_data(&cell_ref);
     match target {

@@ -1,10 +1,4 @@
-// High-precision Information, Database, Lookup, Logical, Web, and Cube functions for visi-core
-
 use crate::core::engine::ResultData;
-
-// ============================================================================
-// 1. Information Functions
-// ============================================================================
 
 pub fn error_type(err: &str) -> Result<f64, String> {
     match err {
@@ -67,17 +61,9 @@ pub fn type_fn(val: &ResultData) -> f64 {
     }
 }
 
-// ============================================================================
-// 2. Logical & Array Functions
-// ============================================================================
-
 pub fn xor_fn(bools: &[bool]) -> bool {
     bools.iter().filter(|&&b| b).count() % 2 != 0
 }
-
-// ============================================================================
-// 3. Lookup & Reference Helpers
-// ============================================================================
 
 pub fn address_fn(
     row_num: f64,
@@ -112,10 +98,6 @@ pub fn address_fn(
         _ => Ok(format!("${}${}", col_str, r)),
     }
 }
-
-// ============================================================================
-// 4. Web & Stub Functions
-// ============================================================================
 
 pub fn encodeurl(text: &str) -> Result<String, String> {
     let mut res = String::new();

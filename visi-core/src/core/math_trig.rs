@@ -1,10 +1,3 @@
-// High-precision Math and Trigonometry functions for visi-core
-// Implements Excel-compatible trigonometric, hyperbolic, matrix, matrix inversion, series, combinatorics, and matrix/array math.
-
-// ============================================================================
-// 1. Trigonometric and Hyperbolic Functions
-// ============================================================================
-
 /// Excel's SIN/COS/TAN (and so anything built on them: COT, CSC, SEC)
 /// refuse an argument at or beyond `2^27` radians with `#NUM!`, rather
 /// than returning whatever a library sin/cos happens to reduce it to --
@@ -15,7 +8,7 @@
 /// `SIN(134217728)` (2^27) is `#NUM!`, and COS/TAN share the identical
 /// boundary. fuzz/fuzz_excel.py seed 676008 hit this via
 /// `CSC(F4^47)` where `F4^47` is on the order of 1e101.
-pub(crate) const TRIG_ARG_LIMIT: f64 = 134_217_728.0; // 2^27
+pub(crate) const TRIG_ARG_LIMIT: f64 = 134_217_728.0;
 
 pub(crate) fn check_trig_domain(x: f64) -> Result<(), String> {
     if x.abs() >= TRIG_ARG_LIMIT {
@@ -34,7 +27,6 @@ pub fn acosh(x: f64) -> Result<f64, String> {
 }
 
 pub fn acot(x: f64) -> Result<f64, String> {
-    // Returns acot(x) in range (0, PI)
     if x == 0.0 {
         Ok(std::f64::consts::FRAC_PI_2)
     } else {
@@ -51,11 +43,6 @@ pub fn acoth(x: f64) -> Result<f64, String> {
     if x.abs() <= 1.0 {
         Err("#NUM!".to_string())
     } else {
-        // atanh(1/x), not 0.5 * ln((x+1)/(x-1)): for large |x| that ratio
-        // approaches 1 and the logarithm loses most of its significant
-        // digits. ACOTH(-165) is -0.006060680266172405..., and the
-        // logarithm form gave -0.006060680266172425 -- wrong from the
-        // 15th digit, which is exactly where Excel's display lands.
         Ok((1.0 / x).atanh())
     }
 }
@@ -65,7 +52,6 @@ pub fn asinh(x: f64) -> Result<f64, String> {
 }
 
 pub fn atan2(x: f64, y: f64) -> Result<f64, String> {
-    // Excel's ATAN2 syntax is ATAN2(x_num, y_num) where x is 1st arg, y is 2nd arg
     if x == 0.0 && y == 0.0 {
         Err("#DIV/0!".to_string())
     } else {
@@ -101,14 +87,6 @@ pub fn coth(x: f64) -> Result<f64, String> {
     if x == 0.0 {
         Err("#DIV/0!".to_string())
     } else {
-        // Not `x.cosh() / x.sinh()`: both overflow to `f64::INFINITY` well
-        // before `|x|` gets anywhere near where `coth` itself is
-        // ill-behaved (~710), leaving `inf / inf = NaN` -- which this
-        // engine's NaN guard then reports as `#NUM!` for an `x` where
-        // Excel returns a perfectly good answer near +-1 (measured:
-        // COTH(47692.3) is `1` in real Excel; fuzz/fuzz_excel.py seed
-        // 711993). `tanh` saturates to +-1 directly with no such overflow,
-        // so go through it the way `cot` already goes through `tan`.
         Ok(1.0 / x.tanh())
     }
 }
@@ -169,10 +147,6 @@ pub fn sqrtpi(x: f64) -> Result<f64, String> {
 pub fn tanh(x: f64) -> Result<f64, String> {
     Ok(x.tanh())
 }
-
-// ============================================================================
-// 2. Rounding and Integer Arithmetic
-// ============================================================================
 
 pub fn ceiling_math(x: f64, significance: Option<f64>, mode: Option<f64>) -> Result<f64, String> {
     let sig = significance.unwrap_or(1.0);
@@ -272,10 +246,6 @@ pub fn trunc(x: f64, digits: Option<f64>) -> Result<f64, String> {
     let factor = 10.0_f64.powi(d);
     Ok((x * factor).trunc() / factor)
 }
-
-// ============================================================================
-// 3. Number Base Conversions & Roman Numerals
-// ============================================================================
 
 pub fn base(number: f64, radix: f64, min_length: Option<f64>) -> Result<String, String> {
     let num = number.floor() as i64;
@@ -408,13 +378,9 @@ pub fn roman(number: f64, form: Option<f64>) -> Result<String, String> {
     for (i, (big, big_sym)) in NUMERALS.iter().enumerate() {
         for (j, (small, small_sym)) in NUMERALS.iter().enumerate().skip(i + 1) {
             let reach = j - i;
-            // Even indices are the powers of ten (M, C, X, I); odd ones
-            // the half-powers (D, L, V).
             let needed = if j % 2 == 0 {
                 2 * ((reach - 1) / 2)
             } else if reach < 2 {
-                // e.g. "DM"/"LC"/"VX" -- worth the same as the plain
-                // numeral, never a real spelling.
                 continue;
             } else {
                 1 + 2 * ((reach - 2) / 2)
@@ -424,7 +390,6 @@ pub fn roman(number: f64, form: Option<f64>) -> Result<String, String> {
             }
         }
     }
-    // Greedy needs richest-first; ties go to the shorter spelling.
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())));
 
     let mut rem = n;
@@ -440,10 +405,6 @@ pub fn roman(number: f64, form: Option<f64>) -> Result<String, String> {
     }
     Ok(res)
 }
-
-// ============================================================================
-// 4. Combinatorics, Factorials, Power, Series, GCD/LCM
-// ============================================================================
 
 pub fn combin(n: f64, k: f64) -> Result<f64, String> {
     let ni = n.floor() as i64;
@@ -510,13 +471,10 @@ pub fn gcd(nums: &[f64]) -> Result<f64, String> {
     if nums.is_empty() {
         return Err("#VALUE!".to_string());
     }
-    // Excel's GCD/LCM are defined only for non-negative arguments and
-    // report #NUM! for a negative one, rather than quietly working on its
-    // magnitude the way `.abs()` below otherwise would.
     if nums.iter().any(|n| *n < 0.0) {
         return Err("#NUM!".to_string());
     }
-    const MAX_EXCEL_GCD_LCM_INT: f64 = 9_007_199_254_740_992.0; // 2^53.
+    const MAX_EXCEL_GCD_LCM_INT: f64 = 9_007_199_254_740_992.0;
     fn to_excel_int(n: f64) -> Result<u64, String> {
         let floored = n.floor().abs();
         if !floored.is_finite() || floored > MAX_EXCEL_GCD_LCM_INT {
@@ -548,7 +506,7 @@ pub fn lcm(nums: &[f64]) -> Result<f64, String> {
     if nums.iter().any(|n| *n < 0.0) {
         return Err("#NUM!".to_string());
     }
-    const MAX_EXCEL_GCD_LCM_INT: u64 = 9_007_199_254_740_992; // 2^53.
+    const MAX_EXCEL_GCD_LCM_INT: u64 = 9_007_199_254_740_992;
     fn to_excel_int(n: f64) -> Result<u64, String> {
         let floored = n.floor().abs();
         if !floored.is_finite() || floored > MAX_EXCEL_GCD_LCM_INT as f64 {
@@ -606,9 +564,6 @@ pub fn multinomial(nums: &[f64]) -> Result<f64, String> {
 
 pub fn power(number: f64, p: f64) -> Result<f64, String> {
     if number == 0.0 && p == 0.0 {
-        // Excel declines to pick a value for 0^0: both POWER(0, 0) and
-        // 0^0 are #NUM!. The `^` operator already did this; POWER was
-        // returning 1, so POWER(<blank>, <blank>) silently became 1.
         Err("#NUM!".to_string())
     } else if number == 0.0 && p < 0.0 {
         Err("#DIV/0!".to_string())
@@ -627,10 +582,6 @@ pub fn seriessum(x: f64, n: f64, m: f64, coefficients: &[f64]) -> Result<f64, St
     }
     Ok(sum)
 }
-
-// ============================================================================
-// 5. Matrix and Array Operations
-// ============================================================================
 
 pub fn mdeterm(matrix: &[Vec<f64>]) -> Result<f64, String> {
     let n = matrix.len();
