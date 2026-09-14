@@ -61,6 +61,7 @@ pub(crate) fn import_xlsx_data_raw(
         std::collections::HashMap::new();
 
     let cell_styles = import_cell_styles(buffer).unwrap_or_default();
+    let column_widths = import_column_widths(buffer).unwrap_or_default();
 
     for (sheet_idx, orig_sheet_name) in sheet_names.iter().enumerate() {
         progress_callback(sheet_idx, total_sheets, orig_sheet_name);
@@ -91,6 +92,11 @@ pub(crate) fn import_xlsx_data_raw(
                     cols = cols.max(col_idx + 1);
                 }
             }
+            if let Some(sheet_widths) = column_widths.get(orig_sheet_name)
+                && let Some(max_width_col) = sheet_widths.keys().max()
+            {
+                cols = cols.max(max_width_col + 1);
+            }
 
             let mut sheet_name = orig_sheet_name.clone();
             let mut count = 1;
@@ -109,6 +115,12 @@ pub(crate) fn import_xlsx_data_raw(
                     let mut col = DataColumn::new(rows);
                     col.id = rand::random::<u64>();
                     col.name = crate::core::parser::col_idx_to_letters(col_idx);
+                    if let Some(width) = column_widths
+                        .get(orig_sheet_name)
+                        .and_then(|sheet_widths| sheet_widths.get(&col_idx))
+                    {
+                        col.width = Some(*width);
+                    }
                     col
                 })
                 .collect::<Vec<_>>();
@@ -622,6 +634,7 @@ pub(crate) fn export_xlsx_data_raw(
     let mut table_name_to_table = std::collections::HashMap::new();
     let mut sheet_id_to_worksheet_name = std::collections::HashMap::new();
     let mut empty_table_names = std::collections::HashSet::new();
+    let mut worksheet_name_to_column_widths = std::collections::HashMap::new();
 
     for sheet in sheets {
         table_name_to_table.insert(sheet.name.clone(), sheet);
@@ -649,6 +662,19 @@ pub(crate) fn export_xlsx_data_raw(
         used_names.insert(worksheet_name.to_lowercase());
         table_name_to_worksheet_name.insert(sheet.name.clone(), worksheet_name.clone());
         sheet_id_to_worksheet_name.insert(sheet.id, worksheet_name.clone());
+        let explicit_widths = sheet
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, col)| {
+                col.width
+                    .filter(|width| width.is_finite() && *width >= 0.0)
+                    .map(|width| (idx, width))
+            })
+            .collect::<Vec<_>>();
+        if !explicit_widths.is_empty() {
+            worksheet_name_to_column_widths.insert(worksheet_name.clone(), explicit_widths);
+        }
 
         {
             let worksheet = workbook.add_worksheet();
@@ -962,6 +988,8 @@ pub(crate) fn export_xlsx_data_raw(
         .save_to_buffer()
         .map_err(|e| format!("Failed to write XLSX buffer: {}", e))?;
 
+    let buffer = inject_column_widths(buffer, &worksheet_name_to_column_widths)?;
+
     let formula_string_result_cells = formula_string_result_cells_by_sheet(sheets);
     let buffer = inject_formula_string_result_types(buffer, &formula_string_result_cells)?;
 
@@ -1153,6 +1181,106 @@ fn force_open_tag_type_str(open_tag: &str) -> String {
     }
 
     format!("{} t=\"str\"", open_tag)
+}
+
+fn inject_column_widths(
+    original: Vec<u8>,
+    widths_by_sheet: &std::collections::HashMap<String, Vec<(usize, f64)>>,
+) -> Result<Vec<u8>, String> {
+    if widths_by_sheet.is_empty() {
+        return Ok(original);
+    }
+
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original.as_slice()))
+        .map_err(|e| format!("Failed to re-open generated xlsx zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(file);
+
+        writer
+            .start_file(&name, options)
+            .map_err(|e| e.to_string())?;
+
+        if let Some(sheet_file) = name.strip_prefix("xl/worksheets/")
+            && !sheet_file.contains('/')
+            && let Some(sheet_name) = sheet_file_to_name.get(sheet_file)
+            && let Some(widths) = widths_by_sheet.get(sheet_name)
+            && let Ok(xml) = std::str::from_utf8(&buf)
+        {
+            let cols_xml = build_column_widths_xml(widths);
+            let new_xml = replace_or_insert_cols_xml(xml, &cols_xml);
+            writer
+                .write_all(new_xml.as_bytes())
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+
+        writer.write_all(&buf).map_err(|e| e.to_string())?;
+    }
+
+    let cursor = writer.finish().map_err(|e| e.to_string())?;
+    Ok(cursor.into_inner())
+}
+
+fn build_column_widths_xml(widths: &[(usize, f64)]) -> String {
+    let mut sorted = widths.to_vec();
+    sorted.sort_by_key(|(idx, _)| *idx);
+    let mut out = String::from("<cols>");
+    for (idx, width) in sorted {
+        if !width.is_finite() || width < 0.0 || idx >= 16_384 {
+            continue;
+        }
+        let one_based = idx + 1;
+        out.push_str(&format!(
+            "<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"/>",
+            one_based, one_based, width
+        ));
+    }
+    out.push_str("</cols>");
+    out
+}
+
+fn replace_or_insert_cols_xml(xml: &str, cols_xml: &str) -> String {
+    if let Some(cols_start) = xml.find("<cols") {
+        if let Some(rel_cols_end) = xml[cols_start..].find("</cols>") {
+            let cols_end = cols_start + rel_cols_end + "</cols>".len();
+            return format!("{}{}{}", &xml[..cols_start], cols_xml, &xml[cols_end..]);
+        }
+        if let Some(rel_tag_end) = xml[cols_start..].find("/>") {
+            let cols_end = cols_start + rel_tag_end + 2;
+            return format!("{}{}{}", &xml[..cols_start], cols_xml, &xml[cols_end..]);
+        }
+    }
+
+    if let Some(sheet_format_start) = xml.find("<sheetFormatPr") {
+        if let Some(rel_empty_end) = xml[sheet_format_start..].find("/>") {
+            let insert_at = sheet_format_start + rel_empty_end + 2;
+            return format!("{}{}{}", &xml[..insert_at], cols_xml, &xml[insert_at..]);
+        }
+        if let Some(rel_end) = xml[sheet_format_start..].find("</sheetFormatPr>") {
+            let insert_at = sheet_format_start + rel_end + "</sheetFormatPr>".len();
+            return format!("{}{}{}", &xml[..insert_at], cols_xml, &xml[insert_at..]);
+        }
+    }
+
+    if let Some(sheet_data_start) = xml.find("<sheetData") {
+        return format!(
+            "{}{}{}",
+            &xml[..sheet_data_start],
+            cols_xml,
+            &xml[sheet_data_start..]
+        );
+    }
+
+    xml.to_string()
 }
 
 fn inject_empty_table_flags(
@@ -1897,6 +2025,70 @@ type SheetCellNumberFormats =
 type SheetCellStyles =
     std::collections::HashMap<String, std::collections::HashMap<(usize, usize), CellStyle>>;
 
+type SheetColumnWidths = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
+
+fn import_column_widths(buffer: &[u8]) -> Result<SheetColumnWidths, String> {
+    use std::collections::HashMap;
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
+        .map_err(|e| format!("Failed to open zip: {}", e))?;
+    let sheet_file_to_name = build_sheet_file_to_name(&mut archive)?;
+
+    let mut sheet_files: Vec<String> = sheet_file_to_name.keys().cloned().collect();
+    sheet_files.sort();
+
+    let mut out: SheetColumnWidths = HashMap::new();
+    for sheet_file in sheet_files {
+        let Some(sheet_name) = sheet_file_to_name.get(&sheet_file).cloned() else {
+            continue;
+        };
+        let path = format!("xl/worksheets/{}", sheet_file);
+        let Some(sheet_xml) = get_zip_file_content(&mut archive, &path) else {
+            continue;
+        };
+        let widths = parse_sheet_column_widths(&sheet_xml);
+        if !widths.is_empty() {
+            out.insert(sheet_name, widths);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_sheet_column_widths(xml: &str) -> std::collections::HashMap<usize, f64> {
+    let mut out = std::collections::HashMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"col"
+                    && let Some(width) = get_attr(e, b"width").and_then(|s| s.parse::<f64>().ok())
+                    && width.is_finite()
+                    && width >= 0.0
+                {
+                    let min = get_attr(e, b"min")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .max(1);
+                    let max = get_attr(e, b"max")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(min)
+                        .max(min)
+                        .min(16_384);
+                    for one_based_col in min..=max {
+                        out.insert(one_based_col - 1, width);
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 fn import_cell_styles(buffer: &[u8]) -> Result<SheetCellStyles, String> {
     use std::collections::HashMap;
 
@@ -2409,6 +2601,36 @@ mod tests {
         assert_eq!(imported_sheet.columns[0].src[1], "20");
         assert_eq!(imported_sheet.columns[1].src[0], "=A1 + A2");
         assert_eq!(imported_sheet.columns[1].src[1], "abc");
+    }
+
+    #[test]
+    fn test_xlsx_column_width_survives_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 3,
+            ..Default::default()
+        });
+        sheet.set_column_width(1, Some(22.5));
+        sheet.set_cell_src(0, 1, "wide".to_string());
+
+        let xlsx_data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("<cols>"));
+        assert!(sheet_xml.contains("min=\"2\""));
+        assert!(sheet_xml.contains("max=\"2\""));
+        assert!(sheet_xml.contains("width=\"22.5\""));
+
+        let (imported_sheets, _, _, _) = import_xlsx_data(&xlsx_data, &[], |_, _, _| {}).unwrap();
+        assert_eq!(imported_sheets[0].sheet.get_column_width(1), Some(22.5));
+
+        let exported_again =
+            export_xlsx_data(&[imported_sheets[0].sheet.clone()], &[], &[], None).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(exported_again.as_slice())).unwrap();
+        let sheet_xml = get_zip_file_content(&mut archive, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet_xml.contains("width=\"22.5\""));
     }
 
     #[test]

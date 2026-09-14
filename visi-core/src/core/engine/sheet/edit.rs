@@ -460,6 +460,16 @@ impl Sheet {
         }
     }
 
+    pub fn get_column_width(&self, col: usize) -> Option<f64> {
+        self.columns.get(col).and_then(|column| column.width)
+    }
+
+    pub fn set_column_width(&mut self, col: usize, width: Option<f64>) {
+        if let Some(column) = self.columns.get_mut(col) {
+            column.width = width.filter(|value| value.is_finite() && *value >= 0.0);
+        }
+    }
+
     /// Insert a new empty row at the specified index
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
