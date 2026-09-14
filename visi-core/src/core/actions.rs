@@ -69,7 +69,7 @@ pub enum SheetAction {
     /// A sheet was added to the workbook.
     AddTable {
         /// The sheet, in full.
-        sheet: crate::core::Sheet,
+        sheet: Box<crate::core::Sheet>,
     },
     /// A sheet was removed from the workbook.
     DeleteTable {
