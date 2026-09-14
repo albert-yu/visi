@@ -463,20 +463,24 @@ impl Sheet {
         }
     }
 
+    /// [GPT-5.5] Returns the custom width for the zero-based column, if one is set.
     pub fn get_column_width(&self, col: usize) -> Option<f64> {
         self.columns.get(col).and_then(|column| column.width)
     }
 
+    /// [GPT-5.5] Sets or clears the custom width for an existing zero-based column.
     pub fn set_column_width(&mut self, col: usize, width: Option<f64>) {
         if let Some(column) = self.columns.get_mut(col) {
             column.width = width.filter(|value| value.is_finite() && *value >= 0.0);
         }
     }
 
+    /// [GPT-5.5] Returns the custom height for the zero-based row, if one is set.
     pub fn get_row_height(&self, row: usize) -> Option<f64> {
         self.row_heights.get(row).and_then(|height| *height)
     }
 
+    /// [GPT-5.5] Sets or clears the custom height for an existing zero-based row.
     pub fn set_row_height(&mut self, row: usize, height: Option<f64>) {
         if row >= self.row_count() {
             return;
