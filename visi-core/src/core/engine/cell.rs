@@ -22,27 +22,24 @@ pub fn generate_unique_id() -> u64 {
 /// [AI-Agent] The intrinsic data type of a cell, mirroring calamine worksheet value variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum CellType {
-    /// [AI-Agent] Empty cell (`calamine::Data::Empty`).
+    /// Empty cell (`calamine::Data::Empty`).
     #[default]
-    #[serde(alias = "Auto", alias = "Formula")]
     Empty,
-    /// [AI-Agent] Signed integer (`calamine::Data::Int`).
+    /// Signed integer (`calamine::Data::Int`).
     Int,
-    /// [AI-Agent] Floating point number (`calamine::Data::Float`).
-    #[serde(alias = "Number")]
+    /// Floating point number (`calamine::Data::Float`).
     Float,
-    /// [AI-Agent] String (`calamine::Data::String`).
+    /// String (`calamine::Data::String`).
     String,
-    /// [AI-Agent] Boolean (`calamine::Data::Bool`).
-    #[serde(alias = "Boolean")]
+    /// Boolean (`calamine::Data::Bool`).
     Bool,
-    /// [AI-Agent] Date/time serial identified by calamine from workbook formatting.
+    /// Date/time serial identified by calamine from workbook formatting.
     DateTime,
-    /// [AI-Agent] ISO 8601 date/time (`calamine::Data::DateTimeIso`, OpenXML `t="d"`).
+    /// ISO 8601 date/time (`calamine::Data::DateTimeIso`, OpenXML `t="d"`).
     DateTimeIso,
-    /// [AI-Agent] ISO 8601 duration (`calamine::Data::DurationIso`).
+    /// ISO 8601 duration (`calamine::Data::DurationIso`).
     DurationIso,
-    /// [AI-Agent] Error cell (`calamine::Data::Error`, OpenXML `t="e"`).
+    /// Error cell (`calamine::Data::Error`, OpenXML `t="e"`).
     Error,
 }
 
