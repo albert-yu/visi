@@ -810,9 +810,6 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
     }
 }
 
-/// Resolves a table column specifier that's either a 1-based index (e.g.
-/// "2") or an existing column name (case-insensitive), returning a 0-based
-/// index relative to the table.
 fn resolve_table_column_index(
     table: &visi_core::core::ExcelTable,
     spec: &str,
@@ -1148,9 +1145,6 @@ fn chart_type_arg_to_chart_type(chart_type: ChartTypeArg) -> ChartType {
     }
 }
 
-/// Parses a `--anchor` value like "D5" into a 0-based (row, col) pair.
-/// Rejects a sheet prefix (e.g. "Sheet1!D5") since the chart's sheet is
-/// already fixed by `--sheet` (add) or the chart's existing placement (edit).
 fn parse_chart_anchor(spec: &str) -> Result<(usize, usize), String> {
     let (sheet, row, col) = parse_cell_ref(spec)?;
     if sheet.is_some() {
@@ -1488,8 +1482,6 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
     }
 }
 
-/// Reads `--source`/`--source-file` (mutually exclusive, enforced by usage's
-/// `conflicts`), erroring if neither was given.
 fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> String {
     match (source, source_file) {
         (Some(s), None) => s,
@@ -1506,11 +1498,6 @@ fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> 
     }
 }
 
-/// A macro-enabled workbook must be saved with a `.xlsm` extension --
-/// Excel's OOXML package validator keys macro support off the content-type
-/// override, but a mismatched extension is still surprising/non-portable
-/// enough to reject outright rather than silently rewrite the user's
-/// chosen path.
 fn require_xlsm_extension(path: &str) {
     if !path.to_ascii_lowercase().ends_with(".xlsm") {
         exit_with_error(
@@ -1523,30 +1510,12 @@ fn require_xlsm_extension(path: &str) {
     }
 }
 
-/// One module's verdict, shared by the human and JSON renderings.
 struct MacroCheckResult {
     module: String,
     procedures: Vec<String>,
     error: Option<visi_core::Error>,
 }
 
-/// `visi macro check` -- Phase 0 of VBA support: does this source parse?
-///
-/// Takes either a workbook (checking every module, or one named with
-/// `--name`) or a bare `.bas` file, since the source usually exists as a file
-/// before it is ever put into a workbook and refusing to check it there would
-/// make the command useless in exactly the moment it is wanted.
-///
-/// Reports *every* module's verdict rather than stopping at the first
-/// failure, so one run tells you the whole story.
-///
-/// Excel compiles a *project*, so whether a name that resolves nowhere is an
-/// error depends on something the input does not carry: whether what was
-/// handed over is the whole project. The default reading is that it is --
-/// right for a workbook and for a genuinely standalone `.bas`, wrong for a
-/// `.bas` cut out of a project that calls into its siblings, which is what
-/// `--partial` is for. Nothing here tries to guess which; the
-/// flag is the only thing that says.
 fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     let results = if is_vba_source_path(&args.file) {
         let source = read_source_argument(&args.file);
@@ -1694,10 +1663,6 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     }
 }
 
-/// Whether the path names VBA source text rather than a workbook.
-///
-/// Anything that is not a recognised workbook extension is treated as source,
-/// so `-` (stdin) and an extensionless file both work.
 fn is_vba_source_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     !(lower.ends_with(".xlsx") || lower.ends_with(".xlsm") || lower.ends_with(".xlsb"))
@@ -1744,19 +1709,6 @@ fn name_syntax_error(e: visi_core::Error, module: &str) -> visi_core::Error {
     }
 }
 
-/// `visi macro run` -- executes a VBA procedure.
-///
-/// Deliberately opt-in and explicit. Nothing else in the CLI runs a macro:
-/// not `eval`, not opening a file, and not a `Workbook_Open` handler. The
-/// notice that a macro ran goes to stderr and survives `--quiet`, because
-/// "this file executed code" is not informational chatter -- and now that a
-/// macro can write cells, it matters more, not less.
-///
-/// Two shapes, and they are genuinely different runs. Given a workbook, the
-/// macro executes **against** it and can read and write cells, so the result
-/// needs somewhere to go: `--output` or `--in-place`, exactly as every other
-/// write command demands. Given a bare `.bas` file there is no workbook at
-/// all, and anything reaching for one reports so rather than pretending.
 fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
     let arg_refs: Vec<&str> = args.args.iter().map(|s| s.as_str()).collect();
 
@@ -1808,10 +1760,6 @@ fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
     report_macro_run(&args, &outcome, save_path.as_deref());
 }
 
-/// The result of a run, in whichever form was asked for.
-///
-/// `saved` is reported even under `--quiet`, alongside the "a macro ran"
-/// notice and for the same reason: which file this wrote is not chatter.
 fn report_macro_run(args: &MacroRunArgs, out: &visi_core::core::RunOutcome, saved: Option<&str>) {
     if args.json {
         println!(
