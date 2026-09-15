@@ -145,6 +145,19 @@ fn test_text_number_format_codes() {
 }
 
 #[test]
+fn test_text_custom_number_format_literals_and_sections() {
+    for (value, fmt, expected) in [
+        (7.5, "0.0\"x\"", "7.5x"),
+        (1234.0, "\\$#,##0.00", "$1,234.00"),
+        (-1234.0, "#,##0;(#,##0)", "(1,234)"),
+        (0.125, "0.##%", "12.5%"),
+    ] {
+        let got = crate::core::text::text_fn(value, fmt);
+        assert_eq!(got, Ok(expected.to_string()), "TEXT({value}, {fmt:?})");
+    }
+}
+
+#[test]
 fn test_proper_capitalizes_letter_after_digits() {
     let grid = [["=PROPER(\"123abc\")"]];
     let mut sheet = create_sheet(&grid);

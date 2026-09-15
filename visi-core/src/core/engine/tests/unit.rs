@@ -1457,17 +1457,29 @@ fn test_date_format_inheritance_is_limited_to_single_cell_formulas() {
     assert_eq!(sheet.get_display_string(&CellRef::new(1, 2)), "92390");
 }
 
-/// A number format that isn't a date format leaves rendering alone -- visi
-/// does not implement Excel's numeric format codes, and mangling a `0.00`
-/// cell into a date would be worse than ignoring it.
+/// [AI-Agent] Generic Excel number formats affect display without changing the stored number.
 #[test]
-fn test_non_date_number_format_does_not_affect_display() {
-    let mut sheet = create_sheet(&[["1234.5"]]);
+fn test_number_format_affects_display_without_changing_value() {
+    let mut sheet = create_sheet(&[["1234.5", "7.5", "0.125", "-1234.5"]]);
     sheet.commit(None).unwrap();
-    sheet.update_cell_style(0, 0, |style| {
-        style.num_format = Some("0.00".to_string());
-    });
-    assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "1234.5");
+    for (col, code) in [
+        (0, "0.00"),
+        (1, "0.0\"x\""),
+        (2, "0.00%"),
+        (3, "#,##0.00;(#,##0.00)"),
+    ] {
+        sheet.update_cell_style(0, col, |style| {
+            style.num_format = Some(code.to_string());
+        });
+    }
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "1234.50");
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 1)), "7.5x");
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 2)), "12.50%");
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 3)), "(1,234.50)");
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(0, 1)),
+        ResultData::Float(f) if f == 7.5
+    ));
 }
 
 /// Inheritance follows the operator, not the number of cells read: `=YEAR(A1)`

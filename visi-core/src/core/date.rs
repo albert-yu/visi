@@ -375,18 +375,38 @@ pub fn format_date(date: SimpleDate, format: &DateFormat) -> String {
     render_date_code(date, &format.to_format_code(), format.month_case())
 }
 
-/// Whether a number-format code renders a date, as opposed to a numeric
-/// format like `0.00` or `#,##0`.
-///
-/// Deliberately narrow: it wants a `y`/`m`/`d` token and no digit placeholder,
-/// so an unrecognized or numeric code falls back to plain number rendering
-/// rather than being mangled into a date.
+/// [AI-Agent] Whether a number-format code renders a date rather than a numeric or time value.
 pub fn is_date_code(code: &str) -> bool {
-    let has_date_token = code
-        .chars()
-        .any(|c| matches!(c.to_ascii_lowercase(), 'y' | 'm' | 'd'));
-    let has_number_placeholder = code.contains('0') || code.contains('#');
-    has_date_token && !has_number_placeholder
+    let mut has_year_or_day = false;
+    let mut has_month = false;
+    let mut has_time_token = false;
+    let mut has_number_placeholder = false;
+    let mut in_quote = false;
+    let mut in_bracket = false;
+    let mut escaped = false;
+    for c in code.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => {
+                escaped = true;
+            }
+            '"' if !in_bracket => in_quote = !in_quote,
+            '[' if !in_quote => in_bracket = true,
+            ']' if in_bracket => in_bracket = false,
+            _ if in_quote || in_bracket => {}
+            '0' | '#' => has_number_placeholder = true,
+            _ => match c.to_ascii_lowercase() {
+                'y' | 'd' => has_year_or_day = true,
+                'm' => has_month = true,
+                'h' | 's' => has_time_token = true,
+                _ => {}
+            },
+        }
+    }
+    (has_year_or_day || has_month) && !has_time_token && !has_number_placeholder
 }
 
 /// The inverse of [`date_to_excel_serial`], for rendering a computed serial.

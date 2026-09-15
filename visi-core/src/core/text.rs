@@ -437,65 +437,291 @@ fn format_date_text(val: f64, format_text: &str) -> Result<String, String> {
     ))
 }
 
-/// A pragmatic subset of Excel's TEXT() number-format mini-language: `$`
-/// currency prefix, `%` percentage (value *100, suffixed), `,` thousands
-/// grouping, and `.0...`/`.#...` decimal-place count, plus common date
-/// tokens (`yyyy`/`yy`/`mm`/`dd`). Not a full format-code parser (no
-/// custom positive/negative/zero sections, no scientific notation, no
-/// fractions, ...) -- covers what this engine's own formula generation
-/// and fuzzing actually exercise.
-pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
-    let fmt = format_text.trim();
+fn split_format_sections(format_text: &str) -> Vec<String> {
+    let mut sections = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut escaped = false;
+    for c in format_text.chars() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            current.push(c);
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            in_quote = !in_quote;
+            current.push(c);
+            continue;
+        }
+        if c == ';' && !in_quote {
+            sections.push(current.trim().to_string());
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    sections.push(current.trim().to_string());
+    sections
+}
 
-    let has_date_tokens =
-        (fmt.contains('y') || fmt.contains('d')) && !fmt.contains('0') && !fmt.contains('#');
-    if has_date_tokens {
+fn section_for_number(sections: &[String], val: f64) -> (&str, bool) {
+    if val < 0.0 {
+        if sections.len() >= 2 && !sections[1].is_empty() {
+            return (&sections[1], false);
+        }
+        return (
+            sections.first().map(String::as_str).unwrap_or("General"),
+            true,
+        );
+    }
+    if val == 0.0 && sections.len() >= 3 && !sections[2].is_empty() {
+        return (&sections[2], false);
+    }
+    (
+        sections.first().map(String::as_str).unwrap_or("General"),
+        false,
+    )
+}
+
+fn clean_format_literal(text: &[char]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < text.len() {
+        match text[i] {
+            '"' => {
+                i += 1;
+                while i < text.len() && text[i] != '"' {
+                    out.push(text[i]);
+                    i += 1;
+                }
+                if i < text.len() {
+                    i += 1;
+                }
+            }
+            '\\' => {
+                if let Some(next) = text.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            '_' | '*' => i += 2,
+            '[' => {
+                i += 1;
+                while i < text.len() && text[i] != ']' {
+                    i += 1;
+                }
+                if i < text.len() {
+                    i += 1;
+                }
+            }
+            c if c == '@' => {
+                out.push(c);
+                i += 1;
+            }
+            '0' | '#' | '?' | '.' | ',' => i += 1,
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn placeholder_bounds(chars: &[char]) -> Option<(usize, usize)> {
+    let first = chars.iter().position(|c| matches!(c, '0' | '#' | '?'))?;
+    let mut last = first;
+    let mut i = first;
+    while i < chars.len() {
+        match chars[i] {
+            '0' | '#' | '?' | '.' | ',' | '+' | '-' => {
+                last = i;
+                i += 1;
+            }
+            'E' | 'e' => {
+                last = i;
+                i += 1;
+                if i < chars.len() && matches!(chars[i], '+' | '-') {
+                    last = i;
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    Some((first, last))
+}
+
+fn trim_optional_decimal(mut decimals: String, tokens: &[char]) -> String {
+    while decimals.len() > tokens.iter().filter(|c| **c == '0').count()
+        && decimals.ends_with('0')
+        && tokens
+            .get(decimals.len().saturating_sub(1))
+            .is_some_and(|c| *c != '0')
+    {
+        decimals.pop();
+    }
+    decimals
+}
+
+fn format_fixed_number(abs_val: f64, pattern: &str) -> String {
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+    let decimal_idx = pattern_chars.iter().position(|c| *c == '.');
+    let int_pattern: String = pattern_chars[..decimal_idx.unwrap_or(pattern_chars.len())]
+        .iter()
+        .collect();
+    let dec_pattern: String = decimal_idx
+        .map(|idx| pattern_chars[idx + 1..].iter().collect())
+        .unwrap_or_default();
+    let dec_tokens: Vec<char> = dec_pattern
+        .chars()
+        .take_while(|c| matches!(c, '0' | '#' | '?'))
+        .collect();
+    let max_dec = dec_tokens.len();
+    let min_dec = dec_tokens.iter().filter(|c| **c == '0').count();
+    let min_int = int_pattern.chars().filter(|c| *c == '0').count();
+    let grouping = int_pattern.contains(',');
+    let rounded = round_half_away_from_zero(abs_val, max_dec).abs();
+    let formatted = format!("{:.*}", max_dec, rounded);
+    let (mut int_part, dec_part) = match formatted.split_once('.') {
+        Some((i, d)) => (i.to_string(), d.to_string()),
+        None => (formatted, String::new()),
+    };
+    if int_part.len() < min_int {
+        int_part = format!("{}{}", "0".repeat(min_int - int_part.len()), int_part);
+    }
+    if grouping {
+        int_part = add_thousands_separators(&int_part);
+    }
+    let mut out = int_part;
+    let decimals = if max_dec == 0 {
+        String::new()
+    } else {
+        trim_optional_decimal(dec_part, &dec_tokens)
+    };
+    if !decimals.is_empty() || min_dec > 0 {
+        out.push('.');
+        out.push_str(&decimals);
+        if decimals.len() < min_dec {
+            out.push_str(&"0".repeat(min_dec - decimals.len()));
+        }
+    }
+    out
+}
+
+fn format_scientific_number(abs_val: f64, pattern: &str) -> Option<String> {
+    let upper = pattern.to_ascii_uppercase();
+    let (mantissa_pattern, exponent_pattern) = upper.split_once('E')?;
+    let dec_count = mantissa_pattern
+        .split_once('.')
+        .map(|(_, d)| d.chars().filter(|c| matches!(c, '0' | '#' | '?')).count())
+        .unwrap_or(0);
+    let exp_digits = exponent_pattern
+        .chars()
+        .filter(|c| matches!(c, '0' | '#' | '?'))
+        .count()
+        .max(1);
+    let raw = format!("{:.*E}", dec_count, abs_val);
+    let (mantissa, exp) = raw.split_once('E')?;
+    let exp_num: i32 = exp.parse().ok()?;
+    let sign = if exponent_pattern.contains('-') && exp_num < 0 {
+        "-"
+    } else if exponent_pattern.contains('+') {
+        if exp_num < 0 { "-" } else { "+" }
+    } else {
+        ""
+    };
+    Some(format!(
+        "{mantissa}E{sign}{:0width$}",
+        exp_num.abs(),
+        width = exp_digits
+    ))
+}
+
+fn is_time_format_code(code: &str) -> bool {
+    let mut in_quote = false;
+    let mut in_bracket = false;
+    let mut escaped = false;
+    for c in code.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' if !in_bracket => in_quote = !in_quote,
+            '[' if !in_quote => in_bracket = true,
+            ']' if in_bracket => in_bracket = false,
+            _ if in_quote || in_bracket => {}
+            _ if matches!(c.to_ascii_lowercase(), 'h' | 's') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+pub(crate) fn format_number_format(val: f64, format_text: &str) -> Result<String, String> {
+    let fmt = format_text.trim();
+    if fmt.is_empty() || fmt.eq_ignore_ascii_case("General") || is_time_format_code(fmt) {
+        return Ok(crate::core::engine::result_data::format_excel_number(val));
+    }
+    if crate::core::date::is_date_code(fmt) {
         return format_date_text(val, fmt);
     }
 
-    let has_currency = fmt.contains('$');
-    let has_percent = fmt.contains('%');
-    let has_comma = fmt.contains(',');
-    let dec_count = match fmt.find('.') {
-        Some(idx) => fmt[idx + 1..]
-            .chars()
-            .take_while(|c| *c == '0' || *c == '#')
-            .count(),
-        None => 0,
+    let sections = split_format_sections(fmt);
+    let (section, use_default_minus) = section_for_number(&sections, val);
+    let chars: Vec<char> = section.chars().collect();
+    let Some((first, last)) = placeholder_bounds(&chars) else {
+        return Ok(clean_format_literal(&chars));
     };
-
-    let scaled = if has_percent { val * 100.0 } else { val };
-    let is_negative = scaled < 0.0;
-    let formatted = format!(
-        "{:.*}",
-        dec_count,
-        round_half_away_from_zero(scaled, dec_count).abs()
-    );
-    let (int_part, dec_part) = match formatted.split_once('.') {
-        Some((i, d)) => (i.to_string(), Some(d.to_string())),
-        None => (formatted, None),
-    };
-    let int_part = if has_comma {
-        add_thousands_separators(&int_part)
+    let prefix = clean_format_literal(&chars[..first]);
+    let suffix = clean_format_literal(&chars[last + 1..]);
+    let number_pattern: String = chars[first..=last]
+        .iter()
+        .filter(|c| matches!(c, '0' | '#' | '?' | '.' | ',' | 'E' | 'e' | '+' | '-'))
+        .collect();
+    let percent_count = section.chars().filter(|c| *c == '%').count() as i32;
+    let scaled = val.abs() * 100f64.powi(percent_count);
+    let number = if number_pattern.to_ascii_uppercase().contains('E') {
+        format_scientific_number(scaled, &number_pattern)
+            .unwrap_or_else(|| format_fixed_number(scaled, &number_pattern))
     } else {
-        int_part
+        format_fixed_number(scaled, &number_pattern)
     };
+    let mut out = String::new();
+    if use_default_minus {
+        out.push('-');
+    }
+    out.push_str(&prefix);
+    out.push_str(&number);
+    out.push_str(&suffix);
+    Ok(out)
+}
 
-    let mut result = int_part;
-    if let Some(d) = dec_part {
-        result.push('.');
-        result.push_str(&d);
+pub(crate) fn format_text_format(val: &str, format_text: &str) -> Option<String> {
+    let sections = split_format_sections(format_text);
+    let section = if sections.len() >= 4 {
+        sections[3].as_str()
+    } else {
+        sections.first().map(String::as_str).unwrap_or("@")
+    };
+    if !section.contains('@') {
+        return None;
     }
-    if has_currency {
-        result.insert(0, '$');
-    }
-    if is_negative {
-        result.insert(0, '-');
-    }
-    if has_percent {
-        result.push('%');
-    }
-    Ok(result)
+    Some(clean_format_literal(&section.chars().collect::<Vec<_>>()).replace('@', val))
+}
+
+/// [AI-Agent] A pragmatic subset of Excel's number-format mini-language for TEXT() and cell display.
+pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
+    format_number_format(val, format_text)
 }
 
 pub fn textafter(text: &str, delimiter: &str, instance: Option<f64>) -> Result<String, String> {
