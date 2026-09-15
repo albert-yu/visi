@@ -240,6 +240,9 @@ pub struct SetArgs {
     /// Font size in points (e.g. 11, 12, 14)
     #[usage(long = "font-size")]
     pub font_size: Option<f64>,
+
+    #[usage(long = "num-format", alias = "number-format")]
+    pub num_format: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1133,6 +1136,9 @@ pub struct StyleCellArgs {
     /// Font size in points (e.g. 11, 12, 14)
     #[usage(long = "font-size")]
     pub font_size: Option<f64>,
+
+    #[usage(long = "num-format", alias = "number-format")]
+    pub num_format: Option<String>,
 
     /// Write updated workbook to target output file path
     #[usage(short, long)]

@@ -123,14 +123,7 @@ impl Sheet {
         }
     }
 
-    /// The cell's value as it should be shown, honoring the cell's number
-    /// format.
-    ///
-    /// A date cell holds a plain numeric serial, exactly as in Excel, so
-    /// rendering it as a date is a display-time concern: this is the only
-    /// place that turns 46195 back into `6/22/26`. Everything that shows a
-    /// value to a user should go through here rather than formatting
-    /// [`ResultData`] directly, which knows nothing about formats.
+    /// [AI-Agent] The cell's value as it should be shown, honoring dates and numeric number formats.
     pub fn get_display_string(&self, cell: &CellRef) -> String {
         let value = self.get_result_data(cell);
         let Some(code) = self
@@ -139,22 +132,15 @@ impl Sheet {
         else {
             return value.to_string();
         };
-        if !crate::core::date::is_date_code(code) {
-            return value.to_string();
+        match value {
+            ResultData::Float(f) => crate::core::text::format_number_format(f, code)
+                .unwrap_or_else(|_| ResultData::Float(f).to_string()),
+            ResultData::Integer(i) => crate::core::text::format_number_format(i as f64, code)
+                .unwrap_or_else(|_| ResultData::Integer(i).to_string()),
+            ResultData::String(s) => crate::core::text::format_text_format(&s, code)
+                .unwrap_or(ResultData::String(s).to_string()),
+            other => other.to_string(),
         }
-        let serial = match value {
-            ResultData::Float(f) => f,
-            ResultData::Integer(i) => i as f64,
-            _ => return value.to_string(),
-        };
-        if serial < 0.0 {
-            return value.to_string();
-        }
-        crate::core::date::render_date_code(
-            crate::core::date::excel_serial_to_date(serial),
-            code,
-            crate::core::date::StringCase::Title,
-        )
     }
 
     /// Returns the intrinsic data type of a cell.

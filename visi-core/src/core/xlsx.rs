@@ -1663,7 +1663,12 @@ pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option
             key
         };
         if local_name == name {
-            return String::from_utf8(attr.value.into_owned()).ok();
+            let raw = String::from_utf8(attr.value.into_owned()).ok()?;
+            return Some(
+                quick_xml::escape::unescape(&raw)
+                    .map(|value| value.into_owned())
+                    .unwrap_or(raw),
+            );
         }
     }
     None
@@ -2212,19 +2217,55 @@ fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)
     Ok(tables)
 }
 
-/// The built-in `numFmtId`s that denote dates, per ECMA-376. Only the
-/// date-bearing ones are listed; ids outside this table and outside the custom
-/// `<numFmt>` range are numeric or text formats and carry no date notation.
-///
-/// The time-bearing built-ins (18-21, 45-47) are deliberately absent: visi has
-/// no time-of-day support, so claiming them would render `h:mm` cells as bare
-/// dates rather than leaving them as plain serials.
-const BUILTIN_DATE_NUM_FMTS: &[(u32, &str)] = &[
+/// [AI-Agent] Built-in OOXML `numFmtId` codes whose display strings can be preserved on import.
+const BUILTIN_NUM_FMTS: &[(u32, &str)] = &[
+    (0, "General"),
+    (1, "0"),
+    (2, "0.00"),
+    (3, "#,##0"),
+    (4, "#,##0.00"),
+    (5, "\"$\"#,##0_);(\"$\"#,##0)"),
+    (6, "\"$\"#,##0_);[Red](\"$\"#,##0)"),
+    (7, "\"$\"#,##0.00_);(\"$\"#,##0.00)"),
+    (8, "\"$\"#,##0.00_);[Red](\"$\"#,##0.00)"),
+    (9, "0%"),
+    (10, "0.00%"),
+    (11, "0.00E+00"),
+    (12, "# ?/?"),
+    (13, "# ??/??"),
     (14, "m/d/yy"),
     (15, "d-mmm-yy"),
     (16, "d-mmm"),
     (17, "mmm-yy"),
+    (18, "h:mm AM/PM"),
+    (19, "h:mm:ss AM/PM"),
+    (20, "h:mm"),
+    (21, "h:mm:ss"),
+    (22, "m/d/yy h:mm"),
+    (37, "#,##0;(#,##0)"),
+    (38, "#,##0;[Red](#,##0)"),
+    (39, "#,##0.00;(#,##0.00)"),
+    (40, "#,##0.00;[Red](#,##0.00)"),
+    (41, r#"_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)"#),
+    (42, r#"_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)"#),
+    (43, r#"_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)"#),
+    (
+        44,
+        r#"_("$"* #,##0.00_);_("$"* (#,##0.00);_("$"* "-"??_);_(@_)"#,
+    ),
+    (45, "mm:ss"),
+    (46, "[h]:mm:ss"),
+    (47, "mm:ss.0"),
+    (48, "##0.0E+0"),
+    (49, "@"),
 ];
+
+fn builtin_num_fmt_code(id: u32) -> Option<&'static str> {
+    BUILTIN_NUM_FMTS
+        .iter()
+        .find(|(builtin_id, _)| *builtin_id == id)
+        .map(|(_, code)| *code)
+}
 
 /// Date format codes per cell, keyed by sheet name and then by 0-based
 /// `(row, col)`.
@@ -2483,13 +2524,11 @@ fn parse_styles_cell_styles(xml: &str) -> std::collections::HashMap<u32, CellSty
                     if let Some(num_fmt_id) =
                         get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
                     {
-                        style.num_format =
-                            custom_num_formats.get(&num_fmt_id).cloned().or_else(|| {
-                                BUILTIN_DATE_NUM_FMTS
-                                    .iter()
-                                    .find(|(id, _)| *id == num_fmt_id)
-                                    .map(|(_, code)| (*code).to_string())
-                            });
+                        style.num_format = custom_num_formats
+                            .get(&num_fmt_id)
+                            .cloned()
+                            .or_else(|| builtin_num_fmt_code(num_fmt_id).map(str::to_string))
+                            .filter(|code| !code.eq_ignore_ascii_case("General"));
                     }
                     if !style.is_empty() {
                         out.insert(xf_idx, style);
@@ -2678,12 +2717,10 @@ fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String>
 
     let mut out = HashMap::new();
     for (xf_idx, num_fmt_id) in cell_xfs.into_iter().enumerate() {
-        let code = custom.get(&num_fmt_id).cloned().or_else(|| {
-            BUILTIN_DATE_NUM_FMTS
-                .iter()
-                .find(|(id, _)| *id == num_fmt_id)
-                .map(|(_, code)| (*code).to_string())
-        });
+        let code = custom
+            .get(&num_fmt_id)
+            .cloned()
+            .or_else(|| builtin_num_fmt_code(num_fmt_id).map(str::to_string));
         if let Some(code) = code
             && crate::core::date::is_date_code(&code)
         {
@@ -2991,6 +3028,35 @@ mod tests {
     }
 
     #[test]
+    fn test_xlsx_custom_number_format_survives_round_trip_and_display() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 1,
+            cols: 1,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "7.5".to_string());
+        sheet.update_cell_style(0, 0, |style| {
+            style.num_format = Some("0.0\"x\"".to_string());
+        });
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let (imported, _, _, _) = import_xlsx_data(&bytes, &[], |_, _, _| {}).unwrap();
+        let imported = &imported[0].sheet;
+        assert_eq!(
+            imported.columns[0].styles[0]
+                .as_ref()
+                .and_then(|s| s.num_format.as_deref()),
+            Some("0.0\"x\"")
+        );
+        assert_eq!(
+            imported.get_display_string(&crate::core::CellRef::new(0, 0)),
+            "7.5x"
+        );
+    }
+
+    #[test]
     fn test_builtin_date_num_fmt_14_uses_two_digit_year() {
         let styles = r#"
             <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -3001,6 +3067,32 @@ mod tests {
         "#;
         let formats = parse_styles_num_formats(styles);
         assert_eq!(formats.get(&0).map(String::as_str), Some("m/d/yy"));
+    }
+
+    #[test]
+    fn test_builtin_and_custom_number_formats_import_as_cell_styles() {
+        let styles = r#"
+            <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+              <numFmts count="1">
+                <numFmt numFmtId="164" formatCode="0.0&quot;x&quot;"/>
+              </numFmts>
+              <cellXfs count="3">
+                <xf numFmtId="0"/>
+                <xf numFmtId="2" applyNumberFormat="1"/>
+                <xf numFmtId="164" applyNumberFormat="1"/>
+              </cellXfs>
+            </styleSheet>
+        "#;
+        let styles = parse_styles_cell_styles(styles);
+        assert!(!styles.contains_key(&0));
+        assert_eq!(
+            styles.get(&1).and_then(|s| s.num_format.as_deref()),
+            Some("0.00")
+        );
+        assert_eq!(
+            styles.get(&2).and_then(|s| s.num_format.as_deref()),
+            Some("0.0\"x\"")
+        );
     }
 
     /// A date cell has to survive as a *date*: the value goes out as a

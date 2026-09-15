@@ -302,7 +302,7 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
         underline: if args.underline { Some(true) } else { None },
         font_family: args.font_family,
         font_size: args.font_size,
-        num_format: None,
+        num_format: args.num_format,
     };
 
     if updates.is_empty() && type_only_cells.is_empty() {
@@ -1075,12 +1075,12 @@ fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
         underline: if args.underline { Some(true) } else { None },
         font_family: args.font_family,
         font_size: args.font_size,
-        num_format: None,
+        num_format: args.num_format,
     };
 
     if style.is_empty() {
         exit_with_error(
-            "Must specify at least one style attribute (--font-color, --bg-color, --bold, --italic, --underline, --font-family, --font-size)",
+            "Must specify at least one style attribute (--font-color, --bg-color, --bold, --italic, --underline, --font-family, --font-size, --num-format)",
             EXIT_USAGE_ERROR,
         );
     }

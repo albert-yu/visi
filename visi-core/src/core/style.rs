@@ -21,11 +21,9 @@ pub struct CellStyle {
     /// as a `Double` and a half-point size round-trips (`.Font.Size = 10.5`
     /// reads back as `10.5`), both measured with `fuzz/vba_style_probe.py`.
     pub font_size: Option<f64>,
-    /// Excel number-format code (e.g. `m/d/yy`, `yyyy-mm-dd`).
+    /// [AI-Agent] Excel number-format code (e.g. `0.00`, `0.0"x"`, `m/d/yy`, `yyyy-mm-dd`).
     ///
-    /// This is how a date cell remembers the notation it was written in: the
-    /// value stays a plain numeric serial, exactly as in Excel, and the format
-    /// governs only how it renders. See `core::date`.
+    /// [AI-Agent] The value stays a plain number, exactly as in Excel, and the format governs only how it renders.
     pub num_format: Option<String>,
 }
 
