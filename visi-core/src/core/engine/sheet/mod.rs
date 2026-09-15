@@ -372,10 +372,12 @@ impl Sheet {
                     } else if cell_type_hint == CellType::DateTime {
                         if let Ok(f) = src.trim().parse::<f64>() {
                             (ResultData::Float(f), CellType::DateTime)
-                        } else if let Some((date, format)) = crate::core::date::parse_date_with_locale(
-                            src.trim_matches(' '),
-                            &self.locale,
-                        ) {
+                        } else if let Some((date, format)) =
+                            crate::core::date::parse_date_with_locale(
+                                src.trim_matches(' '),
+                                &self.locale,
+                            )
+                        {
                             detected_num_format = Some(format.to_format_code());
                             (
                                 ResultData::Float(crate::core::date::date_to_excel_serial(date)),
