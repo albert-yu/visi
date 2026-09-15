@@ -606,7 +606,7 @@ fn format_fixed_number(abs_val: f64, pattern: &str) -> String {
     } else {
         trim_optional_decimal(dec_part, &dec_tokens)
     };
-    if !decimals.is_empty() || min_dec > 0 {
+    if !decimals.is_empty() || min_dec > 0 || (decimal_idx.is_some() && max_dec > 0) {
         out.push('.');
         out.push_str(&decimals);
         if decimals.len() < min_dec {
