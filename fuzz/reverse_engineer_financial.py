@@ -22,7 +22,7 @@ NS = {
 
 
 def map_sheet_names(xlsx_path):
-    """[LLM-generated] `XLSXEvaluatedReader` keys cells by the internal `sheetN.xml`
+    """`XLSXEvaluatedReader` keys cells by the internal `sheetN.xml`
     basename, not the sheet's display name -- both engines preserve sheet
     order (confirmed: sheet definition order in `xl/workbook.xml` matches
     `xl/_rels/workbook.xml.rels` target order for both rust_xlsxwriter's
@@ -52,7 +52,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
 
 def col_name(col_idx):
-    """[LLM-generated] 1-based column index -> A1 column letter (1 -> A, 27 -> AA)."""
+    """1-based column index -> A1 column letter (1 -> A, 27 -> AA)."""
     result = ""
     while col_idx > 0:
         col_idx, remainder = divmod(col_idx - 1, 26)
@@ -85,7 +85,7 @@ CANDIDATE_VARIANTS = [
 
 
 def newton_raphson_generic(f, fprime_numeric, fprime_closed, guess, variant):
-    """[LLM-generated] Shared Newton-Raphson core parameterized by `variant` (see
+    """Shared Newton-Raphson core parameterized by `variant` (see
     CANDIDATE_VARIANTS). Includes reverse-engineered step halving, step capping,
     and domain boundary protection.
     """
@@ -206,7 +206,7 @@ def candidate_irr(values, guess, variant):
 
 
 def candidate_xirr(values, days, guess, variant):
-    """[LLM-generated] `days[i]` = (date_i - date_0) in days (float), days[0] == 0."""
+    """`days[i]` = (date_i - date_0) in days (float), days[0] == 0."""
     n = len(values)
     fracs = [d / 365.0 for d in days]
 

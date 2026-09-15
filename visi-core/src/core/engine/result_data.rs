@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// [LLM-generated] What a cell holds once it has been evaluated.
+/// What a cell holds once it has been evaluated.
 ///
 /// There is deliberately **no date variant**. As in Excel, a date is a plain
 /// numeric serial and the notation it was typed in lives on the cell, as
@@ -15,23 +15,23 @@ use serde::{Deserialize, Serialize};
 /// [`EngineError`]: crate::core::EngineError
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResultData {
-    /// [LLM-generated] A blank cell. Coerces to 0 or `""` depending on what reads it.
+    /// A blank cell. Coerces to 0 or `""` depending on what reads it.
     None,
-    /// [LLM-generated] `TRUE` or `FALSE`.
+    /// `TRUE` or `FALSE`.
     Boolean(bool),
-    /// [LLM-generated] A whole number.
+    /// A whole number.
     Integer(i64),
-    /// [LLM-generated] A number that is not a whole number, or one too large for an `i64`.
+    /// A number that is not a whole number, or one too large for an `i64`.
     /// A date is a `Float` holding its Excel serial.
     Float(f64),
-    /// [LLM-generated] Text.
+    /// Text.
     String(String),
-    /// [LLM-generated] An ordered sequence, for the engine-specific functions that return one.
+    /// An ordered sequence, for the engine-specific functions that return one.
     /// Not an Excel array.
     List(Vec<ResultData>),
-    /// [LLM-generated] Key/value pairs, for the engine-specific functions that return them.
+    /// Key/value pairs, for the engine-specific functions that return them.
     Dict(Vec<(ResultData, ResultData)>),
-    /// [LLM-generated] An Excel error value, held as its code: `#DIV/0!`, `#VALUE!`, `#N/A`.
+    /// An Excel error value, held as its code: `#DIV/0!`, `#VALUE!`, `#N/A`.
     Error(String),
 }
 
@@ -56,7 +56,7 @@ impl std::fmt::Display for ResultData {
     }
 }
 
-/// [LLM-generated] Rounds a significant-digit string to `keep` digits, half away from zero,
+/// Rounds a significant-digit string to `keep` digits, half away from zero,
 /// trimming the trailing zeros Excel does not display. Returns the digits
 /// and the (possibly incremented) exponent -- rounding 999 up to 100 shifts
 /// the decimal point.
@@ -92,7 +92,7 @@ fn round_digits_half_up(digits: &str, exp: i32, keep: usize) -> (String, i32) {
     (out, exp)
 }
 
-/// [LLM-generated] The Excel error values, spelled exactly as a cell shows them.
+/// The Excel error values, spelled exactly as a cell shows them.
 ///
 /// A closed set: these are the only strings a cell can hold that are an error
 /// rather than text, which is what makes recognising one on entry safe.
@@ -100,7 +100,7 @@ pub(crate) const EXCEL_ERROR_CODES: &[&str] = &[
     "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#CALC!", "#SPILL!",
 ];
 
-/// [LLM-generated] Whether a literal cell entry is one of Excel's error values.
+/// Whether a literal cell entry is one of Excel's error values.
 ///
 /// Typing `#NUM!` into Excel produces the error, not the text -- measured,
 /// along with the same thing happening when VBA assigns the string through

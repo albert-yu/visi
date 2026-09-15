@@ -12,18 +12,18 @@ use super::cell::{
 };
 use super::column::DataColumn;
 use super::result_data::ResultData;
-/// [LLM-generated] Context for evaluating expressions, containing references to other sheets
+/// Context for evaluating expressions, containing references to other sheets
 #[derive(Default)]
 pub struct Context<'a> {
-    /// [LLM-generated] Map of sheet names to sheet references for cross-sheet lookups
+    /// Map of sheet names to sheet references for cross-sheet lookups
     pub sheets: HashMap<String, &'a Sheet>,
-    /// [LLM-generated] Every pivot table in the workbook, so `GETPIVOTDATA` can resolve a
+    /// Every pivot table in the workbook, so `GETPIVOTDATA` can resolve a
     /// rendered pivot's destination cell back to its definition. Pivot
     /// tables are workbook-level (like `Context.sheets`' cross-sheet
     /// lookups), not sheet-scoped, so this lives here rather than on
     /// `Sheet` itself.
     pub pivot_tables: &'a [crate::core::pivot::PivotTable],
-    /// [LLM-generated] Sheet names in true workbook order, so `SHEET()` can report a real
+    /// Sheet names in true workbook order, so `SHEET()` can report a real
     /// ordinal. `sheets` is an unordered `HashMap`, which is why this is
     /// tracked separately rather than derived from it -- true order only
     /// exists one layer up, in `visi`'s `WorkbookManager::sheets` (a
@@ -32,7 +32,7 @@ pub struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    /// [LLM-generated] Create a new empty context
+    /// Create a new empty context
     pub fn new() -> Self {
         Self {
             sheets: HashMap::new(),
@@ -41,13 +41,13 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// [LLM-generated] Add a sheet to the context for lookup during evaluation
+    /// Add a sheet to the context for lookup during evaluation
     pub fn add_table(&mut self, name: String, sheet: &'a Sheet) {
         self.sheets.insert(name, sheet);
     }
 }
 
-/// [LLM-generated] A chain of LET name/value bindings in scope while evaluating a single
+/// A chain of LET name/value bindings in scope while evaluating a single
 /// formula. This is a linked list (not a cloned `HashMap`) because LET
 /// binds names one at a time -- each value expression, and the final
 /// calculation, must see all *earlier* bindings from the same LET (and any
@@ -82,22 +82,22 @@ impl<'a> LetScope<'a> {
     }
 }
 
-/// [LLM-generated] Which way a fill or selection extends from its anchor cell.
+/// Which way a fill or selection extends from its anchor cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Direction {
-    /// [LLM-generated] No direction; the operation is a no-op.
+    /// No direction; the operation is a no-op.
     None,
-    /// [LLM-generated] Toward row 0.
+    /// Toward row 0.
     Up,
-    /// [LLM-generated] Toward the last row.
+    /// Toward the last row.
     Down,
-    /// [LLM-generated] Toward column 0.
+    /// Toward column 0.
     Left,
-    /// [LLM-generated] Toward the last column.
+    /// Toward the last column.
     Right,
 }
 
-/// [LLM-generated] One worksheet: a grid of cells, the formulas over them, and the dependency
+/// One worksheet: a grid of cells, the formulas over them, and the dependency
 /// graph that keeps them up to date.
 ///
 /// # Coordinates
@@ -133,54 +133,54 @@ pub enum Direction {
 /// [`ExcelTable`]: crate::core::table::ExcelTable
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sheet {
-    /// [LLM-generated] Workbook-unique identifier. Formulas compile references against this
+    /// Workbook-unique identifier. Formulas compile references against this
     /// rather than the name, which is what makes a rename non-destructive.
     #[serde(default = "generate_unique_id")]
     pub id: u64,
-    /// [LLM-generated] Display name, as it appears in a cross-sheet reference.
+    /// Display name, as it appears in a cross-sheet reference.
     pub name: String,
-    /// [LLM-generated] The cells, one entry per column. Row `r` of column `c` is
+    /// The cells, one entry per column. Row `r` of column `c` is
     /// `columns[c]`'s entry `r`.
     ///
     /// Every column has the same number of rows -- [`Sheet::row_count`] reads
     /// only the first and assumes the rest match -- so the `Vec` itself is
     /// crate-private. Read them through [`Sheet::columns`].
     pub(crate) columns: Vec<DataColumn>,
-    /// [LLM-generated] Excel/OpenXML row heights in point units, aligned with sheet rows.
+    /// [AI-Agent] Excel/OpenXML row heights in point units, aligned with sheet rows.
     #[serde(default)]
     pub(crate) row_heights: Vec<Option<f64>>,
-    /// [LLM-generated] Excel Tables (ListObjects) defined on this sheet.
+    /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
-    /// [LLM-generated] Forward edges: which cells must be recomputed when a dependency
+    /// Forward edges: which cells must be recomputed when a dependency
     /// changes. Rebuilt from the formulas, so not serialized.
     #[serde(skip, default)]
     pub dependencies: HashMap<Dependency, HashSet<CellRef>>,
-    /// [LLM-generated] Reverse edges: what each cell currently reads, so its old edges can be
+    /// Reverse edges: what each cell currently reads, so its old edges can be
     /// dropped when its formula changes. Rebuilt, so not serialized.
     #[serde(skip, default)]
     pub dependencies_rev: HashMap<CellRef, HashSet<Dependency>>,
-    /// [LLM-generated] Edits made since the last commit, for callers that want to observe or
+    /// Edits made since the last commit, for callers that want to observe or
     /// replay them.
     #[serde(skip)]
     pub uncommitted_actions: Vec<crate::core::SheetAction>,
-    /// [LLM-generated] Regional locale for date and number parsing.
+    /// Regional locale for date and number parsing.
     #[serde(default)]
     pub locale: crate::core::locale::Locale,
 }
 
-/// [LLM-generated] Arguments for [`Sheet::new`]. [`Default`] gives a 10x5 sheet with a
+/// Arguments for [`Sheet::new`]. [`Default`] gives a 10x5 sheet with a
 /// generated id and the name `table_1`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SheetInit {
-    /// [LLM-generated] Identifier to use; `None` generates a fresh one.
+    /// Identifier to use; `None` generates a fresh one.
     #[serde(default)]
     pub id: Option<u64>,
-    /// [LLM-generated] Name to use; `None` means `table_1`.
+    /// Name to use; `None` means `table_1`.
     pub name: Option<String>,
-    /// [LLM-generated] Rows to allocate.
+    /// Rows to allocate.
     pub rows: usize,
-    /// [LLM-generated] Columns to allocate.
+    /// Columns to allocate.
     pub cols: usize,
 }
 
@@ -195,19 +195,19 @@ impl Default for SheetInit {
     }
 }
 
-/// [LLM-generated] How a blank cell is treated by the strict numeric flatteners.
+/// How a blank cell is treated by the strict numeric flatteners.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlankPolicy {
-    /// [LLM-generated] Counts as 0 (MULTINOMIAL).
+    /// Counts as 0 (MULTINOMIAL).
     Zero,
-    /// [LLM-generated] Dropped entirely, shifting later elements (SERIESSUM).
+    /// Dropped entirely, shifting later elements (SERIESSUM).
     Skip,
-    /// [LLM-generated] #VALUE!, like text (LINEST/TREND/GROWTH/LOGEST/MMULT).
+    /// #VALUE!, like text (LINEST/TREND/GROWTH/LOGEST/MMULT).
     Reject,
 }
 
 impl Sheet {
-    /// [LLM-generated] Creates a sheet of `args.rows` x `args.cols` empty cells, every one of
+    /// Creates a sheet of `args.rows` x `args.cols` empty cells, every one of
     /// them queued as a pending edit so the first [`Sheet::commit`] sees them.
     pub fn new(args: SheetInit) -> Sheet {
         let SheetInit {
@@ -249,7 +249,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Rebuilds what serialization drops.
+    /// Rebuilds what serialization drops.
     ///
     /// Only the raw source text is persisted, so this resizes the value and
     /// compiled-formula vectors back to match it -- restoring the
@@ -264,7 +264,7 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    /// [LLM-generated] Every sheet a formula on this one could refer to -- this sheet first,
+    /// Every sheet a formula on this one could refer to -- this sheet first,
     /// then the rest of `context` -- as the name-to-id lookup table that
     /// `compile_formula` resolves references against.
     pub(crate) fn get_all_sheets_for_compilation(&self, context: Option<&Context>) -> Vec<Sheet> {
@@ -282,7 +282,7 @@ impl Sheet {
         list
     }
 
-    /// [LLM-generated] Queues every cell for recomputation on the next [`Sheet::commit`].
+    /// Queues every cell for recomputation on the next [`Sheet::commit`].
     ///
     /// This is how cross-sheet staleness is handled: `WorkbookManager` cannot
     /// tell which cells a remote edit reached, so it marks whole sheets.
@@ -293,7 +293,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Commit all changed src items with a context for sheet lookups
+    /// Commit all changed src items with a context for sheet lookups
     pub fn commit(&mut self, context: Option<&Context>) -> Result<HashSet<CellRef>, EngineError> {
         let mut queue: VecDeque<CellRef> = VecDeque::new();
         let mut queue_set: HashSet<CellRef> = HashSet::new();
@@ -587,7 +587,7 @@ impl Sheet {
         Ok(updated_cells)
     }
 
-    /// [LLM-generated] Evaluates cell source text without storing it, as
+    /// Evaluates cell source text without storing it, as
     /// [`Sheet::eval`] does, but from the point of view of `(row, col)`.
     ///
     /// The position is what makes relative constructs work -- a structured
@@ -624,7 +624,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Evaluates cell source text against this sheet without storing it,
+    /// Evaluates cell source text against this sheet without storing it,
     /// returning the value and the references it read.
     ///
     /// Text with a leading `=` is a formula; anything else is parsed as a
@@ -1280,7 +1280,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] `SORT`/`SORTBY`-specific comparator: Microsoft documents that both
+    /// `SORT`/`SORTBY`-specific comparator: Microsoft documents that both
     /// functions always place blank cells last, regardless of ascending
     /// vs. descending order -- unlike `compare_excel_values`'s general
     /// blank-coerces-to-0/""/false rule (correct for comparison operators,
@@ -1379,7 +1379,7 @@ impl Sheet {
         a.len().cmp(&b.len())
     }
 
-    /// [LLM-generated] Snaps a float to its 15-significant-digit rounding when the two are
+    /// Snaps a float to its 15-significant-digit rounding when the two are
     /// within floating-point noise of each other, so accumulated error does
     /// not leak into a result Excel would show as exact.
     ///
@@ -1401,7 +1401,7 @@ impl Sheet {
         val
     }
 
-    /// [LLM-generated] Coerces a value to a number the way an Excel arithmetic operator does:
+    /// Coerces a value to a number the way an Excel arithmetic operator does:
     /// a blank is 0, a boolean is 0 or 1, and text is converted if it reads as
     /// a number or a date (a date becoming its serial).
     ///
@@ -1521,7 +1521,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Flattens a single argument (which may be a range/array `List`) into
+    /// Flattens a single argument (which may be a range/array `List`) into
     /// an ordered `Vec<f64>` for the financial functions that take a
     /// cashflow series (`NPV`, `IRR`, `MIRR`, `XNPV`, `XIRR`, `FVSCHEDULE`).
     /// Mirrors `sum_helper`'s convention: booleans/text only count when
@@ -1578,7 +1578,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Flattens one argument positionally: `Some(n)` for a numeric cell,
+    /// Flattens one argument positionally: `Some(n)` for a numeric cell,
     /// `None` for anything real Excel excludes from a paired statistical
     /// calculation (text, boolean, blank). Unlike flatten_stat_numbers,
     /// excluded cells still occupy a slot, so two ranges of the same
@@ -1620,7 +1620,7 @@ impl Sheet {
         out
     }
 
-    /// [LLM-generated] Excel's paired statistical functions (CORREL/PEARSON/COVAR/
+    /// Excel's paired statistical functions (CORREL/PEARSON/COVAR/
     /// COVARIANCE.P/COVARIANCE.S/SLOPE/INTERCEPT/RSQ/STEYX/FORECAST/
     /// TREND/LINEST/GROWTH/LOGEST/T.TEST/SUMX2PY2/SUMXMY2/SUMX2MY2/PROB)
     /// compare the two ranges' *raw* element counts first -- a mismatch
@@ -1660,7 +1660,7 @@ impl Sheet {
         Ok((xs, ys))
     }
 
-    /// [LLM-generated] pair_and_filter over two argument slots.
+    /// pair_and_filter over two argument slots.
     fn paired_args(
         &self,
         x_arg: Option<&ResultData>,
@@ -1690,7 +1690,7 @@ impl Sheet {
         Self::pair_and_filter(xs_raw, ys_raw)
     }
 
-    /// [LLM-generated] Like flatten_stat_numbers, but errors instead of silently dropping
+    /// Like flatten_stat_numbers, but errors instead of silently dropping
     /// a cell real Excel won't accept. Excel's array/matrix-argument
     /// functions don't ignore text the way SUM/AVERAGE-style aggregates
     /// do -- one bad cell makes the whole call #VALUE!.
@@ -1768,7 +1768,7 @@ impl Sheet {
         Ok(out)
     }
 
-    /// [LLM-generated] flatten_strict_numbers with blanks dropped rather than zero-filled,
+    /// flatten_strict_numbers with blanks dropped rather than zero-filled,
     /// for GCD/LCM (which also coerce numeric text, like MULTINOMIAL).
     fn flatten_skipping_blanks(&self, arg: Option<&ResultData>) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
@@ -1778,7 +1778,7 @@ impl Sheet {
         Ok(out)
     }
 
-    /// [LLM-generated] Like `flatten_skipping_blanks`, but a numeric-looking string is
+    /// Like `flatten_skipping_blanks`, but a numeric-looking string is
     /// #VALUE! rather than coerced -- SERIESSUM's coefficients, unlike
     /// GCD/LCM's operands, don't accept text at all (measured:
     /// `SERIESSUM(1.49, 1, 2, {<blank>, "2", 27, -35})` is #VALUE! in real
@@ -1795,7 +1795,7 @@ impl Sheet {
         Ok(out)
     }
 
-    /// [LLM-generated] flatten_strict_numbers with the stricter "a blank is also #VALUE!"
+    /// flatten_strict_numbers with the stricter "a blank is also #VALUE!"
     /// rule the regression-array and matrix functions use.
     fn flatten_numbers_only(&self, arg: &ResultData) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
@@ -1803,7 +1803,7 @@ impl Sheet {
         Ok(out)
     }
 
-    /// [LLM-generated] The value of one cell of a SUMIF/AVERAGEIF/MAXIFS/MINIFS-style
+    /// The value of one cell of a SUMIF/AVERAGEIF/MAXIFS/MINIFS-style
     /// *aggregate* range. Only a real number counts: Excel silently skips
     /// text and booleans in the range being summed/averaged/compared
     /// (confirmed directly -- `SUMIF` over a range holding
@@ -1826,7 +1826,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] `flatten_stat_numbers` across an argument list, applying Excel's rule
+    /// `flatten_stat_numbers` across an argument list, applying Excel's rule
     /// for text supplied *directly* as an argument: it is coerced if it
     /// looks numeric, and is `#VALUE!` if it does not. Text reached through
     /// a reference is skipped instead, which is what `flatten_stat_numbers`
@@ -1855,7 +1855,7 @@ impl Sheet {
         Ok(out)
     }
 
-    /// [LLM-generated] Flatten arguments for the `*A` statistical family (AVERAGEA, MAXA,
+    /// Flatten arguments for the `*A` statistical family (AVERAGEA, MAXA,
     /// MINA, STDEVA, STDEVPA, VARA, VARPA), which count text and booleans
     /// rather than skipping them.
     ///
@@ -1903,7 +1903,7 @@ impl Sheet {
         })
     }
 
-    /// [LLM-generated] `flatten_stat_numbers_a` over a whole argument list, using the
+    /// `flatten_stat_numbers_a` over a whole argument list, using the
     /// caller's per-argument direct/reference classification.
     fn flatten_args_stat_numbers_a(
         &self,
@@ -1945,7 +1945,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Reshapes a range argument's flat evaluated list back into a 2D
+    /// Reshapes a range argument's flat evaluated list back into a 2D
     /// row-major matrix using the *reference's* own width.
     ///
     /// A plain rectangular range like `F1:G2` evaluates to a flat
@@ -1990,7 +1990,7 @@ impl Sheet {
         flat.chunks(cols).map(|c| c.to_vec()).collect()
     }
 
-    /// [LLM-generated] An optional numeric argument. An *absent* argument falls back to
+    /// An optional numeric argument. An *absent* argument falls back to
     /// `default`, but one that is present and non-numeric is #VALUE! --
     /// the `.and_then(to_f64).unwrap_or(default)` shape used in places
     /// conflates the two, so e.g. `LOG(3.14, "E")` quietly computed
@@ -2013,7 +2013,7 @@ impl Sheet {
         slots.iter().all(|v| v.is_none())
     }
 
-    /// [LLM-generated] True when an argument is a *single-cell* operand that is empty.
+    /// True when an argument is a *single-cell* operand that is empty.
     ///
     /// Excel treats that as a missing operand and answers #VALUE!, rather
     /// than as a one-element array of nothing. The distinction is
@@ -2034,7 +2034,7 @@ impl Sheet {
         matches!(scalar, ResultData::None)
     }
 
-    /// [LLM-generated] True when the first argument is a boolean and the function is one
+    /// True when the first argument is a boolean and the function is one
     /// of the few that refuse them.
     ///
     /// Excel's numeric coercion is not uniform here. SQRT, FACT, SIGN,
@@ -2263,7 +2263,7 @@ impl Sheet {
         self.to_bool_opt(val).unwrap_or(false)
     }
 
-    /// [LLM-generated] Strict "is this a genuine number" check for range-value aggregation
+    /// Strict "is this a genuine number" check for range-value aggregation
     /// (DCOUNT/DSUM/DAVERAGE/... and friends), as opposed to `to_f64`'s
     /// scalar-arithmetic coercion (which maps blank -> 0 and booleans ->
     /// 1/0). Confirmed against real Excel via the differential fuzzer that
@@ -2280,7 +2280,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Exact-match ("match_type 0" / "range_lookup FALSE") comparison for
+    /// Exact-match ("match_type 0" / "range_lookup FALSE") comparison for
     /// MATCH/VLOOKUP/HLOOKUP/XLOOKUP.
     ///
     /// A *blank* lookup value is coerced to 0 (Excel's usual empty-cell
@@ -2370,7 +2370,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Resolves an argument `Expr` to its raw `(sheet, start_row, start_col,
+    /// Resolves an argument `Expr` to its raw `(sheet, start_row, start_col,
     /// end_row, end_col)` range bounds, for functions (like the database
     /// `D*` family below) that need genuine 2D shape and can't work off the
     /// pre-flattened `ResultData::List` every other argument already went
@@ -2395,7 +2395,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Reads a range's cells into a row-major grid, resolving a whole-column
+    /// Reads a range's cells into a row-major grid, resolving a whole-column
     /// range's `end_row` sentinel and cross-sheet references via `context`.
     /// Materializing into an owned `Vec<Vec<ResultData>>` (rather than
     /// keeping a live `&Sheet` around) sidesteps the local-vs-remote
@@ -2443,7 +2443,7 @@ impl Sheet {
         Some(grid)
     }
 
-    /// [LLM-generated] Shared implementation for the 12 database `D*` functions
+    /// Shared implementation for the 12 database `D*` functions
     /// (DAVERAGE/DCOUNT/DCOUNTA/DGET/DMAX/DMIN/DPRODUCT/DSTDEV/DSTDEVP/
     /// DSUM/DVAR/DVARP): each reduces to "match database rows against the
     /// criteria table, then aggregate one field column of the matches" --
@@ -2643,7 +2643,7 @@ impl Sheet {
         ((year, m, d), (hour, minute, second))
     }
 
-    /// [LLM-generated] Evaluates Excel's LET(name1, value1, [name2, value2, ...],
+    /// Evaluates Excel's LET(name1, value1, [name2, value2, ...],
     /// calculation). Binds each name/value pair in order -- value2 (and
     /// later pairs, and the final calculation) can reference name1, per
     /// Excel's LET semantics -- by recursing one pair at a time so each
@@ -2690,7 +2690,7 @@ impl Sheet {
         self.evaluate_let(&args[2..], context, row, col, deps, &inner_scope)
     }
 
-    /// [LLM-generated] Recognizes `expr` as a `LAMBDA(param1, [param2, ...], body)` call
+    /// Recognizes `expr` as a `LAMBDA(param1, [param2, ...], body)` call
     /// and, if so, returns its declared parameter names alongside the
     /// (still-unevaluated) body expression. Used by every function below
     /// that takes a lambda argument: the lambda is never evaluated as an
@@ -2722,7 +2722,7 @@ impl Sheet {
         Some((param_names, body))
     }
 
-    /// [LLM-generated] Evaluates a lambda's body with each of `params` bound (via
+    /// Evaluates a lambda's body with each of `params` bound (via
     /// `LetScope`) to the corresponding entry of `values`, which must be
     /// the same length. `values` is borrowed rather than consumed so
     /// callers can reuse per-element storage across many invocations
@@ -2752,7 +2752,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Flattens `expr` (evaluated) into a `Vec<ResultData>`, treating a
+    /// Flattens `expr` (evaluated) into a `Vec<ResultData>`, treating a
     /// scalar as a single-element array -- shared by MAP/REDUCE/SCAN,
     /// which all iterate an "array" argument that might just be one cell.
     fn eval_as_array(
@@ -2772,7 +2772,7 @@ impl Sheet {
         )
     }
 
-    /// [LLM-generated] `SEQUENCE`/`MUNIT` (unlike every array-*reshaping* function added
+    /// `SEQUENCE`/`MUNIT` (unlike every array-*reshaping* function added
     /// this session) return their 2D result as a genuinely nested
     /// `List(List(row_values), ...)`, one inner list per row, rather than
     /// a flat row-major list -- that's the only place in this engine a
@@ -2800,7 +2800,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Infers `(flat_values, num_cols)` for an array-like argument: real
+    /// Infers `(flat_values, num_cols)` for an array-like argument: real
     /// column count from a `RangeRef`/`CellRef` AST node when available,
     /// otherwise treats the flattened result as a single row -- the same
     /// convention `INDEX`'s 3-arg form already uses (see its `num_cols`
@@ -2838,7 +2838,7 @@ impl Sheet {
         Ok((flat, num_cols))
     }
 
-    /// [LLM-generated] Recovers the column count an array-reshaping function call's result
+    /// Recovers the column count an array-reshaping function call's result
     /// would have, purely from its argument expressions -- needed because
     /// this engine's flat `ResultData::List` carries no shape of its own,
     /// so nesting one of these calls inside another (e.g.
@@ -2981,7 +2981,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Shared `[start, end)` bound computation for `TAKE`/`DROP`: a
+    /// Shared `[start, end)` bound computation for `TAKE`/`DROP`: a
     /// positive count counts from the start, negative from the end;
     /// `is_take` selects which side of that split is kept.
     fn drop_take_bounds(total: isize, n: isize, is_take: bool) -> (isize, isize) {
@@ -2995,7 +2995,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Shared implementation for MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY:
+    /// Shared implementation for MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY:
     /// each applies a `LAMBDA` argument to some shape of input (parallel
     /// arrays, rows, columns, an accumulator, or generated row/col
     /// indices) and collects the results -- see each branch for the
@@ -3159,7 +3159,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Minimal A1-notation string parser for `INDIRECT`: `"A1"`,
+    /// Minimal A1-notation string parser for `INDIRECT`: `"A1"`,
     /// `"B2:C5"`, `"Sheet1!A1"`, `"Sheet1!A1:B2"`, with optional `$`
     /// absolute markers and an optional `'quoted sheet name'!` prefix.
     /// Deliberately small and local rather than shared with
@@ -3206,7 +3206,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Reads a single cell, registering the appropriate local/remote
+    /// Reads a single cell, registering the appropriate local/remote
     /// dependency -- the same local-vs-remote branch used throughout this
     /// file (see e.g. `evaluate_ast`'s `Expr::CellRef` arm), factored out
     /// since `CELL`/`FORMULATEXT`/`ISFORMULA`/`INDIRECT`/`OFFSET` all need
@@ -3239,7 +3239,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Shared implementation for the range/reference-introspection and
+    /// Shared implementation for the range/reference-introspection and
     /// workbook-metadata functions: ROW/ROWS/COLUMN/COLUMNS need the raw
     /// reference's real bounds (not a flattened `evaluated_args` value);
     /// AREAS/ISREF are purely syntactic checks on the argument's AST
@@ -3553,7 +3553,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] `GETPIVOTDATA(data_field, pivot_table_ref, [field, item]...)`.
+    /// `GETPIVOTDATA(data_field, pivot_table_ref, [field, item]...)`.
     /// `pivot_table_ref` must stay an unevaluated cell reference (not a
     /// flattened value) so its sheet/row/col can be matched against
     /// `context.pivot_tables`' rendered destination ranges -- the same
@@ -3627,7 +3627,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Shared implementation for the dynamic-array reshaping functions.
+    /// Shared implementation for the dynamic-array reshaping functions.
     /// All operate on `array_shape`'s `(flat, num_cols)` view and return a
     /// flat, row-major `ResultData::List` -- the same convention
     /// `SEQUENCE`/`MUNIT`/`MAKEARRAY`/etc. already use, since this engine
@@ -4053,7 +4053,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] The raw text typed into a cell -- `"10"`, `"=SUM(A1:A2)"` -- or `None`
+    /// The raw text typed into a cell -- `"10"`, `"=SUM(A1:A2)"` -- or `None`
     /// if the cell is outside the sheet's allocated grid.
     ///
     /// This is the input, not the result; see [`Sheet::get_result_data`] for
@@ -4068,7 +4068,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] [`Sheet::get_src`] with an out-of-range cell flattened to an owned
+    /// [`Sheet::get_src`] with an out-of-range cell flattened to an owned
     /// empty string.
     pub fn get_src_str(&self, cell: &CellRef) -> String {
         let col = self.columns.get(cell.col);
@@ -4079,13 +4079,13 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] [`Sheet::get_src`] as a borrowed `&str`, for callers that only read.
+    /// [`Sheet::get_src`] as a borrowed `&str`, for callers that only read.
     pub fn get_src_str_ref(&self, cell: &CellRef) -> Option<&str> {
         let col = self.columns.get(cell.col)?;
         col.src.get(cell.row).map(|s| s.as_str())
     }
 
-    /// [LLM-generated] The word surrounding `char_offset` in a cell's source text, as a
+    /// The word surrounding `char_offset` in a cell's source text, as a
     /// half-open range of character (not byte) indices -- what an editor needs
     /// for word-wise selection. See [`get_word_boundaries_from_str`].
     pub fn get_word_boundaries(&self, cell: &CellRef, char_offset: usize) -> (usize, usize) {

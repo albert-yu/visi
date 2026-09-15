@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Sheet, generate_unique_id};
 
-/// [LLM-generated] A named, rectangular range within a single worksheet, mirroring an Excel
+/// A named, rectangular range within a single worksheet, mirroring an Excel
 /// Table (a.k.a. `ListObject`): a header row, a body of data rows, and an
 /// optional totals row, all with stable per-column names that formulas can
 /// reference via structured references (e.g. `Sales[Amount]`).
@@ -13,34 +13,34 @@ use crate::core::engine::{Sheet, generate_unique_id};
 /// exactly like a real Excel Table can occupy only part of a worksheet.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExcelTable {
-    /// [LLM-generated] Workbook-unique identifier, stable across renames.
+    /// Workbook-unique identifier, stable across renames.
     pub id: u64,
-    /// [LLM-generated] The table's name, as a structured reference spells it. Unique
+    /// The table's name, as a structured reference spells it. Unique
     /// workbook-wide and matched case-insensitively.
     pub name: String,
-    /// [LLM-generated] The sheet this table occupies part of.
+    /// The sheet this table occupies part of.
     pub sheet_id: u64,
-    /// [LLM-generated] Topmost row of the range, 0-based -- the header row when there is one.
+    /// Topmost row of the range, 0-based -- the header row when there is one.
     pub start_row: usize,
-    /// [LLM-generated] Leftmost column of the range, 0-based.
+    /// Leftmost column of the range, 0-based.
     pub start_col: usize,
-    /// [LLM-generated] Bottommost row of the range, 0-based and inclusive -- the totals row
+    /// Bottommost row of the range, 0-based and inclusive -- the totals row
     /// when there is one.
     pub end_row: usize,
-    /// [LLM-generated] Rightmost column of the range, 0-based and inclusive.
+    /// Rightmost column of the range, 0-based and inclusive.
     pub end_col: usize,
-    /// [LLM-generated] Whether the first row is a header rather than data.
+    /// Whether the first row is a header rather than data.
     pub has_header_row: bool,
-    /// [LLM-generated] Whether the last row is a totals row rather than data.
+    /// Whether the last row is a totals row rather than data.
     pub has_totals_row: bool,
-    /// [LLM-generated] Column names, in sheet-column order, one per column in
+    /// Column names, in sheet-column order, one per column in
     /// `start_col..=end_col`. Kept in sync with the header row's cell text
     /// (when `has_header_row` is true) by the CRUD methods in this file.
     pub columns: Vec<String>,
-    /// [LLM-generated] Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1", or custom theme)
+    /// Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1", or custom theme)
     #[serde(default)]
     pub style_name: Option<String>,
-    /// [LLM-generated] Whether the last row of the range is Excel's *insert row* placeholder
+    /// Whether the last row of the range is Excel's *insert row* placeholder
     /// rather than data -- i.e. the table has **zero data rows**.
     ///
     /// This cannot be inferred from the extent, which is the surprise:
@@ -56,27 +56,27 @@ pub struct ExcelTable {
 }
 
 impl ExcelTable {
-    /// [LLM-generated] Sets the table's visual style, or clears it with `None`.
+    /// Sets the table's visual style, or clears it with `None`.
     pub fn set_style_name(&mut self, style_name: Option<String>) {
         self.style_name = style_name;
     }
 
-    /// [LLM-generated] Total rows in the range, header and totals rows included.
+    /// Total rows in the range, header and totals rows included.
     pub fn row_count(&self) -> usize {
         self.end_row - self.start_row + 1
     }
 
-    /// [LLM-generated] Columns in the range.
+    /// Columns in the range.
     pub fn col_count(&self) -> usize {
         self.end_col - self.start_col + 1
     }
 
-    /// [LLM-generated] First row of the table's actual data body (excludes the header row).
+    /// First row of the table's actual data body (excludes the header row).
     pub fn data_start_row(&self) -> usize {
         self.start_row + usize::from(self.has_header_row)
     }
 
-    /// [LLM-generated] Last row of the table's actual data body, excluding the totals row
+    /// Last row of the table's actual data body, excluding the totals row
     /// and Excel's insert-row placeholder.
     ///
     /// May be less than `data_start_row()` for a table with no data rows, so
@@ -89,7 +89,7 @@ impl ExcelTable {
             .saturating_sub(usize::from(self.has_insert_row))
     }
 
-    /// [LLM-generated] How many data rows the table actually has, which is 0 for a table
+    /// How many data rows the table actually has, which is 0 for a table
     /// sitting on its insert-row placeholder.
     ///
     /// Use this rather than comparing `data_start_row()` with
@@ -99,19 +99,19 @@ impl ExcelTable {
         (self.data_end_row() + 1).saturating_sub(self.data_start_row())
     }
 
-    /// [LLM-generated] The header row's sheet-row index, or `None` if the table has no
+    /// The header row's sheet-row index, or `None` if the table has no
     /// header.
     pub fn header_row(&self) -> Option<usize> {
         self.has_header_row.then_some(self.start_row)
     }
 
-    /// [LLM-generated] The totals row's sheet-row index, or `None` if the table has no
+    /// The totals row's sheet-row index, or `None` if the table has no
     /// totals row.
     pub fn totals_row(&self) -> Option<usize> {
         self.has_totals_row.then_some(self.end_row)
     }
 
-    /// [LLM-generated] Index (0-based, relative to the table's own columns) of the column
+    /// Index (0-based, relative to the table's own columns) of the column
     /// with the given name, matched case-insensitively as Excel does for
     /// structured references.
     pub fn local_column_index(&self, name: &str) -> Option<usize> {
@@ -120,7 +120,7 @@ impl ExcelTable {
             .position(|c| c.eq_ignore_ascii_case(name))
     }
 
-    /// [LLM-generated] Whether this table's range overlaps the given rectangular range.
+    /// Whether this table's range overlaps the given rectangular range.
     pub fn overlaps(
         &self,
         start_row: usize,
@@ -170,7 +170,7 @@ fn check_duplicate_column_names(columns: &[String]) -> Result<(), String> {
 }
 
 impl Sheet {
-    /// [LLM-generated] Finds a table on this sheet by name, matched case-insensitively as
+    /// Finds a table on this sheet by name, matched case-insensitively as
     /// Excel does.
     pub fn find_table(&self, name: &str) -> Option<&ExcelTable> {
         self.tables
@@ -178,14 +178,14 @@ impl Sheet {
             .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
-    /// [LLM-generated] [`Sheet::find_table`], mutably.
+    /// [`Sheet::find_table`], mutably.
     pub fn find_table_mut(&mut self, name: &str) -> Option<&mut ExcelTable> {
         self.tables
             .iter_mut()
             .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
-    /// [LLM-generated] Reads the header text for sheet column `col_idx` at `header_row`, if
+    /// Reads the header text for sheet column `col_idx` at `header_row`, if
     /// non-blank; otherwise falls back to a default "ColumnN" name (N is
     /// 1-based within the table).
     fn table_column_header(&self, header_row: usize, col_idx: usize, local_idx: usize) -> String {
@@ -206,7 +206,7 @@ impl Sheet {
             .unwrap_or_else(|| format!("Column{}", local_idx + 1))
     }
 
-    /// [LLM-generated] Defines a new Excel Table over the rectangular range
+    /// Defines a new Excel Table over the rectangular range
     /// `start_row..=end_row` x `start_col..=end_col` (0-based, inclusive)
     /// on this sheet. Column names are read from the header row's existing
     /// cell text when `has_header_row` is true, falling back to "ColumnN"
@@ -281,7 +281,7 @@ impl Sheet {
         Ok(id)
     }
 
-    /// [LLM-generated] Removes a table definition from this sheet, leaving the cells it
+    /// Removes a table definition from this sheet, leaving the cells it
     /// covered untouched.
     ///
     /// # Errors
@@ -303,7 +303,7 @@ impl Sheet {
         }
     }
 
-    /// [LLM-generated] Renames a table on this sheet.
+    /// Renames a table on this sheet.
     ///
     /// Renaming here does *not* rewrite the formulas that reference the table
     /// -- that cascade is `WorkbookManager::rename_table`'s job, and it is
@@ -330,7 +330,7 @@ impl Sheet {
         Ok(())
     }
 
-    /// [LLM-generated] Extends or shrinks a table's range by moving its bottom-right corner
+    /// Extends or shrinks a table's range by moving its bottom-right corner
     /// to `new_end_row`/`new_end_col` (the top-left corner never moves).
     /// Column names for any newly-included columns are read from the
     /// header row (or default to "ColumnN"); names for columns that
@@ -396,7 +396,7 @@ impl Sheet {
         Ok(())
     }
 
-    /// [LLM-generated] Renames one column (0-based, relative to the table) of a table,
+    /// Renames one column (0-based, relative to the table) of a table,
     /// updating both its stored name and the header row's cell text (if
     /// the table has one).
     pub fn rename_table_column(

@@ -1,4 +1,4 @@
-//! [LLM-generated] Statistical function dispatch.
+//! Statistical function dispatch.
 //!
 //! Split out of the parent module's `evaluate_function`, which tries each
 //! family in turn.
@@ -9,13 +9,13 @@ use crate::core::engine::result_data::ResultData;
 use crate::core::engine::sheet::Sheet;
 
 impl Sheet {
-    /// [LLM-generated] Evaluates `call` if this family owns its name, else `None`.
+    /// Evaluates `call` if this family owns its name, else `None`.
     pub(super) fn eval_stats_fn(
         &self,
         call: FnCall<'_>,
         deps: &mut Vec<Dependency>,
     ) -> Option<Result<ResultData, EngineError>> {
-        // [LLM-generated] The body returns `Result` so its arms can keep using `?`; whether
+        // The body returns `Result` so its arms can keep using `?`; whether
         // the name belongs to this family is signalled alongside.
         let mut owned = true;
         let r = self.eval_stats_dispatch(call, deps, &mut owned);
@@ -35,7 +35,7 @@ impl Sheet {
             ..
         } = call;
         match call.upper_name {
-            // [LLM-generated] --- STATISTICAL FUNCTIONS ---
+            // --- STATISTICAL FUNCTIONS ---
             "AVEDEV" => {
                 let nums: Vec<f64> =
                     match self.flatten_args_stat_numbers(evaluated_args, arg_is_direct) {
@@ -216,7 +216,7 @@ impl Sheet {
                 res_to_rd(crate::core::stats::chisq_inv_rt(p, df))
             }
             "CHISQ.TEST" | "CHITEST" => {
-                // [LLM-generated] Like the paired statistical functions, CHITEST
+                // Like the paired statistical functions, CHITEST
                 // compares its two ranges' *raw* cell counts first --
                 // a mismatch is #N/A even when a range also holds an
                 // error value. It does not, however, pairwise-exclude
@@ -228,7 +228,7 @@ impl Sheet {
                 let a_raw = self.positional_numbers(evaluated_args.first(), &mut first_err);
                 let e_raw = self.positional_numbers(evaluated_args.get(1), &mut first_err);
                 if a_raw.len() != e_raw.len() {
-                    // [LLM-generated] A pure shape mismatch is #N/A, but a one-cell blank
+                    // A pure shape mismatch is #N/A, but a one-cell blank
                     // operand is missing and reports #VALUE! even when the
                     // other range has a different shape. One-cell text/boolean
                     // operands are still shape mismatches (#N/A).
@@ -241,7 +241,7 @@ impl Sheet {
                     }
                     return Ok(ResultData::Error("#N/A".to_string()));
                 }
-                // [LLM-generated] A single category leaves zero degrees of freedom, so
+                // A single category leaves zero degrees of freedom, so
                 // there is no chi-square distribution to evaluate
                 // against and Excel reports #N/A. Judged on the *raw*
                 // range size: applying it after pairwise filtering
@@ -254,7 +254,7 @@ impl Sheet {
                 if let Some(e) = first_err {
                     return Ok(ResultData::Error(e));
                 }
-                // [LLM-generated] Same shape as the paired sums, and checked only after
+                // Same shape as the paired sums, and checked only after
                 // the #N/A cases above: a range holding no numeric
                 // value at all is #DIV/0!, while a range that merely
                 // loses every *pair* to exclusion still computes -- the
@@ -264,7 +264,7 @@ impl Sheet {
                 {
                     return Ok(ResultData::Error("#DIV/0!".to_string()));
                 }
-                // [LLM-generated] Values are taken pairwise so a non-numeric cell in
+                // Values are taken pairwise so a non-numeric cell in
                 // one range can't leave the two sides different lengths
                 // and turn a computable call into a spurious #N/A --
                 // Excel still returns a value there (CHITEST over a
@@ -275,7 +275,7 @@ impl Sheet {
                         Ok(v) => v,
                         Err(e) => return Ok(ResultData::Error(e)),
                     };
-                // [LLM-generated] Degrees of freedom come from the raw range size, not
+                // Degrees of freedom come from the raw range size, not
                 // from how many pairs survived the filtering above.
                 res_to_rd(crate::core::stats::chisq_test(
                     &actual,
@@ -408,7 +408,7 @@ impl Sheet {
                 res_to_rd(crate::core::stats::forecast_linear(x, &ys, &xs))
             }
             "FORECAST.ETS" | "FORECAST.ETS.CONFINT" => {
-                // [LLM-generated] FORECAST.ETS(target, values, timeline,
+                // FORECAST.ETS(target, values, timeline,
                 //              [seasonality], [data_completion], [aggregation])
                 // FORECAST.ETS.CONFINT(target, values, timeline,
                 //              [confidence], [seasonality], [data_completion], [aggregation])
@@ -452,7 +452,7 @@ impl Sheet {
                 }
             }
             "FORECAST.ETS.SEASONALITY" => {
-                // [LLM-generated] FORECAST.ETS.SEASONALITY(values, timeline,
+                // FORECAST.ETS.SEASONALITY(values, timeline,
                 //                          [data_completion], [aggregation])
                 // -- note there is no leading target-date argument.
                 let (values, timeline) =
@@ -469,7 +469,7 @@ impl Sheet {
                 }
             }
             "FORECAST.ETS.STAT" => {
-                // [LLM-generated] FORECAST.ETS.STAT(values, timeline, statistic_type,
+                // FORECAST.ETS.STAT(values, timeline, statistic_type,
                 //                   [seasonality], [data_completion], [aggregation])
                 let (values, timeline) =
                     match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
@@ -526,7 +526,7 @@ impl Sheet {
                 res_to_rd(crate::core::stats::gamma_inv(p, alpha, beta))
             }
             "GAMMALN" | "GAMMALN.PRECISE" => {
-                // [LLM-generated] ln(Gamma(x)) is only defined for x > 0 in Excel --
+                // ln(Gamma(x)) is only defined for x > 0 in Excel --
                 // GAMMALN(-5), GAMMALN(0) and GAMMALN of a large
                 // negative are all #NUM!. The underlying lgamma here
                 // uses the reflection formula and happily returns a
@@ -556,7 +556,7 @@ impl Sheet {
                 res_to_rd(crate::core::stats::geomean(&nums))
             }
             "GROWTH" | "LOGEST" => {
-                // [LLM-generated] LINEST/TREND/GROWTH/LOGEST are the *array* form of
+                // LINEST/TREND/GROWTH/LOGEST are the *array* form of
                 // the regression family and, unlike scalar FORECAST
                 // (which drops a non-numeric pair and carries on),
                 // real Excel rejects any non-numeric cell outright
@@ -608,7 +608,7 @@ impl Sheet {
                 let sample_size = self.to_f64_arg(evaluated_args.get(1), "HYPGEOM.DIST")?;
                 let pop_s = self.to_f64_arg(evaluated_args.get(2), "HYPGEOM.DIST")?;
                 let pop_size = self.to_f64_arg(evaluated_args.get(3), "HYPGEOM.DIST")?;
-                // [LLM-generated] Legacy HYPGEOMDIST takes no cumulative flag at all --
+                // Legacy HYPGEOMDIST takes no cumulative flag at all --
                 // it's always the point probability mass, never the
                 // cumulative sum (unlike HYPGEOM.DIST, whose 5th
                 // argument is required and selects between the two).
@@ -653,7 +653,7 @@ impl Sheet {
                 res_to_rd(crate::core::stats::large(&nums, k))
             }
             "LINEST" | "TREND" => {
-                // [LLM-generated] LINEST/TREND/GROWTH/LOGEST are the *array* form of
+                // LINEST/TREND/GROWTH/LOGEST are the *array* form of
                 // the regression family and, unlike scalar FORECAST
                 // (which drops a non-numeric pair and carries on),
                 // real Excel rejects any non-numeric cell outright
@@ -830,7 +830,7 @@ impl Sheet {
                 }
             }
             "MODE.MULT" => {
-                // [LLM-generated] The MODE family rejects a lone blank operand where
+                // The MODE family rejects a lone blank operand where
                 // its neighbours tolerate it -- MODE(x, <blank>) is
                 // #VALUE! while MEDIAN(x, <blank>) is x. Applies to
                 // all three spellings. See is_empty_scalar_operand.
@@ -850,7 +850,7 @@ impl Sheet {
                 }
             }
             "MODE.SNGL" | "MODE" => {
-                // [LLM-generated] The MODE family rejects a lone blank operand where
+                // The MODE family rejects a lone blank operand where
                 // its neighbours tolerate it -- MODE(x, <blank>) is
                 // #VALUE! while MEDIAN(x, <blank>) is x. Applies to
                 // all three spellings. See is_empty_scalar_operand.
@@ -1158,7 +1158,7 @@ impl Sheet {
                     .get(3)
                     .and_then(|v| self.to_f64(v))
                     .unwrap_or(1.0) as usize;
-                // [LLM-generated] Only test_type 1 is the *paired* test, where the two
+                // Only test_type 1 is the *paired* test, where the two
                 // arrays must be the same size (#N/A otherwise) and a
                 // non-numeric cell drops its whole (x, y) pair. Types 2
                 // and 3 are two-*sample* tests that compare two

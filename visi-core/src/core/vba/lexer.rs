@@ -1,11 +1,11 @@
 use std::fmt;
 
-/// [LLM-generated] A source position, 1-based in both axes so it can be printed as-is.
+/// A source position, 1-based in both axes so it can be printed as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pos {
-    /// [LLM-generated] 1-based line number.
+    /// 1-based line number.
     pub line: u32,
-    /// [LLM-generated] 1-based column number, counted in characters rather than bytes.
+    /// 1-based column number, counted in characters rather than bytes.
     pub col: u32,
 }
 
@@ -15,32 +15,32 @@ impl fmt::Display for Pos {
     }
 }
 
-/// [LLM-generated] The numeric base a literal was written in, kept so a round trip can tell
+/// The numeric base a literal was written in, kept so a round trip can tell
 /// `&H10` from `16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumBase {
-    /// [LLM-generated] Ordinary decimal, possibly with a fraction and exponent.
+    /// Ordinary decimal, possibly with a fraction and exponent.
     Decimal,
-    /// [LLM-generated] `&H`-prefixed hexadecimal.
+    /// `&H`-prefixed hexadecimal.
     Hex,
-    /// [LLM-generated] `&O`-prefixed (or bare `&`-prefixed) octal.
+    /// `&O`-prefixed (or bare `&`-prefixed) octal.
     Octal,
 }
 
-/// [LLM-generated] A VBA type-declaration character: the trailing sigil in `count%`, `name$`.
+/// A VBA type-declaration character: the trailing sigil in `count%`, `name$`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeSuffix {
-    /// [LLM-generated] `$` -- String.
+    /// `$` -- String.
     String,
-    /// [LLM-generated] `%` -- Integer.
+    /// `%` -- Integer.
     Integer,
-    /// [LLM-generated] `&` -- Long.
+    /// `&` -- Long.
     Long,
-    /// [LLM-generated] `!` -- Single.
+    /// `!` -- Single.
     Single,
-    /// [LLM-generated] `#` -- Double.
+    /// `#` -- Double.
     Double,
-    /// [LLM-generated] `@` -- Currency.
+    /// `@` -- Currency.
     Currency,
 }
 
@@ -57,7 +57,7 @@ impl TypeSuffix {
         }
     }
 
-    /// [LLM-generated] The character this suffix is written as.
+    /// The character this suffix is written as.
     pub fn as_char(self) -> char {
         match self {
             Self::String => '$',
@@ -70,48 +70,48 @@ impl TypeSuffix {
     }
 }
 
-/// [LLM-generated] What a token is.
+/// What a token is.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    /// [LLM-generated] An identifier or a keyword, in its original spelling. Keywords are not
+    /// An identifier or a keyword, in its original spelling. Keywords are not
     /// distinguished here -- see this module's docs.
     Ident(String),
-    /// [LLM-generated] A numeric literal.
+    /// A numeric literal.
     Number {
-        /// [LLM-generated] The value. Hex/octal literals are already converted.
+        /// The value. Hex/octal literals are already converted.
         value: f64,
-        /// [LLM-generated] How it was written.
+        /// How it was written.
         base: NumBase,
-        /// [LLM-generated] A trailing type-declaration character, if any.
+        /// A trailing type-declaration character, if any.
         suffix: Option<TypeSuffix>,
-        /// [LLM-generated] Whether it was written with a decimal point or an exponent, which
+        /// Whether it was written with a decimal point or an exponent, which
         /// forces `Double` regardless of the value: `1E3` is a `Double` even
         /// though the same value written `1000` is a `Long`.
         is_float: bool,
     },
-    /// [LLM-generated] A string literal, with `""` escapes already resolved to `"`.
+    /// A string literal, with `""` escapes already resolved to `"`.
     Str(String),
-    /// [LLM-generated] A `#...#` date literal, holding the raw text between the hashes. Not
+    /// A `#...#` date literal, holding the raw text between the hashes. Not
     /// parsed into a serial here: that is `date.rs`'s job and it needs the
     /// workbook's date system, which the lexer has no business knowing.
     Date(String),
-    /// [LLM-generated] Punctuation or an operator, as its canonical spelling (`"<="`, `"&"`).
+    /// Punctuation or an operator, as its canonical spelling (`"<="`, `"&"`).
     /// Word operators (`And`, `Mod`, `Is`) arrive as `Ident` instead.
     Punct(&'static str),
-    /// [LLM-generated] An end of line, which in VBA ends a statement.
+    /// An end of line, which in VBA ends a statement.
     Newline,
-    /// [LLM-generated] End of input.
+    /// End of input.
     Eof,
 }
 
-/// [LLM-generated] A token and where it came from.
+/// A token and where it came from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-    /// [LLM-generated] What the token is.
+    /// What the token is.
     pub kind: TokenKind,
-    /// [LLM-generated] Where it starts.
+    /// Where it starts.
     pub pos: Pos,
-    /// [LLM-generated] Whether whitespace (or a line continuation) preceded it on this line.
+    /// Whether whitespace (or a line continuation) preceded it on this line.
     /// The parser needs this to tell `Foo (a)` -- a call whose one argument
     /// is parenthesised -- from `Foo(a)`, and the lexer needs it to tell a
     /// type suffix from an operator.
@@ -119,7 +119,7 @@ pub struct Token {
 }
 
 impl Token {
-    /// [LLM-generated] The identifier text, if this is an `Ident`.
+    /// The identifier text, if this is an `Ident`.
     pub fn ident(&self) -> Option<&str> {
         match &self.kind {
             TokenKind::Ident(s) => Some(s),
@@ -127,24 +127,24 @@ impl Token {
         }
     }
 
-    /// [LLM-generated] Whether this is the given keyword, compared case-insensitively as VBA
+    /// Whether this is the given keyword, compared case-insensitively as VBA
     /// does.
     pub fn is_kw(&self, kw: &str) -> bool {
         self.ident().is_some_and(|s| s.eq_ignore_ascii_case(kw))
     }
 
-    /// [LLM-generated] Whether this is the given punctuation.
+    /// Whether this is the given punctuation.
     pub fn is_punct(&self, p: &str) -> bool {
         matches!(&self.kind, TokenKind::Punct(x) if *x == p)
     }
 }
 
-/// [LLM-generated] A lexing failure, with the position of the offending character.
+/// A lexing failure, with the position of the offending character.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexError {
-    /// [LLM-generated] What went wrong, phrased for a user reading CLI output.
+    /// What went wrong, phrased for a user reading CLI output.
     pub message: String,
-    /// [LLM-generated] Where it went wrong.
+    /// Where it went wrong.
     pub pos: Pos,
 }
 
@@ -158,7 +158,7 @@ impl fmt::Display for LexError {
     }
 }
 
-/// [LLM-generated] Multi-character operators, longest first so `<=` wins over `<`.
+/// Multi-character operators, longest first so `<=` wins over `<`.
 ///
 /// `:=` is lexed as one token rather than `:` + `=` so that a line label
 /// (`Failed:`) and a named argument (`Foo bar:=1`) cannot be confused: both
@@ -169,7 +169,7 @@ const SINGLE_PUNCT: &[char] = &[
     '%', '@', '?', '{', '}', '[', ']', '~', '|',
 ];
 
-/// [LLM-generated] Splits VBA source into tokens.
+/// Splits VBA source into tokens.
 ///
 /// Returns every token including a final [`TokenKind::Eof`]. Comments are
 /// discarded (VBA has no doc-comment convention that the parser needs), but
@@ -236,7 +236,7 @@ impl Lexer {
         self.space_before = false;
     }
 
-    /// [LLM-generated] Whether the token just emitted can carry a trailing type suffix.
+    /// Whether the token just emitted can carry a trailing type suffix.
     fn last_takes_suffix(&self) -> bool {
         matches!(
             self.out.last().map(|t| &t.kind),
@@ -284,7 +284,7 @@ impl Lexer {
         Ok(self.out)
     }
 
-    /// [LLM-generated] A `_` is a continuation only when whitespace precedes it and nothing
+    /// A `_` is a continuation only when whitespace precedes it and nothing
     /// but whitespace follows it on the line. Otherwise it is part of an
     /// identifier (`my_var`) -- it can never *start* one, since VBA has no
     /// name beginning with an underscore (measured; see the `'_'` arm in
@@ -358,7 +358,7 @@ impl Lexer {
         Ok(())
     }
 
-    /// [LLM-generated] `#` is three different things: a type suffix (`x#`), a date literal
+    /// `#` is three different things: a type suffix (`x#`), a date literal
     /// (`#1/1/2000#`), and the lead-in to a compiler directive (`#If`).
     fn lex_hash(&mut self) -> Result<(), LexError> {
         let pos = self.pos();
@@ -394,7 +394,7 @@ impl Lexer {
         Ok(())
     }
 
-    /// [LLM-generated] Rewrites the token just emitted to carry a type suffix.
+    /// Rewrites the token just emitted to carry a type suffix.
     fn attach_suffix(&mut self, suffix: TypeSuffix) {
         if let Some(last) = self.out.last_mut() {
             match &mut last.kind {
@@ -555,7 +555,7 @@ impl Lexer {
         }
     }
 
-    /// [LLM-generated] Whether the token about to be emitted is the first of a statement.
+    /// Whether the token about to be emitted is the first of a statement.
     fn starts_statement(&self) -> bool {
         match self.out.last().map(|t| &t.kind) {
             None | Some(TokenKind::Newline) => true,
@@ -564,7 +564,7 @@ impl Lexer {
         }
     }
 
-    /// [LLM-generated] A sigil directly after an identifier or number is a type suffix unless
+    /// A sigil directly after an identifier or number is a type suffix unless
     /// it reads as an operator instead.
     ///
     /// `&` and `!` are the two that overlap: `a & b` concatenates, `a$ & b$`
@@ -626,7 +626,7 @@ impl Lexer {
     }
 }
 
-/// [LLM-generated] `&'static str` spellings parallel to [`SINGLE_PUNCT`].
+/// `&'static str` spellings parallel to [`SINGLE_PUNCT`].
 const SINGLE_PUNCT_STR: &[&str] = &[
     "(", ")", ",", ".", "=", "+", "-", "*", "/", "\\", "^", "&", "<", ">", ":", ";", "!", "#", "$",
     "%", "@", "?", "{", "}", "[", "]", "~", "|",

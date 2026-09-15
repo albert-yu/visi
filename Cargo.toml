@@ -4,7 +4,7 @@ members = [
     "visi",
     "visi-python",
 ]
-# [LLM-generated] `visi-python` is a pyo3 cdylib, so building it needs a Python interpreter on
+# `visi-python` is a pyo3 cdylib, so building it needs a Python interpreter on
 # PATH. Keeping it out of the default set means a bare `cargo build` / `cargo
 # test` never requires one; `--workspace` still picks it up, which is what
 # keeps it compiled and linted rather than left to rot.
@@ -20,7 +20,7 @@ rust-version = "1.91"
 homepage = "https://github.com/albert-yu/visi"
 repository = "https://github.com/albert-yu/visi"
 
-# [LLM-generated] The profile that 'dist' will build with
+# The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
 lto = "thin"

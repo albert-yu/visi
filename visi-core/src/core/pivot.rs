@@ -3,52 +3,52 @@ use std::collections::HashMap;
 
 use crate::core::engine::{CellRef, ResultData, Sheet};
 
-/// [LLM-generated] Where a `PivotTable` reads its source records from: either an existing
+/// Where a `PivotTable` reads its source records from: either an existing
 /// `ExcelTable` (looked up by name at compute time, so renames/resizes of
 /// the table are picked up automatically on refresh) or a plain cell range
 /// whose first row is treated as column headers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PivotSource {
-    /// [LLM-generated] An `ExcelTable`, resolved by name on every refresh.
+    /// An `ExcelTable`, resolved by name on every refresh.
     Table {
-        /// [LLM-generated] The table's name, matched case-insensitively workbook-wide.
+        /// The table's name, matched case-insensitively workbook-wide.
         name: String,
     },
-    /// [LLM-generated] A raw rectangular range, whose first row supplies the field names.
+    /// A raw rectangular range, whose first row supplies the field names.
     Range {
-        /// [LLM-generated] Sheet the range lives on.
+        /// Sheet the range lives on.
         sheet_id: u64,
-        /// [LLM-generated] First row of the range, 0-based, and the header row.
+        /// First row of the range, 0-based, and the header row.
         start_row: usize,
-        /// [LLM-generated] First column of the range, 0-based.
+        /// First column of the range, 0-based.
         start_col: usize,
-        /// [LLM-generated] Last row of the range, 0-based and inclusive.
+        /// Last row of the range, 0-based and inclusive.
         end_row: usize,
-        /// [LLM-generated] Last column of the range, 0-based and inclusive.
+        /// Last column of the range, 0-based and inclusive.
         end_col: usize,
     },
 }
 
-/// [LLM-generated] Matches the "Summarize value field by" choices Excel exposes for a data
+/// Matches the "Summarize value field by" choices Excel exposes for a data
 /// field; the five most commonly used ones plus the numeric-only count.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PivotAggregation {
-    /// [LLM-generated] Total of the numeric values.
+    /// Total of the numeric values.
     Sum,
-    /// [LLM-generated] How many non-blank values there are, text included.
+    /// How many non-blank values there are, text included.
     Count,
-    /// [LLM-generated] How many values are numbers.
+    /// How many values are numbers.
     CountNumbers,
-    /// [LLM-generated] Mean of the numeric values.
+    /// Mean of the numeric values.
     Average,
-    /// [LLM-generated] Largest numeric value.
+    /// Largest numeric value.
     Max,
-    /// [LLM-generated] Smallest numeric value.
+    /// Smallest numeric value.
     Min,
 }
 
 impl PivotAggregation {
-    /// [LLM-generated] The caption Excel uses for this aggregation in a value field's default
+    /// The caption Excel uses for this aggregation in a value field's default
     /// label ("Sum of Amount").
     ///
     /// [`PivotAggregation::CountNumbers`] shares `Count`'s caption, which is
@@ -64,7 +64,7 @@ impl PivotAggregation {
         }
     }
 
-    /// [LLM-generated] Parses a user-supplied aggregation name, ignoring case, spaces,
+    /// Parses a user-supplied aggregation name, ignoring case, spaces,
     /// underscores and hyphens, and accepting the common short forms (`avg`,
     /// `countnums`, `maximum`). `None` if it names nothing.
     pub fn parse(s: &str) -> Option<Self> {
@@ -80,18 +80,18 @@ impl PivotAggregation {
     }
 }
 
-/// [LLM-generated] One field placed in the Row or Column area.
+/// One field placed in the Row or Column area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotField {
-    /// [LLM-generated] Name of the source column to group by, matched against the header row.
+    /// Name of the source column to group by, matched against the header row.
     pub column: String,
-    /// [LLM-generated] Whether a subtotal line is emitted for this field when it isn't the
+    /// Whether a subtotal line is emitted for this field when it isn't the
     /// innermost field in its area (Excel's per-field "Subtotals" toggle).
     pub subtotal: bool,
 }
 
 impl PivotField {
-    /// [LLM-generated] A field on `column` with subtotals enabled, Excel's default.
+    /// A field on `column` with subtotals enabled, Excel's default.
     pub fn new(column: impl Into<String>) -> Self {
         Self {
             column: column.into(),
@@ -100,20 +100,20 @@ impl PivotField {
     }
 }
 
-/// [LLM-generated] One field placed in the Values area.
+/// One field placed in the Values area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotValueField {
-    /// [LLM-generated] Name of the source column to aggregate, matched against the header row.
+    /// Name of the source column to aggregate, matched against the header row.
     pub column: String,
-    /// [LLM-generated] How the column's values are summarized.
+    /// How the column's values are summarized.
     pub aggregation: PivotAggregation,
-    /// [LLM-generated] Overrides the default "Sum of Amount" caption. A custom name is used
+    /// Overrides the default "Sum of Amount" caption. A custom name is used
     /// verbatim and takes no part in [`value_field_labels`]' disambiguation.
     pub custom_name: Option<String>,
 }
 
 impl PivotValueField {
-    /// [LLM-generated] A value field on `column` with the default caption.
+    /// A value field on `column` with the default caption.
     pub fn new(column: impl Into<String>, aggregation: PivotAggregation) -> Self {
         Self {
             column: column.into(),
@@ -122,7 +122,7 @@ impl PivotValueField {
         }
     }
 
-    /// [LLM-generated] This field's caption considered on its own, ignoring any collision
+    /// This field's caption considered on its own, ignoring any collision
     /// with the pivot's other value fields. Use [`value_field_labels`] to
     /// caption a whole list the way Excel would.
     pub fn label(&self) -> String {
@@ -132,7 +132,7 @@ impl PivotValueField {
     }
 }
 
-/// [LLM-generated] Default display labels for a pivot's whole value-field list, matching
+/// Default display labels for a pivot's whole value-field list, matching
 /// Excel's own (surprisingly convoluted) disambiguation for repeated
 /// source columns -- derived empirically against real Excel via
 /// fuzz/fuzz_pivot.py plus direct probing (see the probe script referenced
@@ -204,12 +204,12 @@ pub fn value_field_labels(value_fields: &[PivotValueField]) -> Vec<String> {
         .collect()
 }
 
-/// [LLM-generated] One field placed in the Filter (Page) area.
+/// One field placed in the Filter (Page) area.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotFilterField {
-    /// [LLM-generated] Name of the source column to filter on, matched against the header row.
+    /// Name of the source column to filter on, matched against the header row.
     pub column: String,
-    /// [LLM-generated] `None` means every value is allowed (no filtering applied yet).
+    /// `None` means every value is allowed (no filtering applied yet).
     ///
     /// **Reconstructed on xlsx import**, resolved through the cache's
     /// `<sharedItems>` to plain value strings rather than kept as indices --
@@ -231,7 +231,7 @@ pub struct PivotFilterField {
     /// Matching is case-insensitive, because the items themselves are merged
     /// that way; a selection naming `east` picks the merged `East` item.
     pub selected_values: Option<Vec<String>>,
-    /// [LLM-generated] Whether the field is in Excel's *multi-select* page mode
+    /// Whether the field is in Excel's *multi-select* page mode
     /// (`multipleItemSelectionAllowed` in the file) rather than its classic
     /// single-select one.
     ///
@@ -253,7 +253,7 @@ fn default_true() -> bool {
 }
 
 impl PivotFilterField {
-    /// [LLM-generated] A filter field on `column` with nothing filtered out yet.
+    /// A filter field on `column` with nothing filtered out yet.
     pub fn new(column: impl Into<String>) -> Self {
         Self {
             column: column.into(),
@@ -263,63 +263,63 @@ impl PivotFilterField {
     }
 }
 
-/// [LLM-generated] The area of a pivot table a field can be assigned to, used by the
+/// The area of a pivot table a field can be assigned to, used by the
 /// add/remove-field CRUD operations.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PivotArea {
-    /// [LLM-generated] Groups down the left edge; adds to `PivotTable::row_fields`.
+    /// Groups down the left edge; adds to `PivotTable::row_fields`.
     Row,
-    /// [LLM-generated] Groups across the top; adds to `PivotTable::col_fields`.
+    /// Groups across the top; adds to `PivotTable::col_fields`.
     Column,
-    /// [LLM-generated] Aggregated data; adds to `PivotTable::value_fields`.
+    /// Aggregated data; adds to `PivotTable::value_fields`.
     Value,
-    /// [LLM-generated] Restricts which source records take part; adds to
+    /// Restricts which source records take part; adds to
     /// `PivotTable::filter_fields`.
     Filter,
 }
 
-/// [LLM-generated] A pivot table definition: a summary of `source`, grouped by `row_fields`
+/// A pivot table definition: a summary of `source`, grouped by `row_fields`
 /// nested within `col_fields`, restricted by `filter_fields`, and
 /// aggregated per `value_fields`. This is a workbook-level object (like
 /// `Chart`) rather than sheet-scoped like `ExcelTable`, since its source and
 /// destination ranges may live on different sheets.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PivotTable {
-    /// [LLM-generated] Workbook-unique identifier, stable across renames.
+    /// Workbook-unique identifier, stable across renames.
     pub id: u64,
-    /// [LLM-generated] Display name, unique workbook-wide.
+    /// Display name, unique workbook-wide.
     pub name: String,
-    /// [LLM-generated] Where the records come from.
+    /// Where the records come from.
     pub source: PivotSource,
-    /// [LLM-generated] Sheet the grid is written to, which need not be the source's sheet.
+    /// Sheet the grid is written to, which need not be the source's sheet.
     pub dest_sheet_id: u64,
-    /// [LLM-generated] Top-left row of the output grid, 0-based.
+    /// Top-left row of the output grid, 0-based.
     pub dest_row: usize,
-    /// [LLM-generated] Top-left column of the output grid, 0-based.
+    /// Top-left column of the output grid, 0-based.
     pub dest_col: usize,
-    /// [LLM-generated] Fields grouped down the left edge, outermost first.
+    /// Fields grouped down the left edge, outermost first.
     pub row_fields: Vec<PivotField>,
-    /// [LLM-generated] Fields grouped across the top, outermost first.
+    /// Fields grouped across the top, outermost first.
     pub col_fields: Vec<PivotField>,
-    /// [LLM-generated] Fields aggregated into the body. At least one is required for
+    /// Fields aggregated into the body. At least one is required for
     /// [`compute_pivot`] to succeed.
     pub value_fields: Vec<PivotValueField>,
-    /// [LLM-generated] Fields restricting which source records take part.
+    /// Fields restricting which source records take part.
     pub filter_fields: Vec<PivotFilterField>,
-    /// [LLM-generated] Whether a grand-total row is appended below the body.
+    /// Whether a grand-total row is appended below the body.
     pub grand_totals_row: bool,
-    /// [LLM-generated] Whether a grand-total column is appended to the right of the body.
+    /// Whether a grand-total column is appended to the right of the body.
     pub grand_totals_col: bool,
-    /// [LLM-generated] Bottom-right corner of the last rendered output grid, so a refresh
+    /// Bottom-right corner of the last rendered output grid, so a refresh
     /// that produces a smaller grid can clear the now-stale cells.
     #[serde(default)]
     pub last_output_end_row: Option<usize>,
-    /// [LLM-generated] Column half of that corner; see [`PivotTable::last_output_end_row`].
+    /// Column half of that corner; see [`PivotTable::last_output_end_row`].
     #[serde(default)]
     pub last_output_end_col: Option<usize>,
 }
 
-/// [LLM-generated] Width, in columns, reserved for row-field labels: one column per row
+/// Width, in columns, reserved for row-field labels: one column per row
 /// field when there are any. With no row fields at all, Excel only
 /// reserves a single placeholder column when there's *exactly one* value
 /// field *and* at least one column field for it to sit to the left of --
@@ -344,7 +344,7 @@ pub(crate) fn row_label_width(pivot: &PivotTable) -> usize {
     }
 }
 
-/// [LLM-generated] A fully computed pivot result, ready to be materialized into a sheet:
+/// A fully computed pivot result, ready to be materialized into a sheet:
 /// `filter_rows` (if any) come first, then a blank spacer row, then
 /// `header_rows`, then one entry of `body_rows` per output row -- mirroring
 /// Excel's own report-filter placement (verified against real Excel: it
@@ -354,7 +354,7 @@ pub(crate) fn row_label_width(pivot: &PivotTable) -> usize {
 /// the classic single-select page-field mode Excel no longer defaults to).
 #[derive(Debug, Clone)]
 pub struct PivotGrid {
-    /// [LLM-generated] One `(field name, state)` pair per filter field, in the order they
+    /// One `(field name, state)` pair per filter field, in the order they
     /// were added.
     ///
     /// The state is `"(All)"` when every value is allowed, the **item's own
@@ -362,53 +362,53 @@ pub struct PivotGrid {
     /// otherwise -- which is what Excel puts in the page-field cell, and what
     /// `PivotField.CurrentPage` reports alongside it.
     pub filter_rows: Vec<(String, String)>,
-    /// [LLM-generated] The column-header block above the body: one row per column field,
+    /// The column-header block above the body: one row per column field,
     /// plus a value-field row when there is more than one value field.
     pub header_rows: Vec<Vec<String>>,
-    /// [LLM-generated] The body, one entry per output row, subtotal and grand-total rows
+    /// The body, one entry per output row, subtotal and grand-total rows
     /// included.
     pub body_rows: Vec<PivotBodyRow>,
-    /// [LLM-generated] Total width in columns (row-label columns + data columns), used by
+    /// Total width in columns (row-label columns + data columns), used by
     /// the caller to know how large a range to clear/allocate. Always >= 2,
     /// so `filter_rows`' two columns (name, state) always fit within it.
     pub width: usize,
-    /// [LLM-generated] The flattened row/column axis groups underlying `body_rows`/the data
+    /// The flattened row/column axis groups underlying `body_rows`/the data
     /// columns, exposed (independent of display formatting) so an xlsx
     /// exporter can reconstruct a native `pivotTableDefinition`'s
     /// `rowItems`/`colItems` without re-deriving the grouping itself.
     pub row_axis: Vec<PivotAxisItem>,
-    /// [LLM-generated] Column half of that axis pair; see [`PivotGrid::row_axis`].
+    /// Column half of that axis pair; see [`PivotGrid::row_axis`].
     pub col_axis: Vec<PivotAxisItem>,
 }
 
-/// [LLM-generated] One row of a computed pivot's body: its row-field labels and its
+/// One row of a computed pivot's body: its row-field labels and its
 /// aggregated values.
 #[derive(Debug, Clone)]
 pub struct PivotBodyRow {
-    /// [LLM-generated] One entry per row field (or a single "Grand Total" entry when there
+    /// One entry per row field (or a single "Grand Total" entry when there
     /// are no row fields); blank entries mean "same as the row above".
     pub row_labels: Vec<String>,
-    /// [LLM-generated] Whether this row is the grand total rather than a data or subtotal row.
+    /// Whether this row is the grand total rather than a data or subtotal row.
     pub is_grand_total: bool,
-    /// [LLM-generated] One entry per data column, aligned with the last `header_rows` row.
+    /// One entry per data column, aligned with the last `header_rows` row.
     pub values: Vec<ResultData>,
 }
 
-/// [LLM-generated] One flattened group along a row or column axis: a label per axis field
+/// One flattened group along a row or column axis: a label per axis field
 /// (`None` past its own depth), plus whether it's a subtotal or grand-total
 /// pseudo-group rather than a real leaf group.
 #[derive(Debug, Clone)]
 pub struct PivotAxisItem {
-    /// [LLM-generated] One entry per field in this axis, `None` past this group's own depth.
+    /// One entry per field in this axis, `None` past this group's own depth.
     pub labels: Vec<Option<String>>,
-    /// [LLM-generated] Whether this is a subtotal pseudo-group rather than a leaf group.
+    /// Whether this is a subtotal pseudo-group rather than a leaf group.
     pub is_subtotal: bool,
-    /// [LLM-generated] Whether this is the axis's grand-total pseudo-group.
+    /// Whether this is the axis's grand-total pseudo-group.
     pub is_grand_total: bool,
 }
 
 impl PivotGrid {
-    /// [LLM-generated] Row offset from the pivot's `dest_row` anchor to where the row/col
+    /// Row offset from the pivot's `dest_row` anchor to where the row/col
     /// header + data grid actually begins: 0 with no filter fields, else
     /// one row per filter field plus a blank spacer row.
     pub fn grid_row_offset(&self) -> usize {
@@ -419,20 +419,20 @@ impl PivotGrid {
         }
     }
 
-    /// [LLM-generated] Total height in rows, filter rows and spacer included -- what the
+    /// Total height in rows, filter rows and spacer included -- what the
     /// caller needs to allocate or clear at the pivot's `dest_row` anchor.
     pub fn height(&self) -> usize {
         self.grid_row_offset() + self.header_rows.len() + self.body_rows.len()
     }
 }
 
-/// [LLM-generated] A flattened, labeled group of source records along one axis (row or
+/// A flattened, labeled group of source records along one axis (row or
 /// column), produced by recursively grouping by each field in that axis in
 /// turn. `record_indices` is the union of every record folded into this
 /// group -- for a leaf group that's just its own bucket, for a subtotal or
 /// grand-total pseudo-group it's every record under it.
 struct FlatGroup {
-    /// [LLM-generated] One label per field in this axis; `None` past the group's own depth
+    /// One label per field in this axis; `None` past the group's own depth
     /// (e.g. a subtotal group has no label for deeper fields).
     labels: Vec<Option<String>>,
     record_indices: Vec<usize>,
@@ -454,7 +454,7 @@ pub(crate) fn group_key(result: &ResultData) -> String {
     }
 }
 
-/// [LLM-generated] Whether every non-blank value of `records[..][field_idx]` is a genuine
+/// Whether every non-blank value of `records[..][field_idx]` is a genuine
 /// number (`Integer`/`Float`), as opposed to text that merely looks
 /// numeric (e.g. a zero-padded code like `"08"`, or digits kept as text on
 /// purpose). Determines sort order for that field's pivot groups --
@@ -479,7 +479,7 @@ pub(crate) fn field_is_numeric(records: &[Vec<ResultData>], field_idx: usize) ->
         })
 }
 
-/// [LLM-generated] The key `sort_group_entries`'s text-field branch compares siblings by:
+/// The key `sort_group_entries`'s text-field branch compares siblings by:
 /// the value itself, lowercased, *unless* it looks like a negative number
 /// (`"-7"`, `"-25"`), in which case the leading `-` is stripped first.
 /// Measured on Windows real Excel across three independent sibling sets
@@ -552,7 +552,7 @@ fn build_group_tree(
         .collect()
 }
 
-/// [LLM-generated] Recursively flattens a group tree into a list of `FlatGroup`s: every leaf
+/// Recursively flattens a group tree into a list of `FlatGroup`s: every leaf
 /// group, plus (when enabled for that field) a subtotal pseudo-group after
 /// each non-innermost group's children.
 fn flatten_groups(
@@ -593,7 +593,7 @@ fn flatten_groups(
     }
 }
 
-/// [LLM-generated] Builds the flattened axis groups for `fields` over `record_indices`,
+/// Builds the flattened axis groups for `fields` over `record_indices`,
 /// optionally appending a grand-total pseudo-group. Returns a single
 /// implicit "all records" group when `fields` is empty.
 fn build_axis(
@@ -686,7 +686,7 @@ fn aggregate(sheet: &Sheet, values: &[ResultData], agg: PivotAggregation) -> Res
     }
 }
 
-/// [LLM-generated] Resolves a `PivotSource` against the workbook's sheets, returning the
+/// Resolves a `PivotSource` against the workbook's sheets, returning the
 /// owning sheet, the source's column names (in source-column order), the
 /// matching absolute sheet-column indices, and the absolute sheet-row
 /// indices holding data (i.e. excluding any header/totals row).
@@ -757,7 +757,7 @@ pub(crate) fn column_index(names: &[String], target: &str) -> Result<usize, Stri
         })
 }
 
-/// [LLM-generated] Computes a pivot table's result grid from the current state of `sheets`.
+/// Computes a pivot table's result grid from the current state of `sheets`.
 /// Pure and read-only: callers materialize the returned `PivotGrid` into
 /// sheet cells themselves.
 /// Computes `pivot` against `sheets`, returning a display-ready grid.
@@ -1123,7 +1123,7 @@ pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid,
     })
 }
 
-/// [LLM-generated] Finds the unique row/col-axis group matching `criteria` -- `(field
+/// Finds the unique row/col-axis group matching `criteria` -- `(field
 /// depth, item text)` pairs restricted to one axis -- for `GETPIVOTDATA`.
 /// Empty `criteria` means "the axis's grand total". A non-empty `criteria`
 /// that doesn't specify every field on the axis matches the subtotal group
@@ -1184,7 +1184,7 @@ fn match_pivot_axis(
     }
 }
 
-/// [LLM-generated] Implements `GETPIVOTDATA`: extracts a single summarized value out of a
+/// Implements `GETPIVOTDATA`: extracts a single summarized value out of a
 /// pivot table's computed grid by data-field name plus `(row/col field,
 /// item)` criteria pairs, the same way real Excel's formula does when
 /// pointed at a rendered pivot. Recomputes the grid fresh from `sheets`
@@ -1246,7 +1246,7 @@ pub fn getpivotdata(
         .ok_or_else(|| "#REF!".to_string())
 }
 
-/// [LLM-generated] Returns the distinct values of `values`, sorted the same way pivot
+/// Returns the distinct values of `values`, sorted the same way pivot
 /// groups are (ascending numeric if every value parses as a number,
 /// otherwise case-insensitive ascending text) -- used by the xlsx exporter
 /// to build a pivot field's flat `<items>` enumeration.
@@ -1259,7 +1259,7 @@ pub(crate) fn sorted_distinct_strings(values: &[String], numeric: bool) -> Vec<S
     pairs.into_iter().map(|(s, _)| s).collect()
 }
 
-/// [LLM-generated] The distinct values in **first-seen** order, which is the order a pivot
+/// The distinct values in **first-seen** order, which is the order a pivot
 /// cache stores them in.
 ///
 /// Measured: Excel's `<sharedItems>` are in source order while a pivot
@@ -2248,7 +2248,7 @@ mod tests {
     const FUZZ_CATEGORIES: [&str; 5] = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
     const FUZZ_CASE_VARIANTS: [&str; 5] = ["East", "east", "WEST", "west", "North"];
 
-    /// [LLM-generated] Builds a random source sheet with columns chosen to exercise
+    /// Builds a random source sheet with columns chosen to exercise
     /// grouping edge cases: a low-cardinality category column with
     /// occasional blanks, a case-variant category column (case-insensitive
     /// grouping parity), a quoted numeric-looking-string column (the
@@ -2307,7 +2307,7 @@ mod tests {
         }
     }
 
-    /// [LLM-generated] Builds a random, always-valid `PivotTable` config over `sheet`:
+    /// Builds a random, always-valid `PivotTable` config over `sheet`:
     /// 0-2 row fields and 0-2 col fields (drawn without replacement from
     /// the categorical columns), 1-2 value fields (from the numeric
     /// columns), an optional filter field with a random subset of its
@@ -2422,7 +2422,7 @@ mod tests {
         }
     }
 
-    /// [LLM-generated] A row/col axis label vector (`Some` per own depth, `None` past it --
+    /// A row/col axis label vector (`Some` per own depth, `None` past it --
     /// see `FlatGroup`) is a *partial key*: `None` positions are wildcards.
     /// This is exactly what a subtotal or grand-total group represents, so
     /// the same matcher works uniformly for leaf, subtotal, and grand-total
@@ -2433,7 +2433,7 @@ mod tests {
             .all(|(k, want)| want.as_ref().is_none_or(|w| w.eq_ignore_ascii_case(k)))
     }
 
-    /// [LLM-generated] Cross-checks every cell of `grid` against an aggregate computed by a
+    /// Cross-checks every cell of `grid` against an aggregate computed by a
     /// structurally independent path: instead of `compute_pivot`'s
     /// recursive group-tree + flatten, this filters the same record set by
     /// simple partial-key matching against each axis item's labels. Catches
@@ -2536,7 +2536,7 @@ mod tests {
         }
     }
 
-    /// [LLM-generated] A grand-total pseudo-group is appended whenever the toggle is on,
+    /// A grand-total pseudo-group is appended whenever the toggle is on,
     /// *except* when the axis has no fields at all (`build_axis`'s
     /// no-fields early return never adds one -- there's no separate
     /// grouping to total distinctly from the single implicit group).

@@ -10,14 +10,14 @@ use crate::core::workbook::WorkbookManager;
 
 use super::value::{VResult, VarArray, Variant, VbaError};
 
-/// [LLM-generated] Rows in an Excel worksheet. `ws.Cells` is the whole grid, not the part
+/// Rows in an Excel worksheet. `ws.Cells` is the whole grid, not the part
 /// `visi` happens to have allocated, which is why `ws.Cells.Count` overflows
 /// a `Long` in Excel -- and, now, here.
 pub const MAX_ROWS: u32 = 1_048_576;
-/// [LLM-generated] Columns in an Excel worksheet (`A` through `XFD`).
+/// Columns in an Excel worksheet (`A` through `XFD`).
 pub const MAX_COLS: u32 = 16_384;
 
-/// [LLM-generated] How many cells a macro may cause to be *allocated*.
+/// How many cells a macro may cause to be *allocated*.
 ///
 /// Excel's grid is sparse; `visi`'s [`Sheet`] is a dense `Vec` per column, so
 /// `ws.Range("XFD1048576").Value = 1` would ask for 17 billion cells. Excel
@@ -27,17 +27,17 @@ pub const MAX_COLS: u32 = 16_384;
 /// number it could plausibly have seen from Excel.
 const MAX_ALLOCATED_CELLS: u64 = 4_000_000;
 
-/// [LLM-generated] A reference to a host object, or `Nothing`.
+/// A reference to a host object, or `Nothing`.
 ///
 /// Deliberately a plain value: no lifetimes, no borrow of the workbook, so a
 /// [`Variant`] holding one stays `Clone` and can outlive any single statement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ObjRef {
-    /// [LLM-generated] An unset object reference. `TypeName` says `"Nothing"`.
+    /// An unset object reference. `TypeName` says `"Nothing"`.
     Nothing,
-    /// [LLM-generated] `Application`.
+    /// `Application`.
     Application,
-    /// [LLM-generated] `Application.WorksheetFunction`.
+    /// `Application.WorksheetFunction`.
     ///
     /// A separate object from [`ObjRef::Application`] because the *same*
     /// function reached through the two behaves differently on failure:
@@ -45,67 +45,67 @@ pub enum ObjRef {
     /// `Application.VLookup` returns an error `Variant` that `IsError`
     /// detects. Both measured. One implementation, two call paths.
     WorksheetFunction,
-    /// [LLM-generated] `ThisWorkbook` / `ActiveWorkbook`. There is only ever one.
+    /// `ThisWorkbook` / `ActiveWorkbook`. There is only ever one.
     Workbook,
-    /// [LLM-generated] The `Worksheets` / `Sheets` collection. `TypeName` says `"Sheets"`.
+    /// The `Worksheets` / `Sheets` collection. `TypeName` says `"Sheets"`.
     Worksheets,
-    /// [LLM-generated] One worksheet, by its stable id. Identity *is* the id: Excel hands out
+    /// One worksheet, by its stable id. Identity *is* the id: Excel hands out
     /// a cached object per sheet, so `ws Is wb.Worksheets(1)` is True.
     Worksheet(u64),
-    /// [LLM-generated] The `ListObjects` collection of one worksheet, by sheet id.
+    /// The `ListObjects` collection of one worksheet, by sheet id.
     ListObjects(u64),
-    /// [LLM-generated] One Excel Table, by its workbook-unique id.
+    /// One Excel Table, by its workbook-unique id.
     ///
     /// By id rather than by name because the id is what survives a rename --
     /// and `ListObject.Name = "X"` is a supported write, so a macro can hold
     /// a table across one.
     ListObject(u64),
-    /// [LLM-generated] A table's `ListColumns` collection, by table id.
+    /// A table's `ListColumns` collection, by table id.
     ListColumns(u64),
-    /// [LLM-generated] One table column, by table id and 0-based position within the table.
+    /// One table column, by table id and 0-based position within the table.
     ListColumn(u64, u32),
-    /// [LLM-generated] A table's `ListRows` collection, by table id.
+    /// A table's `ListRows` collection, by table id.
     ListRows(u64),
-    /// [LLM-generated] One table data row, by table id and 0-based position within the data
+    /// One table data row, by table id and 0-based position within the data
     /// body.
     ListRow(u64, u32),
-    /// [LLM-generated] The `PivotTables` collection of one worksheet, by sheet id.
+    /// The `PivotTables` collection of one worksheet, by sheet id.
     PivotTables(u64),
-    /// [LLM-generated] One pivot table, by its workbook-unique id.
+    /// One pivot table, by its workbook-unique id.
     PivotTable(u64),
-    /// [LLM-generated] A pivot table's `PivotFields` collection, by pivot id.
+    /// A pivot table's `PivotFields` collection, by pivot id.
     PivotFields(u64),
-    /// [LLM-generated] One pivot field, by pivot id and source-column position -- Excel's
+    /// One pivot field, by pivot id and source-column position -- Excel's
     /// `PivotFields` has one entry per *source column*, whatever area (if
     /// any) it currently occupies.
     PivotField(u64, u32),
-    /// [LLM-generated] `Range.Interior`, by the handle of the range it belongs to.
+    /// `Range.Interior`, by the handle of the range it belongs to.
     ///
     /// Excel hands out a distinct object (`TypeName` is `"Interior"`,
     /// measured) but it has no identity of its own worth modelling: it is a
     /// view onto the same cells, so it rides on the range's handle and
     /// tracks structural edits for free.
     Interior(u64),
-    /// [LLM-generated] `Range.Font`, by the handle of the range it belongs to. `TypeName` is
+    /// `Range.Font`, by the handle of the range it belongs to. `TypeName` is
     /// `"Font"`, measured.
     Font(u64),
-    /// [LLM-generated] A rectangular range of cells, by handle into [`Host::ranges`].
+    /// A rectangular range of cells, by handle into [`Host::ranges`].
     ///
     /// A handle rather than the coordinates because a `Range` **tracks
     /// structural edits**: inserting a row above one moves it, and every copy
     /// of it moves too, so the location has to live in one place that the
     /// edit can rewrite. The handle doubles as the identity token for `Is`.
     Range(u64),
-    /// [LLM-generated] A user-defined class instance, by handle into the interpreter's class instance table.
+    /// A user-defined class instance, by handle into the interpreter's class instance table.
     UserClass(u64),
 }
 
-/// [LLM-generated] Where a `Range` currently points, or that it no longer points anywhere.
+/// Where a `Range` currently points, or that it no longer points anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeState {
-    /// [LLM-generated] The range covers these cells.
+    /// The range covers these cells.
     Live(RangeRef),
-    /// [LLM-generated] Every cell the range covered was deleted.
+    /// Every cell the range covered was deleted.
     ///
     /// Measured, and none of it is guessable: the object is **not**
     /// `Nothing` (`r Is Nothing` is False) and still reports
@@ -122,33 +122,33 @@ pub enum RangeState {
     Dead,
 }
 
-/// [LLM-generated] A `Range`'s rectangle: which sheet, and which cells.
+/// A `Range`'s rectangle: which sheet, and which cells.
 ///
 /// Identity is *not* in here -- that is the [`ObjRef::Range`] handle, so that
 /// two ranges over the same cells stay different objects and a range that
 /// moves stays the same one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeRef {
-    /// [LLM-generated] The sheet the range lives on, by stable id rather than index or name.
+    /// The sheet the range lives on, by stable id rather than index or name.
     pub sheet_id: u64,
-    /// [LLM-generated] 0-based top row.
+    /// 0-based top row.
     pub row: u32,
-    /// [LLM-generated] 0-based left column.
+    /// 0-based left column.
     pub col: u32,
-    /// [LLM-generated] Rows spanned; never zero.
+    /// Rows spanned; never zero.
     pub height: u32,
-    /// [LLM-generated] Columns spanned; never zero.
+    /// Columns spanned; never zero.
     pub width: u32,
 }
 
 impl RangeRef {
-    /// [LLM-generated] Whether this range is exactly one cell, which decides whether `.Value`
+    /// Whether this range is exactly one cell, which decides whether `.Value`
     /// reads a scalar or an array.
     pub fn is_single(&self) -> bool {
         self.height == 1 && self.width == 1
     }
 
-    /// [LLM-generated] Cells covered. `u64` because a whole sheet has more than a `u32` holds
+    /// Cells covered. `u64` because a whole sheet has more than a `u32` holds
     /// -- and more than `Range.Count`'s `Long` holds, which is why
     /// `ws.Cells.Count` is error 6 in Excel.
     pub fn count(&self) -> u64 {
@@ -157,7 +157,7 @@ impl RangeRef {
 }
 
 impl ObjRef {
-    /// [LLM-generated] What `TypeName()` reports. All measured.
+    /// What `TypeName()` reports. All measured.
     pub fn type_name(&self) -> &'static str {
         match self {
             ObjRef::Nothing => "Nothing",
@@ -183,7 +183,7 @@ impl ObjRef {
         }
     }
 
-    /// [LLM-generated] `Is`: reference identity, not value equality.
+    /// `Is`: reference identity, not value equality.
     pub fn same_object(&self, other: &ObjRef) -> bool {
         match (self, other) {
             (ObjRef::Nothing, ObjRef::Nothing)
@@ -211,7 +211,7 @@ impl ObjRef {
     }
 }
 
-/// [LLM-generated] Whether a bare name belongs to the host object model.
+/// Whether a bare name belongs to the host object model.
 ///
 /// Consulted when there is *no* workbook attached, so that
 /// `Range("A1")` in a host-free run reports "this needs a workbook" rather
@@ -230,7 +230,7 @@ pub fn is_host_name(name: &str) -> bool {
     )
 }
 
-/// [LLM-generated] Error 438, naming the construct that is out of scope.
+/// Error 438, naming the construct that is out of scope.
 fn unsupported(what: &str) -> VbaError {
     VbaError::new(
         438,
@@ -238,18 +238,18 @@ fn unsupported(what: &str) -> VbaError {
     )
 }
 
-/// [LLM-generated] What `PivotField.CurrentPage` reads as when the field is unfiltered --
+/// What `PivotField.CurrentPage` reads as when the field is unfiltered --
 /// and, measured, also when *several* items are selected. It only ever
 /// reflects a single selection.
 const ALL_PAGES: &str = "(All)";
 
-/// [LLM-generated] Error 1004 -- what Excel reports for a bad address, an out-of-sheet
+/// Error 1004 -- what Excel reports for a bad address, an out-of-sheet
 /// `Offset`, and a `WorksheetFunction` call that fails. All measured.
 fn app_defined(message: impl Into<String>) -> VbaError {
     VbaError::new(1004, message.into())
 }
 
-/// [LLM-generated] Reaching a member through a `Range` whose cells were all deleted.
+/// Reaching a member through a `Range` whose cells were all deleted.
 ///
 /// The message is Excel's, verbatim. The *number* is not: see
 /// [`RangeState::Dead`] for why Excel's is not reproducible and why 1004 is
@@ -258,19 +258,19 @@ fn dead_range(member: &str) -> VbaError {
     VbaError::new(1004, format!("Method '{member}' of object 'Range' failed"))
 }
 
-/// [LLM-generated] The workbook a macro is running against.
+/// The workbook a macro is running against.
 ///
 /// Holds the workbook mutably for the whole run, which is why every object is
 /// a plain value: nothing else may hold a `&Sheet` across a statement.
 pub struct Host<'w> {
     wb: &'w mut WorkbookManager,
-    /// [LLM-generated] A write happened and no recalculation has run since. The next read
+    /// A write happened and no recalculation has run since. The next read
     /// that could observe it pays for one.
     stale: bool,
-    /// [LLM-generated] Whether this run changed the workbook at all, which is what decides
+    /// Whether this run changed the workbook at all, which is what decides
     /// whether the caller has something worth saving.
     mutated: bool,
-    /// [LLM-generated] Every `Range` handed out this run, by handle.
+    /// Every `Range` handed out this run, by handle.
     ///
     /// The location lives here rather than in the [`ObjRef`] so a structural
     /// edit can move it, which is what makes `Set r = ws.Range("A5")` read
@@ -282,22 +282,22 @@ pub struct Host<'w> {
     /// accumulates entries, which is bounded by the run rather than by the
     /// workbook.
     ranges: HashMap<u64, RangeState>,
-    /// [LLM-generated] Next [`ObjRef::Range`] handle. A counter, not a hash of the
+    /// Next [`ObjRef::Range`] handle. A counter, not a hash of the
     /// coordinates -- two ranges over the same cells must not be the same
     /// object.
     next_token: u64,
-    /// [LLM-generated] The sheet an unqualified `Range(...)` / `Cells(...)` resolves against.
+    /// The sheet an unqualified `Range(...)` / `Cells(...)` resolves against.
     active_sheet: u64,
-    /// [LLM-generated] Whether application events are enabled. Defaults to true.
+    /// Whether application events are enabled. Defaults to true.
     pub enable_events: bool,
-    /// [LLM-generated] Pending cell range mutations for event dispatch.
+    /// Pending cell range mutations for event dispatch.
     pub pending_cell_changes: Vec<RangeRef>,
-    /// [LLM-generated] Pending sheet recalculations for calculate event dispatch.
+    /// Pending sheet recalculations for calculate event dispatch.
     pub pending_calculate_sheets: Vec<u64>,
 }
 
 impl<'w> Host<'w> {
-    /// [LLM-generated] Binds a workbook for the duration of a run.
+    /// Binds a workbook for the duration of a run.
     ///
     /// The first sheet is the active one, since nothing in the supported
     /// surface can change the selection.
@@ -320,12 +320,12 @@ impl<'w> Host<'w> {
         })
     }
 
-    /// [LLM-generated] Whether the run changed anything in the workbook.
+    /// Whether the run changed anything in the workbook.
     pub fn mutated(&self) -> bool {
         self.mutated
     }
 
-    /// [LLM-generated] Settles any outstanding recalculation, so a workbook about to be saved
+    /// Settles any outstanding recalculation, so a workbook about to be saved
     /// holds the values a reader would have seen.
     pub fn finish(&mut self) {
         self.recalculate();
@@ -355,7 +355,7 @@ impl<'w> Host<'w> {
         Ok(&self.wb.sheets[self.sheet_index(id)?])
     }
 
-    /// [LLM-generated] Creates a new range handle.
+    /// Creates a new range handle.
     pub fn new_range(
         &mut self,
         sheet_id: u64,
@@ -378,7 +378,7 @@ impl<'w> Host<'w> {
         ObjRef::Range(self.next_token)
     }
 
-    /// [LLM-generated] Where the range behind a handle currently points.
+    /// Where the range behind a handle currently points.
     ///
     /// `name` is the member being reached through it, purely so a dead range
     /// reports the same `Method '<name>' of object 'Range' failed` Excel
@@ -393,7 +393,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] A bare identifier that names a host object, or `None` if it does not.
+    /// A bare identifier that names a host object, or `None` if it does not.
     pub fn global(&mut self, name: &str) -> Option<ObjRef> {
         Some(match name.to_ascii_lowercase().as_str() {
             "thisworkbook" | "activeworkbook" => ObjRef::Workbook,
@@ -403,7 +403,7 @@ impl<'w> Host<'w> {
         })
     }
 
-    /// [LLM-generated] A call to a bare name that belongs to the host -- `Range("A1")`,
+    /// A call to a bare name that belongs to the host -- `Range("A1")`,
     /// `Cells(2, 3)`, `Worksheets(1)` -- resolved against the active sheet.
     ///
     /// Returns `None` for a name the host does not own, so the interpreter
@@ -422,7 +422,7 @@ impl<'w> Host<'w> {
         Some(self.get_member(&obj, member, args))
     }
 
-    /// [LLM-generated] Reads a property, or calls a method, on an object.
+    /// Reads a property, or calls a method, on an object.
     pub fn get_member(&mut self, obj: &ObjRef, name: &str, args: &[Variant]) -> VResult<Variant> {
         match obj {
             ObjRef::Nothing => Err(VbaError::new(
@@ -451,7 +451,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] Writes a property on an object.
+    /// Writes a property on an object.
     pub fn set_member(
         &mut self,
         obj: &ObjRef,
@@ -610,7 +610,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] Calls an object as if it were its own default member: `Worksheets(1)`,
+    /// Calls an object as if it were its own default member: `Worksheets(1)`,
     /// `ws.Cells(2, 3)`.
     pub fn call_object(&mut self, obj: &ObjRef, args: &[Variant]) -> VResult<Variant> {
         match obj {
@@ -650,7 +650,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] The value an object stands for when it is used without `Set`.
+    /// The value an object stands for when it is used without `Set`.
     ///
     /// `x = ws.Range("A1")` reads the cell, and `MsgBox ws.Range("A1")` would
     /// too. Only `Range` has a default member in this scope.
@@ -671,7 +671,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] Assigning to an object without `Set`, which writes its default member.
+    /// Assigning to an object without `Set`, which writes its default member.
     pub fn assign_default(&mut self, obj: &ObjRef, value: &Variant) -> VResult<()> {
         match obj {
             ObjRef::Range(token) => {
@@ -685,7 +685,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] The elements `For Each` walks.
+    /// The elements `For Each` walks.
     ///
     /// Measured: a `Range` iterates one cell at a time in **row-major** order
     /// (`A1 B1 A2 B2` over `A1:B2`), and `Worksheets` iterates in workbook
@@ -750,7 +750,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] `Worksheets(x)`, where `x` is a 1-based index or a name.
+    /// `Worksheets(x)`, where `x` is a 1-based index or a name.
     ///
     /// Measured: both a missing name and an out-of-range index are error 9,
     /// and the name match is case-insensitive.
@@ -809,7 +809,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] `Range("A1")`, `Range("A1:B2")` and `Range(cell1, cell2)`.
+    /// `Range("A1")`, `Range("A1:B2")` and `Range(cell1, cell2)`.
     fn resolve_range_args(&mut self, sheet_id: u64, args: &[Variant]) -> VResult<ObjRef> {
         let first = args.first().ok_or_else(VbaError::invalid_call)?;
         if args.len() >= 2 {
@@ -834,7 +834,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] One corner of a two-argument `Range(cell1, cell2)`, as `(row, col)`.
+    /// One corner of a two-argument `Range(cell1, cell2)`, as `(row, col)`.
     ///
     /// Takes no sheet: an address is a sheet-free coordinate, and a `Range`
     /// passed as a corner contributes only its top-left. `Range(a, b)` on one
@@ -856,7 +856,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] Takes the handle rather than the rectangle so that a dead range names
+    /// Takes the handle rather than the rectangle so that a dead range names
     /// the member the macro actually reached for, exactly as Excel's
     /// `Method '<name>' of object 'Range' failed` does.
     fn range_member(&mut self, token: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
@@ -966,7 +966,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] The sheet index and a snapshot of the table with this id.
+    /// The sheet index and a snapshot of the table with this id.
     ///
     /// Returns a copy for the same reason every host object is a value: the
     /// caller needs the workbook mutably a moment later. Tables are small
@@ -989,7 +989,7 @@ impl<'w> Host<'w> {
             .ok_or_else(VbaError::subscript)
     }
 
-    /// [LLM-generated] The id of the table covering a cell, or `None` if it is in no table.
+    /// The id of the table covering a cell, or `None` if it is in no table.
     fn table_at(&self, sheet_id: u64, row: u32, col: u32) -> Option<u64> {
         let (row, col) = (row as usize, col as usize);
         self.wb
@@ -1004,7 +1004,7 @@ impl<'w> Host<'w> {
             .map(|t| t.id)
     }
 
-    /// [LLM-generated] `ListObjects(x)`, where `x` is a 1-based index or a name.
+    /// `ListObjects(x)`, where `x` is a 1-based index or a name.
     ///
     /// Measured: a missing name and an out-of-range index are both error 9,
     /// and the name match is case-insensitive.
@@ -1042,7 +1042,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] A `Range` over a table sub-rectangle, or `Nothing` when the part does
+    /// A `Range` over a table sub-rectangle, or `Nothing` when the part does
     /// not exist -- which is measured behaviour for all three of
     /// `HeaderRowRange` on a headerless table, `TotalsRowRange` without a
     /// totals row, and `DataBodyRange` on a table with zero data rows.
@@ -1198,7 +1198,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] `ListRows.Add([Position])`, which appends by default.
+    /// `ListRows.Add([Position])`, which appends by default.
     ///
     /// Measured: the new row is blank, the table grows by one row, and the
     /// returned object is a `ListRow` pointing at it. A table sitting on its
@@ -1238,7 +1238,7 @@ impl<'w> Host<'w> {
         Ok(Variant::Object(ObjRef::ListRow(id, position as u32)))
     }
 
-    /// [LLM-generated] Sets a table's bottom edge to `old_end_row + delta`, or marks it as
+    /// Sets a table's bottom edge to `old_end_row + delta`, or marks it as
     /// sitting on its insert row when that would leave it with no data.
     ///
     /// Assigns absolutely rather than adding, because
@@ -1262,7 +1262,7 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
-    /// [LLM-generated] Whether a pivot field actually has an item with this value, matched
+    /// Whether a pivot field actually has an item with this value, matched
     /// the way the pivot engine merges them (case-insensitively).
     fn pivot_field_has_item(&self, p: &PivotTable, column: &str, wanted: &str) -> VResult<bool> {
         let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
@@ -1275,7 +1275,7 @@ impl<'w> Host<'w> {
         }))
     }
 
-    /// [LLM-generated] A snapshot of the pivot with this id, and its index.
+    /// A snapshot of the pivot with this id, and its index.
     fn pivot(&self, id: u64) -> VResult<(usize, PivotTable)> {
         self.wb
             .pivot_tables
@@ -1285,7 +1285,7 @@ impl<'w> Host<'w> {
             .ok_or_else(|| app_defined("The pivot table no longer exists"))
     }
 
-    /// [LLM-generated] The source column names of a pivot, which is what `PivotFields`
+    /// The source column names of a pivot, which is what `PivotFields`
     /// enumerates -- one entry per source column, whatever area it occupies.
     fn pivot_source_columns(&self, pivot: &PivotTable) -> VResult<Vec<String>> {
         let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
@@ -1377,7 +1377,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] The pivot's rendered bottom-right corner.
+    /// The pivot's rendered bottom-right corner.
     ///
     /// Prefers the extent the last refresh recorded, and computes one
     /// otherwise so that reading a range is a read -- refreshing here would
@@ -1464,7 +1464,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] A style attribute read over a range, or `Null` where the cells
+    /// A style attribute read over a range, or `Null` where the cells
     /// disagree.
     ///
     /// Measured, and the asymmetry is Excel's: `Font.Bold`, `Font.Size`,
@@ -1494,7 +1494,7 @@ impl<'w> Host<'w> {
         Ok(seen.map(wrap).unwrap_or(Variant::Empty))
     }
 
-    /// [LLM-generated] Applies a style change to every cell of a range.
+    /// Applies a style change to every cell of a range.
     fn style_write(&mut self, r: RangeRef, edit: impl Fn(&mut CellStyle)) -> VResult<()> {
         if r.count() > MAX_ALLOCATED_CELLS {
             return Err(VbaError::new(7, "Out of memory: range too large to style"));
@@ -1581,7 +1581,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] Writing `Interior.X` / `Font.X`, which is where the BGR conversion
+    /// Writing `Interior.X` / `Font.X`, which is where the BGR conversion
     /// actually happens.
     fn style_set(&mut self, obj: &ObjRef, name: &str, value: &Variant) -> VResult<()> {
         let (token, on_font) = match obj {
@@ -1652,7 +1652,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] `Rows(n).Insert` / `.Delete` and the column equivalents.
+    /// `Rows(n).Insert` / `.Delete` and the column equivalents.
     ///
     /// Only a whole-row or whole-column band is accepted. Excel *does* accept
     /// a partial range and picks the shift direction from its shape -- and
@@ -1723,7 +1723,7 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
-    /// [LLM-generated] Moves every live `Range` this run has handed out.
+    /// Moves every live `Range` this run has handed out.
     ///
     /// This is what makes a `Range` track the edit the way Excel's does, and
     /// it deliberately reuses [`shift_span`] rather than reimplementing the
@@ -1769,7 +1769,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] `range(r, c)`, 1-based and relative to the range's own top-left.
+    /// `range(r, c)`, 1-based and relative to the range's own top-left.
     ///
     /// Excel lets this run outside the range -- `ws.Cells(2, 3)` works
     /// because `ws.Cells` starts at `A1` -- so only the sheet bounds apply.
@@ -1789,7 +1789,7 @@ impl<'w> Host<'w> {
         ))
     }
 
-    /// [LLM-generated] `.Value` / `.Value2`.
+    /// `.Value` / `.Value2`.
     ///
     /// A single cell reads as a scalar; anything larger reads as a 2-D array
     /// indexed `(row, column)` from 1, which is what makes
@@ -1817,7 +1817,7 @@ impl<'w> Host<'w> {
         })))
     }
 
-    /// [LLM-generated] `.Formula`, which is the cell's source text -- `"=A1*2"` for a
+    /// `.Formula`, which is the cell's source text -- `"=A1*2"` for a
     /// formula, `"hi"` for text, `""` for an empty cell. All measured.
     fn read_formula(&mut self, r: RangeRef) -> VResult<Variant> {
         self.recalculate();
@@ -1841,7 +1841,7 @@ impl<'w> Host<'w> {
         })))
     }
 
-    /// [LLM-generated] Writes one value across every cell of a range.
+    /// Writes one value across every cell of a range.
     ///
     /// Measured: assigning to a multi-cell range fills all of it, and
     /// assigning an *array* to a single cell writes only its first element.
@@ -1902,7 +1902,7 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
-    /// [LLM-generated] `Application.<name>`, which is either an object or a non-raising
+    /// `Application.<name>`, which is either an object or a non-raising
     /// worksheet function.
     fn application_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
         if name.eq_ignore_ascii_case("worksheetfunction") {
@@ -1914,7 +1914,7 @@ impl<'w> Host<'w> {
         self.worksheet_function(name, args, false)
     }
 
-    /// [LLM-generated] Calls an Excel worksheet function through the engine's own
+    /// Calls an Excel worksheet function through the engine's own
     /// implementation.
     ///
     /// `raises` is the whole difference between the two call paths:
@@ -1955,7 +1955,7 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// [LLM-generated] One VBA argument as the formula AST the engine evaluates.
+    /// One VBA argument as the formula AST the engine evaluates.
     ///
     /// A `Range` becomes a real range reference so the function sees cells --
     /// which is what makes `Sum` skip the text and booleans inside one, while
@@ -1995,7 +1995,7 @@ impl<'w> Host<'w> {
     }
 }
 
-/// [LLM-generated] A scalar VBA value as a formula literal.
+/// A scalar VBA value as a formula literal.
 fn scalar_expr(v: &Variant) -> VResult<FExpr> {
     Ok(match v {
         Variant::Boolean(b) => FExpr::Boolean(*b),
@@ -2005,7 +2005,7 @@ fn scalar_expr(v: &Variant) -> VResult<FExpr> {
     })
 }
 
-/// [LLM-generated] One argument as a whole number, for `Offset`/`Resize`/`Cells`.
+/// One argument as a whole number, for `Offset`/`Resize`/`Cells`.
 fn int_arg(args: &[Variant], i: usize) -> VResult<i64> {
     let v = args.get(i).cloned().unwrap_or(Variant::Empty);
     let f = v.to_f64()?;
@@ -2015,7 +2015,7 @@ fn int_arg(args: &[Variant], i: usize) -> VResult<i64> {
     Ok(crate::core::vba::value::bankers_round(f) as i64)
 }
 
-/// [LLM-generated] A colour or palette index written to a style property.
+/// A colour or palette index written to a style property.
 ///
 /// Excel's colour properties are typed `Long`, so a fractional value rounds
 /// rather than erroring; `int_arg`'s banker's rounding is the conversion the
@@ -2025,7 +2025,7 @@ fn long_arg(v: &Variant) -> VResult<i32> {
     i32::try_from(n).map_err(|_| VbaError::overflow())
 }
 
-/// [LLM-generated] A `Resize` dimension, which Excel rejects at zero or below.
+/// A `Resize` dimension, which Excel rejects at zero or below.
 fn positive_dim(v: &Variant) -> VResult<u32> {
     let f = crate::core::vba::value::bankers_round(v.to_f64()?);
     if f < 1.0 || f > f64::from(MAX_ROWS) {
@@ -2034,7 +2034,7 @@ fn positive_dim(v: &Variant) -> VResult<u32> {
     Ok(f as u32)
 }
 
-/// [LLM-generated] `$A$1` / `$A$1:$B$2`, and the whole-row form Excel uses for a range that
+/// `$A$1` / `$A$1:$B$2`, and the whole-row form Excel uses for a range that
 /// spans every column (`ws.Cells.Address` is `$1:$1048576`, measured).
 /// The `(start, count)` a `Rows(...)` / `Columns(...)` argument selects,
 /// 0-based.
@@ -2099,7 +2099,7 @@ fn format_address(r: &RangeRef, row_abs: bool, col_abs: bool) -> String {
     format!("{start}:{cd}{}{rd}{r2}", col_idx_to_letters(c2 as usize))
 }
 
-/// [LLM-generated] `"A1"`, `"A1:B2"`, `"A:B"`, `"3:5"` -> `(row, col, height, width)`, all
+/// `"A1"`, `"A1:B2"`, `"A:B"`, `"3:5"` -> `(row, col, height, width)`, all
 /// 0-based. `None` for anything else, which the caller turns into 1004.
 fn parse_address(text: &str) -> Option<(u32, u32, u32, u32)> {
     let text = text.trim();
@@ -2168,7 +2168,7 @@ fn parse_row(s: &str) -> Option<u32> {
     Some(row - 1)
 }
 
-/// [LLM-generated] One cell as `.Value` or `.Value2` reports it.
+/// One cell as `.Value` or `.Value2` reports it.
 ///
 /// Two measured rules do all the work here. A numeric cell always reads back
 /// as a `Double`, never an `Integer` -- `TypeName(ws.Range("A1").Value)` is
@@ -2197,7 +2197,7 @@ fn cell_value(sheet: &Sheet, row: u32, col: u32, value2: bool) -> Variant {
     }
 }
 
-/// [LLM-generated] One cell as `.Formula` reports it: its source text.
+/// One cell as `.Formula` reports it: its source text.
 ///
 /// Measured: a formula cell gives `"=A1*2"`, a text cell gives `"hi"` and an
 /// empty cell gives `""`. The one adjustment is the quoting -- `visi` stores
@@ -2217,7 +2217,7 @@ fn cell_formula(sheet: &Sheet, row: u32, col: u32) -> String {
     src
 }
 
-/// [LLM-generated] A `Variant` as the cell source text that reproduces it.
+/// A `Variant` as the cell source text that reproduces it.
 ///
 /// A string is written *verbatim*, which is not laziness: measured,
 /// `.Value = "=G1*3"` really does make the cell a formula, and
@@ -2244,7 +2244,7 @@ fn cell_src(v: &Variant) -> VResult<String> {
     })
 }
 
-/// [LLM-generated] An engine result as a `Variant`.
+/// An engine result as a `Variant`.
 ///
 /// No date handling: a worksheet function's result carries no cell and so no
 /// number format, and `WorksheetFunction.Sum` over date cells is measured to
@@ -2261,7 +2261,7 @@ fn result_to_variant(v: &ResultData) -> Variant {
     }
 }
 
-/// [LLM-generated] Excel's error strings and their `CVErr` numbers, which are what `CLng` on
+/// Excel's error strings and their `CVErr` numbers, which are what `CLng` on
 /// an error `Variant` gives back (measured: 2042 for a failed lookup).
 const ERROR_CODES: &[(&str, i32)] = &[
     ("#NULL!", 2000),
@@ -2294,7 +2294,7 @@ mod tests {
     use crate::core::engine::{Sheet, SheetInit};
     use crate::core::workbook::WorkbookManager;
 
-    /// [LLM-generated] The same grid `fuzz/vba_host_probe.py` builds, so an expectation here
+    /// The same grid `fuzz/vba_host_probe.py` builds, so an expectation here
     /// can be read straight off a probe run against real Excel.
     ///
     /// `A1:A3` = 1/2/3, `B1:B3` = 10/20/30, `C1` a date-formatted serial,
@@ -2339,7 +2339,7 @@ mod tests {
         wb
     }
 
-    /// [LLM-generated] Runs one expression as a macro over the fixture and reports
+    /// Runs one expression as a macro over the fixture and reports
     /// `TypeName|CStr`, or `ERR|number` -- the exact shape
     /// `fuzz/vba_host_probe.py` prints from Excel.
     fn probe(setup_and_expr: &str) -> String {
@@ -2850,7 +2850,7 @@ mod tests {
         }
     }
 
-    /// [LLM-generated] 1..10 down column A, 101..110 down B, 201..210 down C, plus an empty
+    /// 1..10 down column A, 101..110 down B, 201..210 down C, plus an empty
     /// `Sheet2` -- distinct per row so a tracked range can be asked what it
     /// now reads, not only where it now points.
     fn tracking_fixture() -> WorkbookManager {

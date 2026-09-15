@@ -7,12 +7,12 @@ use super::host::{Host, ObjRef};
 use super::value::{self, ArithMode, Operand, VResult, Variant, VbaError};
 use super::{VbaModule, VbaModuleKind, VbaProject};
 
-/// [LLM-generated] How many statements a single `run` may execute before giving up.
+/// How many statements a single `run` may execute before giving up.
 const DEFAULT_MAX_OPS: u64 = 5_000_000;
-/// [LLM-generated] How deep procedure calls may nest.
+/// How deep procedure calls may nest.
 const DEFAULT_MAX_DEPTH: usize = 64;
 
-/// [LLM-generated] Error 438 — the "object doesn't support this property or method" that
+/// Error 438 — the "object doesn't support this property or method" that
 /// everything outside the implemented scope reports.
 fn out_of_scope(what: &str) -> VbaError {
     VbaError::new(
@@ -21,7 +21,7 @@ fn out_of_scope(what: &str) -> VbaError {
     )
 }
 
-/// [LLM-generated] The same refusal, for something that needs a workbook when none is attached.
+/// The same refusal, for something that needs a workbook when none is attached.
 fn needs_workbook(what: &str) -> VbaError {
     VbaError::new(
         438,
@@ -31,34 +31,34 @@ fn needs_workbook(what: &str) -> VbaError {
     )
 }
 
-/// [LLM-generated] Non-local control flow out of a statement.
+/// Non-local control flow out of a statement.
 #[derive(Debug, Clone, PartialEq)]
 enum Flow {
-    /// [LLM-generated] Fall through to the next statement.
+    /// Fall through to the next statement.
     Normal,
-    /// [LLM-generated] `Exit Sub` / `Exit Function` / `Exit Property`.
+    /// `Exit Sub` / `Exit Function` / `Exit Property`.
     ExitProc,
-    /// [LLM-generated] `Exit For`.
+    /// `Exit For`.
     ExitFor,
-    /// [LLM-generated] `Exit Do` (and `Exit While`).
+    /// `Exit Do` (and `Exit While`).
     ExitDo,
-    /// [LLM-generated] `GoTo`, or a jump into an error handler. Unwinds to the procedure
+    /// `GoTo`, or a jump into an error handler. Unwinds to the procedure
     /// body, where labels live.
     Goto(String),
 }
 
-/// [LLM-generated] What `On Error` is currently set to.
+/// What `On Error` is currently set to.
 #[derive(Debug, Clone, PartialEq)]
 enum Handler {
-    /// [LLM-generated] No handler: an error propagates out of the procedure.
+    /// No handler: an error propagates out of the procedure.
     None,
-    /// [LLM-generated] `On Error Resume Next`.
+    /// `On Error Resume Next`.
     ResumeNext,
-    /// [LLM-generated] `On Error GoTo <label>`.
+    /// `On Error GoTo <label>`.
     Goto(String),
 }
 
-/// [LLM-generated] Procedures sharing a name in a module (e.g. Sub/Function vs Property Get/Let/Set).
+/// Procedures sharing a name in a module (e.g. Sub/Function vs Property Get/Let/Set).
 #[derive(Debug, Clone, Default)]
 pub struct MemberProcs {
     pub sub_or_func: Option<Rc<Procedure>>,
@@ -87,7 +87,7 @@ impl MemberProcs {
     }
 }
 
-/// [LLM-generated] A parsed module environment in the VBA project.
+/// A parsed module environment in the VBA project.
 #[derive(Debug, Clone)]
 pub struct ModuleEnv {
     pub name: String,
@@ -264,7 +264,7 @@ pub struct UserClassInstance {
     pub terminating: bool,
 }
 
-/// [LLM-generated] One procedure activation.
+/// One procedure activation.
 struct Frame {
     locals: HashMap<String, Variant>,
     auto_new_locals: HashMap<String, String>,
@@ -293,14 +293,14 @@ impl Frame {
     }
 }
 
-/// [LLM-generated] The state `Err` exposes.
+/// The state `Err` exposes.
 #[derive(Debug, Clone, Default)]
 struct ErrState {
     number: i32,
     description: String,
 }
 
-/// [LLM-generated] Runs VBA procedures across single-module or multi-module projects.
+/// Runs VBA procedures across single-module or multi-module projects.
 pub struct Interpreter<'w> {
     modules: HashMap<String, ModuleEnv>,
     instances: HashMap<u64, UserClassInstance>,
@@ -316,7 +316,7 @@ pub struct Interpreter<'w> {
 }
 
 impl<'w> Interpreter<'w> {
-    /// [LLM-generated] Builds an interpreter over a single parsed module.
+    /// Builds an interpreter over a single parsed module.
     pub fn new(module: Module) -> Self {
         let mut name = "Module1".to_string();
         for item in &module.items {
@@ -349,7 +349,7 @@ impl<'w> Interpreter<'w> {
         }
     }
 
-    /// [LLM-generated] Builds an interpreter from a list of project modules.
+    /// Builds an interpreter from a list of project modules.
     pub fn from_modules(modules_list: Vec<VbaModule>, target_module: Option<&str>) -> Self {
         let mut modules = HashMap::new();
         let mut default_active = String::new();
@@ -384,7 +384,7 @@ impl<'w> Interpreter<'w> {
         }
     }
 
-    /// [LLM-generated] Builds an interpreter from a `VbaProject`.
+    /// Builds an interpreter from a `VbaProject`.
     pub fn from_project(project: &VbaProject, target_module: Option<&str>) -> VResult<Self> {
         let mut modules = HashMap::new();
         let mut default_active = String::new();
@@ -429,7 +429,7 @@ impl<'w> Interpreter<'w> {
         })
     }
 
-    /// [LLM-generated] Adds a parsed module to this interpreter.
+    /// Adds a parsed module to this interpreter.
     pub fn add_module(
         &mut self,
         name: &str,
@@ -441,18 +441,18 @@ impl<'w> Interpreter<'w> {
         self.modules.insert(name.to_ascii_lowercase(), env);
     }
 
-    /// [LLM-generated] Binds a workbook, enabling the host object model.
+    /// Binds a workbook, enabling the host object model.
     pub fn with_host(mut self, host: Host<'w>) -> Self {
         self.host = Some(host);
         self
     }
 
-    /// [LLM-generated] Whether the run changed the workbook.
+    /// Whether the run changed the workbook.
     pub fn mutated(&self) -> bool {
         self.host.as_ref().is_some_and(|h| h.mutated())
     }
 
-    /// [LLM-generated] Settles any outstanding recalculation.
+    /// Settles any outstanding recalculation.
     pub fn finish(&mut self) {
         if let Some(h) = self.host.as_mut() {
             h.finish();
@@ -472,18 +472,18 @@ impl<'w> Interpreter<'w> {
         self.host.as_mut().ok_or_else(|| needs_workbook(what))
     }
 
-    /// [LLM-generated] Caps how many statements a run may execute.
+    /// Caps how many statements a run may execute.
     pub fn with_max_ops(mut self, max_ops: u64) -> Self {
         self.max_ops = max_ops;
         self
     }
 
-    /// [LLM-generated] Whether events are currently enabled.
+    /// Whether events are currently enabled.
     pub fn enable_events(&self) -> bool {
         self.host.as_ref().is_none_or(|h| h.enable_events)
     }
 
-    /// [LLM-generated] Returns the resolved type name for a variant (e.g. "Class1" for UserClass).
+    /// Returns the resolved type name for a variant (e.g. "Class1" for UserClass).
     pub fn type_name_of(&self, v: &Variant) -> String {
         match v {
             Variant::Object(ObjRef::UserClass(id)) => {
@@ -505,7 +505,7 @@ impl<'w> Interpreter<'w> {
             .unwrap_or_else(|| "Object".to_string())
     }
 
-    /// [LLM-generated] Runs the named procedure and returns its value.
+    /// Runs the named procedure and returns its value.
     pub fn run(&mut self, name: &str, args: Vec<Variant>) -> VResult<Variant> {
         self.ops = 0;
         self.init_all_modules()?;
@@ -514,7 +514,7 @@ impl<'w> Interpreter<'w> {
         Ok(res)
     }
 
-    /// [LLM-generated] Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
+    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
     pub fn run_open_events(&mut self) -> VResult<()> {
         self.ops = 0;
         self.init_all_modules()?;
@@ -559,7 +559,7 @@ impl<'w> Interpreter<'w> {
         Ok(())
     }
 
-    /// [LLM-generated] Fires `Workbook_BeforeClose` event. Returns true if canceled.
+    /// Fires `Workbook_BeforeClose` event. Returns true if canceled.
     pub fn fire_workbook_before_close(&mut self) -> VResult<bool> {
         if !self.enable_events() {
             return Ok(false);
@@ -592,7 +592,7 @@ impl<'w> Interpreter<'w> {
         Ok(false)
     }
 
-    /// [LLM-generated] Fires `Workbook_BeforeSave` event. Returns true if canceled.
+    /// Fires `Workbook_BeforeSave` event. Returns true if canceled.
     pub fn fire_workbook_before_save(&mut self, save_as_ui: bool) -> VResult<bool> {
         if !self.enable_events() {
             return Ok(false);
@@ -1125,7 +1125,7 @@ impl<'w> Interpreter<'w> {
         Ok(ret)
     }
 
-    /// [LLM-generated] Runs a procedure body, resolving `GoTo` against its top-level labels.
+    /// Runs a procedure body, resolving `GoTo` against its top-level labels.
     fn exec_procedure_body(&mut self, body: &[Stmt], frame: &mut Frame) -> VResult<()> {
         let mut pc = 0usize;
         while pc < body.len() {
@@ -2591,7 +2591,7 @@ impl<'w> Interpreter<'w> {
     }
 }
 
-/// [LLM-generated] VBA reports an undefined label and a bad assignment target as compile
+/// VBA reports an undefined label and a bad assignment target as compile
 /// errors, which have no `Err.Number`. 13 is the closest runtime analogue and
 /// keeps the differential comparison meaningful rather than inventing a
 /// number Excel would never produce.
@@ -2628,7 +2628,7 @@ fn compare_with(op: BinOp, ord: std::cmp::Ordering) -> bool {
     }
 }
 
-/// [LLM-generated] Whether an expression is a compile-time constant.
+/// Whether an expression is a compile-time constant.
 ///
 /// This is *constness*, not static typing, and the two come apart in both
 /// directions -- see [`is_statically_typed`], which is what decides whether
@@ -2645,7 +2645,7 @@ fn is_constant(e: &Expr) -> bool {
     }
 }
 
-/// [LLM-generated] Intrinsics whose return type is declared numeric rather than `Variant`.
+/// Intrinsics whose return type is declared numeric rather than `Variant`.
 ///
 /// This matters for comparison, not for arithmetic. `value::compare_ctx`'s
 /// "constant" case is really "the compiler knows this side's numeric type
@@ -2664,7 +2664,7 @@ const STATICALLY_NUMERIC: &[&str] = &[
     "cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte", "len", "val", "sgn",
 ];
 
-/// [LLM-generated] Intrinsics whose return type is declared `Boolean`.
+/// Intrinsics whose return type is declared `Boolean`.
 ///
 /// The same "the compiler knows this statically" idea as
 /// [`STATICALLY_NUMERIC`] (which lists `cbool` too, for the numeric
@@ -2684,7 +2684,7 @@ const STATICALLY_BOOLEAN: &[&str] = &[
     "iserror",
 ];
 
-/// [LLM-generated] Intrinsics whose return type is declared `String`.
+/// Intrinsics whose return type is declared `String`.
 ///
 /// The pair `True Eqv CStr(True)` (error 13) against `LCase("TRUE") Eqv True`
 /// (True) is what pins the distinction down -- see [`value::logical_pair`].
@@ -2715,7 +2715,7 @@ const STATICALLY_BOOLEAN: &[&str] = &[
 /// it arrives with the right type rather than silently as a Variant.
 const STATICALLY_STRING: &[&str] = &["cstr", "typename", "strreverse", "replace", "join"];
 
-/// [LLM-generated] Whether an expression's *static* type is `Boolean`, as the VBA compiler
+/// Whether an expression's *static* type is `Boolean`, as the VBA compiler
 /// would know it.
 ///
 /// This is the distinction `Select Case` turns on, and it is invisible in the
@@ -2765,7 +2765,7 @@ fn is_literal_string(e: &Expr) -> bool {
     }
 }
 
-/// [LLM-generated] Whether the compiler knows this expression's type without its value.
+/// Whether the compiler knows this expression's type without its value.
 ///
 /// A call to one of the declared-return-type intrinsics qualifies, and so
 /// does **arithmetic over them** -- `Len(CStr(a)) / 2` is a `Double` as
@@ -2784,7 +2784,7 @@ fn is_literal_string(e: &Expr) -> bool {
 /// a = -3 : (CLng(a) * 2)      = "-6.0"      True       (numeric, not text)
 /// ```
 ///
-/// [LLM-generated] That last row is the positive half: against a statically typed number the
+/// That last row is the positive half: against a statically typed number the
 /// string must parse *and then compares numerically*, where a `Variant`
 /// partner would compare it as text and say False.
 ///
@@ -2803,7 +2803,7 @@ fn is_literal_string(e: &Expr) -> bool {
 /// "0" >= IsEmpty(Empty)        True    but a declared-Boolean call is
 /// ```
 ///
-/// [LLM-generated] The last two rows are what say this is about the static *type* rather than
+/// The last two rows are what say this is about the static *type* rather than
 /// about `Empty` appearing anywhere: `IsEmpty(Empty)` is declared `Boolean`
 /// and converts, while `(3# >= Empty)` does not.
 fn is_statically_typed(e: &Expr) -> bool {
@@ -2846,7 +2846,7 @@ fn is_statically_typed(e: &Expr) -> bool {
     }
 }
 
-/// [LLM-generated] How `value::compare_ctx` should treat an operand.
+/// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
     let statically_typed = is_statically_typed(e);
     match e {
@@ -2872,7 +2872,7 @@ fn operand_kind(e: &Expr) -> Operand {
     }
 }
 
-/// [LLM-generated] The one constant-folding quirk this interpreter reproduces.
+/// The one constant-folding quirk this interpreter reproduces.
 ///
 /// `True Mod "12"` is the **Boolean** `False`, and `True \ "12"` is `True`,
 /// where the same expressions with either operand in a variable give the
@@ -2936,7 +2936,7 @@ fn eval_binary(
     }
 }
 
-/// [LLM-generated] Builtins that must see an object rather than its default member.
+/// Builtins that must see an object rather than its default member.
 ///
 /// Short on purpose. `TypeName` and `VarType` exist to report *what a value
 /// is*, and `IsObject` to report whether it is one at all, so dereferencing
@@ -2945,7 +2945,7 @@ fn eval_binary(
 /// a `Range` means the cell.
 const OBJECT_AWARE_BUILTINS: &[&str] = &["typename", "vartype", "isobject"];
 
-/// [LLM-generated] `Is`: reference identity.
+/// `Is`: reference identity.
 ///
 /// Both operands must be objects. `Nothing` is one, which is what makes
 /// `r Is Nothing` the ordinary way to test an unset reference; anything else
@@ -2957,7 +2957,7 @@ fn is_comparison(a: &Variant, b: &Variant) -> VResult<Variant> {
     }
 }
 
-/// [LLM-generated] A statically typed `String` on the **left** of a logical operator, with
+/// A statically typed `String` on the **left** of a logical operator, with
 /// `Null` on the right, is error 94.
 ///
 /// | Expression | Excel |
@@ -3019,7 +3019,7 @@ fn literal_to_variant(l: &Literal) -> Variant {
     }
 }
 
-/// [LLM-generated] A `For` counter keeps the type its bounds imply, so `For i = 1 To 3`
+/// A `For` counter keeps the type its bounds imply, so `For i = 1 To 3`
 /// counts in `Integer`s and `For x = 1.5 To 3` in `Double`s.
 fn number_like(current: f64, start: f64, step: f64) -> Variant {
     let integral = current.fract() == 0.0 && start.fract() == 0.0 && step.fract() == 0.0;
@@ -3055,7 +3055,7 @@ mod tests {
     use super::super::parser::parse_module;
     use super::*;
 
-    /// [LLM-generated] Runs a body inside a Function and reports `TypeName|CStr` -- the same
+    /// Runs a body inside a Function and reports `TypeName|CStr` -- the same
     /// pair `fuzz/vba_variant_probe.bas` prints from Excel, so a test's
     /// expected string can be pasted straight from a probe run.
     fn run(body: &str) -> String {
@@ -3298,7 +3298,7 @@ mod tests {
         );
     }
 
-    /// [LLM-generated] The reason `exec_block` handles errors rather than only the procedure
+    /// The reason `exec_block` handles errors rather than only the procedure
     /// loop: resuming has to continue inside the loop body, not after it.
     #[test]
     fn resume_next_resumes_inside_a_nested_block() {
@@ -3511,7 +3511,7 @@ mod tests {
         );
     }
 
-    /// [LLM-generated] A `Select Case` whose subject is a *constant* string compares as
+    /// A `Select Case` whose subject is a *constant* string compares as
     /// text, even against numeric cases -- and the same string held in a
     /// variable does not. Both halves measured; the split is the same
     /// constant-vs-runtime one the arithmetic and comparison rules have.
@@ -3999,7 +3999,7 @@ mod tests {
         );
     }
 
-    /// [LLM-generated] Which operators coerce a `Null`'s partner before propagating, and
+    /// Which operators coerce a `Null`'s partner before propagating, and
     /// which short-circuit. Measured in both directions with `IsNull`.
     #[test]
     fn only_plus_short_circuits_past_a_bad_partner() {
@@ -4104,7 +4104,7 @@ mod tests {
         );
     }
 
-    /// [LLM-generated] The constant-folding quirk in `constant_bool_int_op`, with the
+    /// The constant-folding quirk in `constant_bool_int_op`, with the
     /// negative controls that pin down how narrow it is.
     #[test]
     fn a_constant_boolean_over_a_constant_string_folds_to_a_boolean() {
@@ -4147,7 +4147,7 @@ mod tests {
         );
     }
 
-    /// [LLM-generated] The whole `Null` table, from a sweep of every intrinsic against real
+    /// The whole `Null` table, from a sweep of every intrinsic against real
     /// Excel. There is no principle behind the split, so the test enumerates
     /// it -- `Hex` propagates but `Chr` rejects, `String` propagates but
     /// `Space` rejects, `CVar` propagates where every other `C*` rejects.

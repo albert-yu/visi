@@ -78,7 +78,7 @@ fn decompress_chunk(chunk_data: &[u8], out: &mut Vec<u8>) -> Result<(), String> 
     Ok(())
 }
 
-/// [LLM-generated] MS-OVBA 2.4.1.3.19: smallest number of bits (clamped 4..=12) such that
+/// MS-OVBA 2.4.1.3.19: smallest number of bits (clamped 4..=12) such that
 /// `decompressed_current <= 2^bit_count` -- governs the offset/length bit
 /// split for a copy token at this point in the chunk.
 fn bit_count_for(decompressed_current: usize) -> u32 {
@@ -89,7 +89,7 @@ fn bit_count_for(decompressed_current: usize) -> u32 {
     bit_count.clamp(4, 12)
 }
 
-/// [LLM-generated] Compresses `data` into an MS-OVBA Compressed Container using real LZ77
+/// Compresses `data` into an MS-OVBA Compressed Container using real LZ77
 /// back-references, chunked to exactly 4096 decompressed bytes per
 /// non-final chunk (matching genuine Excel-authored data). Errors (rather
 /// than falling back to a "stored" chunk -- see the module doc comment for

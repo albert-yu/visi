@@ -34,7 +34,7 @@ class ModuleSource:
 
 
 class VbaGrammarGenerator:
-    """[LLM-generated] Produces small, valid VBA projects from grammar-shaped pieces."""
+    """Produces small, valid VBA projects from grammar-shaped pieces."""
 
     SCALAR_TYPES: ClassVar = ["Long", "String", "Double", "Boolean", "Variant"]
     CONTEXTUAL_NAMES: ClassVar = ["Name", "Line", "Get", "Width", "Value", "Item"]

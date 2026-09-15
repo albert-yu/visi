@@ -1,39 +1,39 @@
 use serde::{Deserialize, Serialize};
 
-/// [LLM-generated] Cell formatting style attributes (font color, background color, font styles, font family, font size).
+/// Cell formatting style attributes (font color, background color, font styles, font family, font size).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CellStyle {
-    /// [LLM-generated] Font color as Hex (e.g. "#FF0000" or "FF0000") or standard color name ("red", "blue", etc.)
+    /// Font color as Hex (e.g. "#FF0000" or "FF0000") or standard color name ("red", "blue", etc.)
     pub font_color: Option<String>,
-    /// [LLM-generated] Background fill color as Hex or color name
+    /// Background fill color as Hex or color name
     pub bg_color: Option<String>,
-    /// [LLM-generated] Bold text style flag
+    /// Bold text style flag
     pub bold: Option<bool>,
-    /// [LLM-generated] Italic text style flag
+    /// Italic text style flag
     pub italic: Option<bool>,
-    /// [LLM-generated] Underline text style flag
+    /// Underline text style flag
     pub underline: Option<bool>,
-    /// [LLM-generated] Font family name (e.g. "Arial", "Calibri", "Courier New")
+    /// Font family name (e.g. "Arial", "Calibri", "Courier New")
     pub font_family: Option<String>,
-    /// [LLM-generated] Font size in points (e.g. 11, 12, 14.5).
+    /// Font size in points (e.g. 11, 12, 14.5).
     ///
     /// `f64` rather than an integer because Excel's is: `Font.Size` reports
     /// as a `Double` and a half-point size round-trips (`.Font.Size = 10.5`
     /// reads back as `10.5`), both measured with `fuzz/vba_style_probe.py`.
     pub font_size: Option<f64>,
-    /// [LLM-generated] Excel number-format code (e.g. `0.00`, `0.0"x"`, `m/d/yy`, `yyyy-mm-dd`).
+    /// [AI-Agent] Excel number-format code (e.g. `0.00`, `0.0"x"`, `m/d/yy`, `yyyy-mm-dd`).
     ///
-    /// [LLM-generated] The value stays a plain number, exactly as in Excel, and the format governs only how it renders.
+    /// [AI-Agent] The value stays a plain number, exactly as in Excel, and the format governs only how it renders.
     pub num_format: Option<String>,
 }
 
 impl CellStyle {
-    /// [LLM-generated] A style with nothing set.
+    /// A style with nothing set.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// [LLM-generated] Whether no attribute is set. An empty style is stored as no style at
+    /// Whether no attribute is set. An empty style is stored as no style at
     /// all rather than kept around.
     pub fn is_empty(&self) -> bool {
         self.font_color.is_none()
@@ -46,7 +46,7 @@ impl CellStyle {
             && self.num_format.is_none()
     }
 
-    /// [LLM-generated] Overlays `other` onto this style, attribute by attribute.
+    /// Overlays `other` onto this style, attribute by attribute.
     ///
     /// Only the attributes `other` actually sets are copied, so merging a
     /// style that just sets `bold` leaves an existing font color alone.

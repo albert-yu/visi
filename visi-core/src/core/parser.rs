@@ -20,7 +20,7 @@ pub enum Expr {
     Number(f64),
     String(String),
     Boolean(bool),
-    /// [LLM-generated] An Excel error value written literally in the formula, as in `=#REF!`.
+    /// An Excel error value written literally in the formula, as in `=#REF!`.
     /// Evaluates to itself, so it propagates through enclosing operators and
     /// functions exactly as an error read out of a cell does.
     Error(&'static str),
@@ -76,7 +76,7 @@ pub enum EvalToken {
     String(String),
     Boolean(bool),
     Identifier(String),
-    /// [LLM-generated] An Excel error value written literally, as in `=#REF!`. One of
+    /// An Excel error value written literally, as in `=#REF!`. One of
     /// `result_data::EXCEL_ERROR_CODES`, canonically cased.
     Error(&'static str),
     Op(Op),
@@ -96,7 +96,7 @@ pub enum EvalToken {
     },
 }
 
-/// [LLM-generated] Renders a 0-based column index as its A1 column letters: 0 is `A`, 25 is
+/// Renders a 0-based column index as its A1 column letters: 0 is `A`, 25 is
 /// `Z`, 26 is `AA`.
 ///
 /// One half of the boundary between the engine's 0-based `(row, col)` and the
@@ -114,7 +114,7 @@ pub fn col_idx_to_letters(mut col: usize) -> String {
     letters
 }
 
-/// [LLM-generated] Converts an already-split A1 reference into a 0-based `(row, col)`.
+/// Converts an already-split A1 reference into a 0-based `(row, col)`.
 ///
 /// `col_str` is the letters and `row_str` the digits, so `("B", "3")` gives
 /// `(2, 1)`. Case-insensitive, and non-alphabetic characters in `col_str` are
@@ -1140,7 +1140,7 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
     result
 }
 
-/// [LLM-generated] Renders a structured reference's `[...]` suffix (everything after the
+/// Renders a structured reference's `[...]` suffix (everything after the
 /// leading table/sheet name), given its already-resolved column name (empty
 /// for a whole-table/whole-row reference), `is_this_row` flag, and section.
 /// Shared by `serialize_formula` (id-based re-rendering) and
@@ -1192,7 +1192,7 @@ fn render_structured_ref_text(
     }
 }
 
-/// [LLM-generated] Rewrites every structured reference to `table_name` within a single
+/// Rewrites every structured reference to `table_name` within a single
 /// cell's formula source (e.g. `"=SUM(Sales[Amount])"`), so that renaming
 /// an ExcelTable (and/or one of its columns) can update dependent formulas
 /// the same way Excel does. `new_table_name` renames the table itself (in
@@ -1283,7 +1283,7 @@ pub fn rewrite_structured_table_reference(
     Some(result)
 }
 
-/// [LLM-generated] Extends a just-lexed number with a scientific-notation exponent, if one
+/// Extends a just-lexed number with a scientific-notation exponent, if one
 /// follows: `1E5`, `1E+5`, `2.5e-3`.
 ///
 /// Only consumes the `e` when a digit actually follows it (after an optional
@@ -1312,7 +1312,7 @@ fn take_number_exponent(chars: &[char], i: &mut usize, num_str: &mut String) {
     }
 }
 
-/// [LLM-generated] The Excel error value spelled at `start`, in its canonical casing, or
+/// The Excel error value spelled at `start`, in its canonical casing, or
 /// `None` if the `#` starts something else.
 ///
 /// Longest match wins, so a code that is a prefix of another cannot shadow it.
@@ -2078,7 +2078,7 @@ pub fn parse_excel_formula(input: &str) -> Result<Expr, String> {
 mod tests {
     use super::*;
 
-    /// [LLM-generated] Scientific-notation literals are numbers, not a number followed by a
+    /// Scientific-notation literals are numbers, not a number followed by a
     /// name.
     #[test]
     fn test_lex_scientific_notation_literals() {
@@ -2099,7 +2099,7 @@ mod tests {
         }
     }
 
-    /// [LLM-generated] The exponent is only consumed when a digit really follows, so an `E`
+    /// The exponent is only consumed when a digit really follows, so an `E`
     /// that belongs to something else is left alone -- notably the column
     /// letter in a range like `A1:E5`, which must stay three tokens.
     #[test]

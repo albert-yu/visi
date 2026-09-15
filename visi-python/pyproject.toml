@@ -8,13 +8,13 @@ requires-python = ">=3.9"
 description = "Python bindings for visi-core (development harness only)"
 license = { text = "MIT OR Apache-2.0" }
 dynamic = ["version"]
-# [LLM-generated] Development-only: this is built with `maturin develop` into fuzz/venv and is
+# Development-only: this is built with `maturin develop` into fuzz/venv and is
 # not a distribution channel for visi-core. The classifier makes PyPI reject an
 # upload outright rather than relying on nobody trying.
 classifiers = ["Private :: Do Not Upload"]
 
 [tool.maturin]
 module-name = "visi_core"
-# [LLM-generated] Turns on the feature that is deliberately off by default in Cargo.toml, so
+# Turns on the feature that is deliberately off by default in Cargo.toml, so
 # that `cargo test --workspace` keeps linking. See the comment there.
 features = ["pyo3/extension-module"]

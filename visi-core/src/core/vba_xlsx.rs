@@ -4,7 +4,7 @@ use crate::core::xlsx::{escape_xml, get_attr, get_zip_file_content, parse_workbo
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
-/// [LLM-generated] The real root cause behind why real Excel never recognized any workbook
+/// The real root cause behind why real Excel never recognized any workbook
 /// this codebase exported as having a VBA project at all (`has vb project`
 /// false, `run VB macro` silently no-op) despite the `vbaProject.bin` CFB
 /// container itself being byte-correct: this was pointing at
@@ -18,7 +18,7 @@ use std::io::{Read, Write};
 /// `vbaProject.bin` part with the workbook as its VBA project.
 const REL_VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
-/// [LLM-generated] Reads `xl/vbaProject.bin` out of an xlsx zip, if present, and reconstructs
+/// Reads `xl/vbaProject.bin` out of an xlsx zip, if present, and reconstructs
 /// a `VbaProject`. Returns `Ok(None)` if the workbook has no VBA project --
 /// never an error, matching how a plain `.xlsx` is the overwhelmingly common
 /// case. `sheet_id_by_name` maps each imported sheet's display name to its
@@ -48,7 +48,7 @@ pub fn import_vba_project(
     parse_vba_project_from_cfb_bytes(vba_bin, &sheet_id_by_code_name).map(Some)
 }
 
-/// [LLM-generated] Parses a raw (not zip-wrapped) `vbaProject.bin` byte buffer into a
+/// Parses a raw (not zip-wrapped) `vbaProject.bin` byte buffer into a
 /// `VbaProject`. Shared by the xlsx-zip import path above and by seeding a
 /// brand-new project from the bundled template asset (which is stored as
 /// raw CFB bytes, not wrapped in a zip).
@@ -144,7 +144,7 @@ fn read_stream_string<F: Read + std::io::Seek>(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// [LLM-generated] The `PROJECT` stream's `ID="{...}"` line.
+/// The `PROJECT` stream's `ID="{...}"` line.
 fn parse_project_id(project_text: &str) -> Option<String> {
     for line in project_text.lines() {
         if let Some(rest) = line.strip_prefix("ID=") {
@@ -154,7 +154,7 @@ fn parse_project_id(project_text: &str) -> Option<String> {
     None
 }
 
-/// [LLM-generated] Every module name named in a `Document=Name/&H...` line.
+/// Every module name named in a `Document=Name/&H...` line.
 fn parse_document_module_names(project_text: &str) -> HashSet<String> {
     project_text
         .lines()
@@ -164,7 +164,7 @@ fn parse_document_module_names(project_text: &str) -> HashSet<String> {
         .collect()
 }
 
-/// [LLM-generated] The `PROJECT` stream's `CMG=`/`DPB=`/`GC=` lines verbatim, in their
+/// The `PROJECT` stream's `CMG=`/`DPB=`/`GC=` lines verbatim, in their
 /// original order, if present. See `VbaProject::protection_lines` for why
 /// these are captured and preserved rather than dropped.
 fn parse_protection_lines(project_text: &str) -> Option<String> {
@@ -181,7 +181,7 @@ fn parse_protection_lines(project_text: &str) -> Option<String> {
     }
 }
 
-/// [LLM-generated] Maps each `<sheet>` element's `name` to its `codeName` attribute, for
+/// Maps each `<sheet>` element's `name` to its `codeName` attribute, for
 /// sheets that have one.
 fn parse_sheet_code_names(workbook_xml: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -209,15 +209,15 @@ fn parse_sheet_code_names(workbook_xml: &str) -> HashMap<String, String> {
 struct ModuleSpec {
     name: String,
     text_offset: usize,
-    /// [LLM-generated] True if MODULETYPE was 0x0022 (document/class per spec), false if
+    /// True if MODULETYPE was 0x0022 (document/class per spec), false if
     /// 0x0021 (procedural/standard).
     is_document_shaped: bool,
-    /// [LLM-generated] MODULECOOKIE (0x002C) record value -- see `VbaModule::module_cookie`
+    /// MODULECOOKIE (0x002C) record value -- see `VbaModule::module_cookie`
     /// for why this is captured and preserved rather than discarded.
     module_cookie: u16,
 }
 
-/// [LLM-generated] Generic Id(u16)+Size(u32)+Data record reader, with the one documented
+/// Generic Id(u16)+Size(u32)+Data record reader, with the one documented
 /// fixed-layout exception (PROJECTVERSION, id=0x0009, 12 bytes total).
 /// Returns `(id, data, next_pos)`.
 fn read_dir_record(dir: &[u8], pos: usize) -> Result<(u16, &[u8], usize), String> {
@@ -247,7 +247,7 @@ fn read_dir_record(dir: &[u8], pos: usize) -> Result<(u16, &[u8], usize), String
     Ok((id, &dir[data_start..data_end], data_end))
 }
 
-/// [LLM-generated] Finds the byte offset of the PROJECTMODULES record (0x000F), i.e. the
+/// Finds the byte offset of the PROJECTMODULES record (0x000F), i.e. the
 /// end of the PROJECTINFORMATION+PROJECTREFERENCES prefix.
 fn find_projectmodules_start(dir: &[u8]) -> Result<usize, String> {
     let mut pos = 0;
@@ -320,7 +320,7 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
     Ok(specs)
 }
 
-/// [LLM-generated] Splices a rebuilt `vbaProject.bin` into an already-produced xlsx zip
+/// Splices a rebuilt `vbaProject.bin` into an already-produced xlsx zip
 /// (patching `[Content_Types].xml`/`workbook.xml.rels`/`workbook.xml` as
 /// needed), or returns `xlsx_bytes` unchanged if `vba` is `None`.
 pub fn export_vba_project(
@@ -388,7 +388,7 @@ pub fn export_vba_project(
     )
 }
 
-/// [LLM-generated] Adds `codeName="ThisWorkbook"` to `<workbookPr>` and a matching
+/// Adds `codeName="ThisWorkbook"` to `<workbookPr>` and a matching
 /// `codeName="..."` to each `<sheet>` element bound to a Document module.
 /// `sheet_id_to_worksheet_name` must map each sheet id to the name it was
 /// *actually* written under in `workbook_xml` -- `xlsx::export_xlsx_data`
@@ -491,7 +491,7 @@ fn rewrite_zip_with_vba_part(
     Ok(cursor.into_inner())
 }
 
-/// [LLM-generated] Builds a complete `vbaProject.bin` byte buffer: the donor's dir-stream
+/// Builds a complete `vbaProject.bin` byte buffer: the donor's dir-stream
 /// PROJECTINFORMATION+PROJECTREFERENCES prefix and `_VBA_PROJECT` cache are
 /// copied verbatim; the dir stream's PROJECTMODULES section, `PROJECT`,
 /// `PROJECTwm`, and every module stream are rebuilt fresh from `project`'s
@@ -575,7 +575,7 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
     Ok(cf.into_inner().into_inner())
 }
 
-/// [LLM-generated] Writes a `dir`-stream Id(u16)+Size(u32)+Data record. Shared with
+/// Writes a `dir`-stream Id(u16)+Size(u32)+Data record. Shared with
 /// `vba_synth.rs`, which builds a from-scratch `dir` stream using the same
 /// record shape.
 pub(crate) fn write_record(out: &mut Vec<u8>, id: u16, data: &[u8]) {
@@ -588,7 +588,7 @@ fn utf16le(s: &str) -> Vec<u8> {
     s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
 }
 
-/// [LLM-generated] `project.protection_lines` (the donor's original `CMG`/`DPB`/`GC` lines,
+/// `project.protection_lines` (the donor's original `CMG`/`DPB`/`GC` lines,
 /// if any) is reproduced verbatim right after `VersionCompatible32=`,
 /// matching real Excel's own line order -- discovered missing while
 /// investigating why every workbook this codebase exports failed real
@@ -645,7 +645,7 @@ mod tests {
     use super::*;
     use crate::core::vba::{VbaModuleKind, VbaProject};
 
-    /// [LLM-generated] Deliberately sets `source` and `cached_compressed_source` to
+    /// Deliberately sets `source` and `cached_compressed_source` to
     /// non-matching content so the test can tell, from the exported bytes
     /// alone, which one `build_vba_project_bin` actually used -- a stale
     /// cache being reused verbatim (correct behavior when `source` hasn't

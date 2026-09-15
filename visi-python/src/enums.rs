@@ -3,7 +3,7 @@ use pyo3::PyResult;
 use visi_engine::core::chart::ChartType;
 use visi_engine::core::{CellType, PivotAggregation, PivotArea, VbaModuleKind};
 
-/// [LLM-generated] Parses a chart type name (`"column"`, `"bar"`, `"line"`, ...).
+/// Parses a chart type name (`"column"`, `"bar"`, `"line"`, ...).
 pub fn parse_chart_type(s: &str) -> PyResult<ChartType> {
     match s.to_ascii_lowercase().as_str() {
         "column" => Ok(ChartType::Column),
@@ -18,7 +18,7 @@ pub fn parse_chart_type(s: &str) -> PyResult<ChartType> {
     }
 }
 
-/// [LLM-generated] Parses a cell type name matching `visi_core::core::CellType`.
+/// [AI-Agent] Parses a cell type name matching `visi_core::core::CellType`.
 pub fn parse_cell_type(s: &str) -> PyResult<CellType> {
     match s.to_ascii_lowercase().as_str() {
         "empty" => Ok(CellType::Empty),
@@ -36,7 +36,7 @@ pub fn parse_cell_type(s: &str) -> PyResult<CellType> {
     }
 }
 
-/// [LLM-generated] Parses a pivot area name (`"row"`, `"column"`, `"value"`, `"filter"`).
+/// Parses a pivot area name (`"row"`, `"column"`, `"value"`, `"filter"`).
 pub fn parse_pivot_area(s: &str) -> PyResult<PivotArea> {
     match s.to_ascii_lowercase().as_str() {
         "row" => Ok(PivotArea::Row),
@@ -49,7 +49,7 @@ pub fn parse_pivot_area(s: &str) -> PyResult<PivotArea> {
     }
 }
 
-/// [LLM-generated] Parses a pivot aggregation name (`"sum"`, `"count-numbers"`, ...).
+/// Parses a pivot aggregation name (`"sum"`, `"count-numbers"`, ...).
 pub fn parse_pivot_agg(s: &str) -> PyResult<PivotAggregation> {
     match s.to_ascii_lowercase().as_str() {
         "sum" => Ok(PivotAggregation::Sum),
@@ -64,7 +64,7 @@ pub fn parse_pivot_agg(s: &str) -> PyResult<PivotAggregation> {
     }
 }
 
-/// [LLM-generated] Parses a VBA module kind (`"standard"`, `"class"`, `"document"`).
+/// Parses a VBA module kind (`"standard"`, `"class"`, `"document"`).
 pub fn parse_vba_module_kind(s: &str) -> PyResult<VbaModuleKind> {
     match s.to_ascii_lowercase().as_str() {
         "standard" => Ok(VbaModuleKind::Standard),
@@ -131,7 +131,7 @@ mod tests {
         assert!(parse_vba_module_kind("cls").is_err());
     }
 
-    /// [LLM-generated] Same exhaustiveness guard as `every_chart_type_has_a_spelling`.
+    /// Same exhaustiveness guard as `every_chart_type_has_a_spelling`.
     #[test]
     fn every_vba_module_kind_has_a_spelling() {
         for kind in [

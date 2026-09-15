@@ -8,7 +8,7 @@ mod workbook;
 
 use errors::Wrapped;
 
-/// [LLM-generated] Reads a workbook, recalculates every formula, and writes the result.
+/// Reads a workbook, recalculates every formula, and writes the result.
 ///
 /// The whole of what the formula fuzzer needs, and the exact equivalent of
 /// `visi eval <input> --output <output>`.
@@ -21,7 +21,7 @@ fn eval_file(input: std::path::PathBuf, output: std::path::PathBuf) -> PyResult<
     Ok(())
 }
 
-/// [LLM-generated] Checks VBA source for syntax errors, returning the procedure names it
+/// Checks VBA source for syntax errors, returning the procedure names it
 /// declares.
 ///
 /// Raises `VbaSyntaxError` (carrying `line` and `column`) if it does not
@@ -34,7 +34,7 @@ fn check_syntax(source: &str) -> PyResult<Vec<String>> {
         .procedures)
 }
 
-/// [LLM-generated] Runs a VBA procedure from loose source text and returns
+/// Runs a VBA procedure from loose source text and returns
 /// `(type_name, value)`.
 ///
 /// Expressions, control flow, `Sub`/`Function` and `On Error`, with **no
@@ -60,7 +60,7 @@ fn run_macro(
     Ok((out.type_name, out.value))
 }
 
-/// [LLM-generated] The Python module, `visi_core`.
+/// The Python module, `visi_core`.
 #[pymodule]
 fn visi_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<workbook::Workbook>()?;

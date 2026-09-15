@@ -5,27 +5,27 @@ use super::builtin_names::is_builtin;
 use super::parser::ParseError;
 use std::collections::HashMap;
 
-/// [LLM-generated] What a declared name is known to be, as far as this pass can tell.
+/// What a declared name is known to be, as far as this pass can tell.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// [LLM-generated] A `Sub`, `Function`, `Property` or `Declare` -- a legitimate call
+    /// A `Sub`, `Function`, `Property` or `Declare` -- a legitimate call
     /// target.
     Callable,
-    /// [LLM-generated] Declared with array bounds (`x()`, `x(10)`) -- `x(i)` is indexing,
+    /// Declared with array bounds (`x()`, `x(10)`) -- `x(i)` is indexing,
     /// not a call, so this is left alone rather than rejected.
     Array,
-    /// [LLM-generated] A plain scalar: no array bounds, and either untyped (defaults to
+    /// A plain scalar: no array bounds, and either untyped (defaults to
     /// `Variant`) or typed as one of VBA's primitive scalar types. This is
     /// the only kind an implicit-call statement is rejected for.
     PlainScalar,
-    /// [LLM-generated] An object-shaped declared type (`As New X`, `As SomeClass`, a dotted
+    /// An object-shaped declared type (`As New X`, `As SomeClass`, a dotted
     /// path) -- could have a default member callable with arguments, and
     /// this pass cannot resolve user-defined class shapes, so it is left
     /// alone.
     Opaque,
 }
 
-/// [LLM-generated] VBA's primitive scalar type keywords. An untyped `Dim` defaults to
+/// VBA's primitive scalar type keywords. An untyped `Dim` defaults to
 /// `Variant`, and `Variant` is on this list too -- measured directly: a bare
 /// `Dim x` is exactly the case `docs/vba-macro-support.md`'s transcript
 /// shows Excel rejecting as a call target.
@@ -50,11 +50,11 @@ fn is_primitive_scalar(name: &str) -> bool {
     PRIMITIVE_SCALAR_TYPES.contains(&name.to_ascii_lowercase().as_str())
 }
 
-/// [LLM-generated] VBA's type-declaration characters, in the spelling the lexer folds into
+/// VBA's type-declaration characters, in the spelling the lexer folds into
 /// an identifier's name.
 const TYPE_SUFFIXES: [char; 6] = ['$', '%', '&', '!', '#', '@'];
 
-/// [LLM-generated] A name as this pass keys it: lowercased, with any trailing
+/// A name as this pass keys it: lowercased, with any trailing
 /// type-declaration character removed.
 ///
 /// `lexer.rs` deliberately folds a type suffix back into an identifier's
@@ -74,12 +74,12 @@ fn norm(name: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// [LLM-generated] What a call target may resolve against, beyond the module's own text.
+/// What a call target may resolve against, beyond the module's own text.
 pub(super) struct Scope<'a> {
-    /// [LLM-generated] Names declared by *other* modules in the same project. Empty when
+    /// Names declared by *other* modules in the same project. Empty when
     /// the caller has no project to consult.
     pub external: &'a std::collections::HashSet<String>,
-    /// [LLM-generated] Whether [`Scope::external`] is known to cover every other module in
+    /// Whether [`Scope::external`] is known to cover every other module in
     /// the project.
     ///
     /// This gates the whole undeclared-name rule, and is the safety valve
@@ -93,7 +93,7 @@ pub(super) struct Scope<'a> {
 }
 
 impl Scope<'_> {
-    /// [LLM-generated] A scope for source that is the whole project as far as anyone knows
+    /// A scope for source that is the whole project as far as anyone knows
     /// -- a standalone `.bas`, or the single generated module the
     /// differential harness asks Excel about.
     pub fn self_contained(empty: &std::collections::HashSet<String>) -> Scope<'_> {
@@ -103,7 +103,7 @@ impl Scope<'_> {
         }
     }
 
-    /// [LLM-generated] A scope for one module of a project whose other modules were not
+    /// A scope for one module of a project whose other modules were not
     /// supplied. Never rejects an unresolvable name.
     pub fn partial(empty: &std::collections::HashSet<String>) -> Scope<'_> {
         Scope {
@@ -117,14 +117,14 @@ impl Scope<'_> {
     }
 }
 
-/// [LLM-generated] Checks `module`'s call targets against the symbol table built from its
+/// Checks `module`'s call targets against the symbol table built from its
 /// own text plus `scope`, per this module's doc.
 pub(super) fn check_module(module: &Module, scope: &Scope<'_>) -> Result<(), ParseError> {
     let module_syms = collect_module_symbols(module);
     check_items(&module.items, &module_syms, scope)
 }
 
-/// [LLM-generated] Every name `module` declares at module level, already [`norm`]alised --
+/// Every name `module` declares at module level, already [`norm`]alised --
 /// what a sibling module's [`Scope::external`] is built from, and so keyed
 /// the same way [`Ctx::known`] will look them up.
 pub(super) fn declared_names(module: &Module) -> Vec<String> {
@@ -157,7 +157,7 @@ fn check_items(
     Ok(())
 }
 
-/// [LLM-generated] Every `Sub`/`Function`/`Property`/`Declare` and module-level
+/// Every `Sub`/`Function`/`Property`/`Declare` and module-level
 /// `Dim`/`Const`/`Private`/`Public`/`Global` in the module, flattened across
 /// `#If` branches exactly as [`Module::procedures`] already does -- which
 /// branch is live depends on `#Const` values parsing alone cannot decide.
@@ -244,7 +244,7 @@ fn check_procedure(
     check_block(&proc.body, &ctx)
 }
 
-/// [LLM-generated] Everything one procedure's body resolves a name against.
+/// Everything one procedure's body resolves a name against.
 struct Ctx<'a> {
     module: &'a HashMap<String, Kind>,
     locals: &'a HashMap<String, Kind>,
@@ -259,13 +259,13 @@ impl Ctx<'_> {
             .copied()
     }
 
-    /// [LLM-generated] Whether the name exists at all, anywhere this pass can see.
+    /// Whether the name exists at all, anywhere this pass can see.
     fn known(&self, lower: &str) -> bool {
         self.kind_of(lower).is_some() || self.scope.knows(lower)
     }
 }
 
-/// [LLM-generated] `Dim`/`Static`/`Const` are procedure-scoped in VBA, not block-scoped, so
+/// `Dim`/`Static`/`Const` are procedure-scoped in VBA, not block-scoped, so
 /// this is a flat walk of every statement the procedure body contains,
 /// regardless of how deeply nested in `If`/`For`/`Do`/`With`/`Select Case`
 /// it is. VBA has no `#If` inside a procedure body (only at module level),
@@ -316,7 +316,7 @@ fn collect_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     }
 }
 
-/// [LLM-generated] Names VBA creates implicitly, with no `Dim` at all, when `Option
+/// Names VBA creates implicitly, with no `Dim` at all, when `Option
 /// Explicit` is off: the target of a plain (non-`Set`) assignment, and a
 /// `For` loop's counter. Both are unambiguously plain scalars -- a `Set`
 /// target holds an object reference and is left `Opaque` by omission here,
@@ -388,7 +388,7 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     }
 }
 
-/// [LLM-generated] VBA's "Duplicate declaration in current scope", over every route into
+/// VBA's "Duplicate declaration in current scope", over every route into
 /// procedure scope that has been measured.
 ///
 /// Unlike everything else here this pass is **order-sensitive**, and has to
@@ -409,7 +409,7 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
 /// Dim arr()              : ReDim arr(1 To 5)' compiles -- ReDim never collides
 /// ```
 ///
-/// [LLM-generated] So a name enters procedure scope by being declared, assigned to, `Set`,
+/// So a name enters procedure scope by being declared, assigned to, `Set`,
 /// `ReDim`'d, used as a `For`/`For Each` loop variable, or taken as a
 /// parameter -- and declaring one that is already there is the error. Each
 /// of the last five was confirmed with a control running the same route
@@ -648,7 +648,7 @@ fn expr_is_literal_false(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(Literal::Bool(false)))
 }
 
-/// [LLM-generated] Walks an expression, checking every **call target** in it.
+/// Walks an expression, checking every **call target** in it.
 ///
 /// A bare `Expr::Ident` on its own is deliberately never checked: an
 /// undeclared name with no call syntax is a legal implicit Variant, which
@@ -683,7 +683,7 @@ fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     }
 }
 
-/// [LLM-generated] The one rule, applied to a name used with call syntax.
+/// The one rule, applied to a name used with call syntax.
 fn check_call_name(name: &str, pos: super::lexer::Pos, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     let lower = norm(name);
     match ctx.kind_of(&lower) {
@@ -706,7 +706,7 @@ mod tests {
     use super::{Scope, check_module, norm};
     use std::collections::HashSet;
 
-    /// [LLM-generated] The self-contained scope: `src` is the whole project, so an
+    /// The self-contained scope: `src` is the whole project, so an
     /// unresolvable name is an error. What `check_syntax` does.
     fn check(src: &str) -> Result<(), String> {
         let module = parse_module(src).expect("should parse");
@@ -714,7 +714,7 @@ mod tests {
         check_module(&module, &Scope::self_contained(&empty)).map_err(|e| e.message)
     }
 
-    /// [LLM-generated] The partial scope: other modules exist but were not supplied, so an
+    /// The partial scope: other modules exist but were not supplied, so an
     /// unresolvable name must be accepted. What `VbaModule::check_syntax`
     /// does.
     fn check_partial(src: &str) -> Result<(), String> {
@@ -723,7 +723,7 @@ mod tests {
         check_module(&module, &Scope::partial(&empty)).map_err(|e| e.message)
     }
 
-    /// [LLM-generated] A self-contained scope that additionally knows `names` from siblings.
+    /// A self-contained scope that additionally knows `names` from siblings.
     fn check_with_external(src: &str, names: &[&str]) -> Result<(), String> {
         let module = parse_module(src).expect("should parse");
         let external: HashSet<String> = names.iter().map(|n| norm(n)).collect();

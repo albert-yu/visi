@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use super::host::ObjRef;
 
-/// [LLM-generated] A VBA runtime error: a number and a description, as `Err.Number` and
+/// A VBA runtime error: a number and a description, as `Err.Number` and
 /// `Err.Description` expose them.
 ///
 /// Modelled on VBA's own error numbers rather than a Rust enum so that
@@ -11,39 +11,39 @@ use super::host::ObjRef;
 /// directly against Excel's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VbaError {
-    /// [LLM-generated] `Err.Number`.
+    /// `Err.Number`.
     pub number: i32,
-    /// [LLM-generated] `Err.Description`.
+    /// `Err.Description`.
     pub description: String,
 }
 
 impl VbaError {
-    /// [LLM-generated] Error 5 -- Invalid procedure call or argument.
+    /// Error 5 -- Invalid procedure call or argument.
     pub fn invalid_call() -> Self {
         Self::new(5, "Invalid procedure call or argument")
     }
-    /// [LLM-generated] Error 6 -- Overflow.
+    /// Error 6 -- Overflow.
     pub fn overflow() -> Self {
         Self::new(6, "Overflow")
     }
-    /// [LLM-generated] Error 9 -- Subscript out of range.
+    /// Error 9 -- Subscript out of range.
     pub fn subscript() -> Self {
         Self::new(9, "Subscript out of range")
     }
-    /// [LLM-generated] Error 11 -- Division by zero.
+    /// Error 11 -- Division by zero.
     pub fn div_by_zero() -> Self {
         Self::new(11, "Division by zero")
     }
-    /// [LLM-generated] Error 13 -- Type mismatch.
+    /// Error 13 -- Type mismatch.
     pub fn type_mismatch() -> Self {
         Self::new(13, "Type mismatch")
     }
-    /// [LLM-generated] Error 94 -- Invalid use of Null.
+    /// Error 94 -- Invalid use of Null.
     pub fn invalid_null() -> Self {
         Self::new(94, "Invalid use of Null")
     }
 
-    /// [LLM-generated] An error with an explicit number and description.
+    /// An error with an explicit number and description.
     pub fn new(number: i32, description: impl Into<String>) -> Self {
         Self {
             number,
@@ -60,10 +60,10 @@ impl fmt::Display for VbaError {
 
 impl std::error::Error for VbaError {}
 
-/// [LLM-generated] The result of evaluating VBA, which is either a value or a runtime error.
+/// The result of evaluating VBA, which is either a value or a runtime error.
 pub type VResult<T> = Result<T, VbaError>;
 
-/// [LLM-generated] A VBA value.
+/// A VBA value.
 ///
 /// `Byte`, `LongLong` and `Decimal` are deliberately absent: nothing in the
 /// implemented scope constructs one, and a variant no path can produce makes
@@ -72,26 +72,26 @@ pub type VResult<T> = Result<T, VbaError>;
 /// where a cell read produces all three.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Variant {
-    /// [LLM-generated] An uninitialised variable. Behaves as `0` and `""` depending on
+    /// An uninitialised variable. Behaves as `0` and `""` depending on
     /// context.
     Empty,
-    /// [LLM-generated] SQL-style unknown. Propagates through arithmetic, is skipped by `&`.
+    /// SQL-style unknown. Propagates through arithmetic, is skipped by `&`.
     Null,
-    /// [LLM-generated] `True` is `-1`, not `1` -- which is why `True + 1` is `0`.
+    /// `True` is `-1`, not `1` -- which is why `True + 1` is `0`.
     Boolean(bool),
-    /// [LLM-generated] 16-bit. The default type of a small integer literal.
+    /// 16-bit. The default type of a small integer literal.
     Integer(i16),
-    /// [LLM-generated] 32-bit.
+    /// 32-bit.
     Long(i32),
-    /// [LLM-generated] 32-bit float, from a `!` suffix.
+    /// 32-bit float, from a `!` suffix.
     Single(f32),
-    /// [LLM-generated] 64-bit float. The default type of any literal with a fraction or
+    /// 64-bit float. The default type of any literal with a fraction or
     /// exponent.
     Double(f64),
-    /// [LLM-generated] Fixed-point with 4 decimal places, stored scaled by 10_000 so that
+    /// Fixed-point with 4 decimal places, stored scaled by 10_000 so that
     /// the decimal arithmetic it exists for stays exact.
     Currency(i64),
-    /// [LLM-generated] A date serial. Numerically a `Double`; the difference is only in how
+    /// A date serial. Numerically a `Double`; the difference is only in how
     /// it renders and what `TypeName` says.
     ///
     /// This is a VBA-side type, deliberately *not* mirrored by a
@@ -101,9 +101,9 @@ pub enum Variant {
     /// back through `.Value` as one of these, and through `.Value2` as a
     /// plain `Double`. Both halves measured (`fuzz/vba_host_probe.py`).
     Date(f64),
-    /// [LLM-generated] A string.
+    /// A string.
     Str(String),
-    /// [LLM-generated] An Excel error value, as `CVErr` builds one, `Application.VLookup`
+    /// An Excel error value, as `CVErr` builds one, `Application.VLookup`
     /// returns on failure, and a cell holding `=1/0` reads back as.
     ///
     /// The payload is the `CVErr` number (2007 for `#DIV/0!`, 2042 for
@@ -111,14 +111,14 @@ pub enum Variant {
     /// stringifies as `"Error 2042"` but is error 13 in arithmetic,
     /// concatenation and comparison alike.
     ErrValue(i32),
-    /// [LLM-generated] An object reference, or `Nothing`.
+    /// An object reference, or `Nothing`.
     ///
     /// Reference semantics: `Set` assigns one, `Is` compares identity, and a
     /// plain `=` reads the object's default member instead. See
     /// [`ObjRef`](super::host::ObjRef) for why identity is a token rather
     /// than the range coordinates.
     Object(ObjRef),
-    /// [LLM-generated] A 2-D `Variant` array, which in this scope only a multi-cell
+    /// A 2-D `Variant` array, which in this scope only a multi-cell
     /// `Range.Value` produces.
     ///
     /// Behind an `Rc` because a `Variant` is cloned constantly and a range
@@ -127,23 +127,23 @@ pub enum Variant {
     Array(Rc<VarArray>),
 }
 
-/// [LLM-generated] A 2-D `Variant` array, indexed from 1 as VBA's are.
+/// A 2-D `Variant` array, indexed from 1 as VBA's are.
 ///
 /// Measured shape for a range read: `ws.Range("A1:A3").Value` has
 /// `UBound(v, 1) = 3` and `UBound(v, 2) = 1`, i.e. `(row, column)` with rows
 /// first, even for a single column.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarArray {
-    /// [LLM-generated] Number of rows; `UBound(v, 1)`.
+    /// Number of rows; `UBound(v, 1)`.
     pub rows: usize,
-    /// [LLM-generated] Number of columns; `UBound(v, 2)`.
+    /// Number of columns; `UBound(v, 2)`.
     pub cols: usize,
-    /// [LLM-generated] The elements, row-major.
+    /// The elements, row-major.
     pub values: Vec<Variant>,
 }
 
 impl VarArray {
-    /// [LLM-generated] The element at a 1-based `(row, column)`, or error 9 if either index
+    /// The element at a 1-based `(row, column)`, or error 9 if either index
     /// is outside the array.
     pub fn get(&self, row: usize, col: usize) -> VResult<Variant> {
         if row < 1 || col < 1 || row > self.rows || col > self.cols {
@@ -152,7 +152,7 @@ impl VarArray {
         Ok(self.values[(row - 1) * self.cols + (col - 1)].clone())
     }
 
-    /// [LLM-generated] `UBound(v, dim)` for a 1-based `dim`.
+    /// `UBound(v, dim)` for a 1-based `dim`.
     pub fn ubound(&self, dim: usize) -> VResult<usize> {
         match dim {
             1 => Ok(self.rows),
@@ -162,7 +162,7 @@ impl VarArray {
     }
 }
 
-/// [LLM-generated] Whether an arithmetic operation may widen its result type on overflow.
+/// Whether an arithmetic operation may widen its result type on overflow.
 ///
 /// The distinction is real and measured: `32767 + 1` written with two
 /// literals is error 6, but the same addition with a variable on either side
@@ -183,13 +183,13 @@ impl VarArray {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithMode {
-    /// [LLM-generated] Both operands are compile-time constants: overflow is an error.
+    /// Both operands are compile-time constants: overflow is an error.
     Constant,
-    /// [LLM-generated] At least one operand is a variable: overflow widens the result.
+    /// At least one operand is a variable: overflow widens the result.
     Promote,
 }
 
-/// [LLM-generated] Where a numeric result's type comes from, ordered by width so the wider
+/// Where a numeric result's type comes from, ordered by width so the wider
 /// of two operands wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NumClass {
@@ -201,7 +201,7 @@ enum NumClass {
 }
 
 impl Variant {
-    /// [LLM-generated] What `TypeName()` returns for this value.
+    /// What `TypeName()` returns for this value.
     ///
     /// Observable from VBA, and therefore something the differential fuzzer
     /// compares -- an interpreter that computes the right number with the
@@ -224,7 +224,7 @@ impl Variant {
         }
     }
 
-    /// [LLM-generated] The `CVErr` number if this is an error value.
+    /// The `CVErr` number if this is an error value.
     ///
     /// Separate from [`Variant::to_f64`] on purpose: `CLng(CVErr(2042))` is
     /// `2042`, but `CVErr(2042) + 1` is error 13. The explicit conversions
@@ -236,7 +236,7 @@ impl Variant {
         }
     }
 
-    /// [LLM-generated] The object this holds, if it is one.
+    /// The object this holds, if it is one.
     pub fn as_object(&self) -> Option<&ObjRef> {
         match self {
             Variant::Object(o) => Some(o),
@@ -244,12 +244,12 @@ impl Variant {
         }
     }
 
-    /// [LLM-generated] Whether this is `Null`, which most operations propagate.
+    /// Whether this is `Null`, which most operations propagate.
     pub fn is_null(&self) -> bool {
         matches!(self, Variant::Null)
     }
 
-    /// [LLM-generated] Whether this is `Empty`.
+    /// Whether this is `Empty`.
     pub fn is_empty(&self) -> bool {
         matches!(self, Variant::Empty)
     }
@@ -266,7 +266,7 @@ impl Variant {
         })
     }
 
-    /// [LLM-generated] This value as an `f64`, for arithmetic.
+    /// This value as an `f64`, for arithmetic.
     ///
     /// `Null` is rejected rather than defaulted: an operation that reaches
     /// here with a `Null` has failed to propagate it, and silently treating
@@ -294,7 +294,7 @@ impl Variant {
         })
     }
 
-    /// [LLM-generated] This value as a string, as `CStr` and `&` produce it.
+    /// This value as a string, as `CStr` and `&` produce it.
     pub fn to_vba_string(&self) -> VResult<String> {
         Ok(match self {
             Variant::Empty => String::new(),
@@ -312,7 +312,7 @@ impl Variant {
         })
     }
 
-    /// [LLM-generated] This value as a `Boolean`, as `CBool` and the logical operators read
+    /// This value as a `Boolean`, as `CBool` and the logical operators read
     /// it.
     ///
     /// Any non-zero number is true, which is why `If 5 Then` runs. `Null`
@@ -330,7 +330,7 @@ impl Variant {
         }
     }
 
-    /// [LLM-generated] This value as a `Boolean`, as an `If`/`Do While`/`Do Until` statement
+    /// This value as a `Boolean`, as an `If`/`Do While`/`Do Until` statement
     /// condition reads it -- unlike [`Self::to_bool`], a `Null` condition is
     /// `False` rather than error 94. Measured against real Excel (Windows):
     /// `If Null Then` takes the `Else` branch, `Do While Null` never loops,
@@ -347,7 +347,7 @@ impl Variant {
         }
     }
 
-    /// [LLM-generated] Builds the narrowest [`Variant`] that a numeric literal of this text
+    /// Builds the narrowest [`Variant`] that a numeric literal of this text
     /// should have.
     ///
     /// Probe cases 1/2/15--20: `1` is `Integer`, `32768` is `Long`,
@@ -367,7 +367,7 @@ impl Variant {
         }
     }
 
-    /// [LLM-generated] Packs an `f64` into the given numeric class.
+    /// Packs an `f64` into the given numeric class.
     ///
     /// In [`ArithMode::Promote`] a value that does not fit widens to the next
     /// class up rather than erroring, which is what runtime Variant
@@ -424,7 +424,7 @@ impl Variant {
         })
     }
 
-    /// [LLM-generated] The result class of an arithmetic operation on two operands.
+    /// The result class of an arithmetic operation on two operands.
     ///
     /// Normally the wider of the two, but `Single` combined with `Long` is
     /// `Double` rather than `Single` -- a `Single` cannot hold every `Long`,
@@ -441,7 +441,7 @@ impl Variant {
     }
 }
 
-/// [LLM-generated] `"True"` / `"False"` as a boolean, case-insensitively and ignoring
+/// `"True"` / `"False"` as a boolean, case-insensitively and ignoring
 /// surrounding space.
 ///
 /// VBA accepts these words on the *integer* conversion path only. `"True"
@@ -460,7 +460,7 @@ pub fn bool_word(s: &str) -> Option<bool> {
     }
 }
 
-/// [LLM-generated] A logical/bitwise operand, with a `"True"`/`"False"` string folded to a
+/// A logical/bitwise operand, with a `"True"`/`"False"` string folded to a
 /// `Boolean` so the ordinary rules take over from there.
 ///
 /// Folding to `Boolean` rather than to a number is what makes
@@ -477,7 +477,7 @@ fn logical_operand(v: &Variant) -> Variant {
     }
 }
 
-/// [LLM-generated] The pair of operands for a logical operator, with the `"True"`/`"False"`
+/// The pair of operands for a logical operator, with the `"True"`/`"False"`
 /// fold applied only where Excel applies it.
 ///
 /// Against a `Boolean` partner the fold is suppressed exactly when **both**
@@ -516,7 +516,7 @@ fn logical_pair(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> (Var
     )
 }
 
-/// [LLM-generated] Round-half-to-even, which is what every VBA numeric conversion uses.
+/// Round-half-to-even, which is what every VBA numeric conversion uses.
 ///
 /// Probe cases 55--59: `CLng(0.5)` is `0`, `CLng(1.5)` is `2`, `CLng(2.5)`
 /// is `2`, `CLng(-0.5)` is `0`, `CLng(-1.5)` is `-2`. Rust's `f64::round`
@@ -537,7 +537,7 @@ pub fn bankers_round(v: f64) -> f64 {
     }
 }
 
-/// [LLM-generated] Parses a string the way VBA's implicit string-to-number coercion does.
+/// Parses a string the way VBA's implicit string-to-number coercion does.
 ///
 /// Probe case 40: leading and trailing whitespace is ignored (`"  3  " + 1`
 /// is `4`). Probe case 37: anything else that is not a number is error 13,
@@ -579,7 +579,7 @@ pub fn parse_vba_number(s: &str) -> VResult<f64> {
     Ok(value)
 }
 
-/// [LLM-generated] The longest leading run of `s` that parses as a number, as `Val` takes it.
+/// The longest leading run of `s` that parses as a number, as `Val` takes it.
 ///
 /// Comparison against a numeric *constant* coerces the string this way rather
 /// than demanding the whole string parse, which is what separates
@@ -599,7 +599,7 @@ pub fn numeric_prefix(s: &str) -> Option<f64> {
     best
 }
 
-/// [LLM-generated] Renders a number the way VBA's `CStr` does.
+/// Renders a number the way VBA's `CStr` does.
 ///
 /// Not the same as Rust's `{}`: VBA prints up to 15 significant digits and
 /// drops a trailing `.0`, and writes exponents as `1E+20`.
@@ -657,7 +657,7 @@ fn format_currency(scaled: i64) -> String {
     }
 }
 
-/// [LLM-generated] `+`, which is arithmetic *or* concatenation depending on the operands.
+/// `+`, which is arithmetic *or* concatenation depending on the operands.
 ///
 /// Probe cases 35--37: `"1" + 1` is the `Double` 2, `"1" + "2"` is the
 /// `String` "12", and `"abc" + 1` is error 13. Only when *both* sides are
@@ -675,12 +675,12 @@ pub fn add(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     keep_date(lhs, rhs, arith(lhs, rhs, mode, |a, b| a + b)?)
 }
 
-/// [LLM-generated] `-`.
+/// `-`.
 pub fn sub(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     keep_date(lhs, rhs, arith(lhs, rhs, mode, |a, b| a - b)?)
 }
 
-/// [LLM-generated] A date plus or minus a number is still a date; a date minus a date is a
+/// A date plus or minus a number is still a date; a date minus a date is a
 /// count of days and is not.
 ///
 /// Measured: `TypeName(#6/22/2026# + 1)` is `Date` and `CStr` of it is
@@ -704,7 +704,7 @@ fn keep_date(lhs: &Variant, rhs: &Variant, result: Variant) -> VResult<Variant> 
     })
 }
 
-/// [LLM-generated] A `Date` as `CStr` renders it: the system short date, plus a time when the
+/// A `Date` as `CStr` renders it: the system short date, plus a time when the
 /// serial carries one, and the time alone when it carries no date.
 ///
 /// Measured against Excel for Mac 16.112 on a machine set to en-US:
@@ -753,12 +753,12 @@ pub fn format_vba_date(serial: f64) -> String {
     }
 }
 
-/// [LLM-generated] `*`.
+/// `*`.
 pub fn mul(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     arith(lhs, rhs, mode, |a, b| a * b)
 }
 
-/// [LLM-generated] `/`, which is always floating point.
+/// `/`, which is always floating point.
 ///
 /// Probe case 25: `4 / 2` is the `Double` 2, not an `Integer`.
 pub fn div(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
@@ -787,7 +787,7 @@ pub fn div(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
     Ok(Variant::Double(r))
 }
 
-/// [LLM-generated] `\` -- integer division.
+/// `\` -- integer division.
 ///
 /// Probe cases 26--28: operands are rounded to integers *first*, so
 /// `7.6 \ 2` is `4` rather than `3`, and a non-integral operand widens the
@@ -803,7 +803,7 @@ pub fn int_div(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
     Variant::pack((a / b) as f64, class)
 }
 
-/// [LLM-generated] `Mod`, with the same operand rounding and widening as `\`.
+/// `Mod`, with the same operand rounding and widening as `\`.
 ///
 /// Probe case 31: `7.6 Mod 2` is `0`, because 7.6 rounds to 8 first.
 pub fn modulo(lhs: &Variant, rhs: &Variant) -> VResult<Variant> {
@@ -821,7 +821,7 @@ fn zip3(a: Option<i64>, b: Option<i64>, class: NumClass) -> Option<(i64, i64, Nu
     Some((a?, b?, class))
 }
 
-/// [LLM-generated] Rounds both operands to integers and decides the result class, shared by
+/// Rounds both operands to integers and decides the result class, shared by
 /// `\` and `Mod`.
 fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i64>, NumClass)> {
     fn one(v: &Variant) -> VResult<Option<i64>> {
@@ -850,7 +850,7 @@ fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i6
     Ok((a, b, class))
 }
 
-/// [LLM-generated] `^`, which is always `Double`.
+/// `^`, which is always `Double`.
 ///
 /// Probe case 32: `2 ^ 2` is the `Double` 4.
 pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
@@ -879,7 +879,7 @@ pub fn pow(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     Ok(Variant::Double(r))
 }
 
-/// [LLM-generated] `&` -- concatenation, which skips `Null` operands rather than
+/// `&` -- concatenation, which skips `Null` operands rather than
 /// propagating them.
 ///
 /// Probe case 51: `Null & "a"` is `"a"`. Probe case 38: `1 & 2` is `"12"`.
@@ -927,7 +927,7 @@ fn arith(
     Variant::pack_mode(r, class, mode)
 }
 
-/// [LLM-generated] Unary `-`.
+/// Unary `-`.
 pub fn neg(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
@@ -942,7 +942,7 @@ pub fn neg(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     Variant::pack_mode(-v.to_f64()?, class, mode)
 }
 
-/// [LLM-generated] Unary `+`, which still coerces to a number.
+/// Unary `+`, which still coerces to a number.
 pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     if v.is_null() {
         return Ok(Variant::Null);
@@ -951,7 +951,7 @@ pub fn pos(v: &Variant, mode: ArithMode) -> VResult<Variant> {
     Variant::pack_mode(v.to_f64()?, class, mode)
 }
 
-/// [LLM-generated] `Not`, which is bitwise on numbers and logical on `Boolean`s.
+/// `Not`, which is bitwise on numbers and logical on `Boolean`s.
 ///
 /// Probe case 46: `Not 5` is `-6`, the bitwise complement.
 ///
@@ -974,7 +974,7 @@ pub fn not(v: &Variant) -> VResult<Variant> {
     }
 }
 
-/// [LLM-generated] The bitwise/logical binary operators.
+/// The bitwise/logical binary operators.
 ///
 /// Probe cases 43/45: `True And False` is the `Boolean` `False`, but
 /// `5 And 3` is the `Integer` `1` -- the operation is bitwise unless both
@@ -1012,7 +1012,7 @@ pub fn logical(
     Variant::pack(f(a as i64, b as i64) as f64, class)
 }
 
-/// [LLM-generated] `And`, which is three-valued: a `Null` operand does not always poison the
+/// `And`, which is three-valued: a `Null` operand does not always poison the
 /// result.
 ///
 /// Measured: `False And Null` is `False`, and `0 And Null` is the `Integer`
@@ -1027,7 +1027,7 @@ pub fn and(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<V
     logical(lhs, rhs, kinds, |x, y| x & y)
 }
 
-/// [LLM-generated] `Or`, three-valued in the mirrored way.
+/// `Or`, three-valued in the mirrored way.
 ///
 /// Measured: `True Or Null` is `True`, `5 Or Null` is the `Integer` `5`, and
 /// `0 Or Null` is `Null`. A *truthy* operand determines the answer here.
@@ -1038,7 +1038,7 @@ pub fn or(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<Va
     logical(lhs, rhs, kinds, |x, y| x | y)
 }
 
-/// [LLM-generated] `Imp`, evaluated as its definition: `Not a Or b`.
+/// `Imp`, evaluated as its definition: `Not a Or b`.
 ///
 /// Deriving it rather than hand-rolling a three-valued table is not just
 /// tidier, it is what makes it *correct*. A hand-rolled version said
@@ -1051,7 +1051,7 @@ pub fn imp(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<V
     or(&not(lhs)?, rhs, kinds)
 }
 
-/// [LLM-generated] The shared half of [`and`] and [`or`]: when one side is `Null`, the other
+/// The shared half of [`and`] and [`or`]: when one side is `Null`, the other
 /// decides the result if its truthiness is the deciding one.
 ///
 /// Returns the deciding operand converted the way the bitwise operation
@@ -1098,24 +1098,24 @@ fn three_valued(
     Variant::pack(rounded, class).map(Some)
 }
 
-/// [LLM-generated] Whether a comparison operand was a compile-time constant.
+/// Whether a comparison operand was a compile-time constant.
 ///
 /// Comparison between a string and a number depends on this, in the same way
 /// arithmetic overflow does (see [`ArithMode`]) -- and the dependence is what
 /// makes the rules look contradictory until you separate the cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
-    /// [LLM-generated] A plain literal. Only this makes the *string* side of a comparison
+    /// A plain literal. Only this makes the *string* side of a comparison
     /// strict; a constant expression that merely evaluates to a string does
     /// not.
     Literal,
-    /// [LLM-generated] An expression built only from literals. Counts as constant on the
+    /// An expression built only from literals. Counts as constant on the
     /// numeric side, but not as a literal on the string side.
     ConstExpr,
-    /// [LLM-generated] A call whose return type is declared numeric, so the compiler knows
+    /// A call whose return type is declared numeric, so the compiler knows
     /// the type statically without the value being constant.
     Static,
-    /// [LLM-generated] Anything involving a variable.
+    /// Anything involving a variable.
     Runtime,
 }
 
@@ -1125,7 +1125,7 @@ impl Operand {
     }
 }
 
-/// [LLM-generated] Comparison, returning `None` when either side is `Null`.
+/// Comparison, returning `None` when either side is `Null`.
 ///
 /// Probe cases 53/54: `Empty = 0` and `Empty = ""` are both `True`, because
 /// `Empty` compares as whichever the other operand is.
@@ -1198,7 +1198,7 @@ pub fn compare_ctx(
             }
 
             let str_typed = str_kind.is_const() || str_kind == Operand::Static;
-            // [LLM-generated] Constant strings keep Excel's numeric-prefix rule, but runtime strings must parse as a whole before they leave the ordering fallback.
+            // [AI-Agent] Constant strings keep Excel's numeric-prefix rule, but runtime strings must parse as a whole before they leave the ordering fallback.
             let ord = if num_kind == Operand::Static {
                 match parse_vba_number(text) {
                     Ok(a) => cmp_f64(a, numeric(other)?),
@@ -1227,7 +1227,7 @@ pub fn compare_ctx(
     }
 }
 
-/// [LLM-generated] A `Boolean` as the number it *is*, which is what ordering compares.
+/// A `Boolean` as the number it *is*, which is what ordering compares.
 ///
 /// `True` is -1, so it sorts below `False`. Rust's own `bool: Ord` has it the
 /// other way round, and using that here reversed every `<`/`>` between a
@@ -1240,7 +1240,7 @@ fn cmp_f64(a: f64, b: f64) -> std::cmp::Ordering {
     a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
 }
 
-/// [LLM-generated] Comparison between two runtime values, for callers with no constant
+/// Comparison between two runtime values, for callers with no constant
 /// information (`Select Case`, and the interpreter's internal uses).
 pub fn compare(lhs: &Variant, rhs: &Variant) -> VResult<Option<std::cmp::Ordering>> {
     compare_ctx(lhs, rhs, Operand::Runtime, Operand::Runtime)

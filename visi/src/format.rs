@@ -3,7 +3,7 @@ use crate::utils::col_idx_to_letters;
 use serde_json::{Value, json};
 use visi_core::core::engine::{CellRef, Sheet};
 
-/// [LLM-generated] Get string representation of cell value (raw formula string vs calculated result)
+/// Get string representation of cell value (raw formula string vs calculated result)
 pub fn get_cell_display_val(sheet: &Sheet, row: usize, col: usize, raw: bool) -> String {
     let cell_ref = CellRef::new(row, col);
     if raw {
@@ -18,7 +18,7 @@ pub fn get_cell_display_val(sheet: &Sheet, row: usize, col: usize, raw: bool) ->
     }
 }
 
-/// [LLM-generated] Render a cell range grid according to specified OutputFormat
+/// Render a cell range grid according to specified OutputFormat
 #[allow(clippy::too_many_arguments)]
 pub fn render_grid(
     sheet: &Sheet,
@@ -62,7 +62,7 @@ pub fn render_grid(
     }
 }
 
-/// [LLM-generated] Render pretty ASCII table
+/// Render pretty ASCII table
 fn render_ascii_table(
     _sheet: &Sheet,
     min_row: usize,
@@ -150,7 +150,7 @@ fn render_ascii_table(
     out
 }
 
-/// [LLM-generated] Render CSV / TSV delimited text
+/// Render CSV / TSV delimited text
 fn render_delimited(matrix: &[Vec<String>], delimiter: &str, _use_headers: bool) -> String {
     let mut out = String::new();
 
@@ -172,7 +172,7 @@ fn render_delimited(matrix: &[Vec<String>], delimiter: &str, _use_headers: bool)
     out
 }
 
-/// [LLM-generated] Render JSON array of rows or JSON array of objects if headers is true
+/// Render JSON array of rows or JSON array of objects if headers is true
 fn render_json(matrix: &[Vec<String>], min_col: usize, use_headers: bool) -> String {
     if matrix.is_empty() {
         return "[]".to_string();
@@ -208,7 +208,7 @@ fn render_json(matrix: &[Vec<String>], min_col: usize, use_headers: bool) -> Str
     }
 }
 
-/// [LLM-generated] Convert string into appropriate JSON primitive type (number, bool, or string)
+/// Convert string into appropriate JSON primitive type (number, bool, or string)
 fn parse_json_value(s: &str) -> Value {
     let trimmed = s.trim();
     if trimmed.is_empty() {

@@ -164,7 +164,7 @@ def run(cmd):
 
 
 def build_workbook(case, path):
-    """[LLM-generated] Writes the case's starting grid to `path` using the visi CLI."""
+    """Writes the case's starting grid to `path` using the visi CLI."""
     pairs = []
     for addr, src in case["cells"].items():
         pairs += ["-S", f"{addr}={src}"]
@@ -179,7 +179,7 @@ def build_workbook(case, path):
 
 
 def visi_edit(case, path):
-    """[LLM-generated] Applies the case's edit with visi, and reads back the probed formulas."""
+    """Applies the case's edit with visi, and reads back the probed formulas."""
     kind, index = case["edit"][0], case["edit"][1]
     sheet = case["edit"][2] if len(case["edit"]) > 2 else None
     noun, verb = (
@@ -199,7 +199,7 @@ def visi_edit(case, path):
 
 
 def read_formulas(path, addrs):
-    """[LLM-generated] The raw source of each address, straight out of the saved file."""
+    """The raw source of each address, straight out of the saved file."""
     import openpyxl
 
     wb = openpyxl.load_workbook(path)

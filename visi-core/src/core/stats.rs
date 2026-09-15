@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-/// [LLM-generated] Inverse standard normal CDF (Acklam's algorithm, max error < 1.15e-9, refined with Newton steps to double precision).
+/// Inverse standard normal CDF (Acklam's algorithm, max error < 1.15e-9, refined with Newton steps to double precision).
 pub fn inv_normal_cdf(p: f64) -> Result<f64, String> {
     if p <= 0.0 || p >= 1.0 {
         return Err("#NUM!".to_string());
@@ -69,30 +69,30 @@ pub fn inv_normal_cdf(p: f64) -> Result<f64, String> {
     Ok(x)
 }
 
-/// [LLM-generated] Standard normal PDF
+/// Standard normal PDF
 pub fn normal_pdf(x: f64) -> f64 {
     (1.0 / (2.0 * std::f64::consts::PI).sqrt()) * (-0.5 * x * x).exp()
 }
 
-/// [LLM-generated] Standard normal CDF via error function
+/// Standard normal CDF via error function
 pub fn normal_cdf(x: f64) -> f64 {
     0.5 * erfc(-x / std::f64::consts::SQRT_2)
 }
 
-/// [LLM-generated] Error function erf(x). Delegates to `libm` (a pure-Rust fdlibm port,
+/// Error function erf(x). Delegates to `libm` (a pure-Rust fdlibm port,
 /// full double precision).
 pub fn erf(x: f64) -> f64 {
     libm::erf(x)
 }
 
-/// [LLM-generated] Complementary error function erfc(x) = 1 - erf(x). Uses libm's own
+/// Complementary error function erfc(x) = 1 - erf(x). Uses libm's own
 /// erfc directly (not `1.0 - erf(x)`) since that subtraction loses
 /// precision for large x, where erf(x) is very close to 1.
 pub fn erfc(x: f64) -> f64 {
     libm::erfc(x)
 }
 
-/// [LLM-generated] log|Gamma(x)|. Delegates to `libm` (a pure-Rust fdlibm port).
+/// log|Gamma(x)|. Delegates to `libm` (a pure-Rust fdlibm port).
 ///
 /// libm returns +inf at the non-positive-integer poles;
 /// normalized to #NUM! at the dispatch boundary.
@@ -100,7 +100,7 @@ pub fn lgamma(x: f64) -> f64 {
     libm::lgamma(x)
 }
 
-/// [LLM-generated] Gamma function Gamma(x). Uses `libm::tgamma` rather than
+/// Gamma function Gamma(x). Uses `libm::tgamma` rather than
 /// `lgamma(x).exp()`: going through the logarithm and back costs several
 /// significant digits, which shows up directly against Excel at integer
 /// arguments where the answer is a factorial. GAMMA(34) is exactly 33! =
@@ -114,7 +114,7 @@ pub fn gamma(x: f64) -> f64 {
     libm::tgamma(x)
 }
 
-/// [LLM-generated] Lower regularized incomplete gamma P(a, x) = gamma(a, x) / Gamma(a)
+/// Lower regularized incomplete gamma P(a, x) = gamma(a, x) / Gamma(a)
 pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
     if a <= 0.0 || x < 0.0 {
         return f64::NAN;
@@ -141,7 +141,7 @@ pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
     }
 }
 
-/// [LLM-generated] Upper regularized incomplete gamma Q(a, x) = Gamma(a, x) / Gamma(a)
+/// Upper regularized incomplete gamma Q(a, x) = Gamma(a, x) / Gamma(a)
 pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
     if a <= 0.0 || x < 0.0 {
         return f64::NAN;
@@ -181,7 +181,7 @@ pub fn regularized_gamma_q(a: f64, x: f64) -> f64 {
     }
 }
 
-/// [LLM-generated] Inverse incomplete gamma function: solves P(a, x) = p for x
+/// Inverse incomplete gamma function: solves P(a, x) = p for x
 pub fn inv_gamma_p(a: f64, p: f64) -> Result<f64, String> {
     if p <= 0.0 || p >= 1.0 || a <= 0.0 {
         if p == 0.0 {
@@ -216,7 +216,7 @@ pub fn inv_gamma_p(a: f64, p: f64) -> Result<f64, String> {
     Ok(x)
 }
 
-/// [LLM-generated] Regularized incomplete beta function I_x(a, b)
+/// Regularized incomplete beta function I_x(a, b)
 /// Gamma for the integer and half-integer arguments the F, t, chi-square
 /// and beta families produce (every one of them is some `df / 2`), built
 /// by recurrence from `sqrt(pi)` rather than taken from `libm::tgamma`.
@@ -249,7 +249,7 @@ fn gamma_half_integer(a: f64) -> Option<f64> {
     }
 }
 
-/// [LLM-generated] `Gamma(a)` for the incomplete-beta prefactor, preferring the exact
+/// `Gamma(a)` for the incomplete-beta prefactor, preferring the exact
 /// recurrence where it applies.
 fn beta_gamma(a: f64) -> f64 {
     gamma_half_integer(a).unwrap_or_else(|| libm::tgamma(a))
@@ -327,7 +327,7 @@ pub fn incbeta(a: f64, b: f64, x: f64) -> f64 {
     front * h
 }
 
-/// [LLM-generated] Inverse incomplete beta function: solves I_x(a, b) = p for x
+/// Inverse incomplete beta function: solves I_x(a, b) = p for x
 pub fn inv_incbeta(a: f64, b: f64, p: f64) -> Result<f64, String> {
     if p <= 0.0 || p >= 1.0 || a <= 0.0 || b <= 0.0 {
         if p == 0.0 {
@@ -1282,7 +1282,7 @@ pub fn chisq_inv_rt(p: f64, df: f64) -> Result<f64, String> {
     chisq_inv(1.0 - p, df)
 }
 
-/// [LLM-generated] `categories` is the number of cells the two ranges originally held,
+/// `categories` is the number of cells the two ranges originally held,
 /// which is not the same as `actual.len()`: the caller has already dropped
 /// pairs where either side was non-numeric, but Excel takes the degrees of
 /// freedom from the *original* dimensions. With one text cell in a 2-cell

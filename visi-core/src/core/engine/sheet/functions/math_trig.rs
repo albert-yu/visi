@@ -1,4 +1,4 @@
-//! [LLM-generated] Math and trigonometry function dispatch.
+//! Math and trigonometry function dispatch.
 //!
 //! Split out of the parent module's `evaluate_function`, which tries each
 //! family in turn.
@@ -9,13 +9,13 @@ use crate::core::engine::result_data::ResultData;
 use crate::core::engine::sheet::Sheet;
 
 impl Sheet {
-    /// [LLM-generated] Evaluates `call` if this family owns its name, else `None`.
+    /// Evaluates `call` if this family owns its name, else `None`.
     pub(super) fn eval_math_trig_fn(
         &self,
         call: FnCall<'_>,
         deps: &mut Vec<Dependency>,
     ) -> Option<Result<ResultData, EngineError>> {
-        // [LLM-generated] The body returns `Result` so its arms can keep using `?`; whether
+        // The body returns `Result` so its arms can keep using `?`; whether
         // the name belongs to this family is signalled alongside.
         let mut owned = true;
         let r = self.eval_math_trig_dispatch(call, deps, &mut owned);
@@ -36,7 +36,7 @@ impl Sheet {
             ..
         } = call;
         match call.upper_name {
-            // [LLM-generated] --- MATH AND TRIGONOMETRY FUNCTIONS ---
+            // --- MATH AND TRIGONOMETRY FUNCTIONS ---
             "ACOSH" => {
                 let x = self.to_f64_arg(evaluated_args.first(), "ACOSH")?;
                 res_to_rd(crate::core::math_trig::acosh(x))
@@ -50,7 +50,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::acoth(x))
             }
             "AGGREGATE" => {
-                // [LLM-generated] AGGREGATE(function_num, options, ref1, ...) -- unlike
+                // AGGREGATE(function_num, options, ref1, ...) -- unlike
                 // SUBTOTAL(function_num, ref1, ...), its *second*
                 // argument is the options flag, not data. Sharing
                 // SUBTOTAL's handler (which skips only the first
@@ -65,7 +65,7 @@ impl Sheet {
                     .and_then(|v| self.to_f64(v))
                     .unwrap_or(0.0)
                     .round() as usize;
-                // [LLM-generated] Function numbers 14-19 (LARGE/SMALL/PERCENTILE.INC/
+                // Function numbers 14-19 (LARGE/SMALL/PERCENTILE.INC/
                 // QUARTILE.INC/PERCENTILE.EXC/QUARTILE.EXC) take a
                 // trailing k argument after the array.
                 let takes_k = (14..=19).contains(&fn_num);
@@ -82,7 +82,7 @@ impl Sheet {
                 } else {
                     1.0
                 };
-                // [LLM-generated] Options 2/3/6/7 mean "ignore error values"; every
+                // Options 2/3/6/7 mean "ignore error values"; every
                 // option this engine can express other than that still
                 // propagates an error in the data, matching Excel.
                 let ignores_errors = matches!(options, 2 | 3 | 6 | 7);
@@ -101,7 +101,7 @@ impl Sheet {
                         Ok(nums.iter().sum::<f64>() / nums.len() as f64)
                     }),
                     2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
-                    // [LLM-generated] MAX/MIN over nothing is 0, not an infinity --
+                    // MAX/MIN over nothing is 0, not an infinity --
                     // which the dispatch-level NaN/infinity guard would
                     // otherwise turn into #NUM!.
                     4 => Ok(ResultData::Float(if nums.is_empty() {
@@ -145,7 +145,7 @@ impl Sheet {
                         Ok(nums.iter().sum::<f64>() / nums.len() as f64)
                     }),
                     2 | 3 => Ok(ResultData::Float(nums.len() as f64)),
-                    // [LLM-generated] MAX/MIN over nothing is 0, matching plain
+                    // MAX/MIN over nothing is 0, matching plain
                     // MAX/MIN (and not an infinity, which the
                     // dispatch-level guard would turn into #NUM!).
                     4 => Ok(ResultData::Float(if nums.is_empty() {
@@ -254,7 +254,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::fact(n))
             }
             "FACTDOUBLE" => {
-                // [LLM-generated] FACTDOUBLE(TRUE) is #VALUE! even though
+                // FACTDOUBLE(TRUE) is #VALUE! even though
                 // FACTDOUBLE(1) is 1. See first_arg_is_boolean.
                 if Self::first_arg_is_boolean(evaluated_args) {
                     return Ok(ResultData::Error("#VALUE!".to_string()));
@@ -269,7 +269,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::floor_math(x, sig, mode))
             }
             "GCD" | "LCM" => {
-                // [LLM-generated] A scalar blank reference is omitted (LCM(1, B1) with B1
+                // A scalar blank reference is omitted (LCM(1, B1) with B1
                 // blank is 1), but blanks inside a range count as zero
                 // (LCM(A1:B2) with two numbers and two blanks is 0). Both
                 // shapes were measured against real Excel; fuzz seed 747962
@@ -279,7 +279,7 @@ impl Sheet {
                 for arg in evaluated_args {
                     let flattened = if matches!(arg, ResultData::List(items) if items.len() == 1 && matches!(items[0], ResultData::None))
                     {
-                        // [LLM-generated] Real Excel treats a one-cell blank range as a missing
+                        // Real Excel treats a one-cell blank range as a missing
                         // operand (`GCD(A1:A1)` is #VALUE!), while a larger
                         // range of blanks contributes zeroes (`GCD(A1:A2)` is 0).
                         self.flatten_skipping_blanks(Some(arg))
@@ -302,7 +302,7 @@ impl Sheet {
             "LOG" => {
                 let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
                 let base = self.opt_f64_arg(evaluated_args, 1, 10.0)?;
-                // [LLM-generated] Base 1 is #DIV/0!, not #NUM!: log(n)/log(1) divides
+                // Base 1 is #DIV/0!, not #NUM!: log(n)/log(1) divides
                 // by zero. Everything else out of domain stays #NUM!
                 // (both confirmed against real Excel).
                 if base == 1.0 {
@@ -342,7 +342,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::mround(x, mult))
             }
             "MULTINOMIAL" => {
-                // [LLM-generated] Like GCD/LCM, MULTINOMIAL rejects a non-numeric cell
+                // Like GCD/LCM, MULTINOMIAL rejects a non-numeric cell
                 // outright (#VALUE!) instead of skipping it the way
                 // SUM does -- a blank inside a range still counts as 0.
                 // ... and a blank operand is only a *missing* operand
@@ -383,7 +383,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::odd(x))
             }
             "PERCENTOF" => {
-                // [LLM-generated] PERCENTOF(subset, all) is SUM(subset)/SUM(all), and
+                // PERCENTOF(subset, all) is SUM(subset)/SUM(all), and
                 // it inherits SUM's leniency rather than erroring on a
                 // non-numeric argument: real Excel gives 0 for
                 // PERCENTOF(<text>, 10) (the numerator sums to 0) and
@@ -430,7 +430,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::power(num, p))
             }
             "QUOTIENT" => {
-                // [LLM-generated] QUOTIENT rejects *booleans* but still coerces
+                // QUOTIENT rejects *booleans* but still coerces
                 // numeric text: QUOTIENT(12, TRUE) is #VALUE! while
                 // QUOTIENT("12", 5) is 2 and QUOTIENT(12, "ab") is
                 // #VALUE!. (MOD differs again -- MOD(TRUE, 2) is 1.)
@@ -533,7 +533,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::sqrtpi(x))
             }
             "SUMPRODUCT" => {
-                // [LLM-generated] SUMPRODUCT treats non-numeric entries as zeros rather
+                // SUMPRODUCT treats non-numeric entries as zeros rather
                 // than skipping or rejecting them, which matters twice
                 // over: the term contributes 0, and -- because the
                 // entry still occupies its slot -- the arrays stay the
@@ -544,7 +544,7 @@ impl Sheet {
                 let mut arrays: Vec<Vec<f64>> = Vec::new();
                 let mut first_err = None;
                 for arg in evaluated_args {
-                    // [LLM-generated] A single blank cell is a missing operand, not an
+                    // A single blank cell is a missing operand, not an
                     // empty array: SUMPRODUCT over one blank cell is
                     // #VALUE! where over two it is 0.
                     if Self::is_empty_scalar_operand(arg) {
@@ -571,7 +571,7 @@ impl Sheet {
                 }
             }
             "SUMX2MY2" => {
-                // [LLM-generated] paired_args first: a shape mismatch is #N/A and takes
+                // paired_args first: a shape mismatch is #N/A and takes
                 // precedence over everything below it, even when a
                 // range also holds no numbers at all.
                 let (xs, ys) = match self.paired_args(evaluated_args.first(), evaluated_args.get(1))
@@ -587,7 +587,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::sumx2my2(&xs, &ys))
             }
             "SUMX2PY2" => {
-                // [LLM-generated] paired_args first: a shape mismatch is #N/A and takes
+                // paired_args first: a shape mismatch is #N/A and takes
                 // precedence over everything below it, even when a
                 // range also holds no numbers at all.
                 let (xs, ys) = match self.paired_args(evaluated_args.first(), evaluated_args.get(1))
@@ -603,7 +603,7 @@ impl Sheet {
                 res_to_rd(crate::core::math_trig::sumx2py2(&xs, &ys))
             }
             "SUMXMY2" => {
-                // [LLM-generated] paired_args first: a shape mismatch is #N/A and takes
+                // paired_args first: a shape mismatch is #N/A and takes
                 // precedence over everything below it, even when a
                 // range also holds no numbers at all.
                 let (xs, ys) = match self.paired_args(evaluated_args.first(), evaluated_args.get(1))

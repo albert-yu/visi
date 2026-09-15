@@ -1,4 +1,4 @@
-//! [LLM-generated] Information, logical, database, lookup, web and cube function dispatch.
+//! Information, logical, database, lookup, web and cube function dispatch.
 //!
 //! Split out of the parent module's `evaluate_function`, which tries each
 //! family in turn.
@@ -11,13 +11,13 @@ use crate::core::finance;
 use crate::core::parser::Expr;
 
 impl Sheet {
-    /// [LLM-generated] Evaluates `call` if this family owns its name, else `None`.
+    /// Evaluates `call` if this family owns its name, else `None`.
     pub(super) fn eval_info_lookup_fn(
         &self,
         call: FnCall<'_>,
         deps: &mut Vec<Dependency>,
     ) -> Option<Result<ResultData, EngineError>> {
-        // [LLM-generated] The body returns `Result` so its arms can keep using `?`; whether
+        // The body returns `Result` so its arms can keep using `?`; whether
         // the name belongs to this family is signalled alongside.
         let mut owned = true;
         let r = self.eval_info_lookup_dispatch(call, deps, &mut owned);
@@ -42,7 +42,7 @@ impl Sheet {
             ..
         } = call;
         match call.upper_name {
-            // [LLM-generated] --- INFORMATION & LOGICAL & DATABASE & LOOKUP & WEB & CUBE FUNCTIONS ---
+            // --- INFORMATION & LOGICAL & DATABASE & LOOKUP & WEB & CUBE FUNCTIONS ---
             "ERROR.TYPE" => {
                 let t = match evaluated_args.first() {
                     Some(ResultData::Error(e)) => e.clone(),
@@ -114,7 +114,7 @@ impl Sheet {
                     true
                 };
 
-                // [LLM-generated] The mirror image of VLOOKUP just below: the range's
+                // The mirror image of VLOOKUP just below: the range's
                 // flat, row-major `List` is reshaped using the
                 // *unevaluated* range's column span, the first *row*
                 // (not column) is searched, and the match is read back
@@ -171,7 +171,7 @@ impl Sheet {
                     Err(e) => Ok(ResultData::Error(e)),
                 }
             }
-            // [LLM-generated] Both need a live external data source this engine has no
+            // Both need a live external data source this engine has no
             // access to (Microsoft's undocumented stock-data cloud
             // service for STOCKHISTORY; a registered Windows COM
             // IRtdServer for RTD) -- #N/A matches what real Excel shows
@@ -184,7 +184,7 @@ impl Sheet {
                 self.evaluate_database_function(upper_name, args, evaluated_args, context)
             }
             "HYPERLINK" => {
-                // [LLM-generated] No clickable-hyperlink concept in this engine --
+                // No clickable-hyperlink concept in this engine --
                 // returns the display value a formula-based consumer
                 // would see: friendly_name if given, else the raw
                 // link_location text.
@@ -196,7 +196,7 @@ impl Sheet {
                         .unwrap_or(ResultData::Error("#VALUE!".to_string()))),
                 }
             }
-            // [LLM-generated] No OLAP cube connection concept exists in this engine --
+            // No OLAP cube connection concept exists in this engine --
             // #N/A matches what real Excel shows once a cube function's
             // underlying connection is unavailable, the same reasoning
             // already applied to RTD/STOCKHISTORY above -- a plausible-looking
@@ -204,15 +204,15 @@ impl Sheet {
             // corrupt a downstream calculation with no signal anything is wrong.
             "CUBEKPIMEMBER" | "CUBEMEMBER" | "CUBEMEMBERPROPERTY" | "CUBERANKEDMEMBER"
             | "CUBESET" | "CUBESETCOUNT" | "CUBEVALUE" => Ok(ResultData::Error("#N/A".to_string())),
-            // [LLM-generated] WEBSERVICE needs actual network access to an arbitrary
+            // WEBSERVICE needs actual network access to an arbitrary
             // URL; #VALUE! matches Microsoft's own documented error
             // for a request that can't be completed.
             "WEBSERVICE" => Ok(ResultData::Error("#VALUE!".to_string())),
-            // [LLM-generated] IMAGE needs to fetch/decode real image data, which this
+            // IMAGE needs to fetch/decode real image data, which this
             // engine has no concept of; #VALUE! matches real Excel's
             // error for a source it can't resolve to a usable image.
             "IMAGE" => Ok(ResultData::Error("#VALUE!".to_string())),
-            // [LLM-generated] GROUPBY/PIVOTBY are genuine, deterministic array
+            // GROUPBY/PIVOTBY are genuine, deterministic array
             // functions (not connection-dependent like the above).
             // Properly implementing Excel's full row/column-field grouping and
             // dynamic-array spill semantics is real, separately-scoped work
@@ -262,7 +262,7 @@ impl Sheet {
                 }
             }
             "COUNT" => {
-                // [LLM-generated] A boolean counts when it is typed directly as an
+                // A boolean counts when it is typed directly as an
                 // argument, but not when it merely sits inside a
                 // referenced range -- Excel's documented split, and the
                 // same is_direct distinction the SUM/AVERAGE helpers
@@ -276,7 +276,7 @@ impl Sheet {
                         && matches!(arg, ResultData::String(_))
                         && self.to_f64(arg).is_some()
                     {
-                        // [LLM-generated] Numeric text typed directly counts too --
+                        // Numeric text typed directly counts too --
                         // COUNT("12", 3, 4, 5) is 4. Text that will not
                         // coerce is simply not counted; unlike the rest
                         // of the family COUNT never reports #VALUE!.
@@ -461,7 +461,7 @@ impl Sheet {
                         let (list, _) = Self::flatten_row_major(raw.clone());
                         let idx = self.to_f64(&evaluated_args[1]).unwrap_or(0.0) as isize;
                         let len = list.len() as isize;
-                        // [LLM-generated] 1-based like every other INDEX form -- found
+                        // 1-based like every other INDEX form -- found
                         // via the differential fuzzer (LAMBDA/MAP/
                         // BYROW testing was the first thing to ever
                         // exercise this 2-arg path; the standalone
@@ -753,7 +753,7 @@ impl Sheet {
                 }
                 match &evaluated_args[0] {
                     ResultData::None => Ok(ResultData::Boolean(true)),
-                    // [LLM-generated] Only an *absent* value is blank. A cell holding the
+                    // Only an *absent* value is blank. A cell holding the
                     // empty string is text, and so is a formula that returned
                     // "" -- Excel reports ISBLANK as FALSE for both.
                     _ => Ok(ResultData::Boolean(false)),
@@ -783,14 +783,14 @@ impl Sheet {
                     }
                 }
                 if has_nums {
-                    // [LLM-generated] Excel snaps a formula's result to 15 significant
+                    // Excel snaps a formula's result to 15 significant
                     // digits, and that is observable beyond display:
                     // PRODUCT(-35, -0.617, -40, -34) is
                     // 29369.199999999997 in raw f64, and
                     // ROUNDDOWN(.., 2) of it gives 29369.19, but Excel
                     // answers 29369.2 because the snap happens first.
                     //
-                    // [LLM-generated] Crucially it is applied *once*, to the finished
+                    // Crucially it is applied *once*, to the finished
                     // product. Doing it per factor compounds: over
                     // seven factors PRODUCT drifted ~14 ULP and
                     // rendered 189124133819.665 where Excel gives
@@ -811,12 +811,12 @@ impl Sheet {
                 if d == 0.0 {
                     return Ok(ResultData::Error("#DIV/0!".to_string()));
                 }
-                // [LLM-generated] Excel gives up once the quotient gets large enough
+                // Excel gives up once the quotient gets large enough
                 // that `n - d * INT(n / d)` stops being meaningful, and
                 // reports #NUM! rather than a number built out of noise
                 // -- MOD(28^31, 3) is #NUM! there.
                 //
-                // [LLM-generated] The cutoff is on the quotient, not on either operand
+                // The cutoff is on the quotient, not on either operand
                 // (MOD(1E15, 1E7) is fine, MOD(1E13, 3) is not), and is
                 // identical for different divisors. Bisected against
                 // real Excel to between 1.024 and 1.026 times 2^40; the
@@ -826,7 +826,7 @@ impl Sheet {
                 // reports #NUM! a little before Excel does -- but it is
                 // right everywhere else, which is where the quotients
                 // that actually turn up land.
-                const MOD_QUOTIENT_LIMIT: f64 = 1_099_511_627_776.0; // [LLM-generated] 2^40
+                const MOD_QUOTIENT_LIMIT: f64 = 1_099_511_627_776.0; // 2^40
                 let quotient = n / d;
                 if !quotient.is_finite() || quotient.abs() > MOD_QUOTIENT_LIMIT {
                     return Ok(ResultData::Error("#NUM!".to_string()));
@@ -946,7 +946,7 @@ impl Sheet {
                     ResultData::List(l) => l.clone(),
                     other => vec![other.clone()],
                 };
-                // [LLM-generated] search_mode (a 4th argument) isn't supported beyond
+                // search_mode (a 4th argument) isn't supported beyond
                 // the default forward linear search, nor is wildcard
                 // match_mode (2).
                 let match_mode = evaluated_args
@@ -977,7 +977,7 @@ impl Sheet {
                         }
                         best.map(|(i, _)| i)
                     }
-                    // [LLM-generated] XMATCH deliberately does NOT use
+                    // XMATCH deliberately does NOT use
                     // exact_lookup_matches: unlike MATCH/VLOOKUP,
                     // real Excel's XMATCH *does* match a blank lookup
                     // value against a blank cell (XMATCH over a blank
@@ -1084,7 +1084,7 @@ impl Sheet {
                     };
 
                     for idx in iter_indices {
-                        // [LLM-generated] Like XMATCH (and unlike VLOOKUP/MATCH),
+                        // Like XMATCH (and unlike VLOOKUP/MATCH),
                         // XLOOKUP matches a blank lookup value against
                         // a blank cell rather than reporting #N/A.
                         if lookup_list[idx].to_string() == lookup_val.to_string() {
@@ -1314,7 +1314,7 @@ impl Sheet {
                         return Ok(ResultData::Error("#VALUE!".to_string()));
                     }
 
-                    // [LLM-generated] A non-numeric cell anywhere in either operand
+                    // A non-numeric cell anywhere in either operand
                     // makes the whole call #VALUE! in real Excel, not
                     // a silent 0 -- MMULT doesn't ignore text the way
                     // SUM/AVERAGE-style aggregates do.
@@ -1330,7 +1330,7 @@ impl Sheet {
                         for c in 0..cols2 {
                             let mut val = 0.0;
                             for k in 0..cols1 {
-                                // [LLM-generated] Only a real number is acceptable --
+                                // Only a real number is acceptable --
                                 // MMULT rejects text, booleans and
                                 // blanks alike (all confirmed #VALUE!
                                 // against real Excel), so this can't

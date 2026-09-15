@@ -82,7 +82,7 @@ CASES = [
 
 
 def probe(driver, case, workdir):
-    """[LLM-generated] (excel_ok, excel_detail, visi_ok, visi_detail) for one case."""
+    """(excel_ok, excel_detail, visi_ok, visi_detail) for one case."""
     label, snippet, sig, call_args = case
     source = build_module(snippet, sig, call_args)
     visi_ok, visi_detail = visi_verdict(source)

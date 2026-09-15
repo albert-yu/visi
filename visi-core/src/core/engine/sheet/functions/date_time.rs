@@ -1,4 +1,4 @@
-//! [LLM-generated] Date and time function dispatch.
+//! Date and time function dispatch.
 //!
 //! Split out of the parent module's `evaluate_function`, which tries each
 //! family in turn.
@@ -9,13 +9,13 @@ use crate::core::engine::result_data::ResultData;
 use crate::core::engine::sheet::Sheet;
 
 impl Sheet {
-    /// [LLM-generated] Evaluates `call` if this family owns its name, else `None`.
+    /// Evaluates `call` if this family owns its name, else `None`.
     pub(super) fn eval_date_time_fn(
         &self,
         call: FnCall<'_>,
         deps: &mut Vec<Dependency>,
     ) -> Option<Result<ResultData, EngineError>> {
-        // [LLM-generated] The body returns `Result` so its arms can keep using `?`; whether
+        // The body returns `Result` so its arms can keep using `?`; whether
         // the name belongs to this family is signalled alongside.
         let mut owned = true;
         let r = self.eval_date_time_dispatch(call, deps, &mut owned);
@@ -30,7 +30,7 @@ impl Sheet {
     ) -> Result<ResultData, EngineError> {
         let FnCall { evaluated_args, .. } = call;
         match call.upper_name {
-            // [LLM-generated] --- DATE AND TIME FUNCTIONS ---
+            // --- DATE AND TIME FUNCTIONS ---
             "DATE" => {
                 let y = self.to_f64_arg(evaluated_args.first(), "DATE")?;
                 let m = self.to_f64_arg(evaluated_args.get(1), "DATE")?;

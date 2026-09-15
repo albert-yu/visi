@@ -18,20 +18,20 @@ const MONTHS_SHORT: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// [LLM-generated] How a month name was capitalized in the text a date was typed as.
+/// How a month name was capitalized in the text a date was typed as.
 ///
 /// A format code cannot carry casing, so this rides alongside
 /// [`DateFormat::to_format_code`] and is lost on a round trip through a
 /// worksheet -- as it is in Excel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StringCase {
-    /// [LLM-generated] All lowercase, as in `22-jun-2026`.
+    /// All lowercase, as in `22-jun-2026`.
     Lower,
-    /// [LLM-generated] All uppercase, as in `22-JUN-2026`.
+    /// All uppercase, as in `22-JUN-2026`.
     Upper,
-    /// [LLM-generated] Leading capital, rest lowercase: `22-Jun-2026`. The default.
+    /// Leading capital, rest lowercase: `22-Jun-2026`. The default.
     Title,
-    /// [LLM-generated] Mixed in some other way; rendered as the canonical title case.
+    /// Mixed in some other way; rendered as the canonical title case.
     Original,
 }
 
@@ -52,18 +52,18 @@ pub fn detect_case(s: &str) -> StringCase {
     }
 }
 
-/// [LLM-generated] A calendar date, with no time-of-day and no timezone.
+/// A calendar date, with no time-of-day and no timezone.
 ///
 /// Only an intermediate: cells hold an Excel serial, not a `SimpleDate`. This
 /// is what [`parse_date`] produces and what [`date_to_excel_serial`] consumes,
 /// so the calendar arithmetic happens in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleDate {
-    /// [LLM-generated] Full year, four digits -- a two-digit year is widened by [`parse_date`].
+    /// Full year, four digits -- a two-digit year is widened by [`parse_date`].
     pub year: i32,
-    /// [LLM-generated] Month, 1-12.
+    /// Month, 1-12.
     pub month: u32,
-    /// [LLM-generated] Day of month, 1-31.
+    /// Day of month, 1-31.
     pub day: u32,
 }
 
@@ -86,7 +86,7 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
-/// [LLM-generated] The notation a date was written in: field order, separator, year width and
+/// The notation a date was written in: field order, separator, year width and
 /// month-name spelling.
 ///
 /// This is *detection* output, not the storage form. A cell stores an Excel
@@ -100,120 +100,120 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
 /// `parse_date`'s default year, a month/year pair takes day 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DateFormat {
-    /// [LLM-generated] Year-month-day, all numeric: `2026-06-22`.
+    /// Year-month-day, all numeric: `2026-06-22`.
     Ymd {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
     },
-    /// [LLM-generated] Month-day-year, all numeric: `06/22/2026`, `6/22/26`.
+    /// Month-day-year, all numeric: `06/22/2026`, `6/22/26`.
     Mdy {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
     },
-    /// [LLM-generated] Day-month-year, all numeric: `22-06-2026`.
+    /// Day-month-year, all numeric: `22-06-2026`.
     Dmy {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
     },
-    /// [LLM-generated] Day, month name, year: `22-Jun-2026`, `22-June-26`.
+    /// Day, month name, year: `22-Jun-2026`, `22-June-26`.
     DMmmY {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
-    /// [LLM-generated] Month name, day, year: `Jun-22-2026`, `June-22-26`.
+    /// Month name, day, year: `Jun-22-2026`, `June-22-26`.
     MmmDY {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
-    /// [LLM-generated] Year, month name, day: `2026-Jun-22`.
+    /// Year, month name, day: `2026-Jun-22`.
     YMmmD {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
 
-    /// [LLM-generated] Numeric month and day, year assumed: `6/22`.
+    /// Numeric month and day, year assumed: `6/22`.
     Md {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
     },
-    /// [LLM-generated] Numeric day and month, year assumed: `22/6`.
+    /// Numeric day and month, year assumed: `22/6`.
     Dm {
-        /// [LLM-generated] Character separating the fields, `-`, `/`, or `.`.
+        /// Character separating the fields, `-`, `/`, or `.`.
         sep: char,
     },
-    /// [LLM-generated] Numeric month and year, day assumed to be the 1st: `6/2026`.
+    /// Numeric month and year, day assumed to be the 1st: `6/2026`.
     My {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
     },
-    /// [LLM-generated] Day then month name, year assumed: `22-Jun`.
+    /// Day then month name, year assumed: `22-Jun`.
     DMmm {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
-    /// [LLM-generated] Month name then day, year assumed: `Jun-22`.
+    /// Month name then day, year assumed: `Jun-22`.
     MmmD {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
-    /// [LLM-generated] Month name then year, day assumed to be the 1st: `Jun-2026`.
+    /// Month name then year, day assumed to be the 1st: `Jun-2026`.
     MmmY {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
-    /// [LLM-generated] Year then month name, day assumed to be the 1st: `2026-Jun`.
+    /// Year then month name, day assumed to be the 1st: `2026-Jun`.
     YMmm {
-        /// [LLM-generated] Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`.
         sep: char,
-        /// [LLM-generated] Digits the year was written with: 2 or 4.
+        /// Digits the year was written with: 2 or 4.
         year_len: usize,
-        /// [LLM-generated] Casing the month name was typed in.
+        /// Casing the month name was typed in.
         month_case: StringCase,
-        /// [LLM-generated] `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
+        /// `true` for a full name (`June`), `false` for an abbreviation (`Jun`).
         month_full: bool,
     },
 }
 
 impl DateFormat {
-    /// [LLM-generated] Lowers to an Excel number-format code (`m/d/yy`, `d-mmm-yyyy`, ...).
+    /// Lowers to an Excel number-format code (`m/d/yy`, `d-mmm-yyyy`, ...).
     ///
     /// This is the interchange form: it is what gets written to the worksheet
     /// as a `numFmt` and what [`render_date_code`] consumes. Month-name casing
@@ -273,7 +273,7 @@ impl DateFormat {
         }
     }
 
-    /// [LLM-generated] The casing the month name was typed in, for the formats that have one.
+    /// The casing the month name was typed in, for the formats that have one.
     pub fn month_case(&self) -> StringCase {
         match *self {
             DateFormat::DMmmY { month_case, .. }
@@ -296,7 +296,7 @@ fn apply_case(s: &str, case: StringCase) -> String {
     }
 }
 
-/// [LLM-generated] Renders a date through an Excel number-format code.
+/// Renders a date through an Excel number-format code.
 ///
 /// Handles the date tokens visi recognizes: runs of `y` (1-2 -> 2-digit year,
 /// 3+ -> 4-digit), `m` (1 -> bare month, 2 -> zero-padded, 3 -> `Jun`, 4+ ->
@@ -370,12 +370,12 @@ pub fn render_date_code(date: SimpleDate, code: &str, month_case: StringCase) ->
     out
 }
 
-/// [LLM-generated] Renders a date back in the notation [`parse_date`] recognized it in.
+/// Renders a date back in the notation [`parse_date`] recognized it in.
 pub fn format_date(date: SimpleDate, format: &DateFormat) -> String {
     render_date_code(date, &format.to_format_code(), format.month_case())
 }
 
-/// [LLM-generated] Whether a number-format code renders a date rather than a numeric or time value.
+/// [AI-Agent] Whether a number-format code renders a date rather than a numeric or time value.
 pub fn is_date_code(code: &str) -> bool {
     let mut has_year_or_day = false;
     let mut has_month = false;
@@ -409,7 +409,7 @@ pub fn is_date_code(code: &str) -> bool {
     (has_year_or_day || has_month) && !has_time_token && !has_number_placeholder
 }
 
-/// [LLM-generated] The inverse of [`date_to_excel_serial`], for rendering a computed serial.
+/// The inverse of [`date_to_excel_serial`], for rendering a computed serial.
 pub fn excel_serial_to_date(serial: f64) -> SimpleDate {
     let (year, month, day) = crate::core::date_fn::serial_to_ymd(serial);
     SimpleDate {
@@ -428,12 +428,12 @@ fn parse_digits(part: &str) -> Option<i32> {
     }
 }
 
-/// [LLM-generated] Recognizes a date written as text using the default US locale.
+/// Recognizes a date written as text using the default US locale.
 pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
     parse_date_with_locale(src, &Locale::en_us())
 }
 
-/// [LLM-generated] Recognizes a date written as text according to a specific [`Locale`].
+/// Recognizes a date written as text according to a specific [`Locale`].
 ///
 /// Returns `None` for anything that is not a date, which is how
 /// `Sheet::commit` decides whether a literal becomes a plain number or a
@@ -912,7 +912,7 @@ pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate,
     None
 }
 
-/// [LLM-generated] Converts a date to Excel's day count, where 1 is 1900-01-01.
+/// Converts a date to Excel's day count, where 1 is 1900-01-01.
 ///
 /// Reproduces Excel's 1900 leap-year bug -- serial 60 is the nonexistent
 /// 1900-02-29 -- by adding a day for every date after 1900-02-28, which is
@@ -940,7 +940,7 @@ pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
 mod tests {
     use super::*;
 
-    /// [LLM-generated] Every case pins both the parsed date and the [`DateFormat`] that
+    /// Every case pins both the parsed date and the [`DateFormat`] that
     /// `parse_date` inferred.
     #[test]
     fn test_date_parsing_and_format_detection() {
@@ -1224,7 +1224,7 @@ mod tests {
         );
     }
 
-    /// [LLM-generated] The point of detecting a format at all: a date echoes back in the
+    /// The point of detecting a format at all: a date echoes back in the
     /// notation it was typed in.
     #[test]
     fn test_format_date_round_trips_the_typed_notation() {

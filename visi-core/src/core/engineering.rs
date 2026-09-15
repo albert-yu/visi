@@ -403,7 +403,7 @@ fn c_cosh(c: ComplexNum) -> ComplexNum {
     }
 }
 
-/// [LLM-generated] 1/(a+bi) = (a-bi)/(a^2+b^2), keeping the operand's own `i`/`j` suffix
+/// 1/(a+bi) = (a-bi)/(a^2+b^2), keeping the operand's own `i`/`j` suffix
 /// (dividing a literal "1" by it would always come back suffixed `i`).
 fn c_recip(c: ComplexNum) -> Result<ComplexNum, String> {
     let denom = c.re * c.re + c.im * c.im;
@@ -459,7 +459,7 @@ pub fn imcosh(in_str: &str) -> Result<String, String> {
     Ok(format_complex(c_cosh(parse_complex(in_str)?)))
 }
 
-/// [LLM-generated] tan and cot via their double-angle forms
+/// tan and cot via their double-angle forms
 ///   tan(x+iy) = [sin 2x + i sinh 2y] / [cos 2x + cosh 2y]
 ///   cot(x+iy) = [sin 2x - i sinh 2y] / [cosh 2y - cos 2x]
 /// rather than as a complex division of sin by cos.
@@ -618,14 +618,14 @@ fn factorial(n: usize) -> f64 {
     (1..=n).map(|i| i as f64).product()
 }
 
-/// [LLM-generated] The `m`th harmonic number `H_m = sum_{i=1}^m 1/i` (`H_0 = 0`), which is
+/// The `m`th harmonic number `H_m = sum_{i=1}^m 1/i` (`H_0 = 0`), which is
 /// what `psi(m+1) = H_m - EULER_GAMMA` reduces to for non-negative integer
 /// `m` -- the digamma terms every Bessel-second-kind series below needs.
 fn harmonic(m: usize) -> f64 {
     (1..=m).map(|i| 1.0 / i as f64).sum()
 }
 
-/// [LLM-generated] `K_n(x)`, the modified Bessel function of the second kind, for
+/// `K_n(x)`, the modified Bessel function of the second kind, for
 /// non-negative integer order (Abramowitz & Stegun 9.6.11/9.6.13):
 ///
 /// K_n(x) = (1/2) sum_{k=0}^{n-1} (-1)^k (n-k-1)!/k! (x/2)^(2k-n)
@@ -676,7 +676,7 @@ pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
     Ok(result)
 }
 
-/// [LLM-generated] `Y_n(x)`, the Bessel function of the second kind, for non-negative
+/// `Y_n(x)`, the Bessel function of the second kind, for non-negative
 /// integer order (Abramowitz & Stegun 9.1.11):
 ///
 /// Y_n(x) = (2/pi) J_n(x) ln(x/2)

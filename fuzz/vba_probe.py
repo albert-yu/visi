@@ -77,7 +77,7 @@ End Function
 
 
 def run_osascript(script, timeout=OSASCRIPT_TIMEOUT):
-    """[LLM-generated] Returns (ok, output). ok=False with output='<timeout>' means Excel went
+    """Returns (ok, output). ok=False with output='<timeout>' means Excel went
     modal -- the caller is responsible for restarting it."""
     try:
         res = subprocess.run(
@@ -95,7 +95,7 @@ def run_osascript(script, timeout=OSASCRIPT_TIMEOUT):
 
 
 def restart_excel():
-    """[LLM-generated] SIGKILL by PID, not `killall` alone -- Excel can intercept SIGTERM to
+    """SIGKILL by PID, not `killall` alone -- Excel can intercept SIGTERM to
     run its own quit handshake and stay listed as running (see
     fuzz_pivot.py::_restart_excel)."""
     subprocess.run(
@@ -176,7 +176,7 @@ def visi_macro_add(visi, base, name, source, out):
 
 
 def check_author_and_run(visi, workdir, results):
-    """[LLM-generated] visi-authored module loads, runs, mutates cells, and the mutations
+    """visi-authored module loads, runs, mutates cells, and the mutations
     survive Excel's save -- readable by both openpyxl and visi."""
     base = os.path.join(workdir, "base.xlsx")
     xlsm = os.path.join(workdir, "probe.xlsm")
@@ -219,7 +219,7 @@ def check_author_and_run(visi, workdir, results):
 
 
 def check_macro_behaviours(visi, workdir, results):
-    """[LLM-generated] Return values, trapped errors, and error propagation out of a called
+    """Return values, trapped errors, and error propagation out of a called
     procedure -- all three in one Excel session, since the session is the
     expensive part."""
     base = os.path.join(workdir, "base2.xlsx")
@@ -265,7 +265,7 @@ def check_macro_behaviours(visi, workdir, results):
 
 
 def demo_hang(visi, workdir, results):
-    """[LLM-generated] Deliberately reproduce the modal-dialog hang, then clean up after it."""
+    """Deliberately reproduce the modal-dialog hang, then clean up after it."""
     base = os.path.join(workdir, "base3.xlsx")
     xlsm = os.path.join(workdir, "hang.xlsm")
     make_base_workbook(base)

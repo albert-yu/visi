@@ -14,7 +14,7 @@ use crate::enums::{
 use crate::errors::{Wrapped, invalid_argument};
 use crate::value::result_to_py;
 
-/// [LLM-generated] A workbook: sheets, charts, pivot tables and any VBA project.
+/// A workbook: sheets, charts, pivot tables and any VBA project.
 ///
 /// ```python
 /// import visi_core
@@ -35,7 +35,7 @@ impl Workbook {
 
 #[pymethods]
 impl Workbook {
-    /// [LLM-generated] An empty workbook with one sheet.
+    /// An empty workbook with one sheet.
     #[new]
     #[pyo3(signature = (locale=None))]
     fn new(locale: Option<&str>) -> PyResult<Self> {
@@ -48,7 +48,7 @@ impl Workbook {
         Ok(Self { inner })
     }
 
-    /// [LLM-generated] Regional locale tag (e.g. "en-US", "de-DE", "en-GB").
+    /// Regional locale tag (e.g. "en-US", "de-DE", "en-GB").
     #[getter]
     fn locale(&self) -> String {
         self.inner.locale.code.clone()
@@ -62,7 +62,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Reads an `.xlsx` from disk.
+    /// Reads an `.xlsx` from disk.
     #[staticmethod]
     fn load(path: PathBuf) -> PyResult<Self> {
         let bytes = std::fs::read(&path)?;
@@ -71,7 +71,7 @@ impl Workbook {
         })
     }
 
-    /// [LLM-generated] Reads an `.xlsx` from an in-memory buffer.
+    /// Reads an `.xlsx` from an in-memory buffer.
     #[staticmethod]
     fn load_bytes(data: &[u8]) -> PyResult<Self> {
         Ok(Self {
@@ -79,13 +79,13 @@ impl Workbook {
         })
     }
 
-    /// [LLM-generated] Serializes to `.xlsx` bytes.
+    /// Serializes to `.xlsx` bytes.
     fn save_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let data = self.inner.save_bytes().map_err(Wrapped)?;
         Ok(PyBytes::new(py, &data))
     }
 
-    /// [LLM-generated] Writes an `.xlsx` to disk, creating parent directories as needed.
+    /// Writes an `.xlsx` to disk, creating parent directories as needed.
     fn save(&self, path: PathBuf) -> PyResult<()> {
         let data = self.inner.save_bytes().map_err(Wrapped)?;
         if let Some(parent) = path.parent()
@@ -97,7 +97,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] A fresh `Workbook` round-tripped through the `.xlsx` format.
+    /// A fresh `Workbook` round-tripped through the `.xlsx` format.
     ///
     /// Equivalent to `Workbook.load_bytes(wb.save_bytes())`, and to what one
     /// in-place (`-i`) CLI invocation did between two edits. The fuzz harness
@@ -114,7 +114,7 @@ impl Workbook {
         })
     }
 
-    /// [LLM-generated] Recalculates every formula in every sheet.
+    /// Recalculates every formula in every sheet.
     ///
     /// Almost never raises: visi-core discards per-sheet commit errors, so a
     /// formula that fails shows up as a `CellError` *value* in the cell rather
@@ -124,20 +124,20 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] The worksheet names, in workbook order.
+    /// The worksheet names, in workbook order.
     #[getter]
     fn sheet_names(&self) -> Vec<String> {
         self.inner.sheets.iter().map(|s| s.name.clone()).collect()
     }
 
-    /// [LLM-generated] The index of a sheet by name, or of the first sheet when `name` is
+    /// The index of a sheet by name, or of the first sheet when `name` is
     /// `None`.
     #[pyo3(signature = (name=None))]
     fn sheet_index(&self, name: Option<&str>) -> PyResult<usize> {
         self.sheet_idx(name)
     }
 
-    /// [LLM-generated] `(rows, cols)` for a sheet.
+    /// `(rows, cols)` for a sheet.
     #[pyo3(signature = (sheet=None))]
     fn dimensions(&self, sheet: Option<&str>) -> PyResult<(usize, usize)> {
         let idx = self.sheet_idx(sheet)?;
@@ -145,7 +145,7 @@ impl Workbook {
         Ok((s.row_count(), s.col_count()))
     }
 
-    /// [LLM-generated] Writes a cell's source text -- a literal (`"10"`) or a formula
+    /// Writes a cell's source text -- a literal (`"10"`) or a formula
     /// (`"=SUM(A1:A2)"`). Call `evaluate()` afterwards to recompute.
     #[pyo3(signature = (row, col, value, sheet=None, cell_type=None))]
     fn set_cell(
@@ -167,7 +167,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Sets the intrinsic data type of a cell at (row, col).
+    /// Sets the intrinsic data type of a cell at (row, col).
     #[pyo3(signature = (row, col, cell_type, sheet=None))]
     fn set_cell_type(
         &mut self,
@@ -182,7 +182,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] A cell's computed value.
+    /// A cell's computed value.
     ///
     /// Excel error values come back as `CellError`, not as `str`, so a cell
     /// holding the *text* `#DIV/0!` stays distinguishable from one that
@@ -201,7 +201,7 @@ impl Workbook {
         result_to_py(py, &v)
     }
 
-    /// [LLM-generated] A cell's value rendered the way it would be shown, honoring the cell's
+    /// A cell's value rendered the way it would be shown, honoring the cell's
     /// number format. This is the only correct way to render a date.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_display(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
@@ -209,7 +209,7 @@ impl Workbook {
         Ok(self.inner.sheets[idx].get_display_string(&CellRef::new(row, col)))
     }
 
-    /// [LLM-generated] The cell's intrinsic type, using the `CellType::as_str` spelling.
+    /// [AI-Agent] The cell's intrinsic type, using the `CellType::as_str` spelling.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_cell_type(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
         let idx = self.sheet_idx(sheet)?;
@@ -217,14 +217,14 @@ impl Workbook {
         Ok(t.as_str().to_string())
     }
 
-    /// [LLM-generated] A cell's source text, as typed.
+    /// A cell's source text, as typed.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_src(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
         let idx = self.sheet_idx(sheet)?;
         Ok(self.inner.sheets[idx].get_src_str(&CellRef::new(row, col)))
     }
 
-    /// [LLM-generated] Adds a chart over `range` (A1 with a sheet prefix, e.g. `"Sheet1!A1:B10"`).
+    /// Adds a chart over `range` (A1 with a sheet prefix, e.g. `"Sheet1!A1:B10"`).
     ///
     /// Returns the new chart's id. **That id is valid only for this in-memory
     /// workbook.** `import_xlsx_data` re-derives chart ids from the sheet name
@@ -246,7 +246,7 @@ impl Workbook {
             .map_err(Wrapped)?)
     }
 
-    /// [LLM-generated] Edits a chart.
+    /// Edits a chart.
     ///
     /// Each of title/xlabel/ylabel is three-state -- leave alone, set, or
     /// clear -- which a single argument cannot express, since pyo3 maps Python
@@ -308,13 +308,13 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Deletes a chart by id.
+    /// Deletes a chart by id.
     fn delete_chart(&mut self, chart_id: u64) -> PyResult<()> {
         self.inner.delete_chart(chart_id).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// [LLM-generated] The charts, as dicts.
+    /// The charts, as dicts.
     ///
     /// Carries every key `visi chart list --json` emits (`id`, `name`, `type`,
     /// `data_range`, `title`, `anchor`) so the two are directly comparable,
@@ -341,7 +341,7 @@ impl Workbook {
         PyList::new(py, out)
     }
 
-    /// [LLM-generated] Creates a pivot table sourced from a named Excel Table.
+    /// Creates a pivot table sourced from a named Excel Table.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         name, source_table, *, dest_sheet=None, dest_row=0, dest_col=0,
@@ -371,7 +371,7 @@ impl Workbook {
             .map_err(Wrapped)?)
     }
 
-    /// [LLM-generated] Creates a pivot table sourced from a raw sheet range, given as 0-based
+    /// Creates a pivot table sourced from a raw sheet range, given as 0-based
     /// inclusive bounds.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
@@ -411,7 +411,7 @@ impl Workbook {
             .map_err(Wrapped)?)
     }
 
-    /// [LLM-generated] Adds a field to a pivot area (`"row"`, `"column"`, `"value"`,
+    /// Adds a field to a pivot area (`"row"`, `"column"`, `"value"`,
     /// `"filter"`), then refreshes if anything changed.
     ///
     /// `subtotal=False` and `label` are applied by mutating the field after
@@ -478,7 +478,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Removes a field from a pivot area.
+    /// Removes a field from a pivot area.
     fn remove_pivot_field(&mut self, pivot: &str, area: &str, column: &str) -> PyResult<()> {
         let area = parse_pivot_area(area)?;
         self.inner
@@ -487,7 +487,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Sets which values of a filter field take part.
+    /// Sets which values of a filter field take part.
     ///
     /// `None` clears the filter (every value allowed); a list restricts to
     /// those values, and an **empty list selects nothing** -- a state the
@@ -513,20 +513,20 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Recomputes a pivot table's grid and writes it into its destination
+    /// Recomputes a pivot table's grid and writes it into its destination
     /// cells. Nothing does this implicitly.
     fn refresh_pivot(&mut self, pivot: &str) -> PyResult<()> {
         self.inner.refresh_pivot_table(pivot).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// [LLM-generated] Deletes a pivot table by name.
+    /// Deletes a pivot table by name.
     fn delete_pivot(&mut self, pivot: &str) -> PyResult<()> {
         self.inner.delete_pivot_table(pivot).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// [LLM-generated] The pivot tables, as dicts.
+    /// The pivot tables, as dicts.
     ///
     /// Carries every key `visi pivot list --json` emits (`id`, `name`,
     /// `row_fields`, `col_fields`, `value_fields`, `filter_fields`), plus
@@ -573,12 +573,12 @@ impl Workbook {
         PyList::new(py, out)
     }
 
-    /// [LLM-generated] Whether the workbook carries a VBA project at all.
+    /// Whether the workbook carries a VBA project at all.
     fn has_macros(&self) -> bool {
         self.inner.has_vba_project()
     }
 
-    /// [LLM-generated] Adds a VBA module, mirroring `visi macro add`.
+    /// Adds a VBA module, mirroring `visi macro add`.
     ///
     /// `kind` is `"standard"`, `"class"` or `"document"`. `sheet` names the
     /// sheet a document module binds to and is required for `"document"` --
@@ -625,19 +625,19 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] Removes a VBA module by name. Mirrors `visi macro remove`.
+    /// Removes a VBA module by name. Mirrors `visi macro remove`.
     fn remove_macro(&mut self, name: &str) -> PyResult<()> {
         self.inner.remove_vba_module(name).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// [LLM-generated] Renames a VBA module. Mirrors `visi macro rename`.
+    /// Renames a VBA module. Mirrors `visi macro rename`.
     fn rename_macro(&mut self, old: &str, new: &str) -> PyResult<()> {
         self.inner.rename_vba_module(old, new).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// [LLM-generated] Runs one of this workbook's macros **against** this workbook, mirroring
+    /// Runs one of this workbook's macros **against** this workbook, mirroring
     /// `visi macro run FILE`.
     ///
     /// Returns `(type_name, value, mutated)`. Unlike the module-level
@@ -672,13 +672,13 @@ impl Workbook {
         Ok((out.type_name, out.value, out.mutated))
     }
 
-    /// [LLM-generated] Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
+    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
     fn run_open_events(&mut self) -> PyResult<(String, Option<String>, bool)> {
         let out = self.inner.run_open_events().map_err(Wrapped)?;
         Ok((out.type_name, out.value, out.mutated))
     }
 
-    /// [LLM-generated] Replaces a module's source text. Mirrors `visi macro set-source`.
+    /// Replaces a module's source text. Mirrors `visi macro set-source`.
     fn set_macro_source(&mut self, name: &str, source: &str) -> PyResult<()> {
         self.inner
             .set_vba_module_source(name, source.to_string())
@@ -686,7 +686,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// [LLM-generated] The VBA modules, as dicts.
+    /// The VBA modules, as dicts.
     ///
     /// Carries the keys `visi macro list --json` emits (`name`, `kind`,
     /// `source_lines`), plus `source` itself and `bound_sheet_id` -- the two

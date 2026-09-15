@@ -1,11 +1,11 @@
-/// [LLM-generated] Whether `name` is a VBA or Excel-host built-in, matched
+/// Whether `name` is a VBA or Excel-host built-in, matched
 /// case-insensitively as VBA does.
 pub(super) fn is_builtin(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     BUILTIN_NAMES.contains(&lower.as_str())
 }
 
-/// [LLM-generated] Every built-in name, lowercased, grouped by where it comes from.
+/// Every built-in name, lowercased, grouped by where it comes from.
 ///
 /// Deliberately a **linear** scan in [`is_builtin`] rather than a sorted
 /// binary search. Sorting would mean one flat alphabetical run, throwing
@@ -116,7 +116,7 @@ mod tests {
         assert!(!is_builtin("MyOwnSub"));
     }
 
-    /// [LLM-generated] Every intrinsic the interpreter implements must also be a name this
+    /// Every intrinsic the interpreter implements must also be a name this
     /// registry knows.
     ///
     /// The two lists are maintained separately and answer different

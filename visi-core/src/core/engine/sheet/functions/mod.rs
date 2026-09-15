@@ -1,4 +1,4 @@
-//! [LLM-generated] Excel function dispatch.
+//! Excel function dispatch.
 //!
 //! `evaluate_function` does what has to happen before a function's arguments
 //! can be evaluated -- prefix stripping, the lazy/short-circuit functions, and
@@ -23,32 +23,32 @@ use crate::core::engine::cell::{Dependency, EngineError, EvalError};
 use crate::core::engine::result_data::ResultData;
 use crate::core::parser::Expr;
 
-/// [LLM-generated] One evaluated function call, as handed to a family module.
+/// One evaluated function call, as handed to a family module.
 ///
 /// `Copy`, so a family can destructure it and still read `call.upper_name`.
 #[derive(Clone, Copy)]
 pub(super) struct FnCall<'a> {
-    /// [LLM-generated] Uppercased and stripped of `_xlfn.`/`_xlws.`; what families match on.
+    /// Uppercased and stripped of `_xlfn.`/`_xlws.`; what families match on.
     pub upper_name: &'a str,
-    /// [LLM-generated] The unevaluated argument expressions, for the functions that need the
+    /// The unevaluated argument expressions, for the functions that need the
     /// AST rather than the value.
     pub args: &'a [Expr],
-    /// [LLM-generated] The evaluated arguments.
+    /// The evaluated arguments.
     pub evaluated_args: &'a [ResultData],
-    /// [LLM-generated] Per argument: whether it came from a direct cell reference rather than
+    /// Per argument: whether it came from a direct cell reference rather than
     /// a computed expression.
     pub arg_is_direct: &'a [bool],
-    /// [LLM-generated] The other sheets, for cross-sheet references.
+    /// The other sheets, for cross-sheet references.
     pub context: Option<&'a Context<'a>>,
-    /// [LLM-generated] The row the call is being evaluated for, if any.
+    /// The row the call is being evaluated for, if any.
     pub row: Option<usize>,
-    /// [LLM-generated] The column the call is being evaluated for, if any.
+    /// The column the call is being evaluated for, if any.
     pub col: Option<usize>,
-    /// [LLM-generated] Enclosing `LET` bindings.
+    /// Enclosing `LET` bindings.
     pub scope: &'a LetScope<'a>,
 }
 
-/// [LLM-generated] Adapts a numeric function's `Result<f64, String>` to a cell value, where
+/// Adapts a numeric function's `Result<f64, String>` to a cell value, where
 /// the error string is an Excel error code rather than a Rust failure.
 pub(super) fn res_to_rd(res: Result<f64, String>) -> Result<ResultData, EngineError> {
     match res {
@@ -57,7 +57,7 @@ pub(super) fn res_to_rd(res: Result<f64, String>) -> Result<ResultData, EngineEr
     }
 }
 
-/// [LLM-generated] A NaN can only come from a math function evaluated outside its domain
+/// A NaN can only come from a math function evaluated outside its domain
 /// (ASIN/ACOS of |x|>1, SQRT/LN/LOG10 of a negative, ...), and an infinity
 /// only from one that overflowed (POWER(42, 600), EXP(1000)). Excel has
 /// neither -- it reports #NUM! for both -- so rather than bolting a
@@ -71,7 +71,7 @@ fn post_process(r: Result<ResultData, EngineError>) -> Result<ResultData, Engine
 }
 
 impl Sheet {
-    /// [LLM-generated] Evaluates a worksheet function from already-built argument
+    /// Evaluates a worksheet function from already-built argument
     /// expressions, outside any cell.
     ///
     /// The entry point `Application.WorksheetFunction.X` reaches, so that the
@@ -95,7 +95,7 @@ impl Sheet {
         self.evaluate_function(name, args, context, None, None, &mut deps, &LetScope::Empty)
     }
 
-    /// [LLM-generated] Evaluates a function call by name.
+    /// Evaluates a function call by name.
     ///
     /// Handles the lazy/short-circuit functions itself, since their arguments
     /// must not be evaluated up front, then evaluates the remaining arguments
@@ -116,7 +116,7 @@ impl Sheet {
         if upper_name.starts_with("_XLFN.") {
             upper_name = upper_name["_XLFN.".len()..].to_string();
         }
-        // [LLM-generated] Real Excel's OOXML writer additionally nests some dynamic-array
+        // Real Excel's OOXML writer additionally nests some dynamic-array
         // worksheet functions (UNIQUE, SORT, FILTER, ...) under a second
         // `_xlws.` prefix inside `_xlfn.` -- e.g. `_xlfn._xlws.SORT`, not
         // just `_xlfn.SORT`. Without stripping it too, the un-stripped
@@ -173,7 +173,7 @@ impl Sheet {
                     "IFNA requires 2 arguments".to_string(),
                 )));
             }
-            // [LLM-generated] Not a bare `?`: a nested call can fail as a hard `Err` rather
+            // Not a bare `?`: a nested call can fail as a hard `Err` rather
             // than an `Ok(ResultData::Error(_))` -- e.g. ATAN2/LOG's own
             // `to_f64_arg(...)?`  on an argument that is itself already an
             // error -- and IFNA still needs to see which error code that
@@ -197,7 +197,7 @@ impl Sheet {
         }
 
         if upper_name == "IFS" {
-            // [LLM-generated] Lazily evaluated: only the arms up to and including the
+            // Lazily evaluated: only the arms up to and including the
             // first TRUE condition are ever computed, so an error
             // sitting in a later (unselected) value never propagates.
             // Confirmed against real Excel: `IFS(TRUE, 42, TRUE, 1/0)`
@@ -217,7 +217,7 @@ impl Sheet {
         }
 
         if upper_name == "SWITCH" {
-            // [LLM-generated] Lazily evaluated for the same reason as IFS: an error in
+            // Lazily evaluated for the same reason as IFS: an error in
             // a value arm that isn't selected must not propagate
             // (`SWITCH(2, 1, 1/0, 2, 99, -1)` is 99 in real Excel).
             if args.len() < 3 {
@@ -238,7 +238,7 @@ impl Sheet {
                 }
                 i += 2;
             }
-            // [LLM-generated] A trailing odd argument is the default.
+            // A trailing odd argument is the default.
             if i < args.len() {
                 return self.evaluate_ast(&args[i], context, row, col, deps, scope);
             }
@@ -275,7 +275,7 @@ impl Sheet {
         }
 
         if upper_name == "LAMBDA" {
-            // [LLM-generated] A bare, uninvoked LAMBDA (not nested as another
+            // A bare, uninvoked LAMBDA (not nested as another
             // function's argument, e.g. `=LAMBDA(x, x*2)` alone in a
             // cell) has nothing to apply it to -- the parser doesn't
             // support the `LAMBDA(...)(args)` immediate-invocation
@@ -301,7 +301,7 @@ impl Sheet {
         }
 
         if upper_name == "ISOMITTED" {
-            // [LLM-generated] Best-effort: every lambda invocation path here
+            // Best-effort: every lambda invocation path here
             // (MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY) always supplies
             // exactly as many argument values as the lambda declares
             // parameters, so a declared parameter is never actually
@@ -393,7 +393,7 @@ impl Sheet {
             if args.is_empty() {
                 return Ok(ResultData::Boolean(false));
             }
-            // [LLM-generated] A nested call can fail as a hard `Err` rather than an
+            // A nested call can fail as a hard `Err` rather than an
             // `Ok(ResultData::Error(_))` -- e.g. ATAN2/LOG's own
             // `to_f64_arg(...)?` on an argument that is itself already an
             // error -- so this has to check the error *code* on that path
@@ -438,7 +438,7 @@ impl Sheet {
             upper_name.as_str(),
             "SUM" | "AVERAGE" | "MIN" | "MAX" | "PRODUCT"
         );
-        // [LLM-generated] The type-introspection functions must see an error value
+        // The type-introspection functions must see an error value
         // rather than have it propagate past them: real Excel answers
         // TYPE(1/0) = 16, ISNONTEXT(1/0) = TRUE, and
         // ISTEXT/ISNUMBER/ISLOGICAL/ISBLANK(1/0) = FALSE. (Math
@@ -459,19 +459,19 @@ impl Sheet {
                 | "ISBLANK"
         );
         if !inspects_errors
-                // [LLM-generated] COUNTA counts an error argument as one more non-blank
+                // COUNTA counts an error argument as one more non-blank
                 // value, and COUNT skips it, rather than either
                 // propagating it (both match real Excel).
                 && upper_name != "COUNTA"
                 && upper_name != "COUNT"
-                // [LLM-generated] COUNTBLANK just asks which cells are empty; an error in
+                // COUNTBLANK just asks which cells are empty; an error in
                 // the range is a non-blank cell, not a reason to fail.
                 && upper_name != "COUNTBLANK"
-                // [LLM-generated] AGGREGATE decides for itself whether to propagate or
+                // AGGREGATE decides for itself whether to propagate or
                 // ignore an error in its data, based on its `options`
                 // argument, so it must see the raw arguments.
                 && upper_name != "AGGREGATE"
-                // [LLM-generated] The paired statistical functions check their two ranges'
+                // The paired statistical functions check their two ranges'
                 // shapes before anything else -- a size mismatch is #N/A
                 // even when a range also holds an error value -- so they
                 // re-raise errors themselves (see paired_args).
@@ -493,7 +493,7 @@ impl Sheet {
                         | "SUMXMY2"
                         | "CHISQ.TEST"
                         | "CHITEST"
-                        // [LLM-generated] LOG and ATAN2 type-check their *first* argument
+                        // LOG and ATAN2 type-check their *first* argument
                         // before ever looking at whether a later one is
                         // itself an error -- when the first argument is
                         // non-numeric and a later one holds a pre-computed
@@ -508,11 +508,11 @@ impl Sheet {
                         // existing order run instead of being preempted.
                         | "LOG"
                         | "ATAN2"
-                        // [LLM-generated] POWER likewise type-checks its base before a later
+                        // POWER likewise type-checks its base before a later
                         // exponent error: `POWER("C", #N/A)` is #VALUE!, not
                         // #N/A (fuzz/fuzz_excel.py seeds 61472 and 148208).
                         | "POWER"
-                        // [LLM-generated] GCD/LCM walk their arguments in order and reject
+                        // GCD/LCM walk their arguments in order and reject
                         // the first non-numeric one (a boolean, or text
                         // that doesn't coerce) as #VALUE! -- same
                         // first-argument-wins shape as LOG/ATAN2 above.
@@ -528,7 +528,7 @@ impl Sheet {
             return Ok(err);
         }
 
-        // [LLM-generated] A NaN can only come from a math function evaluated outside
+        // A NaN can only come from a math function evaluated outside
         // its domain (ASIN/ACOS of |x|>1, SQRT/LN/LOG10 of a negative,
         // ...), and an infinity only from one that overflowed
         // (POWER(42, 600), EXP(1000)). Excel has neither -- it reports

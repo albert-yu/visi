@@ -54,7 +54,7 @@ fn main() {
     }
 }
 
-/// [LLM-generated] Ensure output target (either --output or --in-place) is specified
+/// Ensure output target (either --output or --in-place) is specified
 fn resolve_output_path(output: Option<String>, in_place: bool, input_file: &str) -> String {
     if in_place {
         if input_file == "-" {
@@ -810,7 +810,7 @@ fn handle_chart(args: ChartArgs, quiet: bool) {
     }
 }
 
-/// [LLM-generated] Resolves a table column specifier that's either a 1-based index (e.g.
+/// Resolves a table column specifier that's either a 1-based index (e.g.
 /// "2") or an existing column name (case-insensitive), returning a 0-based
 /// index relative to the table.
 fn resolve_table_column_index(
@@ -1148,7 +1148,7 @@ fn chart_type_arg_to_chart_type(chart_type: ChartTypeArg) -> ChartType {
     }
 }
 
-/// [LLM-generated] Parses a `--anchor` value like "D5" into a 0-based (row, col) pair.
+/// Parses a `--anchor` value like "D5" into a 0-based (row, col) pair.
 /// Rejects a sheet prefix (e.g. "Sheet1!D5") since the chart's sheet is
 /// already fixed by `--sheet` (add) or the chart's existing placement (edit).
 fn parse_chart_anchor(spec: &str) -> Result<(usize, usize), String> {
@@ -1488,7 +1488,7 @@ fn handle_pivot(args: PivotArgs, quiet: bool) {
     }
 }
 
-/// [LLM-generated] Reads `--source`/`--source-file` (mutually exclusive, enforced by usage's
+/// Reads `--source`/`--source-file` (mutually exclusive, enforced by usage's
 /// `conflicts`), erroring if neither was given.
 fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> String {
     match (source, source_file) {
@@ -1506,7 +1506,7 @@ fn resolve_macro_source(source: Option<String>, source_file: Option<String>) -> 
     }
 }
 
-/// [LLM-generated] A macro-enabled workbook must be saved with a `.xlsm` extension --
+/// A macro-enabled workbook must be saved with a `.xlsm` extension --
 /// Excel's OOXML package validator keys macro support off the content-type
 /// override, but a mismatched extension is still surprising/non-portable
 /// enough to reject outright rather than silently rewrite the user's
@@ -1523,14 +1523,14 @@ fn require_xlsm_extension(path: &str) {
     }
 }
 
-/// [LLM-generated] One module's verdict, shared by the human and JSON renderings.
+/// One module's verdict, shared by the human and JSON renderings.
 struct MacroCheckResult {
     module: String,
     procedures: Vec<String>,
     error: Option<visi_core::Error>,
 }
 
-/// [LLM-generated] `visi macro check` -- Phase 0 of VBA support: does this source parse?
+/// `visi macro check` -- Phase 0 of VBA support: does this source parse?
 ///
 /// Takes either a workbook (checking every module, or one named with
 /// `--name`) or a bare `.bas` file, since the source usually exists as a file
@@ -1694,7 +1694,7 @@ fn handle_macro_check(args: MacroCheckArgs, quiet: bool) {
     }
 }
 
-/// [LLM-generated] Whether the path names VBA source text rather than a workbook.
+/// Whether the path names VBA source text rather than a workbook.
 ///
 /// Anything that is not a recognised workbook extension is treated as source,
 /// so `-` (stdin) and an extensionless file both work.
@@ -1744,7 +1744,7 @@ fn name_syntax_error(e: visi_core::Error, module: &str) -> visi_core::Error {
     }
 }
 
-/// [LLM-generated] `visi macro run` -- executes a VBA procedure.
+/// `visi macro run` -- executes a VBA procedure.
 ///
 /// Deliberately opt-in and explicit. Nothing else in the CLI runs a macro:
 /// not `eval`, not opening a file, and not a `Workbook_Open` handler. The
@@ -1808,7 +1808,7 @@ fn handle_macro_run(args: MacroRunArgs, _quiet: bool) {
     report_macro_run(&args, &outcome, save_path.as_deref());
 }
 
-/// [LLM-generated] The result of a run, in whichever form was asked for.
+/// The result of a run, in whichever form was asked for.
 ///
 /// `saved` is reported even under `--quiet`, alongside the "a macro ran"
 /// notice and for the same reason: which file this wrote is not chatter.

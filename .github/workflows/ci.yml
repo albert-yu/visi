@@ -1,6 +1,6 @@
-# [LLM-generated] Runs the test suite on every PR, so a branch can't merge red.
+# Runs the test suite on every PR, so a branch can't merge red.
 #
-# [LLM-generated] What is deliberately *not* here: the differential fuzzers in `fuzz/`
+# What is deliberately *not* here: the differential fuzzers in `fuzz/`
 # (fuzz_excel.py and friends). They diff visi against a real copy of Microsoft
 # Excel driven over AppleScript, which no hosted runner has. Their findings
 # reach CI the other way around -- minimized into the regression cases under
@@ -8,7 +8,7 @@
 # under `visi-core/fuzz/` are also left out: they need nightly and are
 # open-ended runs, not pass/fail checks.
 #
-# [LLM-generated] The `name:` of every job here is load-bearing: the "Protect main" repository
+# The `name:` of every job here is load-bearing: the "Protect main" repository
 # ruleset lists them as required status checks, by the exact strings
 # `fmt + clippy`, `cargo test (ubuntu-24.04)`, `cargo test (macos-15)`, and
 # `bindings + parity`. Renaming a job -- or changing the `os` matrix, which
@@ -21,7 +21,7 @@ on:
   push:
     branches: [main]
 
-# [LLM-generated] A PR that gets a second push doesn't need the first run's results.
+# A PR that gets a second push doesn't need the first run's results.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -49,17 +49,17 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-      # [LLM-generated] `--workspace` (not the default members) so visi-python is checked too,
+      # `--workspace` (not the default members) so visi-python is checked too,
       # and `--all-targets` so tests and examples are linted like the library.
       #
-      # [LLM-generated] The pyo3 pair is what lets visi-python be checked with no interpreter
+      # The pyo3 pair is what lets visi-python be checked with no interpreter
       # on the runner at all: it is abi3, so PYO3_NO_PYTHON is enough to
       # configure it -- but only with `extension-module` on, since without that
       # feature pyo3-ffi emits a link line for libpython and its build script
       # fails for want of a library name. Nothing is actually linked in a
       # clippy run; maturin turns the same feature on for the real build.
       #
-      # [LLM-generated] -D warnings covers rustc's lints as well as clippy's, which is what
+      # -D warnings covers rustc's lints as well as clippy's, which is what
       # makes lib.rs's `#![warn(missing_docs)]` a hard failure on a new public
       # item that arrives undocumented.
       - name: cargo clippy
@@ -86,7 +86,7 @@ jobs:
         with:
           key: ${{ matrix.os }}
 
-      # [LLM-generated] visi-python is excluded on purpose. It is a pyo3 cdylib, and building
+      # visi-python is excluded on purpose. It is a pyo3 cdylib, and building
       # its (empty) test harness would link against libpython, which is a
       # portability problem this job does not need to own -- the `python` job
       # below builds it for real with maturin and exercises it through pytest,
@@ -114,7 +114,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # [LLM-generated] `maturin develop` installs into the active virtualenv and refuses to
+      # `maturin develop` installs into the active virtualenv and refuses to
       # run without one, so make one and put it on PATH for the steps below.
       # Same shape as the documented local setup (`fuzz/venv`).
       - name: Create a virtualenv
@@ -126,7 +126,7 @@ jobs:
       - name: Install Python deps
         run: pip install -r fuzz/requirements.txt
 
-      # [LLM-generated] test_backend_parity.py compares the bindings against the CLI, so both
+      # test_backend_parity.py compares the bindings against the CLI, so both
       # have to exist. It resolves the binary as the newer of
       # target/{release,debug}/visi, so a release build is enough.
       - name: Build the bindings and the CLI
@@ -134,7 +134,7 @@ jobs:
           maturin develop -m visi-python/Cargo.toml --release
           cargo build --release -p visi
 
-      # [LLM-generated] Both suites skip themselves when the bindings or the binary are
+      # Both suites skip themselves when the bindings or the binary are
       # missing, which would turn a broken build into a green run of zero
       # tests. Fail here instead, where the reason is still visible.
       - name: Check the harness is actually wired up

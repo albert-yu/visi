@@ -1,15 +1,15 @@
 use crate::core::formula::{CompiledFormula, FormulaPart};
 
-/// [LLM-generated] Which axis a structural edit runs along.
+/// Which axis a structural edit runs along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Axis {
-    /// [LLM-generated] Rows were inserted or deleted, moving cells vertically.
+    /// Rows were inserted or deleted, moving cells vertically.
     Row,
-    /// [LLM-generated] Columns were inserted or deleted, moving cells horizontally.
+    /// Columns were inserted or deleted, moving cells horizontally.
     Col,
 }
 
-/// [LLM-generated] A row or column insert/delete on one sheet.
+/// A row or column insert/delete on one sheet.
 ///
 /// Carries the sheet it happened on because the rewrite runs workbook-wide:
 /// a formula on `Sheet2` referring to `Sheet1!A3` has to move when a row is
@@ -17,17 +17,17 @@ pub(crate) enum Axis {
 /// `Sheet2`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GridEdit {
-    /// [LLM-generated] The sheet whose grid changed, by stable id.
+    /// The sheet whose grid changed, by stable id.
     pub sheet_id: u64,
-    /// [LLM-generated] Whether rows or columns moved.
+    /// Whether rows or columns moved.
     pub axis: Axis,
-    /// [LLM-generated] First index inserted or deleted, 0-based.
+    /// First index inserted or deleted, 0-based.
     pub at: usize,
-    /// [LLM-generated] How many were inserted or deleted; never zero.
+    /// How many were inserted or deleted; never zero.
     pub count: usize,
-    /// [LLM-generated] `true` for an insert, `false` for a delete.
+    /// `true` for an insert, `false` for a delete.
     pub insert: bool,
-    /// [LLM-generated] Restricts the edit to an inclusive column range, for Excel's
+    /// Restricts the edit to an inclusive column range, for Excel's
     /// *Insert / Delete cells, shift down / up* over a band -- which is what
     /// `ListRows.Add` actually is, not a row insert.
     ///
@@ -45,7 +45,7 @@ pub(crate) struct GridEdit {
 }
 
 impl GridEdit {
-    /// [LLM-generated] A single row inserted before `at`.
+    /// A single row inserted before `at`.
     pub fn insert_row(sheet_id: u64, at: usize) -> Self {
         Self {
             sheet_id,
@@ -57,7 +57,7 @@ impl GridEdit {
         }
     }
 
-    /// [LLM-generated] A single row deleted at `at`.
+    /// A single row deleted at `at`.
     pub fn delete_row(sheet_id: u64, at: usize) -> Self {
         Self {
             sheet_id,
@@ -69,7 +69,7 @@ impl GridEdit {
         }
     }
 
-    /// [LLM-generated] A single column inserted before `at`.
+    /// A single column inserted before `at`.
     pub fn insert_col(sheet_id: u64, at: usize) -> Self {
         Self {
             sheet_id,
@@ -81,7 +81,7 @@ impl GridEdit {
         }
     }
 
-    /// [LLM-generated] A single column deleted at `at`.
+    /// A single column deleted at `at`.
     pub fn delete_col(sheet_id: u64, at: usize) -> Self {
         Self {
             sheet_id,
@@ -93,7 +93,7 @@ impl GridEdit {
         }
     }
 
-    /// [LLM-generated] Rows inserted or deleted within an inclusive column band, which is
+    /// Rows inserted or deleted within an inclusive column band, which is
     /// Excel's *Insert cells, shift down* rather than a row insert.
     pub fn band_rows(
         sheet_id: u64,
@@ -113,7 +113,7 @@ impl GridEdit {
         }
     }
 
-    /// [LLM-generated] Whether an inclusive column span lies entirely inside the band, which
+    /// Whether an inclusive column span lies entirely inside the band, which
     /// is the whole test for whether a reference moves. A whole-row edit has
     /// no band and so covers everything.
     ///
@@ -127,20 +127,20 @@ impl GridEdit {
         }
     }
 
-    /// [LLM-generated] Where a single index on this edit's axis ends up, or `None` if it was
+    /// Where a single index on this edit's axis ends up, or `None` if it was
     /// deleted.
     fn point(&self, index: usize) -> Option<usize> {
         shift_point(index, self.at, self.count, self.insert)
     }
 
-    /// [LLM-generated] Where an inclusive span on this edit's axis ends up, or `None` if all
+    /// Where an inclusive span on this edit's axis ends up, or `None` if all
     /// of it was deleted.
     fn span(&self, start: usize, end: usize) -> Option<(usize, usize)> {
         shift_span(start, end, self.at, self.count, self.insert)
     }
 }
 
-/// [LLM-generated] Where a single index ends up after `count` rows or columns are inserted
+/// Where a single index ends up after `count` rows or columns are inserted
 /// before `at`, or deleted starting at `at`.
 ///
 /// `None` means the index itself was deleted -- the caller turns that into
@@ -157,7 +157,7 @@ pub(crate) fn shift_point(index: usize, at: usize, count: usize, insert: bool) -
     }
 }
 
-/// [LLM-generated] Where an inclusive `start..=end` span ends up after the same edit.
+/// Where an inclusive `start..=end` span ends up after the same edit.
 ///
 /// `None` means every index in the span was deleted. A partly-deleted span
 /// survives as the part that is left, which is how `SUM(A2:A4)` becomes
@@ -190,7 +190,7 @@ pub(crate) fn shift_span(
     }
 }
 
-/// [LLM-generated] Where a rectangle ends up after the edit, or `None` if the edit deleted
+/// Where a rectangle ends up after the edit, or `None` if the edit deleted
 /// every row or every column of it.
 ///
 /// Both bounds are inclusive. Used for the coordinate-holding objects that
@@ -214,7 +214,7 @@ pub(crate) fn shift_rect(
     }
 }
 
-/// [LLM-generated] Rewrites a compiled formula's references for the edit, returning `None`
+/// Rewrites a compiled formula's references for the edit, returning `None`
 /// if nothing in it was affected.
 ///
 /// `deleted_col_ids` are the ids of columns the edit is about to remove,
@@ -239,7 +239,7 @@ pub(crate) fn shift_formula(
     changed.then_some(CompiledFormula { parts })
 }
 
-/// [LLM-generated] The text a reference collapses to once what it pointed at is gone.
+/// The text a reference collapses to once what it pointed at is gone.
 ///
 /// Only the reference is replaced, so the rest of the formula still
 /// evaluates and the error propagates through it the way Excel's does.

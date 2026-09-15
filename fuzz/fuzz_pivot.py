@@ -19,7 +19,7 @@ from fuzz_excel import (
 
 
 class PivotFuzzGenerator:
-    """[LLM-generated] Generates a random source workbook plus a matching pivot table
+    """Generates a random source workbook plus a matching pivot table
     configuration (as a plain dict, not XML) that both `VisiPivotDriver` and
     `ExcelPivotDriver` build a real pivot table from.
 
@@ -69,7 +69,7 @@ class PivotFuzzGenerator:
             self.FILTERABLE_COLS = [0, 1, 2, 5]
 
     def _random_numstr(self):
-        """[LLM-generated] A quoted (forced-text), possibly numeric-looking string, or a
+        """A quoted (forced-text), possibly numeric-looking string, or a
         blank -- probes the sort/group-key numeric-vs-text ambiguity in
         visi's `sort_group_entries` (pivot.rs)."""
         roll = random.random()
@@ -82,7 +82,7 @@ class PivotFuzzGenerator:
         return str(random.randint(-50, 50))
 
     def generate(self, source_path, num_rows, use_table):
-        """[LLM-generated] Builds `source_path` and returns a pivot configuration dict:
+        """Builds `source_path` and returns a pivot configuration dict:
         {source_range, table_name, row_fields, col_fields, value_fields,
          filter_field, grand_totals_row, grand_totals_col}.
         `table_name` is None when `use_table` is False (raw-range source).
@@ -239,7 +239,7 @@ from visi_driver import (
 
 
 class ExcelPivotDriver:
-    """[LLM-generated] Drives Microsoft Excel's own PivotTable object model to build a
+    """Drives Microsoft Excel's own PivotTable object model to build a
     matching pivot table, then saves. Unlike `fuzz_excel.py`'s `ExcelDriver`
     (which only needs `calculate` over cells visi already computed), Excel
     must *construct* a live PivotTable here -- there's no XML shortcut.
@@ -306,7 +306,7 @@ class ExcelPivotDriver:
         return f'"{escaped}"'
 
     def _ensure_macro_template(self):
-        """[LLM-generated] Builds `pivot_macro_template.xlsm` from `BuildFuzzPivot.bas` if it
+        """Builds `pivot_macro_template.xlsm` from `BuildFuzzPivot.bas` if it
         isn't already there, by way of `visi macro add`.
 
         Rebuilds whenever the .bas is newer than the .xlsm, so editing the
@@ -340,7 +340,7 @@ class ExcelPivotDriver:
         )
 
     def _build_macro_template_via_bindings(self, source):
-        """[LLM-generated] Returns a description of what it used, or None if unavailable."""
+        """Returns a description of what it used, or None if unavailable."""
         try:
             import visi_core
         except ImportError:
@@ -485,7 +485,7 @@ class ExcelPivotDriver:
         return "\n".join(lines)
 
     def _restart_excel(self):
-        """[LLM-generated] Force-quits and relaunches Excel entirely (not just `killall` +
+        """Force-quits and relaunches Excel entirely (not just `killall` +
         hope) -- see GitHub issue #15. `run VB macro` calls degrade into a
         session-wide, config-independent "Parameter error (-50)" after
         enough consecutive AppleScript invocations against one long-lived
@@ -576,7 +576,7 @@ class ExcelPivotDriver:
                 self._run_win32com_once(abs_output, config, dest_cell)
                 last_err = None
                 break
-            except Exception as e:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
+            except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
                 last_err = e
         if last_err is not None:
             raise last_err
@@ -806,7 +806,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
+        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(

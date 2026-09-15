@@ -22,7 +22,7 @@ pub fn iserr(val: &ResultData) -> bool {
     }
 }
 
-/// [LLM-generated] Parity in f64 rather than through an i64 cast, which saturates at
+/// Parity in f64 rather than through an i64 cast, which saturates at
 /// i64::MAX (an odd number) for anything past ~9.2e18 and so answered
 /// ISEVEN(19^24) = FALSE. Excel works from the double it actually holds:
 /// 19^24 is odd mathematically, but its f64 is 4898762930960846690858...,
