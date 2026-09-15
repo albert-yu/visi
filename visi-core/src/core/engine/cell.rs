@@ -19,30 +19,49 @@ pub fn generate_unique_id() -> u64 {
     val & 0x001F_FFFF_FFFF_FFFF
 }
 
-/// The intrinsic data type of a cell, matching Excel / OpenXML `<c t="...">` representations.
+/// [AI-Agent] The intrinsic data type of a cell, mirroring calamine worksheet value variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum CellType {
-    /// Inferred on commit (default for newly created / untyped cells).
+    /// Empty cell (`calamine::Data::Empty`).
     #[default]
-    Auto,
-    /// Blank / empty cell.
     Empty,
-    /// Numeric cell (OOXML `t="n"` or omitted `t`). Includes date/time serials.
-    Number,
-    /// String / text cell (OOXML `t="s"`, `t="inlineStr"`, `t="str"`, or input with leading `'`).
+    /// Signed integer (`calamine::Data::Int`).
+    Int,
+    /// Floating point number (`calamine::Data::Float`).
+    Float,
+    /// String (`calamine::Data::String`).
     String,
-    /// Boolean cell (OOXML `t="b"`).
-    Boolean,
-    /// Error cell (OOXML `t="e"`).
+    /// Boolean (`calamine::Data::Bool`).
+    Bool,
+    /// Date/time serial identified by calamine from workbook formatting.
+    DateTime,
+    /// ISO 8601 date/time (`calamine::Data::DateTimeIso`, OpenXML `t="d"`).
+    DateTimeIso,
+    /// ISO 8601 duration (`calamine::Data::DurationIso`).
+    DurationIso,
+    /// Error cell (`calamine::Data::Error`, OpenXML `t="e"`).
     Error,
-    /// Formula cell.
-    Formula,
 }
 
 impl CellType {
-    /// Whether this cell type is explicitly a string/text cell.
+    /// [AI-Agent] Whether this cell type is explicitly a string/text cell.
     pub fn is_string(&self) -> bool {
         matches!(self, CellType::String)
+    }
+
+    /// [AI-Agent] Stable lowercase spelling used by CLI and JSON output.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CellType::Empty => "empty",
+            CellType::Int => "int",
+            CellType::Float => "float",
+            CellType::String => "string",
+            CellType::Bool => "bool",
+            CellType::DateTime => "date-time",
+            CellType::DateTimeIso => "date-time-iso",
+            CellType::DurationIso => "duration-iso",
+            CellType::Error => "error",
+        }
     }
 }
 

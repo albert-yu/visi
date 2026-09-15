@@ -121,13 +121,15 @@ pub enum PivotAggArg {
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellTypeArg {
-    Auto,
     Empty,
-    Number,
+    Int,
+    Float,
     String,
-    Boolean,
+    Bool,
+    DateTime,
+    DateTimeIso,
+    DurationIso,
     Error,
-    Formula,
 }
 
 #[derive(Args, Debug)]
@@ -195,7 +197,7 @@ pub struct SetArgs {
     #[usage(short = 'S', long = "set", value_name = "CELL=VALUE")]
     pub set_pairs: Vec<String>,
 
-    /// Explicit cell type [auto, empty, number, string, boolean, error, formula]
+    /// [AI-Agent] Explicit cell type [empty, int, float, string, bool, date-time, date-time-iso, duration-iso, error]
     #[usage(short = 't', long = "type", alias = "cell-type", value_enum)]
     pub cell_type: Option<CellTypeArg>,
 

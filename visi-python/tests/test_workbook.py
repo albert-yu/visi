@@ -108,7 +108,7 @@ def test_set_cell_with_explicit_type():
     assert wb.get_cell_type(0, 0) == "string"
     assert wb.get_cell(0, 0) == "12345"
     assert isinstance(wb.get_cell(0, 0), str)
-    assert wb.get_cell_type(0, 1) == "number"
+    assert wb.get_cell_type(0, 1) == "int"
     assert wb.get_cell(0, 1) == 12345
 
     again = wb.roundtrip()

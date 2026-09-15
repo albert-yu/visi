@@ -2,6 +2,35 @@ use crate::core::{CellStyle, CellType, DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;
 
+fn result_data_for_calamine(cell_value: &calamine::Data) -> crate::core::engine::ResultData {
+    match cell_value {
+        calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
+        calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
+        calamine::Data::String(s) => crate::core::engine::ResultData::String(s.clone()),
+        calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
+        calamine::Data::Error(e) => crate::core::engine::ResultData::Error(e.to_string()),
+        calamine::Data::DateTime(d) => crate::core::engine::ResultData::Float(d.as_f64()),
+        calamine::Data::DateTimeIso(s) | calamine::Data::DurationIso(s) => {
+            crate::core::engine::ResultData::String(s.clone())
+        }
+        calamine::Data::Empty => crate::core::engine::ResultData::None,
+    }
+}
+
+fn cell_type_and_src_for_calamine(cell_value: &calamine::Data) -> (CellType, String) {
+    match cell_value {
+        calamine::Data::Empty => (CellType::Empty, String::new()),
+        calamine::Data::Int(i) => (CellType::Int, i.to_string()),
+        calamine::Data::Float(f) => (CellType::Float, f.to_string()),
+        calamine::Data::String(s) => (CellType::String, s.clone()),
+        calamine::Data::Bool(b) => (CellType::Bool, b.to_string()),
+        calamine::Data::DateTime(d) => (CellType::DateTime, d.to_string()),
+        calamine::Data::DateTimeIso(s) => (CellType::DateTimeIso, s.clone()),
+        calamine::Data::DurationIso(s) => (CellType::DurationIso, s.clone()),
+        calamine::Data::Error(e) => (CellType::Error, e.to_string()),
+    }
+}
+
 /// A worksheet read out of an `.xlsx` file.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportedSheet {
@@ -153,21 +182,7 @@ pub(crate) fn import_xlsx_data_raw(
 
                     for col_idx in 0..cols {
                         let cell_value = &r_cells[col_idx];
-                        let init_res = match cell_value {
-                            calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
-                            calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
-                            calamine::Data::String(s) => {
-                                crate::core::engine::ResultData::String(s.clone())
-                            }
-                            calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
-                            calamine::Data::Error(e) => {
-                                crate::core::engine::ResultData::Error(format!("{:?}", e))
-                            }
-                            calamine::Data::DateTime(d) => {
-                                crate::core::engine::ResultData::Float(d.as_f64())
-                            }
-                            _ => crate::core::engine::ResultData::None,
-                        };
+                        let init_res = result_data_for_calamine(cell_value);
                         columns[col_idx].data.set(row_idx, init_res);
 
                         if let Some(f_cells_slice) = f_cells {
@@ -183,21 +198,13 @@ pub(crate) fn import_xlsx_data_raw(
                                 let cell_src = format!("={}", formula);
                                 max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                                 columns[col_idx].src[row_idx] = cell_src;
-                                columns[col_idx].cell_types[row_idx] = CellType::Formula;
+                                columns[col_idx].cell_types[row_idx] =
+                                    cell_type_and_src_for_calamine(cell_value).0;
                                 continue;
                             }
                         }
 
-                        let (cell_type, cell_src) = match cell_value {
-                            calamine::Data::Empty => (CellType::Empty, String::new()),
-                            calamine::Data::String(s) => (CellType::String, s.clone()),
-                            calamine::Data::Float(f) => (CellType::Number, f.to_string()),
-                            calamine::Data::Int(i) => (CellType::Number, i.to_string()),
-                            calamine::Data::Bool(b) => (CellType::Boolean, b.to_string()),
-                            calamine::Data::Error(e) => (CellType::Error, format!("#ERR: {:?}", e)),
-                            calamine::Data::DateTime(d) => (CellType::Number, d.to_string()),
-                            _ => (CellType::Empty, String::new()),
-                        };
+                        let (cell_type, cell_src) = cell_type_and_src_for_calamine(cell_value);
                         max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                         columns[col_idx].src[row_idx] = cell_src;
                         columns[col_idx].cell_types[row_idx] = cell_type;
@@ -212,21 +219,7 @@ pub(crate) fn import_xlsx_data_raw(
                         let cell_value = range
                             .get_value((row_u32, col_u32))
                             .unwrap_or(&calamine::Data::Empty);
-                        let init_res = match cell_value {
-                            calamine::Data::Int(i) => crate::core::engine::ResultData::Integer(*i),
-                            calamine::Data::Float(f) => crate::core::engine::ResultData::Float(*f),
-                            calamine::Data::String(s) => {
-                                crate::core::engine::ResultData::String(s.clone())
-                            }
-                            calamine::Data::Bool(b) => crate::core::engine::ResultData::Boolean(*b),
-                            calamine::Data::Error(e) => {
-                                crate::core::engine::ResultData::Error(format!("{:?}", e))
-                            }
-                            calamine::Data::DateTime(d) => {
-                                crate::core::engine::ResultData::Float(d.as_f64())
-                            }
-                            _ => crate::core::engine::ResultData::None,
-                        };
+                        let init_res = result_data_for_calamine(cell_value);
                         columns[col_idx].data.set(row_idx, init_res);
 
                         if let Some(ref f_range) = formula_range
@@ -247,21 +240,13 @@ pub(crate) fn import_xlsx_data_raw(
                             };
                             max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                             columns[col_idx].src[row_idx] = cell_src;
-                            columns[col_idx].cell_types[row_idx] = CellType::Formula;
+                            columns[col_idx].cell_types[row_idx] =
+                                cell_type_and_src_for_calamine(cell_value).0;
                             columns[col_idx].dirty_indices.push(row_idx);
                             continue;
                         }
 
-                        let (cell_type, cell_src) = match cell_value {
-                            calamine::Data::Empty => (CellType::Empty, String::new()),
-                            calamine::Data::String(s) => (CellType::String, s.clone()),
-                            calamine::Data::Float(f) => (CellType::Number, f.to_string()),
-                            calamine::Data::Int(i) => (CellType::Number, i.to_string()),
-                            calamine::Data::Bool(b) => (CellType::Boolean, b.to_string()),
-                            calamine::Data::Error(e) => (CellType::Error, format!("#ERR: {:?}", e)),
-                            calamine::Data::DateTime(d) => (CellType::Number, d.to_string()),
-                            _ => (CellType::Empty, String::new()),
-                        };
+                        let (cell_type, cell_src) = cell_type_and_src_for_calamine(cell_value);
                         max_cell_lens[col_idx] = max_cell_lens[col_idx].max(cell_src.len());
                         columns[col_idx].src[row_idx] = cell_src;
                         columns[col_idx].cell_types[row_idx] = cell_type;
@@ -724,7 +709,7 @@ pub(crate) fn export_xlsx_data_raw(
                         .cell_types
                         .get(row_idx)
                         .copied()
-                        .unwrap_or(CellType::Auto);
+                        .unwrap_or(CellType::Empty);
                     let style_opt = col.styles.get(row_idx).and_then(|s| s.as_ref());
                     let format_opt = style_opt.map(build_xlsx_format);
 

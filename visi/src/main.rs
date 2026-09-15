@@ -169,15 +169,7 @@ fn handle_read(args: ReadArgs, locale: Option<visi_core::core::Locale>) {
                 .cloned()
                 .unwrap_or_default();
             let cell_type = sheet.get_cell_type(&visi_core::core::CellRef::new(row, col));
-            let type_str = match cell_type {
-                visi_core::core::CellType::Auto => "auto",
-                visi_core::core::CellType::Empty => "empty",
-                visi_core::core::CellType::Number => "number",
-                visi_core::core::CellType::String => "string",
-                visi_core::core::CellType::Boolean => "boolean",
-                visi_core::core::CellType::Error => "error",
-                visi_core::core::CellType::Formula => "formula",
-            };
+            let type_str = cell_type.as_str();
             let json_out = json!({
                 "sheet": sheet.name,
                 "cell": format!("{}{}", col_idx_to_letters(col), row + 1),
@@ -219,13 +211,15 @@ fn handle_read(args: ReadArgs, locale: Option<visi_core::core::Locale>) {
 
 fn cell_type_arg_to_cell_type(arg: CellTypeArg) -> visi_core::core::CellType {
     match arg {
-        CellTypeArg::Auto => visi_core::core::CellType::Auto,
         CellTypeArg::Empty => visi_core::core::CellType::Empty,
-        CellTypeArg::Number => visi_core::core::CellType::Number,
+        CellTypeArg::Int => visi_core::core::CellType::Int,
+        CellTypeArg::Float => visi_core::core::CellType::Float,
         CellTypeArg::String => visi_core::core::CellType::String,
-        CellTypeArg::Boolean => visi_core::core::CellType::Boolean,
+        CellTypeArg::Bool => visi_core::core::CellType::Bool,
+        CellTypeArg::DateTime => visi_core::core::CellType::DateTime,
+        CellTypeArg::DateTimeIso => visi_core::core::CellType::DateTimeIso,
+        CellTypeArg::DurationIso => visi_core::core::CellType::DurationIso,
         CellTypeArg::Error => visi_core::core::CellType::Error,
-        CellTypeArg::Formula => visi_core::core::CellType::Formula,
     }
 }
 
