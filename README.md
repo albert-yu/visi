@@ -26,8 +26,8 @@
 LLMs are good at authoring spreadsheets with existing tools
 (such as `openpyxl` for Python), but in order
 to _evaluate_ the formula results, you need a real
-spreadsheet application (such as Excel). Excel is
-unsuitable for headlessly evaluation of
+spreadsheet application. Excel is
+unsuitable for headless evaluation of
 spreadsheet files, especially on non-Windows
 platforms (e.g. no COM automation).
 
