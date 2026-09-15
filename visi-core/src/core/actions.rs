@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// A single edit made to a workbook, recorded so a host can observe or replay
+/// [LLM-generated] A single edit made to a workbook, recorded so a host can observe or replay
 /// it.
 ///
 /// `Sheet` appends one of these to `Sheet::uncommitted_actions` for each edit.
@@ -11,69 +11,69 @@ use serde::{Deserialize, Serialize};
 /// older informal naming -- not an `ExcelTable`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SheetAction {
-    /// A cell's raw text was replaced.
+    /// [LLM-generated] A cell's raw text was replaced.
     SetCellSrc {
-        /// Sheet the cell is on.
+        /// [LLM-generated] Sheet the cell is on.
         sheet_name: String,
-        /// Column index, 0-based.
+        /// [LLM-generated] Column index, 0-based.
         col: usize,
-        /// Row index, 0-based.
+        /// [LLM-generated] Row index, 0-based.
         row: usize,
-        /// The new text.
+        /// [LLM-generated] The new text.
         src: String,
     },
-    /// A column was renamed.
+    /// [LLM-generated] A column was renamed.
     UpdateColName {
-        /// Sheet the column is on.
+        /// [LLM-generated] Sheet the column is on.
         sheet_name: String,
-        /// Column index, 0-based.
+        /// [LLM-generated] Column index, 0-based.
         col: usize,
-        /// The new name.
+        /// [LLM-generated] The new name.
         name: String,
     },
-    /// A sheet was renamed.
+    /// [LLM-generated] A sheet was renamed.
     UpdateTableName {
-        /// The sheet's previous name.
+        /// [LLM-generated] The sheet's previous name.
         old_name: String,
-        /// Its new name.
+        /// [LLM-generated] Its new name.
         new_name: String,
     },
-    /// An empty row was inserted.
+    /// [LLM-generated] An empty row was inserted.
     InsertRow {
-        /// Sheet the row was inserted on.
+        /// [LLM-generated] Sheet the row was inserted on.
         sheet_name: String,
-        /// Position it was inserted at, 0-based.
+        /// [LLM-generated] Position it was inserted at, 0-based.
         index: usize,
     },
-    /// A row was deleted.
+    /// [LLM-generated] A row was deleted.
     DeleteRow {
-        /// Sheet the row was deleted from.
+        /// [LLM-generated] Sheet the row was deleted from.
         sheet_name: String,
-        /// Position it occupied, 0-based.
+        /// [LLM-generated] Position it occupied, 0-based.
         index: usize,
     },
-    /// An empty column was inserted.
+    /// [LLM-generated] An empty column was inserted.
     InsertCol {
-        /// Sheet the column was inserted on.
+        /// [LLM-generated] Sheet the column was inserted on.
         sheet_name: String,
-        /// Position it was inserted at, 0-based.
+        /// [LLM-generated] Position it was inserted at, 0-based.
         index: usize,
     },
-    /// A column was deleted.
+    /// [LLM-generated] A column was deleted.
     DeleteCol {
-        /// Sheet the column was deleted from.
+        /// [LLM-generated] Sheet the column was deleted from.
         sheet_name: String,
-        /// Position it occupied, 0-based.
+        /// [LLM-generated] Position it occupied, 0-based.
         index: usize,
     },
-    /// A sheet was added to the workbook.
+    /// [LLM-generated] A sheet was added to the workbook.
     AddTable {
-        /// The sheet, in full.
+        /// [LLM-generated] The sheet, in full.
         sheet: Box<crate::core::Sheet>,
     },
-    /// A sheet was removed from the workbook.
+    /// [LLM-generated] A sheet was removed from the workbook.
     DeleteTable {
-        /// Name of the sheet that was removed.
+        /// [LLM-generated] Name of the sheet that was removed.
         sheet_name: String,
     },
 }

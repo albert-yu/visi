@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use visi_engine::core::ResultData;
 
-/// An Excel error *value* (`#DIV/0!`, `#VALUE!`, `#N/A`) sitting in a cell.
+/// [LLM-generated] An Excel error *value* (`#DIV/0!`, `#VALUE!`, `#N/A`) sitting in a cell.
 ///
 /// A distinct type rather than a plain `str`, because a cell can legitimately
 /// hold the *text* `#DIV/0!` -- `=CONCATENATE("#DIV/0!")` produces exactly
@@ -20,7 +20,7 @@ use visi_engine::core::ResultData;
 #[pyclass(module = "visi_core", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct CellError {
-    /// The Excel error code, e.g. `"#DIV/0!"`.
+    /// [LLM-generated] The Excel error code, e.g. `"#DIV/0!"`.
     #[pyo3(get)]
     pub code: String,
 }
@@ -55,7 +55,7 @@ impl CellError {
     }
 }
 
-/// Converts one [`ResultData`] into a Python object.
+/// [LLM-generated] Converts one [`ResultData`] into a Python object.
 ///
 /// The match is deliberately total -- no `_` arm -- so that a new `ResultData`
 /// variant fails to compile here rather than silently converting to `None`.
@@ -84,7 +84,7 @@ pub fn result_to_py<'py>(py: Python<'py>, v: &ResultData) -> PyResult<Bound<'py,
     })
 }
 
-/// Converts a value being used as a dict *key*.
+/// [LLM-generated] Converts a value being used as a dict *key*.
 ///
 /// Same as [`result_to_py`] except that a `List` becomes a tuple, since a
 /// Python list is unhashable and would make the whole dict unbuildable.

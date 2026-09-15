@@ -100,7 +100,7 @@ MUTATION_TOKENS = [
 
 
 class VbaSourceGenerator:
-    """Builds VBA statement bodies, valid by construction, then optionally
+    """[LLM-generated] Builds VBA statement bodies, valid by construction, then optionally
     mutates them.
 
     Generating from fragments rather than raw characters is deliberate: the
@@ -122,7 +122,7 @@ class VbaSourceGenerator:
         return src
 
     def mutate(self, src):
-        """One structural edit, chosen to be the kind a human typo produces."""
+        """[LLM-generated] One structural edit, chosen to be the kind a human typo produces."""
         toks = src.split(" ")
         if not toks:
             return src
@@ -164,7 +164,7 @@ End Function
 
 
 def build_module(body, sig="", args=""):
-    """The module source wrapping one statement body.
+    """[LLM-generated] The module source wrapping one statement body.
 
     `sig`/`args` give `Gen` a parameter list: `build_module(src, "ByVal x
     As Long", " 1")` declares `Public Sub Gen(ByVal x As Long)` and calls
@@ -184,7 +184,7 @@ def build_module(body, sig="", args=""):
 
 
 def visi_verdict(source):
-    """(accepted, detail) from visi's parser."""
+    """[LLM-generated] (accepted, detail) from visi's parser."""
     try:
         visi_core.check_syntax(source)
         return True, ""
@@ -217,7 +217,7 @@ finally:
 
 
 class ExcelVerdictDriver:
-    """Excel's verdict, read from whether `run VB macro "Harness"` returns.
+    """[LLM-generated] Excel's verdict, read from whether `run VB macro "Harness"` returns.
 
     Returning at all -- with "OK" or a trapped runtime "ERR|n" -- means the
     module compiled. Only a timeout means it did not.
@@ -260,7 +260,7 @@ class ExcelVerdictDriver:
         )
 
     def restart_excel(self):
-        """SIGKILL by PID -- `killall` alone can leave Excel running, since it
+        """[LLM-generated] SIGKILL by PID -- `killall` alone can leave Excel running, since it
         may intercept SIGTERM to run its own quit handshake (see
         fuzz_pivot.py::_restart_excel, where this was first needed)."""
         self.restarts += 1
@@ -294,7 +294,7 @@ class ExcelVerdictDriver:
         time.sleep(4.0)
 
     def restart_windows(self):
-        """`taskkill` every EXCEL.EXE. Nothing to relaunch -- the next
+        """[LLM-generated] `taskkill` every EXCEL.EXE. Nothing to relaunch -- the next
         verdict's `gencache.EnsureDispatch("Excel.Application")` starts a
         fresh one."""
         self.restarts += 1
@@ -307,7 +307,7 @@ class ExcelVerdictDriver:
         time.sleep(1.0)
 
     def _win32com_verdict(self, xlsm_path):
-        """Runs the win32com verdict check in a *child process*.
+        """[LLM-generated] Runs the win32com verdict check in a *child process*.
 
         A compile error hangs `excel.Run("Harness")` exactly the way it
         hangs the AppleScript `run VB macro` call -- that is the whole
@@ -334,7 +334,7 @@ class ExcelVerdictDriver:
         )
 
     def verdict(self, xlsm_path):
-        """(accepted, detail). `accepted is None` means "could not tell"."""
+        """[LLM-generated] (accepted, detail). `accepted is None` means "could not tell"."""
         if self.driver_type == "mock":
             return None, "mock driver: Excel not invoked"
 
@@ -397,7 +397,7 @@ VERDICT_BLURB = {
 
 
 def run_corpus(cases, path):
-    """Parser-only regression check over real `.bas` files.
+    """[LLM-generated] Parser-only regression check over real `.bas` files.
 
     Not differential, and deliberately so: Excel compiles a procedure only
     when it is invoked, and invoking one runs it. For an arbitrary module

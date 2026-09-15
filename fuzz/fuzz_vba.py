@@ -128,7 +128,7 @@ GRID_FUNCTIONS = ["Sum", "Count", "CountA", "Min", "Max", "Average"]
 
 
 class VbaGenerator:
-    """Generates VBA expressions and statements from a small typed grammar.
+    """[LLM-generated] Generates VBA expressions and statements from a small typed grammar.
 
     `depth` bounds expression nesting, which is what keeps generated source
     from growing without limit and keeps the two engines comparing the same
@@ -253,7 +253,7 @@ class VbaGenerator:
         return self.host_statement(target, vars_in_scope, depth)
 
     def cell(self, scratch=False):
-        """A literal `(row, col)` inside the grid, or in the scratch columns.
+        """[LLM-generated] A literal `(row, col)` inside the grid, or in the scratch columns.
 
         Literal on purpose -- see the module docstring on why a computed
         coordinate makes for a boring case.
@@ -268,7 +268,7 @@ class VbaGenerator:
         return f"{chr(ord('A') + col - 1)}{row}"
 
     def host_statement(self, target, vars_in_scope, depth):
-        """One statement that reads or writes the workbook.
+        """[LLM-generated] One statement that reads or writes the workbook.
 
         Every construct here is in the Phase 2 allow-list. Anything outside it
         would be an agreed-on error in both engines at best, and a compile
@@ -354,7 +354,7 @@ class VbaGenerator:
         ]
 
     def extended_host_statement(self, target, vars_in_scope, depth):
-        """Host-object cases that mutate workbook structure, tables or styles.
+        """[LLM-generated] Host-object cases that mutate workbook structure, tables or styles.
 
         These are kept behind the extended host surface because they are
         intentionally broader and more stateful than the original fast mix.
@@ -512,7 +512,7 @@ def grid_helpers():
 
 
 def check_no_duplicate_dims(source):
-    """Raise if any procedure declares the same name twice.
+    """[LLM-generated] Raise if any procedure declares the same name twice.
 
     A compile error, not a run-time one, so Excel answers it with a modal
     dialog: `osascript` never returns, the whole batch is lost, and the only
@@ -550,7 +550,7 @@ def check_no_duplicate_dims(source):
 
 
 def build_module(cases):
-    """One module holding every case in a batch, plus its harnesses.
+    """[LLM-generated] One module holding every case in a batch, plus its harnesses.
 
     Batching matters: the AppleScript round trip dominates the cost by three
     orders of magnitude, so 25 cases in one workbook run in roughly the time
@@ -564,7 +564,7 @@ def build_module(cases):
 
 
 def build_workbook(path):
-    """The workbook both engines run against: one sheet named `Data`.
+    """[LLM-generated] The workbook both engines run against: one sheet named `Data`.
 
     `ResetGrid` fills the A:F value grid. A small Excel Table lives to the
     right of it so extended host cases can fuzz ListObjects/ListRows without
@@ -593,7 +593,7 @@ def build_workbook(path):
 
 
 def visi_result(source, proc, workbook=None, harness=False):
-    """`OK|TypeName|CStr|grid` or `ERR|number|grid`, the harness's own shape.
+    """[LLM-generated] `OK|TypeName|CStr|grid` or `ERR|number|grid`, the harness's own shape.
 
     `harness` says the procedure *is* one of the `Harness{i}` wrappers, whose
     return value is already that string -- so it is handed back rather than
@@ -642,7 +642,7 @@ def _numeric(text):
 
 
 def fields_match(mine, theirs):
-    """Whether two harness results agree, field by field.
+    """[LLM-generated] Whether two harness results agree, field by field.
 
     Split on the harness's own separators rather than compared as one string,
     so that a Double differing in its last bit does not report as a mismatch
@@ -729,7 +729,7 @@ class ExcelDriver:
         return name
 
     def restart(self):
-        """Force-quit and relaunch, not just `killall` and hope.
+        """[LLM-generated] Force-quit and relaunch, not just `killall` and hope.
 
         The same escalation `fuzz_pivot.py::_restart_excel` documents, and for
         the same reason: `run VB macro` degrades into a session-wide
@@ -771,7 +771,7 @@ class ExcelDriver:
         time.sleep(4.0)
 
     def restart_windows(self):
-        """`taskkill` every EXCEL.EXE. Nothing to relaunch -- the next batch's
+        """[LLM-generated] `taskkill` every EXCEL.EXE. Nothing to relaunch -- the next batch's
         `gencache.EnsureDispatch("Excel.Application")` starts a fresh one, the
         same as fuzz_excel.py's/fuzz_chart.py's/fuzz_pivot.py's win32com
         drivers already do on their own retries.
@@ -786,7 +786,7 @@ class ExcelDriver:
         time.sleep(1.0)
 
     def _run_win32com_batch(self, xlsm, indices):
-        """Runs one batch through win32com, in a *child process*.
+        """[LLM-generated] Runs one batch through win32com, in a *child process*.
 
         A generated case with a compile error (an undefined name, a
         duplicate `Dim`) pops a modal dialog that `DisplayAlerts = False`
@@ -819,7 +819,7 @@ class ExcelDriver:
         return res.returncode, out
 
     def run_batch(self, xlsm, indices):
-        """Returns {index: result-string}, or {} if Excel could not be asked."""
+        """[LLM-generated] Returns {index: result-string}, or {} if Excel could not be asked."""
         if self.driver_type == "win32com":
             for attempt in range(2):
                 try:

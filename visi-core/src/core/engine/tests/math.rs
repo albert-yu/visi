@@ -611,7 +611,7 @@ fn test_fuzz_int_concatenate_month_two_digit_year_as_date() {
     }
 }
 
-/// Scientific-notation literals evaluate inside formulas, not just as bare
+/// [LLM-generated] Scientific-notation literals evaluate inside formulas, not just as bare
 /// cell values.
 #[test]
 fn test_scientific_notation_literals_evaluate() {

@@ -195,7 +195,7 @@ def build_module(cases):
 
 
 def build_workbook(path):
-    """1..10 down column A and 101..110 down column B, plus a second sheet.
+    """[LLM-generated] 1..10 down column A and 101..110 down column B, plus a second sheet.
 
     Distinct values per row so a tracked range can be asked what it reads,
     not only where it points.

@@ -22,7 +22,7 @@ DEFAULT_PRESAVED_DIR = os.path.join(
 
 
 def find_presaved_files(path: str) -> list[str]:
-    """Resolves a file or directory path to a list of .xlsx files."""
+    """[LLM-generated] Resolves a file or directory path to a list of .xlsx files."""
     if os.path.isfile(path):
         return [path]
     if os.path.isdir(path):
@@ -197,7 +197,7 @@ def main():
                 cell_filter=args.cell,
                 verbose=args.verbose,
             )
-        except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as e:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
             print(f"[ERROR] {e}")
             overall_passed = False
             continue

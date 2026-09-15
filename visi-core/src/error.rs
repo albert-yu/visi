@@ -1,6 +1,6 @@
 use crate::core::engine::EngineError;
 
-/// The kind of workbook object an [`Error`] refers to.
+/// [LLM-generated] The kind of workbook object an [`Error`] refers to.
 ///
 /// Used by the [`Error::NotFound`] / [`Error::AlreadyExists`] /
 /// [`Error::NameTaken`] variants so callers can distinguish "no such sheet"
@@ -8,25 +8,25 @@ use crate::core::engine::EngineError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ObjectKind {
-    /// A worksheet.
+    /// [LLM-generated] A worksheet.
     Sheet,
-    /// An Excel Table (ListObject) -- a named range with a header row, not a
+    /// [LLM-generated] An Excel Table (ListObject) -- a named range with a header row, not a
     /// worksheet. See [`crate::core::ExcelTable`].
     Table,
-    /// A column within an Excel Table.
+    /// [LLM-generated] A column within an Excel Table.
     TableColumn,
-    /// A pivot table.
+    /// [LLM-generated] A pivot table.
     PivotTable,
-    /// A field within a pivot table.
+    /// [LLM-generated] A field within a pivot table.
     PivotField,
-    /// A chart.
+    /// [LLM-generated] A chart.
     Chart,
-    /// A VBA module.
+    /// [LLM-generated] A VBA module.
     VbaModule,
 }
 
 impl ObjectKind {
-    /// The human-readable name used in error messages ("sheet", "table", ...).
+    /// [LLM-generated] The human-readable name used in error messages ("sheet", "table", ...).
     pub fn as_str(self) -> &'static str {
         match self {
             ObjectKind::Sheet => "sheet",
@@ -46,107 +46,107 @@ impl std::fmt::Display for ObjectKind {
     }
 }
 
-/// Errors returned by `visi-core`'s public API.
+/// [LLM-generated] Errors returned by `visi-core`'s public API.
 ///
 /// This enum is `#[non_exhaustive]`: match with a `_` arm, since new variants
 /// may be added in a minor release.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Error {
-    /// No object of this kind goes by this name (or id, for charts).
+    /// [LLM-generated] No object of this kind goes by this name (or id, for charts).
     NotFound {
-        /// What was being looked up.
+        /// [LLM-generated] What was being looked up.
         kind: ObjectKind,
-        /// The name that was not found.
+        /// [LLM-generated] The name that was not found.
         name: String,
-        /// The names that *do* exist, when the call can supply them cheaply,
+        /// [LLM-generated] The names that *do* exist, when the call can supply them cheaply,
         /// so callers can render a "did you mean" hint. Often empty.
         available: Vec<String>,
     },
-    /// An object of this kind already goes by this name, so it cannot be added.
+    /// [LLM-generated] An object of this kind already goes by this name, so it cannot be added.
     AlreadyExists {
-        /// What was being added.
+        /// [LLM-generated] What was being added.
         kind: ObjectKind,
-        /// The name that collided.
+        /// [LLM-generated] The name that collided.
         name: String,
     },
-    /// A rename was rejected because the new name is already in use.
+    /// [LLM-generated] A rename was rejected because the new name is already in use.
     ///
     /// Distinct from [`Error::AlreadyExists`], which is raised when *creating*.
     NameTaken {
-        /// What was being renamed.
+        /// [LLM-generated] What was being renamed.
         kind: ObjectKind,
-        /// The requested new name.
+        /// [LLM-generated] The requested new name.
         name: String,
     },
-    /// A name was rejected as structurally invalid, independent of collisions.
+    /// [LLM-generated] A name was rejected as structurally invalid, independent of collisions.
     InvalidName {
-        /// What was being named.
+        /// [LLM-generated] What was being named.
         kind: ObjectKind,
-        /// The rejected name.
+        /// [LLM-generated] The rejected name.
         name: String,
-        /// Why it was rejected.
+        /// [LLM-generated] Why it was rejected.
         reason: String,
     },
-    /// A row or column index fell outside the sheet.
+    /// [LLM-generated] A row or column index fell outside the sheet.
     OutOfBounds {
-        /// What was being indexed ("row" or "column").
+        /// [LLM-generated] What was being indexed ("row" or "column").
         what: &'static str,
-        /// The offending 0-based index.
+        /// [LLM-generated] The offending 0-based index.
         index: usize,
-        /// The number of rows/columns that exist.
+        /// [LLM-generated] The number of rows/columns that exist.
         len: usize,
     },
-    /// A cell range was malformed -- for example, an end before its start.
+    /// [LLM-generated] A cell range was malformed -- for example, an end before its start.
     InvalidRange(String),
-    /// The operation needs at least one sheet and the workbook has none.
+    /// [LLM-generated] The operation needs at least one sheet and the workbook has none.
     EmptyWorkbook,
-    /// The last remaining sheet cannot be deleted; a workbook needs one.
+    /// [LLM-generated] The last remaining sheet cannot be deleted; a workbook needs one.
     LastSheetInWorkbook,
-    /// A worksheet can carry only one bound VBA document module.
+    /// [LLM-generated] A worksheet can carry only one bound VBA document module.
     DocumentModuleExists,
-    /// The operation was rejected by a lower layer that does not yet report a
+    /// [LLM-generated] The operation was rejected by a lower layer that does not yet report a
     /// typed error -- currently the Excel Table and pivot internals.
     ///
     /// Carries message text only. Do not match on the string; variants will be
     /// carved out of this one as those layers are typed, which is why [`Error`]
     /// is `#[non_exhaustive]`.
     InvalidArgument(String),
-    /// Reading or writing the `.xlsx` container failed.
+    /// [LLM-generated] Reading or writing the `.xlsx` container failed.
     Xlsx(String),
-    /// Reading or writing the VBA project failed.
+    /// [LLM-generated] Reading or writing the VBA project failed.
     Vba(String),
-    /// A VBA module failed to parse.
+    /// [LLM-generated] A VBA module failed to parse.
     ///
     /// Carries the position separately from the message so a caller can point
     /// at the offending line -- an editor integration, or `visi macro check
     /// --json` -- without parsing the text back out.
     VbaSyntax {
-        /// What went wrong, phrased for someone reading it.
+        /// [LLM-generated] What went wrong, phrased for someone reading it.
         message: String,
-        /// The module the error is in, when the caller knew one.
+        /// [LLM-generated] The module the error is in, when the caller knew one.
         module: Option<String>,
-        /// 1-based line number within that module's source.
+        /// [LLM-generated] 1-based line number within that module's source.
         line: u32,
-        /// 1-based column number, counted in characters.
+        /// [LLM-generated] 1-based column number, counted in characters.
         column: u32,
     },
-    /// A VBA procedure raised a run-time error.
+    /// [LLM-generated] A VBA procedure raised a run-time error.
     ///
     /// Carries VBA's own `Err.Number` so a caller can compare it against what
     /// Excel would have raised, which is what the differential fuzzer does.
     VbaRuntime {
-        /// `Err.Description`.
+        /// [LLM-generated] `Err.Description`.
         message: String,
-        /// `Err.Number`.
+        /// [LLM-generated] `Err.Number`.
         number: i32,
     },
-    /// Formula evaluation failed.
+    /// [LLM-generated] Formula evaluation failed.
     Eval(EngineError),
 }
 
 impl Error {
-    /// A [`Error::NotFound`] with no "did you mean" candidates.
+    /// [LLM-generated] A [`Error::NotFound`] with no "did you mean" candidates.
     pub fn not_found(kind: ObjectKind, name: impl Into<String>) -> Self {
         Error::NotFound {
             kind,
@@ -155,7 +155,7 @@ impl Error {
         }
     }
 
-    /// A [`Error::NotFound`] that also carries the names that do exist.
+    /// [LLM-generated] A [`Error::NotFound`] that also carries the names that do exist.
     pub fn not_found_among(
         kind: ObjectKind,
         name: impl Into<String>,
@@ -236,7 +236,7 @@ impl From<EngineError> for Error {
     }
 }
 
-/// A `Result` whose error type is [`Error`].
+/// [LLM-generated] A `Result` whose error type is [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

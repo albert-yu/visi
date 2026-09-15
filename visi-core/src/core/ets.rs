@@ -1,14 +1,14 @@
-/// A timeline resolved onto a regular grid, plus the grid's own geometry.
+/// [LLM-generated] A timeline resolved onto a regular grid, plus the grid's own geometry.
 pub struct Series {
-    /// Observations, one per grid step, gaps already filled.
+    /// [LLM-generated] Observations, one per grid step, gaps already filled.
     pub values: Vec<f64>,
-    /// First timeline value.
+    /// [LLM-generated] First timeline value.
     pub start: f64,
-    /// Constant spacing between consecutive grid points.
+    /// [LLM-generated] Constant spacing between consecutive grid points.
     pub step: f64,
 }
 
-/// A fitted model plus everything the STAT/CONFINT accessors need.
+/// [LLM-generated] A fitted model plus everything the STAT/CONFINT accessors need.
 pub struct Model {
     pub alpha: f64,
     pub beta: f64,
@@ -16,15 +16,15 @@ pub struct Model {
     pub period: usize,
     pub level: f64,
     pub trend: f64,
-    /// Seasonal indices for the final period, oldest first.
+    /// [LLM-generated] Seasonal indices for the final period, oldest first.
     pub seasons: Vec<f64>,
-    /// One-step-ahead in-sample residuals (actual - forecast).
+    /// [LLM-generated] One-step-ahead in-sample residuals (actual - forecast).
     pub residuals: Vec<f64>,
     pub values: Vec<f64>,
     pub step: f64,
 }
 
-/// Excel's optimizer reports its smoothing parameters to three decimals and
+/// [LLM-generated] Excel's optimizer reports its smoothing parameters to three decimals and
 /// never returns 0 or 1 for alpha/beta (a perfectly linear series comes back
 /// as alpha = 0.9, beta = 0.001), so the search runs over the same
 /// three-decimal grid within these bounds.
@@ -36,7 +36,7 @@ fn quantize(x: f64) -> f64 {
     (x / PARAM_QUANTUM).round() * PARAM_QUANTUM
 }
 
-/// Collapses (timeline, values) pairs onto the regular grid ETS needs:
+/// [LLM-generated] Collapses (timeline, values) pairs onto the regular grid ETS needs:
 /// sorts by time, averages duplicate timestamps, infers the constant step,
 /// and fills interior gaps.
 ///
@@ -139,7 +139,7 @@ pub fn build_series(
     })
 }
 
-/// Excel's automatic season-length detection. Returns 0 when the series
+/// [LLM-generated] Excel's automatic season-length detection. Returns 0 when the series
 /// shows no repeating pattern.
 ///
 /// Scores each candidate period by the autocorrelation of the
@@ -178,7 +178,7 @@ pub fn detect_period(values: &[f64]) -> usize {
     if best.1 >= 0.3 { best.0 } else { 0 }
 }
 
-/// Least-squares line through `(i, ys[i])`, returned as `(intercept, slope)`.
+/// [LLM-generated] Least-squares line through `(i, ys[i])`, returned as `(intercept, slope)`.
 fn linreg(ys: &[f64]) -> (f64, f64) {
     let n = ys.len() as f64;
     if n < 2.0 {
@@ -197,7 +197,7 @@ fn linreg(ys: &[f64]) -> (f64, f64) {
     (mean_y - slope * mean_x, slope)
 }
 
-/// Seeds level/trend/season, and reports how many leading observations were
+/// [LLM-generated] Seeds level/trend/season, and reports how many leading observations were
 /// consumed doing so.
 ///
 /// Two details matter for a clean series to forecast exactly:
@@ -272,7 +272,7 @@ fn initial_state(values: &[f64], period: usize) -> (f64, f64, Vec<f64>, usize) {
     (level, slope, seasons, warmup)
 }
 
-/// Runs the AAA recurrences for a fixed parameter triple, collecting the
+/// [LLM-generated] Runs the AAA recurrences for a fixed parameter triple, collecting the
 /// one-step-ahead residuals the optimizer scores and STAT reports.
 fn smooth(values: &[f64], period: usize, alpha: f64, beta: f64, gamma: f64) -> Model {
     let (mut level, mut trend, mut seasons, warmup) = initial_state(values, period);
@@ -319,7 +319,7 @@ fn sse(values: &[f64], period: usize, alpha: f64, beta: f64, gamma: f64) -> f64 
         .sum()
 }
 
-/// Fits alpha/beta/gamma by minimizing the in-sample one-step-ahead SSE.
+/// [LLM-generated] Fits alpha/beta/gamma by minimizing the in-sample one-step-ahead SSE.
 ///
 /// Coordinate descent over progressively finer grids (0.1, then 0.01, then
 /// 0.001) rather than one dense 3-D sweep -- the full three-decimal cube
@@ -387,7 +387,7 @@ pub fn fit(values: &[f64], period: usize) -> Model {
 }
 
 impl Model {
-    /// Forecast `h` steps past the end of the fitted series (h >= 1).
+    /// [LLM-generated] Forecast `h` steps past the end of the fitted series (h >= 1).
     pub fn forecast(&self, h: usize) -> f64 {
         let m = self.period.max(1);
         let n = self.values.len();
@@ -399,7 +399,7 @@ impl Model {
         self.level + (h as f64) * self.trend + seasonal
     }
 
-    /// Residual standard deviation, the basis for the prediction interval.
+    /// [LLM-generated] Residual standard deviation, the basis for the prediction interval.
     fn residual_sd(&self) -> f64 {
         let tail = &self.residuals[..];
         if tail.len() < 2 {
@@ -411,7 +411,7 @@ impl Model {
         var.sqrt()
     }
 
-    /// Half-width of the prediction interval `h` steps ahead.
+    /// [LLM-generated] Half-width of the prediction interval `h` steps ahead.
     ///
     /// The interval widens with the horizon: for an additive-error model the
     /// h-step variance accumulates as `sigma^2 * (1 + (h-1)*(alpha^2 + ...))`,
@@ -426,7 +426,7 @@ impl Model {
         Ok(z * sd * growth.sqrt())
     }
 
-    /// FORECAST.ETS.STAT's `statistic_type` values 1-8.
+    /// [LLM-generated] FORECAST.ETS.STAT's `statistic_type` values 1-8.
     pub fn stat(&self, which: usize) -> Result<f64, String> {
         let tail = &self.residuals[..];
         let actual = &self.values[self.values.len() - tail.len()..];
@@ -474,7 +474,7 @@ impl Model {
     }
 }
 
-/// Shared front end for the whole FORECAST.ETS family: validates and
+/// [LLM-generated] Shared front end for the whole FORECAST.ETS family: validates and
 /// regularizes the timeline, resolves the season length, and fits.
 ///
 /// `seasonality` follows Excel's convention -- 1 means "detect
@@ -503,7 +503,7 @@ pub fn prepare(
     Ok(model)
 }
 
-/// Steps from the end of the fitted series to `target`, or an error when the
+/// [LLM-generated] Steps from the end of the fitted series to `target`, or an error when the
 /// target is not strictly in the future.
 pub fn horizon(series_start: f64, step: f64, n: usize, target: f64) -> Result<usize, String> {
     let last = series_start + step * (n as f64 - 1.0);

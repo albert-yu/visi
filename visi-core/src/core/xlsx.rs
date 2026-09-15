@@ -31,15 +31,15 @@ fn cell_type_and_src_for_calamine(cell_value: &calamine::Data) -> (CellType, Str
     }
 }
 
-/// A worksheet read out of an `.xlsx` file.
+/// [LLM-generated] A worksheet read out of an `.xlsx` file.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportedSheet {
-    /// The sheet, with its cells, styles and any Excel Tables on it. Its
+    /// [LLM-generated] The sheet, with its cells, styles and any Excel Tables on it. Its
     /// values are already committed, so it can be read without evaluating.
     pub sheet: Sheet,
 }
 
-/// `(imported sheets, charts, pivot tables, VBA project)`.
+/// [LLM-generated] `(imported sheets, charts, pivot tables, VBA project)`.
 pub type ImportedXlsxData = (
     Vec<ImportedSheet>,
     Vec<crate::core::chart::Chart>,
@@ -47,7 +47,7 @@ pub type ImportedXlsxData = (
     Option<crate::core::vba::VbaProject>,
 );
 
-/// Read a `.xlsx` file from memory into sheets, charts, pivot tables and an
+/// [LLM-generated] Read a `.xlsx` file from memory into sheets, charts, pivot tables and an
 /// optional VBA project.
 ///
 /// `existing_sheets` lets the importer keep column ids stable when reloading
@@ -552,7 +552,7 @@ pub(crate) fn parse_xlsx_table_style(name: &str) -> rust_xlsxwriter::TableStyle 
     }
 }
 
-/// The numeric serial to export for a date-formatted cell, if this is one.
+/// [LLM-generated] The numeric serial to export for a date-formatted cell, if this is one.
 ///
 /// A date cell keeps the typed text in `src` and the serial in `data`, so the
 /// value -- not the source -- is what Excel needs alongside the `numFmt`.
@@ -605,7 +605,7 @@ pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwrit
     format
 }
 
-/// Serialize sheets, charts, pivot tables and an optional VBA project into a
+/// [LLM-generated] Serialize sheets, charts, pivot tables and an optional VBA project into a
 /// `.xlsx` file in memory.
 ///
 /// Formulas are written with their cached results, so readers that do not
@@ -1674,7 +1674,7 @@ pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option
     None
 }
 
-/// Escapes text for use inside an XML attribute value. Shared by
+/// [LLM-generated] Escapes text for use inside an XML attribute value. Shared by
 /// `pivot_xlsx.rs` and `vba_xlsx.rs`.
 pub(crate) fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -1754,7 +1754,7 @@ fn parse_sheet_drawing_rels(xml: &str) -> Option<String> {
     drawing_target
 }
 
-/// Collects the table parts a worksheet's `_rels/sheetN.xml.rels` points at,
+/// [LLM-generated] Collects the table parts a worksheet's `_rels/sheetN.xml.rels` points at,
 /// as bare filenames (`table1.xml`). Every table part lives in `xl/tables/`,
 /// so taking the basename via `get_filename` sidesteps resolving the
 /// `Target` attribute's form entirely: `../tables/table1.xml` (what Excel
@@ -2083,7 +2083,7 @@ pub(crate) fn get_zip_file_content(
     Some(content)
 }
 
-/// One Excel Table (ListObject) as declared by its own `xl/tables/*.xml`
+/// [LLM-generated] One Excel Table (ListObject) as declared by its own `xl/tables/*.xml`
 /// part. Everything here is read straight out of that XML rather than
 /// through calamine: `Xlsx::table_by_name` panics outright on a table with a
 /// header row and zero data rows (it derives a data-only range whose start
@@ -2094,7 +2094,7 @@ struct ParsedTablePart {
     columns: Vec<String>,
     has_header_row: bool,
     has_totals_row: bool,
-    /// The whole table's bounds from its declared `ref`, header and totals
+    /// [LLM-generated] The whole table's bounds from its declared `ref`, header and totals
     /// rows included, 0-based `(start_row, start_col, end_row, end_col)`.
     /// `None` when the `ref` attribute is absent or unparseable, in which
     /// case the table can't be placed and is skipped.
@@ -2103,7 +2103,7 @@ struct ParsedTablePart {
     has_insert_row: bool,
 }
 
-/// Parses one `xl/tables/tableN.xml` part. Returns `None` if the XML has no
+/// [LLM-generated] Parses one `xl/tables/tableN.xml` part. Returns `None` if the XML has no
 /// `<table>` element with a `displayName`, which is the only field a table
 /// can't sensibly be reconstructed without.
 ///
@@ -2174,7 +2174,7 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
     })
 }
 
-/// Discovers every Excel Table in the workbook by walking the zip directly,
+/// [LLM-generated] Discovers every Excel Table in the workbook by walking the zip directly,
 /// pairing each with the name of the sheet that owns it.
 ///
 /// This deliberately replaces calamine's `load_tables`/`table_by_name`. That
@@ -2217,7 +2217,7 @@ fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)
     Ok(tables)
 }
 
-/// [AI-Agent] Built-in OOXML `numFmtId` codes whose display strings can be preserved on import.
+/// [LLM-generated] Built-in OOXML `numFmtId` codes whose display strings can be preserved on import.
 const BUILTIN_NUM_FMTS: &[(u32, &str)] = &[
     (0, "General"),
     (1, "0"),
@@ -2267,7 +2267,7 @@ fn builtin_num_fmt_code(id: u32) -> Option<&'static str> {
         .map(|(_, code)| *code)
 }
 
-/// Date format codes per cell, keyed by sheet name and then by 0-based
+/// [LLM-generated] Date format codes per cell, keyed by sheet name and then by 0-based
 /// `(row, col)`.
 type SheetCellNumberFormats =
     std::collections::HashMap<String, std::collections::HashMap<(usize, usize), String>>;
@@ -2626,7 +2626,7 @@ fn parse_sheet_cell_styles(
     out
 }
 
-/// Maps each cell that carries a date number format to that format's code,
+/// [LLM-generated] Maps each cell that carries a date number format to that format's code,
 /// keyed by sheet name and then by `(row, col)` -- both 0-based, matching the
 /// engine.
 ///
@@ -2672,7 +2672,7 @@ fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, S
     Ok(out)
 }
 
-/// Resolves `xl/styles.xml` into "cell style index -> date format code",
+/// [LLM-generated] Resolves `xl/styles.xml` into "cell style index -> date format code",
 /// keeping only the entries that denote a date.
 fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String> {
     use std::collections::HashMap;
@@ -2730,7 +2730,7 @@ fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String>
     out
 }
 
-/// Pulls `(row, col) -> date format code` out of one worksheet part, for the
+/// [LLM-generated] Pulls `(row, col) -> date format code` out of one worksheet part, for the
 /// cells whose style index resolves to a date format.
 fn parse_sheet_cell_formats(
     xml: &str,
@@ -2760,7 +2760,7 @@ fn parse_sheet_cell_formats(
     out
 }
 
-/// `"B3"` -> `(2, 1)`, 0-based. Trailing `$` anchors are not expected in a
+/// [LLM-generated] `"B3"` -> `(2, 1)`, 0-based. Trailing `$` anchors are not expected in a
 /// cell's `r` attribute and are not accepted.
 fn parse_a1_cell(reference: &str) -> Option<(usize, usize)> {
     let split = reference.find(|c: char| c.is_ascii_digit())?;
@@ -2779,7 +2779,7 @@ fn parse_a1_cell(reference: &str) -> Option<(usize, usize)> {
     Some((row - 1, col - 1))
 }
 
-/// Derives a stable chart id from its sheet name and position within that
+/// [LLM-generated] Derives a stable chart id from its sheet name and position within that
 /// sheet's charts, so re-importing the same unchanged xlsx always assigns
 /// the same id to the same chart. Uses `DefaultHasher`, which (unlike
 /// `HashMap`'s default `RandomState`) is not seeded per-process, so this is
@@ -2793,7 +2793,7 @@ fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
     hasher.finish() & 0x001F_FFFF_FFFF_FFFF
 }
 
-/// Maps each worksheet part's bare filename (`sheet1.xml`) to the sheet name
+/// [LLM-generated] Maps each worksheet part's bare filename (`sheet1.xml`) to the sheet name
 /// the workbook declares for it, by joining `xl/workbook.xml`'s
 /// `<sheet name= r:id=>` entries against `xl/_rels/workbook.xml.rels`. The
 /// part filenames are not in workbook order and carry no reliable
@@ -3095,7 +3095,7 @@ mod tests {
         );
     }
 
-    /// A date cell has to survive as a *date*: the value goes out as a
+    /// [LLM-generated] A date cell has to survive as a *date*: the value goes out as a
     /// numeric serial (Excel cannot do date arithmetic on text) while the
     /// notation goes out as the cell's `numFmt` and comes back from it. The
     /// CLI is a fresh process per invocation, so this round trip is the only
@@ -3166,7 +3166,7 @@ mod tests {
         }
     }
 
-    /// Text that merely looks like a date must not become one on import --
+    /// [LLM-generated] Text that merely looks like a date must not become one on import --
     /// Excel handed it over as a string cell, so it stays a string.
     #[test]
     fn test_xlsx_date_looking_text_stays_text() {
@@ -3488,7 +3488,7 @@ mod tests {
         assert_eq!(imported_sheet.tables[0].columns, vec!["Name", "Amount"]);
     }
 
-    /// Rewrites the `ref` attribute of every `xl/tables/*.xml` part in an
+    /// [LLM-generated] Rewrites the `ref` attribute of every `xl/tables/*.xml` part in an
     /// exported workbook, leaving the rest of the zip byte-for-byte intact.
     fn rewrite_table_ref(xlsx_data: &[u8], new_ref_attr: &str) -> Vec<u8> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data)).unwrap();
@@ -3869,7 +3869,7 @@ mod tests {
         }
     }
 
-    /// The emitted pivot XML, as one string per part, for shape assertions.
+    /// [LLM-generated] The emitted pivot XML, as one string per part, for shape assertions.
     ///
     /// These stand in for a check CI cannot run: the only authority on
     /// whether Excel accepts a pivot part is Excel, and

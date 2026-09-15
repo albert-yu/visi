@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// A random 53-bit identifier for a sheet or column.
+/// [LLM-generated] A random 53-bit identifier for a sheet or column.
 ///
 /// Capped to `2^53 - 1` so it survives a round trip through a JSON number,
 /// which is what a JavaScript host would deserialize it as. Falls back to the
@@ -19,37 +19,37 @@ pub fn generate_unique_id() -> u64 {
     val & 0x001F_FFFF_FFFF_FFFF
 }
 
-/// [AI-Agent] The intrinsic data type of a cell, mirroring calamine worksheet value variants.
+/// [LLM-generated] The intrinsic data type of a cell, mirroring calamine worksheet value variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum CellType {
-    /// Empty cell (`calamine::Data::Empty`).
+    /// [LLM-generated] Empty cell (`calamine::Data::Empty`).
     #[default]
     Empty,
-    /// Signed integer (`calamine::Data::Int`).
+    /// [LLM-generated] Signed integer (`calamine::Data::Int`).
     Int,
-    /// Floating point number (`calamine::Data::Float`).
+    /// [LLM-generated] Floating point number (`calamine::Data::Float`).
     Float,
-    /// String (`calamine::Data::String`).
+    /// [LLM-generated] String (`calamine::Data::String`).
     String,
-    /// Boolean (`calamine::Data::Bool`).
+    /// [LLM-generated] Boolean (`calamine::Data::Bool`).
     Bool,
-    /// Date/time serial identified by calamine from workbook formatting.
+    /// [LLM-generated] Date/time serial identified by calamine from workbook formatting.
     DateTime,
-    /// ISO 8601 date/time (`calamine::Data::DateTimeIso`, OpenXML `t="d"`).
+    /// [LLM-generated] ISO 8601 date/time (`calamine::Data::DateTimeIso`, OpenXML `t="d"`).
     DateTimeIso,
-    /// ISO 8601 duration (`calamine::Data::DurationIso`).
+    /// [LLM-generated] ISO 8601 duration (`calamine::Data::DurationIso`).
     DurationIso,
-    /// Error cell (`calamine::Data::Error`, OpenXML `t="e"`).
+    /// [LLM-generated] Error cell (`calamine::Data::Error`, OpenXML `t="e"`).
     Error,
 }
 
 impl CellType {
-    /// [AI-Agent] Whether this cell type is explicitly a string/text cell.
+    /// [LLM-generated] Whether this cell type is explicitly a string/text cell.
     pub fn is_string(&self) -> bool {
         matches!(self, CellType::String)
     }
 
-    /// [AI-Agent] Stable lowercase spelling used by CLI and JSON output.
+    /// [LLM-generated] Stable lowercase spelling used by CLI and JSON output.
     pub fn as_str(&self) -> &'static str {
         match self {
             CellType::Empty => "empty",
@@ -65,13 +65,13 @@ impl CellType {
     }
 }
 
-/// For either a column or row
+/// [LLM-generated] For either a column or row
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RefType {
-    /// Written without a `$`, so it shifts when the formula is filled or
+    /// [LLM-generated] Written without a `$`, so it shifts when the formula is filled or
     /// copied.
     Relative,
-    /// Written with a `$`, so it stays put.
+    /// [LLM-generated] Written with a `$`, so it stays put.
     Absolute,
 }
 
@@ -84,19 +84,19 @@ impl std::fmt::Display for RefType {
     }
 }
 
-/// A cell's position, plus whether it was written as absolute.
+/// [LLM-generated] A cell's position, plus whether it was written as absolute.
 ///
 /// Coordinates are 0-based, as everywhere inside the engine; `A1` is
 /// `CellRef::new(0, 0)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CellRef {
-    /// Row index, 0-based.
+    /// [LLM-generated] Row index, 0-based.
     pub row: usize,
-    /// Column index, 0-based.
+    /// [LLM-generated] Column index, 0-based.
     pub col: usize,
-    /// Whether the row was written with a `$`.
+    /// [LLM-generated] Whether the row was written with a `$`.
     pub row_ref_type: RefType,
-    /// Whether the column was written with a `$`.
+    /// [LLM-generated] Whether the column was written with a `$`.
     pub col_ref_type: RefType,
 }
 
@@ -111,7 +111,7 @@ impl std::fmt::Display for CellRef {
 }
 
 impl CellRef {
-    /// A relative reference to `(row, col)`, 0-based.
+    /// [LLM-generated] A relative reference to `(row, col)`, 0-based.
     pub fn new(row: usize, col: usize) -> CellRef {
         Self {
             row,
@@ -122,7 +122,7 @@ impl CellRef {
     }
 }
 
-/// Something a formula reads, and therefore an edge in the recalculation
+/// [LLM-generated] Something a formula reads, and therefore an edge in the recalculation
 /// graph.
 ///
 /// The local/remote split is load-bearing. `Sheet::commit` propagates through
@@ -136,46 +136,46 @@ impl CellRef {
 /// what a formula's text carries and what `Context` is indexed by.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dependency {
-    /// A cell on the same sheet.
+    /// [LLM-generated] A cell on the same sheet.
     Local(CellRef),
-    /// A whole column on the same sheet, by 0-based position.
+    /// [LLM-generated] A whole column on the same sheet, by 0-based position.
     LocalColumn(usize),
-    /// A cell on another sheet.
+    /// [LLM-generated] A cell on another sheet.
     Remote {
-        /// Name of the sheet the cell is on.
+        /// [LLM-generated] Name of the sheet the cell is on.
         sheet: String,
-        /// The cell, on that sheet.
+        /// [LLM-generated] The cell, on that sheet.
         cell: CellRef,
     },
-    /// A whole column on another sheet.
+    /// [LLM-generated] A whole column on another sheet.
     RemoteColumn {
-        /// Name of the sheet the column is on.
+        /// [LLM-generated] Name of the sheet the column is on.
         sheet: String,
-        /// Column index, 0-based.
+        /// [LLM-generated] Column index, 0-based.
         col: usize,
     },
 }
 
-/// A caret position: a cell plus an offset within its source text, for the
+/// [LLM-generated] A caret position: a cell plus an offset within its source text, for the
 /// text-editing operations `Sheet::insert` and `Sheet::delete`.
 #[derive(Debug, Clone, Default)]
 pub struct TextCellRef {
-    /// Row index, 0-based.
+    /// [LLM-generated] Row index, 0-based.
     pub row: usize,
-    /// Column index, 0-based.
+    /// [LLM-generated] Column index, 0-based.
     pub col: usize,
-    /// Offset into the cell's source text, in characters rather than bytes.
+    /// [LLM-generated] Offset into the cell's source text, in characters rather than bytes.
     pub char_offset: usize,
 }
 
-/// A formula that could not be evaluated at all.
+/// [LLM-generated] A formula that could not be evaluated at all.
 ///
 /// Distinct from an Excel error value: `=1/0` evaluates successfully to
 /// `ResultData::Error("#DIV/0!")`, whereas this is for text that never became
 /// a computable formula.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
-    /// The formula could not be parsed, or named something unrecognized. The
+    /// [LLM-generated] The formula could not be parsed, or named something unrecognized. The
     /// string is the message, which for some failures is an Excel error code.
     UnknownFunction(String),
 }
@@ -190,10 +190,10 @@ impl std::fmt::Display for EvalError {
     }
 }
 
-/// What the engine's evaluation entry points return on failure.
+/// [LLM-generated] What the engine's evaluation entry points return on failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
-    /// A formula could not be evaluated.
+    /// [LLM-generated] A formula could not be evaluated.
     EvalError(EvalError),
 }
 

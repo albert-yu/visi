@@ -36,7 +36,7 @@ struct PivotXmlUnit {
 
 use crate::core::pivot::field_is_numeric as is_all_numeric;
 
-/// One `<item x="N"/>` per value in *display* order, where `N` is that
+/// [LLM-generated] One `<item x="N"/>` per value in *display* order, where `N` is that
 /// value's index in the cache's `<sharedItems>` -- which is in a different
 /// (first-seen) order. Optionally followed by the `<item t="default"/>`
 /// subtotal placeholder.
@@ -56,7 +56,7 @@ fn build_items_xml(shared_idx: &[usize], with_default: bool) -> String {
     s
 }
 
-/// The `<items>` child for a page/filter pivotField: every value in display
+/// [LLM-generated] The `<items>` child for a page/filter pivotField: every value in display
 /// order, marked `h="1"` (hidden) when it isn't in `selected`.
 ///
 /// `display` pairs each value with its `<sharedItems>` index, for the same
@@ -77,7 +77,7 @@ fn build_filter_items_xml(display: &[(usize, String)], selected: &Option<Vec<Str
     s
 }
 
-/// Encodes one axis (row or column) of flattened groups into the
+/// [LLM-generated] Encodes one axis (row or column) of flattened groups into the
 /// `rowItems`/`colItems` `<i>` sequence, applying Excel's leading-field
 /// repeat suppression (`r="N"` = "the first N fields are unchanged from
 /// the previous item, so aren't repeated here").
@@ -156,7 +156,7 @@ fn build_axis_items_xml(
     out
 }
 
-/// When there are 2+ value fields, Excel places an implicit "Values"
+/// [LLM-generated] When there are 2+ value fields, Excel places an implicit "Values"
 /// pseudo-field as the innermost column level (field index `-2`); this
 /// duplicates each column-axis group once per value field so
 /// `build_axis_items_xml` can encode that extra level like any other.
@@ -282,7 +282,7 @@ fn build_pivot_xml_unit(
         })
         .collect();
 
-    /// Just the `<sharedItems>` indices, in display order.
+    /// [LLM-generated] Just the `<sharedItems>` indices, in display order.
     fn shared_idx_for(
         field_items: &HashMap<usize, Vec<String>>,
         cache_items: &HashMap<usize, Vec<String>>,
@@ -297,7 +297,7 @@ fn build_pivot_xml_unit(
         .collect()
     }
 
-    /// A display-ordered field's values paired with their `<sharedItems>`
+    /// [LLM-generated] A display-ordered field's values paired with their `<sharedItems>`
     /// index. Values are matched case-insensitively, the same way
     /// `distinct_strings` dedups them.
     fn display_with_shared_idx(display: &[String], cache: &[String]) -> Vec<(usize, String)> {
@@ -663,7 +663,7 @@ fn extract_max_rid(rels_xml: &str) -> usize {
     max_id
 }
 
-/// Post-processes an already-exported xlsx buffer, adding native PivotTable
+/// [LLM-generated] Post-processes an already-exported xlsx buffer, adding native PivotTable
 /// parts for every entry in `pivots` whose destination sheet still exists.
 /// Returns the buffer unchanged if there's nothing to add.
 pub fn inject_pivot_tables(
@@ -888,22 +888,22 @@ struct ParsedPivotTable {
     row_grand_totals: bool,
     col_grand_totals: bool,
     location_ref: Option<String>,
-    /// Field indices (into the cache's `cacheFields`) used as row/col
+    /// [LLM-generated] Field indices (into the cache's `cacheFields`) used as row/col
     /// fields, in order; the `-2` "Values" pseudo-field sentinel is
     /// filtered out already.
     row_field_x: Vec<usize>,
     col_field_x: Vec<usize>,
     page_field_fld: Vec<usize>,
-    /// (source field index, aggregation, display name).
+    /// [LLM-generated] (source field index, aggregation, display name).
     data_fields: Vec<(usize, PivotAggregation, String)>,
-    /// Per-`<pivotFields>`-position (same indexing as `row_field_x`/
+    /// [LLM-generated] Per-`<pivotFields>`-position (same indexing as `row_field_x`/
     /// `col_field_x`), whether that field's `<items>` included the
     /// `<item t="default"/>` subtotal placeholder `build_items_xml` writes
     /// -- i.e. the field's `PivotField::subtotal` toggle. Absent entries
     /// (fields with no `<items>` at all, e.g. plain non-axis columns)
     /// default to `true` at the lookup site, same as `PivotField::new`.
     field_has_subtotal_item: HashMap<usize, bool>,
-    /// Per `<pivotFields>` position, that field's `<items>` as
+    /// [LLM-generated] Per `<pivotFields>` position, that field's `<items>` as
     /// `(shared-items index, hidden)` pairs, in the order they appear -- the
     /// display order. The `<item t="default"/>` placeholder is not included.
     ///
@@ -912,7 +912,7 @@ struct ParsedPivotTable {
     /// form, and a `<pageField item="N">` names a *position in this list* in
     /// the single-select form. Measured; see `fuzz/pivot_filter_probe.py`.
     field_items: HashMap<usize, Vec<(usize, bool)>>,
-    /// Per page field, in `page_field_fld` order, the `item` attribute of its
+    /// [LLM-generated] Per page field, in `page_field_fld` order, the `item` attribute of its
     /// `<pageField>` -- a position into that field's `field_items`.
     page_field_item: Vec<Option<usize>>,
 }
@@ -1082,7 +1082,7 @@ struct ParsedCacheDefinition {
     field_names: Vec<String>,
     source_sheet: String,
     source_ref: String,
-    /// Each field's `<sharedItems>` values, in the cache's own first-seen
+    /// [LLM-generated] Each field's `<sharedItems>` values, in the cache's own first-seen
     /// order -- which is the index space an `<item x="N"/>` refers to.
     /// Empty for a field that stores none (an aggregated-only column).
     shared_items: Vec<Vec<String>>,
@@ -1132,7 +1132,7 @@ fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
     }
 }
 
-/// Parses an A1 cell reference (e.g. "C4") into 0-based (row, col).
+/// [LLM-generated] Parses an A1 cell reference (e.g. "C4") into 0-based (row, col).
 fn parse_a1_cell(s: &str) -> Option<(usize, usize)> {
     let col_end = s.find(|c: char| c.is_ascii_digit())?;
     let (col_part, row_part) = s.split_at(col_end);
@@ -1150,7 +1150,7 @@ fn parse_a1_cell(s: &str) -> Option<(usize, usize)> {
     Some((row.checked_sub(1)?, col - 1))
 }
 
-/// Parses an A1 range (e.g. "A1:C4", or a single cell "A1") into 0-based
+/// [LLM-generated] Parses an A1 range (e.g. "A1:C4", or a single cell "A1") into 0-based
 /// `(start_row, start_col, end_row, end_col)`.
 pub(crate) fn parse_a1_range(s: &str) -> Option<(usize, usize, usize, usize)> {
     if let Some((start, end)) = s.split_once(':') {
@@ -1163,7 +1163,7 @@ pub(crate) fn parse_a1_range(s: &str) -> Option<(usize, usize, usize, usize)> {
     }
 }
 
-/// Reconstructs every `PivotTable` definable from a workbook's pivot XML
+/// [LLM-generated] Reconstructs every `PivotTable` definable from a workbook's pivot XML
 /// parts, matching sheets by name against `sheet_id_by_name` (the already
 /// -imported sheets, keyed by their possibly de-duplicated import name) and
 /// tables by name against `find_table`. Best-effort: silently skips any

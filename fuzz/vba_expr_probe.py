@@ -27,7 +27,7 @@ PREAMBLE = ["Dim va, vb, vc, vd, ve, vi, vn, a, b, c, n", "n = Null"]
 
 
 def parse_case(text):
-    """`"setup :: expr"` -> (list of setup statements, expression).
+    """[LLM-generated] `"setup :: expr"` -> (list of setup statements, expression).
 
     A literal `\\n` in the setup starts a new line, which is the only way to
     probe a block statement: VBA's `:` separator carries several statements on

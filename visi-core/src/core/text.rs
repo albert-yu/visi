@@ -166,7 +166,7 @@ pub fn detectlanguage(_text: &str) -> Result<String, String> {
     Ok("en".to_string())
 }
 
-/// Rounds half away from zero at `decimals` places, the rule Excel's
+/// [LLM-generated] Rounds half away from zero at `decimals` places, the rule Excel's
 /// DOLLAR/FIXED display uses. Rust's `format!("{:.N}", x)` instead rounds
 /// the *binary* value to nearest-even, so a decimal literal like 3395.85
 /// (whose nearest f64 is a hair below 3395.85) formats down to "3395.8"
@@ -719,7 +719,7 @@ pub(crate) fn format_text_format(val: &str, format_text: &str) -> Option<String>
     Some(clean_format_literal(&section.chars().collect::<Vec<_>>()).replace('@', val))
 }
 
-/// [AI-Agent] A pragmatic subset of Excel's number-format mini-language for TEXT() and cell display.
+/// [LLM-generated] A pragmatic subset of Excel's number-format mini-language for TEXT() and cell display.
 pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
     format_number_format(val, format_text)
 }

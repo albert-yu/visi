@@ -56,14 +56,14 @@ pub fn nper(rate: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64) -> Option<f64>
     }
 }
 
-/// Newton-Raphson root find, starting from `guess`. Shared by
+/// [LLM-generated] Newton-Raphson root find, starting from `guess`. Shared by
 /// `rate`/`irr`/`xirr`, which are all "solve this TVM/cashflow equation for
 /// a rate" problems differing only in `f`.
 fn newton_raphson(f: impl Fn(f64) -> f64, guess: f64) -> Option<f64> {
     newton_raphson_bounded(f, guess, None, true)
 }
 
-/// Reverse-engineered Newton-Raphson solver with step halving, step capping,
+/// [LLM-generated] Reverse-engineered Newton-Raphson solver with step halving, step capping,
 /// and configurable domain boundary protection matching Excel.
 fn newton_raphson_bounded(
     f: impl Fn(f64) -> f64,
@@ -149,7 +149,7 @@ fn abs_val(x: f64) -> f64 {
     x.abs()
 }
 
-/// Mirrors Excel's `RATE`, which also fails to converge (`#NUM!`) for some
+/// [LLM-generated] Mirrors Excel's `RATE`, which also fails to converge (`#NUM!`) for some
 /// inputs -- confirmed against the differential fuzzer to matter in both
 /// directions: trying extra starting guesses beyond the caller's own found
 /// mathematically valid roots that real Excel's own (single-guess, less
@@ -172,7 +172,7 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
     if r <= -0.999 { None } else { Some(r) }
 }
 
-/// Interest accrued during `period` on the outstanding balance, walked
+/// [LLM-generated] Interest accrued during `period` on the outstanding balance, walked
 /// forward one period at a time rather than via the closed-form
 /// `pv*(1+rate)^(period-1)` expression: for large (rate, period) that
 /// exponential dwarfs `pv`/`payment` and the two nearly-equal huge
@@ -255,7 +255,7 @@ fn npv_from_period_zero(rate: f64, values: &[f64]) -> f64 {
         .sum()
 }
 
-/// Retries once from 0.0 if the caller's own guess (0.1 by default,
+/// [LLM-generated] Retries once from 0.0 if the caller's own guess (0.1 by default,
 /// matching Excel) fails to converge. Verified against the differential
 /// fuzzer to recover real cases without reintroducing the false positives
 /// a broader multi-guess sweep caused (see git history) -- real Excel's
@@ -321,7 +321,7 @@ pub fn mirr(values: &[f64], finance_rate: f64, reinvest_rate: f64) -> Option<f64
     }
 }
 
-/// `dates` are Excel serial day numbers; `dates[0]` is the anchor.
+/// [LLM-generated] `dates` are Excel serial day numbers; `dates[0]` is the anchor.
 pub fn xnpv(rate: f64, values: &[f64], dates: &[f64]) -> f64 {
     let d0 = dates[0];
     values
@@ -632,7 +632,7 @@ pub fn ispmt(rate: f64, per: f64, nper: f64, pv: f64) -> f64 {
 
 use crate::core::date_fn;
 
-/// Actual or 30/360 day count between two dates, matching whichever
+/// [LLM-generated] Actual or 30/360 day count between two dates, matching whichever
 /// convention `basis` selects. Actual/actual (`basis == 1`) also resolves
 /// to a plain actual-day count here -- the "actual" divisor for annualizing
 /// it is handled separately by `coupdays`/`basis_year_days`.
@@ -644,7 +644,7 @@ fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     }
 }
 
-/// `basis_days_between`, but for `PRICEMAT`/`YIELDMAT`'s issue/settlement/
+/// [LLM-generated] `basis_days_between`, but for `PRICEMAT`/`YIELDMAT`'s issue/settlement/
 /// maturity legs, which measured out to a different basis-0 rule than
 /// every other caller of `basis_days_between` (see
 /// `date_fn::days_30_360_bond_ex`'s doc comment) -- each end's
@@ -667,7 +667,7 @@ fn basis_days_between_pricemat_leg(
     }
 }
 
-/// Year length used to annualize a discount/interest rate. For basis 1
+/// [LLM-generated] Year length used to annualize a discount/interest rate. For basis 1
 /// (actual/actual), confirmed against real Excel via the differential
 /// fuzzer that this was falling through to the 360 default (basis 1 isn't
 /// 30/360), and that for a `start`/`end` span of a year or less it comes
@@ -706,7 +706,7 @@ fn round_half_away_from_zero(x: f64) -> f64 {
     }
 }
 
-/// The regular coupon date on or before `settlement` -- found by walking
+/// [LLM-generated] The regular coupon date on or before `settlement` -- found by walking
 /// backward from `maturity` in `12/frequency`-month steps, since Excel
 /// anchors the whole quasi-coupon schedule at maturity rather than at
 /// issue.
@@ -735,7 +735,7 @@ fn step_months(anchor: f64, months_per_period: f64, k: f64) -> f64 {
     date_fn::ymd_to_serial(sy, sm, date_fn::days_in_month(sy, sm))
 }
 
-/// Number of whole periods back from `maturity` needed to reach (or pass)
+/// [LLM-generated] Number of whole periods back from `maturity` needed to reach (or pass)
 /// `settlement` -- the shared basis for `COUPPCD`/`COUPNCD`/`COUPNUM`, all
 /// derived from the *same* anchor-relative index so they stay consistent
 /// with each other regardless of any day-of-month clamping along the way.
@@ -798,7 +798,7 @@ pub fn coupdaybs(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> 
     basis_days_between(pcd, settlement, basis)
 }
 
-/// Days from settlement to the next coupon date. Confirmed against real
+/// [LLM-generated] Days from settlement to the next coupon date. Confirmed against real
 /// Excel via the differential fuzzer that this is *not* simply
 /// `coupdays - coupdaybs` for basis 0/2/3/4: `COUPDAYS` reports an
 /// idealized period length (360/freq or 365/freq) that generally doesn't
@@ -810,7 +810,7 @@ pub fn coupdaysnc(settlement: f64, maturity: f64, frequency: f64, basis: f64) ->
     coupon_end_days(settlement, ncd, basis)
 }
 
-/// Shared by `PRICE`/`YIELD`: present value (per 100 face) of a regular
+/// [LLM-generated] Shared by `PRICE`/`YIELD`: present value (per 100 face) of a regular
 /// bond's remaining cashflows at a given yield. Excel switches to simple
 /// (linear) discounting once fewer than one coupon period remains (`n<=1`)
 /// rather than compounding fractional-period discount factors.
@@ -871,7 +871,7 @@ pub fn yield_(
     bisection(f, -0.99, 10.0)
 }
 
-/// Generic bisection root-finder used by the yield-solving bond functions,
+/// [LLM-generated] Generic bisection root-finder used by the yield-solving bond functions,
 /// which (unlike `RATE`/`IRR`) are monotonic in the unknown but don't have
 /// a cheap closed-form derivative worth hand-deriving.
 fn bisection(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> Option<f64> {
@@ -1026,7 +1026,7 @@ pub fn tbillyield(settlement: f64, maturity: f64, pr: f64) -> f64 {
     (100.0 - pr) / pr * (360.0 / dsm)
 }
 
-/// Bond-equivalent yield of a Treasury bill. The `dsm <= 182` branch is the
+/// [LLM-generated] Bond-equivalent yield of a Treasury bill. The `dsm <= 182` branch is the
 /// exact documented formula; the longer-maturity branch uses the standard
 /// quadratic reconstruction (see e.g. LibreOffice's `GetTBillEq`) with a
 /// fixed 365-day year rather than special-casing the rare leap-February
@@ -1057,7 +1057,7 @@ pub fn accrintm(
     Ok(par * rate * frac)
 }
 
-/// Builds the ascending quasi-coupon-date schedule spanning `[lo, hi]`,
+/// [LLM-generated] Builds the ascending quasi-coupon-date schedule spanning `[lo, hi]`,
 /// anchored at `anchor` (typically `first_interest`) and stepping in
 /// `12/frequency`-month increments -- shared by `ACCRINT`'s period-by-period
 /// accrual walk.
@@ -1087,7 +1087,7 @@ fn quasi_coupon_schedule(anchor: f64, lo: f64, hi: f64, frequency: f64) -> Vec<f
     dates
 }
 
-/// `calc_method` is accepted for signature compatibility but, per
+/// [LLM-generated] `calc_method` is accepted for signature compatibility but, per
 /// Microsoft's docs, only theoretically distinguishes "accrue from issue"
 /// (`TRUE`) from "accrue from the last coupon date" (`FALSE`). Confirmed
 /// against real Excel via the differential fuzzer across regular,
@@ -1174,7 +1174,7 @@ pub fn amorlinc(
     }
 }
 
-/// Confirmed against real Excel via the differential fuzzer for life >= 4
+/// [LLM-generated] Confirmed against real Excel via the differential fuzzer for life >= 4
 /// (the coefficient-table brackets, including the final-period taper to
 /// zero once the remaining balance drops below salvage). Life <= 2 is
 /// rejected with #NUM!. Life in (2, 4) is a known gap: real Excel switches
@@ -1350,7 +1350,7 @@ pub fn oddfyield(
     bisection(f, -0.99, 10.0)
 }
 
-/// E, the length of the regular coupon period `ODDLPRICE`/`ODDLYIELD`
+/// [LLM-generated] E, the length of the regular coupon period `ODDLPRICE`/`ODDLYIELD`
 /// treat the odd last period as a fraction of. Confirmed against real
 /// Excel via the differential fuzzer, across bases 0-4 and multiple
 /// frequencies, to be the *actual* (or 30/360, per basis) length of the
@@ -1374,7 +1374,7 @@ fn oddlprice_e(last_interest: f64, _maturity: f64, frequency: f64, basis: f64) -
     coupon_end_days(last_interest, next_regular, basis)
 }
 
-/// Like `ODDFPRICE`/`ODDFYIELD`, this is a documented gap for a "long" odd
+/// [LLM-generated] Like `ODDFPRICE`/`ODDFYIELD`, this is a documented gap for a "long" odd
 /// period (here: last_interest to maturity spanning more than one regular
 /// coupon period) -- real Excel's exact handling wasn't reverse-
 /// engineered within the fuzzer's reach, so the fuzz generator keeps the
@@ -1422,7 +1422,7 @@ pub fn oddlyield(
     (numerator / denominator - 1.0) * (frequency * e / dsc)
 }
 
-/// Fixed euro-conversion rate (1 EUR = N units of `code`), permanently
+/// [LLM-generated] Fixed euro-conversion rate (1 EUR = N units of `code`), permanently
 /// fixed by EU regulation on each currency's euro-adoption date -- these
 /// are legal constants, not derived values that could drift.
 ///

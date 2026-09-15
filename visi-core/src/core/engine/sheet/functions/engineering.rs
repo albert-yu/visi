@@ -1,4 +1,4 @@
-//! Engineering function dispatch.
+//! [LLM-generated] Engineering function dispatch.
 //!
 //! Split out of the parent module's `evaluate_function`, which tries each
 //! family in turn.
@@ -9,13 +9,13 @@ use crate::core::engine::result_data::ResultData;
 use crate::core::engine::sheet::Sheet;
 
 impl Sheet {
-    /// Evaluates `call` if this family owns its name, else `None`.
+    /// [LLM-generated] Evaluates `call` if this family owns its name, else `None`.
     pub(super) fn eval_engineering_fn(
         &self,
         call: FnCall<'_>,
         deps: &mut Vec<Dependency>,
     ) -> Option<Result<ResultData, EngineError>> {
-        // The body returns `Result` so its arms can keep using `?`; whether
+        // [LLM-generated] The body returns `Result` so its arms can keep using `?`; whether
         // the name belongs to this family is signalled alongside.
         let mut owned = true;
         let r = self.eval_engineering_dispatch(call, deps, &mut owned);
@@ -34,7 +34,7 @@ impl Sheet {
             ..
         } = call;
         match call.upper_name {
-            // --- ENGINEERING FUNCTIONS ---
+            // [LLM-generated] --- ENGINEERING FUNCTIONS ---
             "BESSELI" => {
                 let x = self.to_f64_arg(evaluated_args.first(), "BESSELI")?;
                 let n = self.to_f64_arg(evaluated_args.get(1), "BESSELI")?;
@@ -163,7 +163,7 @@ impl Sheet {
                 res_to_rd(crate::core::engineering::delta(n1, n2))
             }
             "ERF" | "ERFC" | "ERF.PRECISE" | "ERFC.PRECISE" => {
-                // Unlike SQRT/ABS/INT/MOD (which all accept a boolean
+                // [LLM-generated] Unlike SQRT/ABS/INT/MOD (which all accept a boolean
                 // as 1/0), the error functions reject booleans: real
                 // Excel answers #VALUE! for ERF(TRUE) and ERF(FALSE).
                 // Numeric *text* is coerced though, from a literal or
@@ -175,13 +175,13 @@ impl Sheet {
                 let x = match evaluated_args.first() {
                     None | Some(ResultData::None) => 0.0,
                     Some(v) => {
-                        // A one-cell range arrives as a one-element List.
+                        // [LLM-generated] A one-cell range arrives as a one-element List.
                         let scalar = match v {
                             ResultData::List(items) if items.len() == 1 => &items[0],
                             other => other,
                         };
                         if matches!(scalar, ResultData::Boolean(_)) {
-                            // See first_arg_is_boolean.
+                            // [LLM-generated] See first_arg_is_boolean.
                             return Ok(ResultData::Error("#VALUE!".to_string()));
                         }
                         match self.to_f64(scalar) {

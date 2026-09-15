@@ -1,6 +1,6 @@
 use super::*;
 
-/// Evaluates a standalone formula (no cell grid needed) and returns its result.
+/// [LLM-generated] Evaluates a standalone formula (no cell grid needed) and returns its result.
 fn eval1(source: &str) -> ResultData {
     let sheet = Sheet::new(SheetInit::default());
     sheet.eval(source, None).unwrap().0
@@ -19,7 +19,7 @@ fn assert_float_close(result: &ResultData, expected: f64, tol: f64) {
 
 #[test]
 fn test_date_serial_matches_real_excel_reference_values() {
-    // ymd_to_serial's Excel-epoch offset was off by one for every date
+    // [LLM-generated] ymd_to_serial's Excel-epoch offset was off by one for every date
     // after the fictitious Feb 29, 1900 (serial 60) -- found via
     // differential fuzzing against real Excel while validating the new
     // bond-pricing functions below, which all depend on serial-date
@@ -56,7 +56,7 @@ fn test_choose_out_of_range_errors() {
 
 #[test]
 fn test_choose_lazy_evaluation_skips_unselected_branch_errors() {
-    // Real Excel does not evaluate unselected CHOOSE branches; NA() in the
+    // [LLM-generated] Real Excel does not evaluate unselected CHOOSE branches; NA() in the
     // unselected branch must not surface.
     let result = eval1("=CHOOSE(1, 42, NA())");
     assert_float_close(&result, 42.0, 1e-9);
@@ -64,7 +64,7 @@ fn test_choose_lazy_evaluation_skips_unselected_branch_errors() {
 
 #[test]
 fn test_yearfrac_basis1_uses_actual_actual_year_average() {
-    // Confirmed against real Excel via the differential fuzzer: basis 1
+    // [LLM-generated] Confirmed against real Excel via the differential fuzzer: basis 1
     // averages 365/366 across every calendar year the span touches, not
     // the average Julian year (365.2425) the previous implementation used.
     assert_float_close(
@@ -84,15 +84,15 @@ fn test_yearfrac_basis1_uses_actual_actual_year_average() {
     );
 }
 
-// --- Day-count / bond-pricing financial functions -----------------------
+// [LLM-generated] --- Day-count / bond-pricing financial functions -----------------------
 //
-// Every expected value below was confirmed directly against real
+// [LLM-generated] Every expected value below was confirmed directly against real
 // Microsoft Excel via the differential fuzzer (fuzz/fuzz_excel.py),
 // either from a Microsoft-documented example or a fuzzer-found input.
 
 #[test]
 fn test_coupon_date_functions_match_microsoft_docs_example() {
-    // Microsoft's own COUPDAYS/COUPDAYBS/COUPNUM/COUPPCD documentation
+    // [LLM-generated] Microsoft's own COUPDAYS/COUPDAYBS/COUPNUM/COUPPCD documentation
     // example: settlement 1/25/2011, maturity 11/15/2011, semiannual,
     // actual/actual.
     assert_float_close(
@@ -119,7 +119,7 @@ fn test_coupon_date_functions_match_microsoft_docs_example() {
 
 #[test]
 fn test_coupncd_handles_day_of_month_clamping_correctly() {
-    // Walking a coupon schedule by anchoring each quasi-coupon date from the
+    // [LLM-generated] Walking a coupon schedule by anchoring each quasi-coupon date from the
     // maturity anchor handles day-of-month clamping in short months (e.g. April).
     assert_float_close(
         &eval1("=COUPNCD(DATE(2007,11,21), EDATE(DATE(2007,11,21),30), 4)"),
@@ -130,7 +130,7 @@ fn test_coupncd_handles_day_of_month_clamping_correctly() {
 
 #[test]
 fn test_coupdaysnc_uses_real_calendar_days_not_coupdays_minus_coupdaybs() {
-    // COUPDAYSNC applies the same real day-count convention as COUPDAYBS
+    // [LLM-generated] COUPDAYSNC applies the same real day-count convention as COUPDAYBS
     // directly to (settlement, next-coupon) -- it is not simply
     // COUPDAYS - COUPDAYBS, since COUPDAYS is an idealized period length
     // on bases 0/2/3/4 that generally doesn't equal the period's actual
@@ -186,7 +186,7 @@ fn test_disc_pricedisc_yielddisc_match_real_excel() {
 
 #[test]
 fn test_disc_basis1_year_length_has_two_regimes() {
-    // Confirmed against real Excel via the differential fuzzer:
+    // [LLM-generated] Confirmed against real Excel via the differential fuzzer:
     // basis-1 Y has two regimes. For a span of at most 366 days --
     // including one that crosses a calendar-year boundary, like
     // Dec -> Mar -- Y is simply whether the *later* date's own calendar
@@ -209,7 +209,7 @@ fn test_disc_basis1_year_length_has_two_regimes() {
         1e-9,
     );
 
-    // The two 366 cases above are "wholly inside a leap year" and "spans
+    // [LLM-generated] The two 366 cases above are "wholly inside a leap year" and "spans
     // 29 February". A short period that merely *ends* in a leap year,
     // before the leap day, takes 365 -- taking the end year's leap-ness
     // alone got these wrong.
@@ -227,7 +227,7 @@ fn test_disc_basis1_year_length_has_two_regimes() {
 
 #[test]
 fn test_pricemat_yieldmat_basis1_uses_issue_to_settlement_span() {
-    // Unlike DISC's settlement-to-maturity span, PRICEMAT/YIELDMAT's
+    // [LLM-generated] Unlike DISC's settlement-to-maturity span, PRICEMAT/YIELDMAT's
     // basis-1 year length is based on the (issue, settlement) span, not
     // the full (often multi-year) issue-to-maturity DIM span -- confirmed
     // against real Excel across two cases whose issue and settlement
@@ -283,7 +283,7 @@ fn test_tbill_functions_match_real_excel() {
 
 #[test]
 fn test_accrint_totals_from_issue_regardless_of_calc_method() {
-    // Confirmed against real Excel via the differential fuzzer across
+    // [LLM-generated] Confirmed against real Excel via the differential fuzzer across
     // regular, odd-first-period, and multi-period cases: calc_method
     // (TRUE vs FALSE) never changes ACCRINT's result in practice, so both
     // must total the same accrued-since-issue amount.
@@ -314,7 +314,7 @@ fn test_accrintm_matches_real_excel() {
 
 #[test]
 fn test_amorlinc_amordegrc_reject_basis_2() {
-    // Confirmed against real Excel: unlike every other function in
+    // [LLM-generated] Confirmed against real Excel: unlike every other function in
     // finance.rs, AMORLINC/AMORDEGRC reject basis 2 (actual/360).
     assert!(matches!(
         eval1("=AMORLINC(17737.01, DATE(2026,5,16), EDATE(DATE(2026,5,16),9), 5082.98, 1, 0.5, 2)"),
@@ -328,7 +328,7 @@ fn test_amorlinc_amordegrc_reject_basis_2() {
 
 #[test]
 fn test_amordegrc_rejects_life_at_or_below_two_years() {
-    // Confirmed against real Excel: the threshold is exactly life > 2
+    // [LLM-generated] Confirmed against real Excel: the threshold is exactly life > 2
     // (rate < 0.5), not life >= 3 where the next coefficient bracket
     // starts -- life == 2 (rate == 0.5) is already rejected.
     assert!(matches!(
@@ -344,7 +344,7 @@ fn test_amordegrc_rejects_life_at_or_below_two_years() {
 
 #[test]
 fn test_amordegrc_period_sequence_matches_real_excel() {
-    // A full period-by-period depreciation schedule confirmed against real
+    // [LLM-generated] A full period-by-period depreciation schedule confirmed against real
     // Excel, including the first-period prorate and final-period taper.
     let expected = [
         5699.0, 8515.0, 6742.0, 5338.0, 4226.0, 3346.0, 2649.0, 2098.0, 1661.0, 1315.0,
@@ -366,7 +366,7 @@ fn test_oddfprice_oddfyield_match_real_excel() {
         98.06021551292406,
         1e-6,
     );
-    // Basis 2: ODDFPRICE keeps COUPDAYS's idealized 360/365-per-freq value
+    // [LLM-generated] Basis 2: ODDFPRICE keeps COUPDAYS's idealized 360/365-per-freq value
     // for E on every basis except 1 (unlike ODDLPRICE/ODDLYIELD below).
     assert_float_close(
         &eval1(
@@ -400,7 +400,7 @@ fn test_oddlprice_oddlyield_match_real_excel() {
         0.2752128427867764,
         1e-6,
     );
-    // Basis 3: unlike ODDFPRICE/ODDFYIELD, ODDLPRICE/ODDLYIELD use the
+    // [LLM-generated] Basis 3: unlike ODDFPRICE/ODDFYIELD, ODDLPRICE/ODDLYIELD use the
     // *actual* adjacent-period length for E on every basis, including 3.
     assert_float_close(
         &eval1(
@@ -409,7 +409,7 @@ fn test_oddlprice_oddlyield_match_real_excel() {
         14.62856320740453,
         1e-6,
     );
-    // Basis 1 and a freq=2/basis=2 case: tests E being anchored at the
+    // [LLM-generated] Basis 1 and a freq=2/basis=2 case: tests E being anchored at the
     // regular period *following* last_interest, not the one *preceding* maturity.
     assert_float_close(
         &eval1(
@@ -427,7 +427,7 @@ fn test_oddlprice_oddlyield_match_real_excel() {
     );
 }
 
-// EUROCONVERT is the one function in this batch NOT verified against real
+// [LLM-generated] EUROCONVERT is the one function in this batch NOT verified against real
 // Excel: it requires the "Euro Currency Tools" add-in, which returns
 // #NAME? in this environment's Excel regardless of arguments (confirmed
 // by direct check). These expected values are computed by hand from
@@ -456,7 +456,7 @@ fn test_euroconvert_same_currency_is_a_no_op() {
 
 #[test]
 fn test_euroconvert_rounds_zero_decimal_currencies_to_whole_units() {
-    // ITL/ESP/BEF/LUF had no meaningful subunit in everyday use.
+    // [LLM-generated] ITL/ESP/BEF/LUF had no meaningful subunit in everyday use.
     assert_float_close(
         &eval1("=EUROCONVERT(100, \"EUR\", \"ITL\")"),
         193627.0,
@@ -482,7 +482,7 @@ fn test_euroconvert_rejects_triangulation_precision_below_3() {
 
 #[test]
 fn test_odd_period_functions_reject_settlement_at_or_before_anchor() {
-    // Confirmed against real Excel via the differential fuzzer: settlement
+    // [LLM-generated] Confirmed against real Excel via the differential fuzzer: settlement
     // must be strictly after issue (ODDFPRICE/ODDFYIELD) or last_interest
     // (ODDLPRICE/ODDLYIELD) -- settlement == issue/last_interest is #NUM!,
     // not a zero-length odd period.
@@ -504,13 +504,13 @@ fn test_odd_period_functions_reject_settlement_at_or_before_anchor() {
     ));
 }
 
-// --- Database (D*) functions --------------------------------------------
+// [LLM-generated] --- Database (D*) functions --------------------------------------------
 //
-// Uses Microsoft's own classic "Tree/Height/Age/Yield/Profit" documented
+// [LLM-generated] Uses Microsoft's own classic "Tree/Height/Age/Yield/Profit" documented
 // example dataset. Every expected value below was confirmed against real
 // Microsoft Excel via the differential fuzzer.
 //
-//     A       B       C    D      E        G     H     J       K
+// [LLM-generated] A       B       C    D      E        G     H     J       K
 //  1  Tree    Height  Age  Yield  Profit   Tree  Height Tree    Tree
 //  2  Apple   18      20   14     105      Apple >12    Pear    Cherry
 //  3  Pear    12      12   10     96                    Cherry  Tree
@@ -519,7 +519,7 @@ fn test_odd_period_functions_reject_settlement_at_or_before_anchor() {
 //  6  Pear    9       8    8      76.8     Pear
 //  7  Apple   8       9    6      45       Cherry
 //
-// G1:H2 = Tree="Apple" AND Height>12 (matches rows 2 and 5: Profit 105, 75)
+// [LLM-generated] G1:H2 = Tree="Apple" AND Height>12 (matches rows 2 and 5: Profit 105, 75)
 // J1:J3 = Tree="Pear" OR Tree="Cherry" (matches rows 3, 4, 6: Profit 96, 105, 76.8)
 // J1:J2 alone = Tree="Pear" (matches rows 3 and 6 -> ambiguous for DGET)
 // K1:K2 = Tree="Cherry" (matches row 4 only -> unique for DGET)
@@ -633,23 +633,23 @@ fn database_test_sheet() -> Sheet {
 #[test]
 fn test_database_functions_and_criteria_match_real_excel() {
     let sheet = database_test_sheet();
-    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 11)), 180.0, 1e-9); // DSUM
-    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 11)), 12.0, 1e-9); // DAVERAGE
-    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 11)), 2.0, 1e-9); // DCOUNT
-    assert_float_close(&sheet.get_result_data(&CellRef::new(3, 11)), 2.0, 1e-9); // DCOUNTA
-    assert_float_close(&sheet.get_result_data(&CellRef::new(4, 11)), 105.0, 1e-9); // DMAX
-    assert_float_close(&sheet.get_result_data(&CellRef::new(5, 11)), 75.0, 1e-9); // DMIN
-    assert_float_close(&sheet.get_result_data(&CellRef::new(6, 11)), 140.0, 1e-9); // DPRODUCT
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 11)), 180.0, 1e-9); // [LLM-generated] DSUM
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 11)), 12.0, 1e-9); // [LLM-generated] DAVERAGE
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 11)), 2.0, 1e-9); // [LLM-generated] DCOUNT
+    assert_float_close(&sheet.get_result_data(&CellRef::new(3, 11)), 2.0, 1e-9); // [LLM-generated] DCOUNTA
+    assert_float_close(&sheet.get_result_data(&CellRef::new(4, 11)), 105.0, 1e-9); // [LLM-generated] DMAX
+    assert_float_close(&sheet.get_result_data(&CellRef::new(5, 11)), 75.0, 1e-9); // [LLM-generated] DMIN
+    assert_float_close(&sheet.get_result_data(&CellRef::new(6, 11)), 140.0, 1e-9); // [LLM-generated] DPRODUCT
 }
 
 #[test]
 fn test_dget_unique_match_or_error() {
     let mut sheet = database_test_sheet();
-    sheet.set_cell_src(0, 11, "=DGET(A1:E7, \"Profit\", K1:K2)".to_string()); // unique Cherry match
-    sheet.set_cell_src(1, 11, "=DGET(A1:E7, \"Profit\", J1:J2)".to_string()); // 2 Pear matches -> ambiguous
+    sheet.set_cell_src(0, 11, "=DGET(A1:E7, \"Profit\", K1:K2)".to_string()); // [LLM-generated] unique Cherry match
+    sheet.set_cell_src(1, 11, "=DGET(A1:E7, \"Profit\", J1:J2)".to_string()); // [LLM-generated] 2 Pear matches -> ambiguous
     sheet.set_cell_src(2, 10, "Tree".to_string());
     sheet.set_cell_src(3, 10, "Mango".to_string());
-    sheet.set_cell_src(2, 11, "=DGET(A1:E7, \"Profit\", K3:K4)".to_string()); // no matches
+    sheet.set_cell_src(2, 11, "=DGET(A1:E7, \"Profit\", K3:K4)".to_string()); // [LLM-generated] no matches
     sheet.commit(None).unwrap();
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 11)), 105.0, 1e-9);
     assert!(matches!(
@@ -665,7 +665,7 @@ fn test_dget_unique_match_or_error() {
 #[test]
 fn test_database_or_across_criteria_rows_and_field_by_index() {
     let mut sheet = database_test_sheet();
-    // Pear OR Cherry, field selected by 1-based index (5 = Profit).
+    // [LLM-generated] Pear OR Cherry, field selected by 1-based index (5 = Profit).
     sheet.set_cell_src(0, 11, "=DSUM(A1:E7, 5, J1:J3)".to_string());
     sheet.commit(None).unwrap();
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 11)), 277.8, 1e-6);
@@ -691,7 +691,7 @@ fn test_database_blank_criteria_row_matches_every_record() {
 
 #[test]
 fn test_database_aggregation_ignores_blank_and_boolean_range_values() {
-    // Aggregating range arguments in DSUM/DCOUNT/DPRODUCT/DAVERAGE ignores
+    // [LLM-generated] Aggregating range arguments in DSUM/DCOUNT/DPRODUCT/DAVERAGE ignores
     // blanks and TRUE/FALSE range cells rather than coercing them to numeric 0/1.
     let grid: [[&str; 4]; 4] = [
         ["Key", "Val", "=DSUM(A1:B4, \"Val\", D1:D2)", "Key"],
@@ -701,7 +701,7 @@ fn test_database_aggregation_ignores_blank_and_boolean_range_values() {
     ];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
-    // Only the genuine number (10) should count/sum/multiply; the blank
+    // [LLM-generated] Only the genuine number (10) should count/sum/multiply; the blank
     // and the boolean must be excluded, not treated as 0/1.
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 10.0, 1e-9);
     assert_float_close(&sheet.get_result_data(&CellRef::new(2, 2)), 1.0, 1e-9);
@@ -710,26 +710,26 @@ fn test_database_aggregation_ignores_blank_and_boolean_range_values() {
 
 #[test]
 fn test_database_numeric_criteria_excludes_non_numeric_cells() {
-    // Numeric criteria (e.g. ">"/"<") match genuine numbers only;
+    // [LLM-generated] Numeric criteria (e.g. ">"/"<") match genuine numbers only;
     // blank/text/boolean database cells do not match.
     let grid: [[&str; 4]; 6] = [
         ["Key", "Val", "=DCOUNT(A1:B6, \"Val\", D1:D2)", "Val"],
         ["x", "1", "", "<1000"],
-        ["x", "", "", ""],     // blank -- must not match "<1000" as if it were 0
-        ["x", "text", "", ""], // text -- must not match either
-        ["x", "TRUE", "", ""], // boolean -- must not match either
+        ["x", "", "", ""], // [LLM-generated] blank -- must not match "<1000" as if it were 0
+        ["x", "text", "", ""], // [LLM-generated] text -- must not match either
+        ["x", "TRUE", "", ""], // [LLM-generated] boolean -- must not match either
         ["x", "-5", "", ""],
     ];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
-    // Only the two genuine numbers (1 and -5) should match and count.
+    // [LLM-generated] Only the two genuine numbers (1 and -5) should match and count.
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 2.0, 1e-9);
 }
 
-// --- LAMBDA family (LAMBDA, MAP, REDUCE, SCAN, BYROW, BYCOL, MAKEARRAY,
+// [LLM-generated] --- LAMBDA family (LAMBDA, MAP, REDUCE, SCAN, BYROW, BYCOL, MAKEARRAY,
 // ISOMITTED) --------------------------------------------------------------
 //
-// MAP and REDUCE results were confirmed against real Microsoft Excel.
+// [LLM-generated] MAP and REDUCE results were confirmed against real Microsoft Excel.
 // BYROW/BYCOL/MAKEARRAY, a bare uninvoked LAMBDA, and even SCAN could not
 // be reliably confirmed that way: any dynamic-array-spilling formula --
 // even a bare `=SEQUENCE(3)` with no LAMBDA involved at all -- breaks this
@@ -742,7 +742,7 @@ fn test_database_numeric_criteria_excludes_non_numeric_cells() {
 
 #[test]
 fn test_lambda_bare_is_uncallable() {
-    // The parser has no `(expr)(args)` immediate-invocation syntax (that
+    // [LLM-generated] The parser has no `(expr)(args)` immediate-invocation syntax (that
     // would require calling an arbitrary sub-expression, not just a bare
     // identifier), so an uninvoked, unnamed LAMBDA can't produce a value,
     // matching Excel's own #CALC! for this case.
@@ -754,7 +754,7 @@ fn test_lambda_bare_is_uncallable() {
 
 #[test]
 fn test_isomitted_best_effort() {
-    // Best-effort implementation (see the doc comment in evaluate_function
+    // [LLM-generated] Best-effort implementation (see the doc comment in evaluate_function
     // above `ISOMITTED`'s dispatch): every lambda invocation path here
     // always supplies exactly as many values as declared parameters, so a
     // declared, in-scope parameter is never actually omitted -- this only
@@ -778,8 +778,8 @@ fn test_map_single_and_multiple_arrays_match_real_excel() {
     ];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
-    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 40.0, 1e-9); // 20*2
-    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 2)), 33.0, 1e-9); // 30+3
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 40.0, 1e-9); // [LLM-generated] 20*2
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 2)), 33.0, 1e-9); // [LLM-generated] 30+3
 }
 
 #[test]
@@ -797,7 +797,7 @@ fn test_reduce_and_scan_match_real_excel() {
 
 #[test]
 fn test_reduce_two_arg_form_seeds_from_first_element() {
-    // Real Excel's REDUCE always takes 3 arguments, but initial_value is
+    // [LLM-generated] Real Excel's REDUCE always takes 3 arguments, but initial_value is
     // documented as optional; since this parser has no syntax to express
     // "omitted argument" (no leading/trailing empty comma support), a
     // plain 2-argument REDUCE(array, lambda) is accepted as that
@@ -815,7 +815,7 @@ fn test_reduce_two_arg_form_seeds_from_first_element() {
 
 #[test]
 fn test_byrow_and_bycol_sum_hand_verified() {
-    // Data: [[1,2,3],[4,5,6],[7,8,9]]. Row sums: 6, 15, 24.
+    // [LLM-generated] Data: [[1,2,3],[4,5,6],[7,8,9]]. Row sums: 6, 15, 24.
     // Column sums: 12, 15, 18. Not verifiable against real Excel here (see
     // module doc comment above) -- hand-verified arithmetic instead.
     let grid: [[&str; 5]; 3] = [
@@ -855,7 +855,7 @@ fn test_byrow_and_bycol_sum_hand_verified() {
 
 #[test]
 fn test_makearray_builds_row_major_flat_array_hand_verified() {
-    // MAKEARRAY(2, 3, LAMBDA(r,c, r*10+c)) should build
+    // [LLM-generated] MAKEARRAY(2, 3, LAMBDA(r,c, r*10+c)) should build
     // [[11,12,13],[21,22,23]] flattened row-major: [11,12,13,21,22,23].
     let grid: [[&str; 1]; 6] = [
         ["=INDEX(MAKEARRAY(2, 3, LAMBDA(rr,cc, rr*10+cc)), 1)"],
@@ -874,7 +874,7 @@ fn test_makearray_builds_row_major_flat_array_hand_verified() {
 
 #[test]
 fn test_index_two_arg_form_is_one_based() {
-    // The 2-arg INDEX(array, n) form is 1-based (INDEX(list, 1) returns
+    // [LLM-generated] The 2-arg INDEX(array, n) form is 1-based (INDEX(list, 1) returns
     // the list's 1st element).
     let grid: [[&str; 2]; 3] = [
         ["10", "=INDEX(A1:A3, 1)"],
@@ -888,16 +888,16 @@ fn test_index_two_arg_form_is_one_based() {
     assert_float_close(&sheet.get_result_data(&CellRef::new(2, 1)), 30.0, 1e-9);
 }
 
-// --- Range/workbook metadata introspection --------------------------------
+// [LLM-generated] --- Range/workbook metadata introspection --------------------------------
 //
-// Every expected value below was confirmed against real Microsoft Excel
+// [LLM-generated] Every expected value below was confirmed against real Microsoft Excel
 // (FORMULATEXT/ISFORMULA/SHEETS needed an `_xlfn.` prefix to be recognized
 // at all when written by openpyxl -- confirmed as the actual cause of a
 // real #NAME? mismatch, not a bug in this implementation).
 
 #[test]
 fn test_row_and_column_return_array_for_multi_row_or_col_range() {
-    // ROW/COLUMN against a multi-row/multi-column reference return
+    // [LLM-generated] ROW/COLUMN against a multi-row/multi-column reference return
     // an array (one entry per row/column spanned) -- `=SUM(ROW(A1:A5))`
     // is 1+2+3+4+5=15.
     let grid: [[&str; 2]; 5] = [
@@ -972,7 +972,7 @@ fn test_sheets_counts_context_sheets() {
 
 #[test]
 fn test_sheet_reports_real_workbook_ordinal() {
-    // SHEET() reports the sheet's 1-based position in workbook order.
+    // [LLM-generated] SHEET() reports the sheet's 1-based position in workbook order.
     let table1 = Sheet::new(SheetInit {
         id: None,
         name: Some("table_1".to_string()),
@@ -1006,20 +1006,20 @@ fn test_sheet_reports_real_workbook_ordinal() {
     let (r3, _) = sheets[2].eval("=SHEET()", Some(&context)).unwrap();
     assert_float_close(&r3, 3.0, 1e-9);
 
-    // A reference into another sheet reports *that* sheet's ordinal, not
+    // [LLM-generated] A reference into another sheet reports *that* sheet's ordinal, not
     // the formula's own.
     let (r4, _) = sheets[0]
         .eval("=SHEET(table_3!A1)", Some(&context))
         .unwrap();
     assert_float_close(&r4, 3.0, 1e-9);
 
-    // A plain text sheet name is also accepted, same as real Excel.
+    // [LLM-generated] A plain text sheet name is also accepted, same as real Excel.
     let (r5, _) = sheets[0]
         .eval("=SHEET(\"table_2\")", Some(&context))
         .unwrap();
     assert_float_close(&r5, 2.0, 1e-9);
 
-    // No context at all (standalone eval outside a WorkbookManager pass)
+    // [LLM-generated] No context at all (standalone eval outside a WorkbookManager pass)
     // keeps the old documented fallback of 1.
     assert!(matches!(eval1("=SHEET()"), ResultData::Float(f) if f == 1.0));
 }
@@ -1070,9 +1070,9 @@ fn test_cell_info_subset() {
     assert_float_close(&sheet.get_result_data(&CellRef::new(3, 1)), 10.0, 1e-9);
 }
 
-// --- Dynamic array reshaping/lookup batch ---
+// [LLM-generated] --- Dynamic array reshaping/lookup batch ---
 //
-// Each test below builds its 2D input with `SEQUENCE(rows, cols)` so it
+// [LLM-generated] Each test below builds its 2D input with `SEQUENCE(rows, cols)` so it
 // doesn't need a cell grid, then pulls values back out with `INDEX`/`SUM`.
 // HSTACK, VSTACK, UNIQUE, SORT, XMATCH, and FILTER (with a genuine boolean
 // helper range rather than a broadcast comparison -- this engine's
@@ -1093,7 +1093,7 @@ fn test_cell_info_subset() {
 
 #[test]
 fn test_transpose_swaps_rows_and_cols() {
-    // SEQUENCE(2,3) = [[1,2,3],[4,5,6]]; transposed = [[1,4],[2,5],[3,6]].
+    // [LLM-generated] SEQUENCE(2,3) = [[1,2,3],[4,5,6]]; transposed = [[1,4],[2,5],[3,6]].
     assert_float_close(&eval1("=INDEX(TRANSPOSE(SEQUENCE(2,3)),3,1)"), 3.0, 1e-9);
     assert_float_close(&eval1("=INDEX(TRANSPOSE(SEQUENCE(2,3)),1,2)"), 4.0, 1e-9);
     assert_float_close(&eval1("=SUM(TRANSPOSE(SEQUENCE(2,3)))"), 21.0, 1e-9);
@@ -1101,7 +1101,7 @@ fn test_transpose_swaps_rows_and_cols() {
 
 #[test]
 fn test_index_recovers_shape_of_nested_reshape_function() {
-    // INDEX's 3-arg row/col form recovers the 2D shape of array-producing
+    // [LLM-generated] INDEX's 3-arg row/col form recovers the 2D shape of array-producing
     // function calls (such as EXPAND).
     let grid: [[&str; 3]; 2] = [
         ["1", "2", "=INDEX(EXPAND(A1:B2,3,3,0),3,3)"],
@@ -1114,7 +1114,7 @@ fn test_index_recovers_shape_of_nested_reshape_function() {
 
 #[test]
 fn test_hstack_vstack_combine_arrays() {
-    // HSTACK(SEQUENCE(2,1), SEQUENCE(2,1)) side-by-side: [[1,1],[2,2]].
+    // [LLM-generated] HSTACK(SEQUENCE(2,1), SEQUENCE(2,1)) side-by-side: [[1,1],[2,2]].
     assert_float_close(
         &eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,1)"),
         2.0,
@@ -1125,7 +1125,7 @@ fn test_hstack_vstack_combine_arrays() {
         2.0,
         1e-9,
     );
-    // VSTACK(SEQUENCE(1,2), SEQUENCE(1,2)) stacked: [[1,2],[1,2]].
+    // [LLM-generated] VSTACK(SEQUENCE(1,2), SEQUENCE(1,2)) stacked: [[1,2],[1,2]].
     assert_float_close(
         &eval1("=INDEX(VSTACK(SEQUENCE(1,2),SEQUENCE(1,2)),2,2)"),
         2.0,
@@ -1140,7 +1140,7 @@ fn test_hstack_vstack_combine_arrays() {
 
 #[test]
 fn test_chooserows_chosecols_select_by_index() {
-    // SEQUENCE(3,3) = [[1,2,3],[4,5,6],[7,8,9]].
+    // [LLM-generated] SEQUENCE(3,3) = [[1,2,3],[4,5,6],[7,8,9]].
     assert_float_close(&eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),2),1,1)"), 4.0, 1e-9);
     assert_float_close(
         &eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),-1),1,1)"),
@@ -1173,7 +1173,7 @@ fn test_tocol_torow_flatten() {
 
 #[test]
 fn test_wraprows_wrapcols_reshape_flat_sequence() {
-    // Confirmed against real Excel: WRAPROWS(SEQUENCE(7),3,0) wraps
+    // [LLM-generated] Confirmed against real Excel: WRAPROWS(SEQUENCE(7),3,0) wraps
     // [1..7] into rows of 3, padding the last row with 0; WRAPCOLS does
     // the same column-major.
     assert_float_close(&eval1("=INDEX(WRAPROWS(SEQUENCE(7),3,0),3,1)"), 7.0, 1e-9);
@@ -1184,7 +1184,7 @@ fn test_wraprows_wrapcols_reshape_flat_sequence() {
 
 #[test]
 fn test_unique_sort_sortby_filter_trimrange() {
-    // UNIQUE(A1:A5) -> {10,20,5,30}; SUM should drop the duplicate 20.
+    // [LLM-generated] UNIQUE(A1:A5) -> {10,20,5,30}; SUM should drop the duplicate 20.
     let grid_u: [[&str; 3]; 5] = [
         ["10", "", "=SUM(UNIQUE(A1:A5))"],
         ["20", "", ""],
@@ -1196,7 +1196,7 @@ fn test_unique_sort_sortby_filter_trimrange() {
     sheet_u.commit(None).unwrap();
     assert_float_close(&sheet_u.get_result_data(&CellRef::new(0, 2)), 65.0, 1e-9);
 
-    // SORT(A1:A5, 1, -1) descending -> first element should be the max, 30.
+    // [LLM-generated] SORT(A1:A5, 1, -1) descending -> first element should be the max, 30.
     let grid_s: [[&str; 3]; 5] = [
         ["10", "", "=INDEX(SORT(A1:A5,1,-1),1)"],
         ["20", "", ""],
@@ -1208,7 +1208,7 @@ fn test_unique_sort_sortby_filter_trimrange() {
     sheet_s.commit(None).unwrap();
     assert_float_close(&sheet_s.get_result_data(&CellRef::new(0, 2)), 30.0, 1e-9);
 
-    // SORTBY(A1:A5, B1:B5, -1): sort A by B descending; B's max (50) is row1 (A=10).
+    // [LLM-generated] SORTBY(A1:A5, B1:B5, -1): sort A by B descending; B's max (50) is row1 (A=10).
     let grid_sb: [[&str; 3]; 5] = [
         ["10", "50", "=INDEX(SORTBY(A1:A5,B1:B5,-1),1)"],
         ["20", "0", ""],
@@ -1220,7 +1220,7 @@ fn test_unique_sort_sortby_filter_trimrange() {
     sheet_sb.commit(None).unwrap();
     assert_float_close(&sheet_sb.get_result_data(&CellRef::new(0, 2)), 10.0, 1e-9);
 
-    // FILTER(A1:A5, B1:B5) with a genuine boolean helper range (not a
+    // [LLM-generated] FILTER(A1:A5, B1:B5) with a genuine boolean helper range (not a
     // broadcast comparison -- this engine's comparison operators don't
     // broadcast across a range, a separate pre-existing limitation).
     let grid_f: [[&str; 3]; 5] = [
@@ -1234,13 +1234,13 @@ fn test_unique_sort_sortby_filter_trimrange() {
     sheet_f.commit(None).unwrap();
     assert_float_close(&sheet_f.get_result_data(&CellRef::new(0, 2)), 70.0, 1e-9);
 
-    // TRIMRANGE(A1:A5) with no blank/error padding is a pass-through.
+    // [LLM-generated] TRIMRANGE(A1:A5) with no blank/error padding is a pass-through.
     assert_float_close(&eval1("=SUM(TRIMRANGE(SEQUENCE(3,3)))"), 45.0, 1e-9);
 }
 
 #[test]
 fn test_fuzz_unique_distinguishes_numeric_text_from_numbers() {
-    // Harvested from fuzz/fuzz_excel.py seed 993170: UNIQUE keeps text "3"
+    // [LLM-generated] Harvested from fuzz/fuzz_excel.py seed 993170: UNIQUE keeps text "3"
     // distinct from numeric 3. SUM then ignores the text and sums 3 + 10.
     let grid = [
         ["\"3\"", "=SUM(UNIQUE(A1:A5))"],
@@ -1256,7 +1256,7 @@ fn test_fuzz_unique_distinguishes_numeric_text_from_numbers() {
 
 #[test]
 fn test_sort_and_sortby_always_place_blanks_last() {
-    // Both SORT and SORTBY always place blanks last, regardless of sort direction.
+    // [LLM-generated] Both SORT and SORTBY always place blanks last, regardless of sort direction.
     let grid: [[&str; 4]; 5] = [
         ["-215.8", "10", "", "=INDEX(SORT(A1:A5,1,-1),1)"],
         ["", "20", "4", "=INDEX(SORTBY(B1:B5,C1:C5,-1),1)"],
@@ -1266,10 +1266,10 @@ fn test_sort_and_sortby_always_place_blanks_last() {
     ];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
-    // SORT(A1:A5,1,-1): A2 is blank, sorted last regardless of direction,
+    // [LLM-generated] SORT(A1:A5,1,-1): A2 is blank, sorted last regardless of direction,
     // so the largest real number (-88) is first.
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 3)), -88.0, 1e-9);
-    // SORTBY(B1:B5,C1:C5,-1): C1 is blank, sorted last regardless of
+    // [LLM-generated] SORTBY(B1:B5,C1:C5,-1): C1 is blank, sorted last regardless of
     // direction, so the row with C's largest real value (row2, C=4, B=20)
     // comes first.
     assert_float_close(&sheet.get_result_data(&CellRef::new(1, 3)), 20.0, 1e-9);
@@ -1277,7 +1277,7 @@ fn test_sort_and_sortby_always_place_blanks_last() {
 
 #[test]
 fn test_lookup_vector_form_on_sorted_data() {
-    // LOOKUP requires an ascending-sorted lookup vector; Excel's own docs
+    // [LLM-generated] LOOKUP requires an ascending-sorted lookup vector; Excel's own docs
     // call behavior on unsorted input unpredictable (confirmed
     // divergent-but-Excel-undefined via the differential fuzzer on
     // unsorted input, not treated as a visi bug). On sorted input, visi
@@ -1320,7 +1320,7 @@ fn test_xmatch_supports_next_smaller_and_larger_modes() {
 
 #[test]
 fn test_bare_row_and_column_report_current_cell_position() {
-    // No-arg ROW()/COLUMN() report the position of the cell the formula
+    // [LLM-generated] No-arg ROW()/COLUMN() report the position of the cell the formula
     // itself lives in -- distinct from the reference-argument form, which
     // reports the referenced range instead (already covered elsewhere).
     let grid: [[&str; 3]; 2] = [["=ROW()", "=COLUMN()", "x"], ["x", "x", "=ROW()+COLUMN()"]];
@@ -1335,7 +1335,7 @@ fn test_bare_row_and_column_report_current_cell_position() {
 #[test]
 fn test_let_binds_names_in_sequence_and_rejects_duplicate_names() {
     assert_float_close(&eval1("=LET(x, 5, x * 2)"), 10.0, 1e-9);
-    // Later pairs can reference earlier ones in the same LET.
+    // [LLM-generated] Later pairs can reference earlier ones in the same LET.
     assert_float_close(&eval1("=LET(x, 5, y, x + 1, x + y)"), 11.0, 1e-9);
     assert!(matches!(
         eval1("=LET(x, 1, x, 2, x)"),
@@ -1372,7 +1372,7 @@ fn test_randarray_respects_shape_bounds_and_whole_number_flag() {
 
 #[test]
 fn test_hlookup_exact_and_approximate_match_on_text_header_row() {
-    // HLOOKUP matches exact and approximate values on text header rows.
+    // [LLM-generated] HLOOKUP matches exact and approximate values on text header rows.
     let grid: [[&str; 3]; 2] = [["Jan", "Feb", "Mar"], ["10", "20", "30"]];
     let mut sheet = create_sheet(&grid);
     sheet.commit(None).unwrap();
@@ -1388,35 +1388,35 @@ fn test_hlookup_exact_and_approximate_match_on_text_header_row() {
     let numeric_grid: [[&str; 3]; 2] = [["10", "20", "30"], ["a", "b", "c"]];
     let mut numeric_sheet = create_sheet(&numeric_grid);
     numeric_sheet.commit(None).unwrap();
-    // Approximate match: largest header <= 25 is 20, in column 2.
+    // [LLM-generated] Approximate match: largest header <= 25 is 20, in column 2.
     let (approx, _) = numeric_sheet.eval("=HLOOKUP(25,A1:C2,2)", None).unwrap();
     assert_eq!(approx.to_string(), "b");
 }
 
 #[test]
 fn test_date_functions_match_documented_excel_examples() {
-    // Jan 1, 2024 (serial 45292) is a Monday. WORKDAY skips both weekend
+    // [LLM-generated] Jan 1, 2024 (serial 45292) is a Monday. WORKDAY skips both weekend
     // days landing on Mon 1/8/2024 (serial 45299) five working days later
     // (Tue-Fri, then Mon).
     assert_float_close(&eval1("=WORKDAY(DATE(2024,1,1),5)"), 45299.0, 1e-9);
-    // Inclusive of both endpoints, excluding the Sat/Sun in between:
+    // [LLM-generated] Inclusive of both endpoints, excluding the Sat/Sun in between:
     // Jan 1, 2, 3, 4, 5, 8 = 6 working days.
     assert_float_close(
         &eval1("=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,8))"),
         6.0,
         1e-9,
     );
-    // EOMONTH(0) is the same month's last day; EOMONTH(1) rolls into
+    // [LLM-generated] EOMONTH(0) is the same month's last day; EOMONTH(1) rolls into
     // Feb 2024, a leap year (serial 45351 = Feb 29), so the last day is
     // the 29th.
     assert_float_close(&eval1("=DAY(EOMONTH(DATE(2024,1,15),0))"), 31.0, 1e-9);
     assert_float_close(&eval1("=EOMONTH(DATE(2024,1,15),1)"), 45351.0, 1e-9);
-    // WEEKNUM with the default return type (week starts Sunday): Jan 1,
+    // [LLM-generated] WEEKNUM with the default return type (week starts Sunday): Jan 1,
     // 2024 (a Monday) is always week 1; the first Sunday (Jan 7) starts
     // week 2.
     assert_float_close(&eval1("=WEEKNUM(DATE(2024,1,1))"), 1.0, 1e-9);
     assert_float_close(&eval1("=WEEKNUM(DATE(2024,1,7))"), 2.0, 1e-9);
-    // Microsoft's own DAYS360 documentation example (US/NASD method).
+    // [LLM-generated] Microsoft's own DAYS360 documentation example (US/NASD method).
     assert_float_close(
         &eval1("=DAYS360(DATE(2011,1,30),DATE(2011,2,1))"),
         1.0,
@@ -1426,14 +1426,14 @@ fn test_date_functions_match_documented_excel_examples() {
 
 #[test]
 fn test_besselk_bessely_match_known_reference_values() {
-    // BESSELK/BESSELY match known reference values (K_n/Y_n diverge as x -> 0
+    // [LLM-generated] BESSELK/BESSELY match known reference values (K_n/Y_n diverge as x -> 0
     // while I_n/J_n stay finite there). Expected values are well-known
     // constants (Abramowitz & Stegun tables).
     assert_float_close(&eval1("=BESSELK(1,0)"), 0.4210244382, 1e-8);
     assert_float_close(&eval1("=BESSELK(1,1)"), 0.6019072301, 1e-8);
     assert_float_close(&eval1("=BESSELY(1,0)"), 0.0882569642, 1e-8);
     assert_float_close(&eval1("=BESSELY(1,1)"), -0.7812128213, 1e-8);
-    // Sanity check the still-correct BESSELI/BESSELJ weren't disturbed.
+    // [LLM-generated] Sanity check the still-correct BESSELI/BESSELJ weren't disturbed.
     assert_float_close(&eval1("=BESSELI(1,0)"), 1.2660658778, 1e-8);
     assert_float_close(&eval1("=BESSELJ(1,0)"), 0.7651976866, 1e-8);
 }
@@ -1447,15 +1447,15 @@ fn test_complex_number_functions_round_trip() {
     assert_eq!(eval1("=IMCONJUGATE(\"3+4i\")").to_string(), "3-4i");
     assert_eq!(eval1("=IMSUM(\"3+4i\",\"1-2i\")").to_string(), "4+2i");
     assert_eq!(eval1("=IMSUB(\"3+4i\",\"1-2i\")").to_string(), "2+6i");
-    // (3+4i)(1-2i) = 3-6i+4i-8i^2 = 3-2i+8 = 11-2i
+    // [LLM-generated] (3+4i)(1-2i) = 3-6i+4i-8i^2 = 3-2i+8 = 11-2i
     assert_eq!(eval1("=IMPRODUCT(\"3+4i\",\"1-2i\")").to_string(), "11-2i");
-    // (3+4i)/(1-2i) = (3+4i)(1+2i)/5 = (3+6i+4i-8)/5 = (-5+10i)/5 = -1+2i
+    // [LLM-generated] (3+4i)/(1-2i) = (3+4i)(1+2i)/5 = (3+6i+4i-8)/5 = (-5+10i)/5 = -1+2i
     assert_eq!(eval1("=IMDIV(\"3+4i\",\"1-2i\")").to_string(), "-1+2i");
 }
 
 #[test]
 fn test_cube_webservice_image_report_unavailable_connections_not_echo_stub_args() {
-    // None has a local data source this engine can serve (a live OLAP cube
+    // [LLM-generated] None has a local data source this engine can serve (a live OLAP cube
     // connection, actual network access, real image decoding); the error
     // codes match what real Excel shows once its equivalent live connection/
     // resource is unavailable (#N/A for the CUBE* family, mirroring
@@ -1487,7 +1487,7 @@ fn test_cube_webservice_image_report_unavailable_connections_not_echo_stub_args(
 
 #[test]
 fn test_stockhistory_and_rtd_report_unavailable_data_source() {
-    // Neither has a local data source this engine can serve (a live
+    // [LLM-generated] Neither has a local data source this engine can serve (a live
     // Microsoft stock-data cloud connection, a registered Windows COM RTD
     // server) -- #N/A matches real Excel's own display once its
     // equivalent live connection is unavailable.
@@ -1503,20 +1503,20 @@ fn test_stockhistory_and_rtd_report_unavailable_data_source() {
 
 #[test]
 fn test_coupon_schedule_is_end_of_month_when_maturity_is() {
-    // A maturity on the last day of its month puts the whole coupon
+    // [LLM-generated] A maturity on the last day of its month puts the whole coupon
     // schedule on month-ends, so a step that lands in a leap year takes the
     // 29th rather than the anchor's 28th. Stepping by a fixed day-of-month
     // instead made COUPPCD report the settlement date itself.
     // Values are verbatim real Excel.
     let settlement = "DATE(2024,2,28)";
-    let maturity = "EDATE(DATE(2024,2,28),180)"; // 2039-02-28, a month end
-    // 2023-02-28
+    let maturity = "EDATE(DATE(2024,2,28),180)"; // [LLM-generated] 2039-02-28, a month end
+    // [LLM-generated] 2023-02-28
     assert_float_close(
         &eval1(&format!("=COUPPCD({settlement}, {maturity}, 1)")),
         44985.0,
         1e-9,
     );
-    // 2024-02-29 -- the 29th, not the 28th.
+    // [LLM-generated] 2024-02-29 -- the 29th, not the 28th.
     assert_float_close(
         &eval1(&format!("=COUPNCD({settlement}, {maturity}, 1)")),
         45351.0,
@@ -1527,30 +1527,30 @@ fn test_coupon_schedule_is_end_of_month_when_maturity_is() {
         16.0,
         1e-9,
     );
-    // Semi-annual on the same bond: 2023-08-31, again a month end.
+    // [LLM-generated] Semi-annual on the same bond: 2023-08-31, again a month end.
     assert_float_close(
         &eval1(&format!("=COUPPCD({settlement}, {maturity}, 2)")),
         45169.0,
         1e-9,
     );
 
-    // A maturity that is *not* a month end keeps its day-of-month.
+    // [LLM-generated] A maturity that is *not* a month end keeps its day-of-month.
     // 2024-05-15 settling against 2039-06-15, semi-annual.
     assert_float_close(
         &eval1("=COUPPCD(DATE(2024,5,15), EDATE(DATE(2024,5,15),181), 2)"),
-        45275.0, // 2023-12-15
+        45275.0, // [LLM-generated] 2023-12-15
         1e-9,
     );
     assert_float_close(
         &eval1("=COUPNCD(DATE(2024,5,15), EDATE(DATE(2024,5,15),181), 2)"),
-        45458.0, // 2024-06-15
+        45458.0, // [LLM-generated] 2024-06-15
         1e-9,
     );
 }
 
 #[test]
 fn test_amordegrc_keeps_full_precision_in_the_running_balance() {
-    // The declining balance carries full precision; only the returned
+    // [LLM-generated] The declining balance carries full precision; only the returned
     // figure is rounded. Rounding each period and subtracting the rounded
     // amount compounds the error and shifts a later period by a whole unit
     // -- period 2 below is 4624.4757 carried exactly (Excel: 4624), but

@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-/// A `Vec` behind an [`Arc`], cheap to clone and copy-on-write to mutate.
+/// [LLM-generated] A `Vec` behind an [`Arc`], cheap to clone and copy-on-write to mutate.
 ///
 /// The engine clones whole sheets freely -- to build a compilation context, to
 /// snapshot state -- and most of those clones never write. Sharing the backing
@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub struct SharedVec<T>(Arc<Vec<T>>);
 
 impl<T> SharedVec<T> {
-    /// An empty `SharedVec`.
+    /// [LLM-generated] An empty `SharedVec`.
     pub fn new() -> Self {
         Self(Arc::new(Vec::new()))
     }

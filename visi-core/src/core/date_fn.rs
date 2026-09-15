@@ -104,7 +104,7 @@ pub fn date_fn(year: f64, month: f64, day: f64) -> Result<f64, String> {
     }
 }
 
-/// Parses a date-only text into an (year, month, day) triple, without
+/// [LLM-generated] Parses a date-only text into an (year, month, day) triple, without
 /// Parses a date-only text into an (year, month, day) triple, without
 /// resolving it to a serial number yet. Uses default US locale.
 #[allow(dead_code)]
@@ -112,7 +112,7 @@ pub fn parse_date_parts(text: &str) -> Option<(i32, i32, i32)> {
     parse_date_parts_with_locale(text, &crate::core::locale::Locale::en_us())
 }
 
-/// Parses a date-only text into an (year, month, day) triple using the specified locale.
+/// [LLM-generated] Parses a date-only text into an (year, month, day) triple using the specified locale.
 pub fn parse_date_parts_with_locale(
     text: &str,
     locale: &crate::core::locale::Locale,
@@ -121,7 +121,7 @@ pub fn parse_date_parts_with_locale(
         .map(|(d, _)| (d.year, d.month as i32, d.day as i32))
 }
 
-/// Days in a given month, honouring leap years.
+/// [LLM-generated] Days in a given month, honouring leap years.
 pub fn days_in_month(year: i32, month: i32) -> i32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -137,7 +137,7 @@ pub fn days_in_month(year: i32, month: i32) -> i32 {
     }
 }
 
-/// DATEDIF's calendar difference, decomposed into whole years, whole
+/// [LLM-generated] DATEDIF's calendar difference, decomposed into whole years, whole
 /// months and leftover days -- the shared basis for all six unit codes.
 ///
 /// The point of the borrowing below is that DATEDIF counts *completed*
@@ -202,7 +202,7 @@ pub fn datevalue_with_locale(
     }
 }
 
-/// Parses a time-only text into a day fraction (0.0..1.0). Supports
+/// [LLM-generated] Parses a time-only text into a day fraction (0.0..1.0). Supports
 /// `H:MM`, `H:MM:SS`, and either with a trailing `AM`/`PM` marker
 /// (case-insensitive, with or without a separating space).
 pub fn parse_time_fraction(text: &str) -> Option<f64> {
@@ -315,7 +315,7 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
     Ok(((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64)
 }
 
-/// NASD 30/360, but with a *month-end end date* first pulled back to the
+/// [LLM-generated] NASD 30/360, but with a *month-end end date* first pulled back to the
 /// 30th -- including February's month end, which is what separates it from
 /// the plain European rule.
 ///
@@ -331,7 +331,7 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
 ///   settlement    -> maturity    54   (plain NASD, 28 Feb stays 28)
 /// ```
 ///
-/// Fitted against 20 real-Excel ODDLPRICE values covering month-end and
+/// [LLM-generated] Fitted against 20 real-Excel ODDLPRICE values covering month-end and
 /// non-month-end maturities, leap and non-leap Februaries, and month-end
 /// last-interest dates.
 pub fn days_30_360_coupon_end(start_date: f64, end_date: f64) -> f64 {
@@ -351,7 +351,7 @@ pub fn days_30_360_coupon_end(start_date: f64, end_date: f64) -> f64 {
     ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
 }
 
-/// The 30/360 day count `basis_days_between_pricemat_leg` (`finance.rs`)
+/// [LLM-generated] The 30/360 day count `basis_days_between_pricemat_leg` (`finance.rs`)
 /// uses for `PRICEMAT`/`YIELDMAT`'s basis-0 issue/settlement/maturity
 /// legs -- despite both nominally being "US (NASD) 30/360", this is a
 /// *different* rule from `days_30_360_nasd` (YEARFRAC's basis 0, and
@@ -406,7 +406,7 @@ pub fn days_30_360_bond_ex(
     ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
 }
 
-/// The NASD 30/360 day count that Excel's YEARFRAC (basis 0) uses, and
+/// [LLM-generated] The NASD 30/360 day count that Excel's YEARFRAC (basis 0) uses, and
 /// that `finance.rs`'s `basis_days_between` also uses for every basis-0
 /// bond-pricing call except `PRICEMAT`/`YIELDMAT`'s issue/settlement/
 /// maturity legs -- see `days_30_360_bond_ex` for that one exception and
@@ -613,7 +613,7 @@ pub fn workday(start_date: f64, days: f64, holidays: &[f64]) -> Result<f64, Stri
     Ok(curr as f64)
 }
 
-/// Actual/actual year length for basis-1 day-count conventions. Confirmed
+/// [LLM-generated] Actual/actual year length for basis-1 day-count conventions. Confirmed
 /// against real Excel via the differential fuzzer to have two regimes:
 /// for a span of at most 366 days (including one that crosses a calendar
 /// year boundary, e.g. Dec into Jan), it's simply whether the *later*

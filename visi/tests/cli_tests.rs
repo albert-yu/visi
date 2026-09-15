@@ -1031,7 +1031,7 @@ fn test_table_style_theme_setting_and_xlsx_round_trip() {
     let _ = fs::remove_file(file_path);
 }
 
-/// Syntax checking through the same API `visi macro check` calls, including
+/// [LLM-generated] Syntax checking through the same API `visi macro check` calls, including
 /// the round trip that matters: a module's source only survives to be checked
 /// in a later invocation because it goes through `vbaProject.bin`.
 #[test]
@@ -1097,7 +1097,7 @@ fn test_vba_syntax_check_through_a_real_roundtrip() {
     let _ = fs::remove_file(file_path);
 }
 
-/// A workbook-bound macro run, through the same `WorkbookManager::run_macro`
+/// [LLM-generated] A workbook-bound macro run, through the same `WorkbookManager::run_macro`
 /// the CLI handler calls, over a real `.xlsm` round trip.
 ///
 /// The round trip is the point rather than incidental. The CLI is a fresh
@@ -1166,7 +1166,7 @@ fn test_vba_macro_run_reads_and_writes_a_real_workbook() {
     let _ = fs::remove_file(out_path);
 }
 
-/// `visi macro run` takes the same write flags as every other write command.
+/// [LLM-generated] `visi macro run` takes the same write flags as every other write command.
 #[test]
 fn test_macro_run_parses_output_and_in_place() {
     let cli = try_parse(&[
@@ -1217,7 +1217,7 @@ fn test_macro_run_parses_output_and_in_place() {
     );
 }
 
-/// A workbook with one sheet of the given cell sources, round-tripped through
+/// [LLM-generated] A workbook with one sheet of the given cell sources, round-tripped through
 /// a real `.xlsx` so the test exercises import and export too.
 fn workbook_from(
     name: &str,
@@ -1242,7 +1242,7 @@ fn workbook_from(
     wb
 }
 
-/// The raw source text of a cell -- what a reference shift actually rewrites.
+/// [LLM-generated] The raw source text of a cell -- what a reference shift actually rewrites.
 /// The computed value can agree by coincidence; the text cannot.
 fn cell_src(wb: &WorkbookManager, sheet: usize, row: usize, col: usize) -> String {
     wb.sheets[sheet].columns()[col]

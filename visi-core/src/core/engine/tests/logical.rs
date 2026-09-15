@@ -2586,7 +2586,7 @@ fn test_fuzz_nested_logical_and_or_numeric_comparison() {
     }
 }
 
-/// The numeric value at a cell, for the empty-string tests below.
+/// [LLM-generated] The numeric value at a cell, for the empty-string tests below.
 fn numeric_at(sheet: &Sheet, row: usize, col: usize) -> f64 {
     let value = sheet.get_result_data(&CellRef::new(row, col));
     sheet
@@ -2594,7 +2594,7 @@ fn numeric_at(sheet: &Sheet, row: usize, col: usize) -> f64 {
         .unwrap_or_else(|| panic!("expected a number at ({row}, {col}), got {value:?}"))
 }
 
-/// An empty-string cell is *text*, not a blank cell.
+/// [LLM-generated] An empty-string cell is *text*, not a blank cell.
 ///
 /// Harvested from a differential-fuzz grid whose `G1` held a single space.
 /// OOXML strips whitespace-only `<t>` content that isn't marked
@@ -2631,7 +2631,7 @@ fn test_fuzz_empty_string_cell_is_text_not_blank() {
     assert_eq!(numeric_at(&sheet, 2, 2), 1.0);
 }
 
-/// Excel is asymmetric here and visi mirrors it: a cell holding the empty
+/// [LLM-generated] Excel is asymmetric here and visi mirrors it: a cell holding the empty
 /// string is counted by COUNTA *and* by COUNTBLANK, while ISBLANK reports it
 /// as not blank. COUNTBLANK is documented to include cells whose formula
 /// returned `""`; COUNTA counts it because it is a value.
@@ -2653,7 +2653,7 @@ fn test_empty_string_counts_as_both_present_and_blank() {
     assert_eq!(numeric_at(&sheet, 2, 2), 1.0);
 }
 
-/// The `ISERROR` shape from the same fuzz grid, reduced: `AND(...)` over a
+/// [LLM-generated] The `ISERROR` shape from the same fuzz grid, reduced: `AND(...)` over a
 /// text cell yields FALSE, so the division is by zero. Getting `G1 < 100`
 /// wrong turned this from `#DIV/0!` into an ordinary number.
 #[test]

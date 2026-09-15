@@ -1293,7 +1293,7 @@ fn test_excel_table_column_reference_dependency_is_row_scoped_not_whole_column()
     );
 }
 
-/// `commit`'s dirty-cell BFS is bounded by `max_ops`, not real cycle detection
+/// [LLM-generated] `commit`'s dirty-cell BFS is bounded by `max_ops`, not real cycle detection
 /// (unlike real Excel, which shows a warning and substitutes 0 by default, or
 /// converges under user-configured iterative calculation -- neither modeled here).
 /// These tests verify that a cycle terminates quickly with a finite result rather
@@ -1352,7 +1352,7 @@ fn test_multi_cell_circular_chain_terminates_without_hanging() {
     }
 }
 
-/// A bare, unaggregated range reference that includes the very cell its own
+/// [LLM-generated] A bare, unaggregated range reference that includes the very cell its own
 /// formula lives in (e.g. `=C:P` sitting in column K, inside the C..P span)
 /// does not grow nested Lists unbounded on recompute passes.
 #[test]
@@ -1390,7 +1390,7 @@ fn test_self_referential_whole_column_range_does_not_grow_unbounded() {
     }
 }
 
-/// A date literal is a *number* that displays as a date, exactly as in Excel:
+/// [LLM-generated] A date literal is a *number* that displays as a date, exactly as in Excel:
 /// the value is the serial, so arithmetic and the numeric functions see it,
 /// and the notation survives only as the cell's number format.
 #[test]
@@ -1421,7 +1421,7 @@ fn test_date_literal_becomes_a_serial_with_a_number_format() {
     );
 }
 
-/// Quoting is the escape hatch for text that happens to look like a date.
+/// [LLM-generated] Quoting is the escape hatch for text that happens to look like a date.
 #[test]
 fn test_quoted_date_text_stays_text() {
     let mut sheet = create_sheet(&[["\"22-Jun\"", "=ISTEXT(A1)"]]);
@@ -1439,7 +1439,7 @@ fn test_quoted_date_text_stays_text() {
     assert!(sheet.get_cell_style(0, 0).is_none());
 }
 
-/// A formula reading exactly one date cell inherits its notation, so `=A1+1`
+/// [LLM-generated] A formula reading exactly one date cell inherits its notation, so `=A1+1`
 /// on a date shows the next day rather than a bare serial. Formulas that read
 /// two cells or a range do not -- a difference of dates is a count of days,
 /// and a sum of dates is nothing at all.
@@ -1457,7 +1457,7 @@ fn test_date_format_inheritance_is_limited_to_single_cell_formulas() {
     assert_eq!(sheet.get_display_string(&CellRef::new(1, 2)), "92390");
 }
 
-/// [AI-Agent] Generic Excel number formats affect display without changing the stored number.
+/// [LLM-generated] Generic Excel number formats affect display without changing the stored number.
 #[test]
 fn test_number_format_affects_display_without_changing_value() {
     let mut sheet = create_sheet(&[["1234.5", "7.5", "0.125", "-1234.5"]]);
@@ -1496,7 +1496,7 @@ fn test_fuzz_number_format_optional_decimal_keeps_decimal_point() {
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 1)), "9000.");
 }
 
-/// Inheritance follows the operator, not the number of cells read: `=YEAR(A1)`
+/// [LLM-generated] Inheritance follows the operator, not the number of cells read: `=YEAR(A1)`
 /// touches exactly one date cell and returns a year, which must stay a plain
 /// number rather than being rendered as a 1905 date.
 #[test]
@@ -1509,7 +1509,7 @@ fn test_date_component_functions_do_not_inherit_the_date_format() {
     assert_eq!(sheet.get_display_string(&CellRef::new(0, 3)), "92390");
 }
 
-/// `src`, `data`, `cell_types`, `compiled_src` and `styles` must all stay the same length.
+/// [LLM-generated] `src`, `data`, `cell_types`, `compiled_src` and `styles` must all stay the same length.
 /// Asserts it across every column of a sheet.
 fn assert_columns_aligned(sheet: &Sheet, context: &str) {
     for (idx, col) in sheet.columns.iter().enumerate() {
@@ -1544,7 +1544,7 @@ fn bold() -> crate::core::CellStyle {
     }
 }
 
-/// `extend` grows `src`/`data`/`compiled_src` and `styles` together so that
+/// [LLM-generated] `extend` grows `src`/`data`/`compiled_src` and `styles` together so that
 /// the new row remains stylable.
 #[test]
 fn test_extend_down_keeps_styles_aligned() {
@@ -1584,7 +1584,7 @@ fn test_extend_up_keeps_styles_aligned() {
     );
 }
 
-/// The multi-row branch of `delete` drained `src`/`data`/`compiled_src` but
+/// [LLM-generated] The multi-row branch of `delete` drained `src`/`data`/`compiled_src` but
 /// not `styles`, leaving every style below the deleted range attached to the
 /// wrong row.
 #[test]
@@ -1646,7 +1646,7 @@ fn test_ensure_capacity_keeps_columns_aligned() {
     assert_eq!(sheet.get_cell_style(5, 3).and_then(|s| s.bold), Some(true));
 }
 
-/// `styles` is `#[serde(default)]`, so a workbook serialized without it
+/// [LLM-generated] `styles` is `#[serde(default)]`, so a workbook serialized without it
 /// deserializes with an empty one. The load path has to size it back up.
 #[test]
 fn test_setup_after_deserialization_restores_styles_length() {

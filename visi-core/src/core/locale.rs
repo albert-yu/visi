@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-/// Date field ordering of a locale.
+/// [LLM-generated] Date field ordering of a locale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DateOrder {
-    /// Month-Day-Year (e.g. `en-US`: `06/22/2026`).
+    /// [LLM-generated] Month-Day-Year (e.g. `en-US`: `06/22/2026`).
     Mdy,
-    /// Day-Month-Year (e.g. `en-GB`, `de-DE`, `fr-FR`: `22/06/2026`).
+    /// [LLM-generated] Day-Month-Year (e.g. `en-GB`, `de-DE`, `fr-FR`: `22/06/2026`).
     Dmy,
-    /// Year-Month-Day (e.g. `zh-CN`, `ja-JP`, ISO: `2026-06-22`).
+    /// [LLM-generated] Year-Month-Day (e.g. `zh-CN`, `ja-JP`, ISO: `2026-06-22`).
     Ymd,
 }
 
@@ -21,20 +21,20 @@ impl std::fmt::Display for DateOrder {
     }
 }
 
-/// A spreadsheet regional locale configuring date and number parsing rules.
+/// [LLM-generated] A spreadsheet regional locale configuring date and number parsing rules.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Locale {
-    /// Language / country tag (e.g. `"en-US"`, `"en-GB"`, `"de-DE"`, `"fr-FR"`).
+    /// [LLM-generated] Language / country tag (e.g. `"en-US"`, `"en-GB"`, `"de-DE"`, `"fr-FR"`).
     pub code: String,
-    /// Primary date field ordering.
+    /// [LLM-generated] Primary date field ordering.
     pub date_order: DateOrder,
-    /// Primary date separator (`'/'`, `'.' `, or `'-'`).
+    /// [LLM-generated] Primary date separator (`'/'`, `'.' `, or `'-'`).
     pub primary_date_sep: char,
-    /// Windows LCID (e.g., `0x0409` for en-US, `0x0809` for en-GB, `0x0407` for de-DE).
+    /// [LLM-generated] Windows LCID (e.g., `0x0409` for en-US, `0x0809` for en-GB, `0x0407` for de-DE).
     pub lcid: u16,
-    /// 2-digit year pivot threshold (default 29 -> 00..29 is 20xx, 30..99 is 19xx).
+    /// [LLM-generated] 2-digit year pivot threshold (default 29 -> 00..29 is 20xx, 30..99 is 19xx).
     pub two_digit_year_pivot: u32,
-    /// Default calendar year for 2-part dates (if `None`, defaults to 2026).
+    /// [LLM-generated] Default calendar year for 2-part dates (if `None`, defaults to 2026).
     pub default_year: Option<i32>,
 }
 
@@ -45,7 +45,7 @@ impl Default for Locale {
 }
 
 impl Locale {
-    /// English (United States) locale: `MDY`, separator `/`, LCID `0x0409`.
+    /// [LLM-generated] English (United States) locale: `MDY`, separator `/`, LCID `0x0409`.
     pub fn en_us() -> Self {
         Self {
             code: "en-US".to_string(),
@@ -57,7 +57,7 @@ impl Locale {
         }
     }
 
-    /// English (United Kingdom) locale: `DMY`, separator `/`, LCID `0x0809`.
+    /// [LLM-generated] English (United Kingdom) locale: `DMY`, separator `/`, LCID `0x0809`.
     pub fn en_gb() -> Self {
         Self {
             code: "en-GB".to_string(),
@@ -69,7 +69,7 @@ impl Locale {
         }
     }
 
-    /// German (Germany) locale: `DMY`, separator `.`, LCID `0x0407`.
+    /// [LLM-generated] German (Germany) locale: `DMY`, separator `.`, LCID `0x0407`.
     pub fn de_de() -> Self {
         Self {
             code: "de-DE".to_string(),
@@ -81,7 +81,7 @@ impl Locale {
         }
     }
 
-    /// French (France) locale: `DMY`, separator `/`, LCID `0x040C`.
+    /// [LLM-generated] French (France) locale: `DMY`, separator `/`, LCID `0x040C`.
     pub fn fr_fr() -> Self {
         Self {
             code: "fr-FR".to_string(),
@@ -93,7 +93,7 @@ impl Locale {
         }
     }
 
-    /// Spanish (Spain) locale: `DMY`, separator `/`, LCID `0x0C0A`.
+    /// [LLM-generated] Spanish (Spain) locale: `DMY`, separator `/`, LCID `0x0C0A`.
     pub fn es_es() -> Self {
         Self {
             code: "es-ES".to_string(),
@@ -105,7 +105,7 @@ impl Locale {
         }
     }
 
-    /// Italian (Italy) locale: `DMY`, separator `/`, LCID `0x0410`.
+    /// [LLM-generated] Italian (Italy) locale: `DMY`, separator `/`, LCID `0x0410`.
     pub fn it_it() -> Self {
         Self {
             code: "it-IT".to_string(),
@@ -117,7 +117,7 @@ impl Locale {
         }
     }
 
-    /// Portuguese (Brazil) locale: `DMY`, separator `/`, LCID `0x0416`.
+    /// [LLM-generated] Portuguese (Brazil) locale: `DMY`, separator `/`, LCID `0x0416`.
     pub fn pt_br() -> Self {
         Self {
             code: "pt-BR".to_string(),
@@ -129,7 +129,7 @@ impl Locale {
         }
     }
 
-    /// Dutch (Netherlands) locale: `DMY`, separator `-`, LCID `0x0413`.
+    /// [LLM-generated] Dutch (Netherlands) locale: `DMY`, separator `-`, LCID `0x0413`.
     pub fn nl_nl() -> Self {
         Self {
             code: "nl-NL".to_string(),
@@ -141,7 +141,7 @@ impl Locale {
         }
     }
 
-    /// Russian (Russia) locale: `DMY`, separator `.`, LCID `0x0419`.
+    /// [LLM-generated] Russian (Russia) locale: `DMY`, separator `.`, LCID `0x0419`.
     pub fn ru_ru() -> Self {
         Self {
             code: "ru-RU".to_string(),
@@ -153,7 +153,7 @@ impl Locale {
         }
     }
 
-    /// Chinese (Simplified, China) locale: `YMD`, separator `/`, LCID `0x0804`.
+    /// [LLM-generated] Chinese (Simplified, China) locale: `YMD`, separator `/`, LCID `0x0804`.
     pub fn zh_cn() -> Self {
         Self {
             code: "zh-CN".to_string(),
@@ -165,7 +165,7 @@ impl Locale {
         }
     }
 
-    /// Japanese (Japan) locale: `YMD`, separator `/`, LCID `0x0411`.
+    /// [LLM-generated] Japanese (Japan) locale: `YMD`, separator `/`, LCID `0x0411`.
     pub fn ja_jp() -> Self {
         Self {
             code: "ja-JP".to_string(),
@@ -177,7 +177,7 @@ impl Locale {
         }
     }
 
-    /// Look up or construct a locale from a BCP 47 or POSIX language tag.
+    /// [LLM-generated] Look up or construct a locale from a BCP 47 or POSIX language tag.
     ///
     /// Recognizes tags like `"en-US"`, `"en_US"`, `"en-GB"`, `"de"`, `"de-DE"`,
     /// `"fr"`, `"es"`, `"it"`, `"pt"`, `"nl"`, `"ru"`, `"zh"`, `"ja"`, etc.
@@ -214,12 +214,12 @@ impl Locale {
         }
     }
 
-    /// The default year for 2-part dates (e.g. `6/22` or `22-Jun`).
+    /// [LLM-generated] The default year for 2-part dates (e.g. `6/22` or `22-Jun`).
     pub fn default_year(&self) -> i32 {
         self.default_year.unwrap_or(2026)
     }
 
-    /// Convert a 2-digit year to a 4-digit year using this locale's pivot.
+    /// [LLM-generated] Convert a 2-digit year to a 4-digit year using this locale's pivot.
     pub fn expand_two_digit_year(&self, year: i32) -> i32 {
         if (0..=self.two_digit_year_pivot as i32).contains(&year) {
             2000 + year
@@ -230,7 +230,7 @@ impl Locale {
         }
     }
 
-    /// Attempts to match a month name/word token against this locale's month
+    /// [LLM-generated] Attempts to match a month name/word token against this locale's month
     /// dictionaries (or English as fallback). Returns `(month_1_based, is_full_name)`.
     pub fn match_month_word(&self, word: &str) -> Option<(u32, bool)> {
         let cleaned = word.trim().trim_end_matches('.');

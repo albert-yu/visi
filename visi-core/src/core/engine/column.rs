@@ -6,7 +6,7 @@ use super::bitmask::Bitmask;
 use super::cell::{CellType, generate_unique_id};
 use super::result_data::ResultData;
 
-/// A column of computed values, stored in whichever representation fits what
+/// [LLM-generated] A column of computed values, stored in whichever representation fits what
 /// it currently holds.
 ///
 /// A column starts out as `Integer` and widens as needed: writing a float
@@ -20,21 +20,21 @@ use super::result_data::ResultData;
 /// through `Sheet` to edit cells.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColumnData {
-    /// All-integer, or integer-and-blank.
+    /// [LLM-generated] All-integer, or integer-and-blank.
     Integer {
-        /// Which positions hold a value rather than a blank.
+        /// [LLM-generated] Which positions hold a value rather than a blank.
         validity: Bitmask,
-        /// The values. Positions marked invalid hold a placeholder.
+        /// [LLM-generated] The values. Positions marked invalid hold a placeholder.
         values: SharedVec<i64>,
     },
-    /// Numeric with at least one non-integer, or integer-and-blank promoted.
+    /// [LLM-generated] Numeric with at least one non-integer, or integer-and-blank promoted.
     Float {
-        /// Which positions hold a value rather than a blank.
+        /// [LLM-generated] Which positions hold a value rather than a blank.
         validity: Bitmask,
-        /// The values. Positions marked invalid hold a placeholder.
+        /// [LLM-generated] The values. Positions marked invalid hold a placeholder.
         values: SharedVec<f64>,
     },
-    /// Mixed: anything the numeric representations cannot hold -- text,
+    /// [LLM-generated] Mixed: anything the numeric representations cannot hold -- text,
     /// booleans, errors.
     Any(SharedVec<ResultData>),
 }
@@ -47,7 +47,7 @@ impl ColumnData {
         }
     }
 
-    /// How many rows the column holds.
+    /// [LLM-generated] How many rows the column holds.
     pub fn len(&self) -> usize {
         match self {
             Self::Integer { validity, .. } => validity.len,
@@ -56,7 +56,7 @@ impl ColumnData {
         }
     }
 
-    /// Whether the column holds no rows at all.
+    /// [LLM-generated] Whether the column holds no rows at all.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -66,7 +66,7 @@ impl ColumnData {
         self.insert(index, value);
     }
 
-    /// The value at `index`, or `None` if that is past the end.
+    /// [LLM-generated] The value at `index`, or `None` if that is past the end.
     ///
     /// A blank within the column's range reads as
     /// `Some(ResultData::None)`, which is what distinguishes it from an
@@ -270,7 +270,7 @@ impl Default for ColumnData {
     }
 }
 
-/// One column of a sheet: the raw text, the computed values, the cell types,
+/// [LLM-generated] One column of a sheet: the raw text, the computed values, the cell types,
 /// the compiled formulas and the styles, as parallel per-row vectors.
 ///
 /// # Invariant
@@ -286,32 +286,32 @@ impl Default for ColumnData {
 /// awaiting recomputation, and is emptied by `Sheet::commit`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataColumn {
-    /// Identifier, stable across renames and repositioning. Compiled formulas
+    /// [LLM-generated] Identifier, stable across renames and repositioning. Compiled formulas
     /// refer to a column by this rather than by name or position.
     #[serde(default = "generate_unique_id")]
     pub id: u64,
-    /// Display name, empty unless one was set.
+    /// [LLM-generated] Display name, empty unless one was set.
     #[serde(default)]
     pub name: String,
-    /// [AI-Agent] Excel/OpenXML column width in character units, when one was explicitly stored.
+    /// [LLM-generated] Excel/OpenXML column width in character units, when one was explicitly stored.
     #[serde(default)]
     pub width: Option<f64>,
-    /// The computed values. Rebuilt on load, so not persisted.
+    /// [LLM-generated] The computed values. Rebuilt on load, so not persisted.
     #[serde(skip, default)]
     pub(crate) data: ColumnData,
-    /// The raw text of each cell, exactly as typed. The only representation
+    /// [LLM-generated] The raw text of each cell, exactly as typed. The only representation
     /// that is persisted, and the one everything else is rebuilt from.
     pub(crate) src: SharedVec<String>,
-    /// Intrinsic cell data types, matching Excel / OpenXML representations.
+    /// [LLM-generated] Intrinsic cell data types, matching Excel / OpenXML representations.
     #[serde(default)]
     pub(crate) cell_types: SharedVec<CellType>,
-    /// Cached compile output for each cell. Rebuilt on load.
+    /// [LLM-generated] Cached compile output for each cell. Rebuilt on load.
     #[serde(skip, default)]
     pub(crate) compiled_src: SharedVec<CompiledFormula>,
-    /// Rows awaiting recomputation. Drained by `Sheet::commit`.
+    /// [LLM-generated] Rows awaiting recomputation. Drained by `Sheet::commit`.
     #[serde(skip, default)]
     pub(crate) dirty_indices: SharedVec<usize>,
-    /// Per-cell styling, `None` where a cell has none. Carries a date cell's
+    /// [LLM-generated] Per-cell styling, `None` where a cell has none. Carries a date cell's
     /// number format.
     #[serde(default)]
     pub(crate) styles: SharedVec<Option<crate::core::CellStyle>>,
@@ -323,7 +323,7 @@ pub(crate) struct ColumnPosition {
 }
 
 impl DataColumn {
-    /// A column of `size` empty rows, with every parallel vector sized to
+    /// [LLM-generated] A column of `size` empty rows, with every parallel vector sized to
     /// match and a freshly generated id.
     pub fn new(size: usize) -> Self {
         Self {
@@ -339,22 +339,22 @@ impl DataColumn {
         }
     }
 
-    /// Rows in the column. Every parallel vector has this length.
+    /// [LLM-generated] Rows in the column. Every parallel vector has this length.
     pub fn len(&self) -> usize {
         self.src.len()
     }
 
-    /// Whether the column has no rows.
+    /// [LLM-generated] Whether the column has no rows.
     pub fn is_empty(&self) -> bool {
         self.src.is_empty()
     }
 
-    /// The raw text of a cell, exactly as typed, or `None` past the end.
+    /// [LLM-generated] The raw text of a cell, exactly as typed, or `None` past the end.
     pub fn src(&self, row: usize) -> Option<&str> {
         self.src.get(row).map(String::as_str)
     }
 
-    /// The computed value of a cell, or `None` past the end.
+    /// [LLM-generated] The computed value of a cell, or `None` past the end.
     ///
     /// Reflects the last `Sheet::commit`; a cell edited since then still
     /// reads as its old value.
@@ -362,31 +362,31 @@ impl DataColumn {
         self.data.get(row)
     }
 
-    /// The whole value column, for callers that want to work with the typed
+    /// [LLM-generated] The whole value column, for callers that want to work with the typed
     /// representation rather than row by row.
     pub fn values(&self) -> &ColumnData {
         &self.data
     }
 
-    /// The intrinsic data type of a cell, or `None` past the end.
+    /// [LLM-generated] The intrinsic data type of a cell, or `None` past the end.
     pub fn cell_type(&self, row: usize) -> Option<CellType> {
         self.cell_types.get(row).copied()
     }
 
-    /// Sets the intrinsic data type of a cell at `row`.
+    /// [LLM-generated] Sets the intrinsic data type of a cell at `row`.
     pub fn set_cell_type(&mut self, row: usize, cell_type: CellType) {
         if row < self.cell_types.len() {
             self.cell_types[row] = cell_type;
         }
     }
 
-    /// A cell's compiled formula, or `None` past the end. A cell holding a
+    /// [LLM-generated] A cell's compiled formula, or `None` past the end. A cell holding a
     /// literal has an empty one rather than no entry.
     pub fn compiled(&self, row: usize) -> Option<&CompiledFormula> {
         self.compiled_src.get(row)
     }
 
-    /// A cell's style, or `None` if it has none or is past the end.
+    /// [LLM-generated] A cell's style, or `None` if it has none or is past the end.
     pub fn style(&self, row: usize) -> Option<&crate::core::CellStyle> {
         self.styles.get(row).and_then(Option::as_ref)
     }
@@ -397,7 +397,7 @@ impl DataColumn {
         }
     }
 
-    /// A named column holding `src`, with every parallel vector sized to
+    /// [LLM-generated] A named column holding `src`, with every parallel vector sized to
     /// match.
     ///
     /// The values start empty -- `Sheet::commit` is what fills them in from
@@ -411,7 +411,7 @@ impl DataColumn {
         col
     }
 
-    /// Rebuilds what serialization drops, restoring the length invariant.
+    /// [LLM-generated] Rebuilds what serialization drops, restoring the length invariant.
     ///
     /// Only `src`, `cell_types` and `styles` are persisted, and `styles`/`cell_types`
     /// are optional, so a workbook saved without them loads with a length of 0. Everything
@@ -424,7 +424,7 @@ impl DataColumn {
         self.styles.resize(size, None);
     }
 
-    /// Appends an empty row to every parallel vector.
+    /// [LLM-generated] Appends an empty row to every parallel vector.
     pub(crate) fn push_row(&mut self) {
         self.src.push(String::new());
         self.cell_types.push(CellType::Empty);
@@ -433,7 +433,7 @@ impl DataColumn {
         self.styles.push(None);
     }
 
-    /// Inserts an empty row at `index` in every parallel vector, shifting the
+    /// [LLM-generated] Inserts an empty row at `index` in every parallel vector, shifting the
     /// rows below it down. Appends if `index` is at or past the end.
     pub(crate) fn insert_row(&mut self, index: usize) {
         if index >= self.len() {
@@ -448,7 +448,7 @@ impl DataColumn {
         self.shift_dirty_after_insert(index, 1);
     }
 
-    /// Removes row `index` from every parallel vector, shifting the rows below
+    /// [LLM-generated] Removes row `index` from every parallel vector, shifting the rows below
     /// it up. Ignored if `index` is past the end.
     pub(crate) fn remove_row(&mut self, index: usize) {
         if index >= self.len() {
@@ -462,7 +462,7 @@ impl DataColumn {
         self.drop_dirty_range(index, index + 1);
     }
 
-    /// Removes a range of rows from every parallel vector.
+    /// [LLM-generated] Removes a range of rows from every parallel vector.
     ///
     /// The range is clamped to the column's length, so an out-of-range end is
     /// not an error.
@@ -490,7 +490,7 @@ impl DataColumn {
         self.drop_dirty_range(start, end);
     }
 
-    /// Grows or shrinks every parallel vector to `len` rows, filling with
+    /// [LLM-generated] Grows or shrinks every parallel vector to `len` rows, filling with
     /// empties when growing.
     pub(crate) fn resize_rows(&mut self, len: usize) {
         while self.len() < len {
@@ -501,7 +501,7 @@ impl DataColumn {
         }
     }
 
-    /// Drops queued rows in `start..end` and rebases those below it.
+    /// [LLM-generated] Drops queued rows in `start..end` and rebases those below it.
     fn drop_dirty_range(&mut self, start: usize, end: usize) {
         let removed = end - start;
         self.dirty_indices.retain(|&i| i < start || i >= end);
@@ -512,7 +512,7 @@ impl DataColumn {
         }
     }
 
-    /// Rebases queued rows at or below `index` after an insert.
+    /// [LLM-generated] Rebases queued rows at or below `index` after an insert.
     fn shift_dirty_after_insert(&mut self, index: usize, count: usize) {
         for i in self.dirty_indices.iter_mut() {
             if *i >= index {
@@ -521,7 +521,7 @@ impl DataColumn {
         }
     }
 
-    /// Row is absolutely referenced
+    /// [LLM-generated] Row is absolutely referenced
     pub(crate) fn insert(&mut self, position: ColumnPosition, input: &str) {
         let ColumnPosition { row, char_offset } = position;
         let index = row;

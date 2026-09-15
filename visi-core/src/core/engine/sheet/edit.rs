@@ -1,7 +1,7 @@
 use super::super::column::{ColumnPosition, DataColumn};
 use super::{CellRef, CellType, Direction, ResultData, Sheet, TextCellRef};
 
-/// The word surrounding `char_offset` in `text`, as a half-open range of
+/// [LLM-generated] The word surrounding `char_offset` in `text`, as a half-open range of
 /// character indices.
 ///
 /// A "word" is a run of alphanumerics and underscores, a run of whitespace, or
@@ -67,7 +67,7 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
     (start, end)
 }
 impl Sheet {
-    /// The computed value of a cell, or [`ResultData::None`] if it is empty
+    /// [LLM-generated] The computed value of a cell, or [`ResultData::None`] if it is empty
     /// or outside the sheet's allocated grid.
     ///
     /// Reflects the last [`Sheet::commit`]; a cell edited since then still
@@ -85,7 +85,7 @@ impl Sheet {
         }
     }
 
-    /// The date format a formula should inherit from the cells it reads, if
+    /// [LLM-generated] The date format a formula should inherit from the cells it reads, if
     /// any -- Excel's "date plus a number is still a date" behavior.
     ///
     /// The rule is deliberately about the *operator*, not about how many
@@ -123,7 +123,7 @@ impl Sheet {
         }
     }
 
-    /// [AI-Agent] The cell's value as it should be shown, honoring dates and numeric number formats.
+    /// [LLM-generated] The cell's value as it should be shown, honoring dates and numeric number formats.
     pub fn get_display_string(&self, cell: &CellRef) -> String {
         let value = self.get_result_data(cell);
         let Some(code) = self
@@ -143,7 +143,7 @@ impl Sheet {
         }
     }
 
-    /// Returns the intrinsic data type of a cell.
+    /// [LLM-generated] Returns the intrinsic data type of a cell.
     pub fn get_cell_type(&self, cell: &CellRef) -> CellType {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -156,7 +156,7 @@ impl Sheet {
         }
     }
 
-    /// Sets the intrinsic data type of a cell at (row, col).
+    /// [LLM-generated] Sets the intrinsic data type of a cell at (row, col).
     pub fn set_cell_type(&mut self, row: usize, col: usize, cell_type: CellType) {
         if let Some(column) = self.columns.get_mut(col)
             && row < column.cell_types.len()
@@ -166,7 +166,7 @@ impl Sheet {
         }
     }
 
-    /// Sets the source text and explicit cell type of a particular cell.
+    /// [LLM-generated] Sets the source text and explicit cell type of a particular cell.
     pub fn set_cell_with_type(&mut self, row: usize, col: usize, src: String, cell_type: CellType) {
         let table_clone = self.clone();
         if let Some(column) = self.columns.get_mut(col)
@@ -188,7 +188,7 @@ impl Sheet {
         }
     }
 
-    /// Updates the src text of a particular cell but does
+    /// [LLM-generated] Updates the src text of a particular cell but does
     /// not automatically evaluate. Call [`Sheet::commit`] to evaluate
     /// updated cells.
     /// Directly sets the src of a cell and marks it dirty.
@@ -213,7 +213,7 @@ impl Sheet {
         }
     }
 
-    /// Inserts text into a cell's source at a character offset, as typing
+    /// [LLM-generated] Inserts text into a cell's source at a character offset, as typing
     /// into it would, then recompiles and marks it dirty.
     ///
     /// This is a text edit within one cell, not a range insert; see
@@ -248,7 +248,7 @@ impl Sheet {
         }
     }
 
-    /// Delete one before (like backspace)
+    /// [LLM-generated] Delete one before (like backspace)
     pub fn delete_one_before(&mut self, pos: TextCellRef) {
         let char_offset = pos.char_offset;
         let start = if char_offset > 0 {
@@ -264,7 +264,7 @@ impl Sheet {
         self.delete(start, end);
     }
 
-    /// Deletes the text between two positions, recompiling and dirtying every
+    /// [LLM-generated] Deletes the text between two positions, recompiling and dirtying every
     /// cell it touches.
     ///
     /// Within a single cell this removes a character range; spanning cells it
@@ -314,7 +314,7 @@ impl Sheet {
         }
     }
 
-    /// Grows the sheet by one empty row or column on the given side.
+    /// [LLM-generated] Grows the sheet by one empty row or column on the given side.
     ///
     /// [`Direction::None`] does nothing. Rows are unbounded, but sideways
     /// growth stops once the sheet has 26 columns.
@@ -371,7 +371,7 @@ impl Sheet {
         }
     }
 
-    /// Ensure sheet has at least target_row+1 rows and target_col+1 columns
+    /// [LLM-generated] Ensure sheet has at least target_row+1 rows and target_col+1 columns
     pub fn ensure_capacity(&mut self, target_row: usize, target_col: usize) {
         let current_rows = self.row_count();
         let needed_rows = target_row + 1;
@@ -392,7 +392,7 @@ impl Sheet {
         }
     }
 
-    /// The style set on a cell, or `None` if it has none.
+    /// [LLM-generated] The style set on a cell, or `None` if it has none.
     ///
     /// This is where a date cell's `num_format` lives -- the notation half of
     /// a date, the value half being the serial in the cell.
@@ -403,7 +403,7 @@ impl Sheet {
             .and_then(|opt| opt.as_ref())
     }
 
-    /// Replaces a cell's style, growing the sheet if the cell is past its
+    /// [LLM-generated] Replaces a cell's style, growing the sheet if the cell is past its
     /// current bounds. An empty style is stored as no style at all.
     pub fn set_cell_style(&mut self, row: usize, col: usize, style: crate::core::CellStyle) {
         self.ensure_capacity(row, col);
@@ -418,7 +418,7 @@ impl Sheet {
         }
     }
 
-    /// Mutates a cell's style in place, starting from the default if it has
+    /// [LLM-generated] Mutates a cell's style in place, starting from the default if it has
     /// none, so one attribute can be changed without disturbing the others.
     ///
     /// Grows the sheet if needed; a style left empty is dropped.
@@ -440,7 +440,7 @@ impl Sheet {
         }
     }
 
-    /// Removes a cell's style. Unlike the setters, this never grows the sheet.
+    /// [LLM-generated] Removes a cell's style. Unlike the setters, this never grows the sheet.
     pub fn clear_cell_style(&mut self, row: usize, col: usize) {
         if let Some(column) = self.columns.get_mut(col)
             && row < column.styles.len()
@@ -449,24 +449,24 @@ impl Sheet {
         }
     }
 
-    /// [GPT-5.5] Returns the custom width for the zero-based column, if one is set.
+    /// [LLM-generated] Returns the custom width for the zero-based column, if one is set.
     pub fn get_column_width(&self, col: usize) -> Option<f64> {
         self.columns.get(col).and_then(|column| column.width)
     }
 
-    /// [GPT-5.5] Sets or clears the custom width for an existing zero-based column.
+    /// [LLM-generated] Sets or clears the custom width for an existing zero-based column.
     pub fn set_column_width(&mut self, col: usize, width: Option<f64>) {
         if let Some(column) = self.columns.get_mut(col) {
             column.width = width.filter(|value| value.is_finite() && *value >= 0.0);
         }
     }
 
-    /// [GPT-5.5] Returns the custom height for the zero-based row, if one is set.
+    /// [LLM-generated] Returns the custom height for the zero-based row, if one is set.
     pub fn get_row_height(&self, row: usize) -> Option<f64> {
         self.row_heights.get(row).and_then(|height| *height)
     }
 
-    /// [GPT-5.5] Sets or clears the custom height for an existing zero-based row.
+    /// [LLM-generated] Sets or clears the custom height for an existing zero-based row.
     pub fn set_row_height(&mut self, row: usize, height: Option<f64>) {
         if row >= self.row_count() {
             return;
@@ -476,7 +476,7 @@ impl Sheet {
         self.row_heights[row] = height.filter(|value| value.is_finite() && *value >= 0.0);
     }
 
-    /// Insert a new empty row at the specified index
+    /// [LLM-generated] Insert a new empty row at the specified index
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
         let row_count = self.row_count();
@@ -504,7 +504,7 @@ impl Sheet {
         }
     }
 
-    /// Deletes a row, shifting the rows below it up.
+    /// [LLM-generated] Deletes a row, shifting the rows below it up.
     ///
     /// Removes the entry from all three parallel per-row vectors together,
     /// which is what keeps them the same length, and rebases the dirty queue.
@@ -528,7 +528,7 @@ impl Sheet {
         }
     }
 
-    /// Excel's *Insert cells, shift down* over an inclusive column band.
+    /// [LLM-generated] Excel's *Insert cells, shift down* over an inclusive column band.
     ///
     /// Unlike [`Sheet::insert_row`] this moves only `first_col..=last_col`,
     /// leaving every other column where it is -- which is what
@@ -577,7 +577,7 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    /// Excel's *Delete cells, shift up* over an inclusive column band; the
+    /// [LLM-generated] Excel's *Delete cells, shift up* over an inclusive column band; the
     /// inverse of [`Sheet::insert_cells_shift_down`].
     ///
     /// The band's rows below `row` move up and blank rows appear at its
@@ -610,7 +610,7 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    /// Deletes a column, shifting the columns to its right left.
+    /// [LLM-generated] Deletes a column, shifting the columns to its right left.
     ///
     /// Out-of-range indices are ignored; everything is marked dirty.
     pub fn delete_col(&mut self, index: usize) {
@@ -625,7 +625,7 @@ impl Sheet {
         }
     }
 
-    /// Insert a new empty column at the specified index
+    /// [LLM-generated] Insert a new empty column at the specified index
     /// If index is >= columns.len(), appends at the end
     pub fn insert_col(&mut self, index: usize) {
         let row_count = self.row_count();
@@ -649,7 +649,7 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    /// The sheet's columns.
+    /// [LLM-generated] The sheet's columns.
     ///
     /// Read-only: every column must keep the same number of rows, so growing
     /// or replacing one from outside would desync the sheet. Use
@@ -659,13 +659,13 @@ impl Sheet {
         &self.columns
     }
 
-    /// Allocated rows, taken from the first column -- every column has the
+    /// [LLM-generated] Allocated rows, taken from the first column -- every column has the
     /// same length.
     pub fn row_count(&self) -> usize {
         self.columns.first().map(|c| c.src.len()).unwrap_or(0)
     }
 
-    /// Allocated columns.
+    /// [LLM-generated] Allocated columns.
     pub fn col_count(&self) -> usize {
         self.columns.len()
     }

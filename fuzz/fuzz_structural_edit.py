@@ -272,7 +272,7 @@ class ExcelStructuralDriver:
                 wb.Close(False)
                 last_err = None
                 break
-            except Exception as exc:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+            except Exception as exc:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
                 last_err = exc
             finally:
                 excel.Quit()
@@ -495,7 +495,7 @@ def main():
                         )
                 else:
                     print(f" Iteration {i:3d}/{len(seeds)} [PASSED] (Seed: {seed})")
-            except Exception as exc:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+            except Exception as exc:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
                 failed += 1
                 fail_dir = save_failure(td, args.output_dir, i, seed)
                 print(f" Iteration {i:3d}/{len(seeds)} [ERROR] (Seed: {seed})")

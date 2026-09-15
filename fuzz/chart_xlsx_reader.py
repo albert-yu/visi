@@ -11,7 +11,7 @@ _CLASS_TO_TYPE = {
 
 
 def _title_text(title_obj):
-    """Walks openpyxl's nested Title -> Text -> RichText -> Paragraph ->
+    """[LLM-generated] Walks openpyxl's nested Title -> Text -> RichText -> Paragraph ->
     RegularTextRun structure down to a flat string, or None if there's no
     title (or it's a strRef-based title, which visi never writes). openpyxl
     exposes no flat-string accessor for *reading* a title, only for writing
@@ -41,7 +41,7 @@ def _chart_type(chart):
 
 
 def _series_range(ref):
-    """`ref` is a Series' `.val` (NumDataSource) or `.cat` (AxDataSource).
+    """[LLM-generated] `ref` is a Series' `.val` (NumDataSource) or `.cat` (AxDataSource).
     Returns the referenced range formula (`numRef.f` or `strRef.f`), or None
     if there's no series or no reference (e.g. literal/inline data)."""
     if ref is None:
@@ -56,7 +56,7 @@ def _series_range(ref):
 
 
 def read_charts(xlsx_path):
-    """Returns one dict per chart found across all worksheets:
+    """[LLM-generated] Returns one dict per chart found across all worksheets:
     {sheet, chart_type, cat_range, val_range, title, xlabel, ylabel,
     show_legend}.
 

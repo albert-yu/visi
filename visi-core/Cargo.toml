@@ -1,6 +1,6 @@
 [package]
 name = "visi-core"
-# Deliberately independent of the workspace version: `visi` is already
+# [LLM-generated] Deliberately independent of the workspace version: `visi` is already
 # released at 0.1.x, but `visi-core` is a new name on crates.io with no
 # prior releases, so it starts its own line at 0.1.0.
 version = "0.2.12"
@@ -17,7 +17,7 @@ categories = ["parser-implementations", "encoding", "data-structures"]
 
 [features]
 default = []
-# For `wasm32-unknown-unknown` in a browser: routes `getrandom` through the JS
+# [LLM-generated] For `wasm32-unknown-unknown` in a browser: routes `getrandom` through the JS
 # crypto API. Enable this only from a final binary -- getrandom's backend is a
 # global choice, so a library that turns it on forces it on every consumer.
 wasm = ["getrandom/js"]

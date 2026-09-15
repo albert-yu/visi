@@ -19,17 +19,17 @@ pub mod value;
 use crate::{Error, ObjectKind};
 use serde::{Deserialize, Serialize};
 
-/// What [`check_syntax`] found in a module that parsed.
+/// [LLM-generated] What [`check_syntax`] found in a module that parsed.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ModuleSyntax {
-    /// The names of every `Sub`, `Function` and `Property` declared, in source
+    /// [LLM-generated] The names of every `Sub`, `Function` and `Property` declared, in source
     /// order. Procedures inside a `#If` branch are all included: which branch
     /// is live depends on `#Const` values, which parsing alone cannot decide.
     pub procedures: Vec<String>,
 }
 
-/// Checks a VBA module's source for syntax errors.
+/// [LLM-generated] Checks a VBA module's source for syntax errors.
 ///
 /// Phase 0 of the plan in `docs/vba-macro-support.md`, plus the narrow
 /// name-resolution pass in [`resolve`]: it answers
@@ -57,7 +57,7 @@ pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
     check_source(source, None, &resolve::Scope::self_contained(&empty))
 }
 
-/// [`check_syntax`] for source that is **one module of a larger project**
+/// [LLM-generated] [`check_syntax`] for source that is **one module of a larger project**
 /// whose other modules are not available.
 ///
 /// Same parse and the same rules, with one exception: a name that resolves
@@ -74,11 +74,11 @@ pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
 ///
 /// ```
 /// use visi_core::core::{check_syntax, check_syntax_partial};
-/// // `DoWork` is declared by some other module of the project.
+/// // [LLM-generated] `DoWork` is declared by some other module of the project.
 /// let src = "Sub Caller()\n    DoWork 1\nEnd Sub\n";
 /// assert!(check_syntax(src).is_err());
 /// assert!(check_syntax_partial(src).is_ok());
-/// // A fragment is still held to what its own text shows.
+/// // [LLM-generated] A fragment is still held to what its own text shows.
 /// assert!(check_syntax_partial("Sub Caller()\n").is_err());
 /// ```
 pub fn check_syntax_partial(source: &str) -> Result<ModuleSyntax, Error> {
@@ -86,7 +86,7 @@ pub fn check_syntax_partial(source: &str) -> Result<ModuleSyntax, Error> {
     check_source(source, None, &resolve::Scope::partial(&empty))
 }
 
-/// [`check_syntax`]'s body, with the resolution scope chosen by the caller.
+/// [LLM-generated] [`check_syntax`]'s body, with the resolution scope chosen by the caller.
 fn check_source(
     source: &str,
     module_name: Option<&str>,
@@ -105,7 +105,7 @@ fn check_source(
     })
 }
 
-/// The outcome of running a VBA procedure: its return value, rendered the way
+/// [LLM-generated] The outcome of running a VBA procedure: its return value, rendered the way
 /// VBA would render it, plus the subtype name `TypeName()` reports.
 ///
 /// Both halves matter. An interpreter that computes the right number with the
@@ -115,12 +115,12 @@ fn check_source(
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RunOutcome {
-    /// `TypeName()` of the returned value.
+    /// [LLM-generated] `TypeName()` of the returned value.
     pub type_name: String,
-    /// `CStr()` of the returned value, or `None` where VBA itself cannot
+    /// [LLM-generated] `CStr()` of the returned value, or `None` where VBA itself cannot
     /// stringify it (`Null`).
     pub value: Option<String>,
-    /// Whether the run changed the workbook.
+    /// [LLM-generated] Whether the run changed the workbook.
     ///
     /// Always `false` from [`run_macro`], which has no workbook to change.
     /// From [`crate::core::WorkbookManager::run_macro`] this is what tells a caller
@@ -130,7 +130,7 @@ pub struct RunOutcome {
     pub mutated: bool,
 }
 
-/// Turns command-line argument text into the `Variant`s a procedure receives.
+/// [LLM-generated] Turns command-line argument text into the `Variant`s a procedure receives.
 ///
 /// Arguments arrive as text -- they come from a CLI or a fuzz harness -- and
 /// are given the type VBA would give the same literal, so `-a 1` is an
@@ -171,7 +171,7 @@ fn to_runtime_error(e: value::VbaError) -> Error {
 }
 
 impl crate::core::WorkbookManager {
-    /// Runs one of this workbook's own VBA procedures **against** this
+    /// [LLM-generated] Runs one of this workbook's own VBA procedures **against** this
     /// workbook.
     ///
     /// Phase 2 of `docs/vba-macro-support.md`, and the entry point that
@@ -224,7 +224,7 @@ impl crate::core::WorkbookManager {
         Ok(to_outcome(result, mutated, &interp))
     }
 
-    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
+    /// [LLM-generated] Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
     pub fn run_open_events(&mut self) -> Result<RunOutcome, Error> {
         let interp = if let Some(project) = &self.vba_project {
             interp::Interpreter::from_project(project, None).map_err(to_runtime_error)?
@@ -248,7 +248,7 @@ impl crate::core::WorkbookManager {
         })
     }
 
-    /// The source text to run, resolving `module` the way
+    /// [LLM-generated] The source text to run, resolving `module` the way
     /// [`WorkbookManager::run_macro`] documents.
     fn macro_source_for(&self, module: Option<&str>, procedure: &str) -> Result<String, Error> {
         let project = self
@@ -284,7 +284,7 @@ impl crate::core::WorkbookManager {
     }
 }
 
-/// Parses `source` and runs one of its procedures.
+/// [LLM-generated] Parses `source` and runs one of its procedures.
 ///
 /// Phase 1 of `docs/vba-macro-support.md`: expressions, control flow,
 /// `Sub`/`Function` calls and `On Error`. There is **no host object model**,
@@ -318,7 +318,7 @@ pub fn run_macro(source: &str, procedure: &str, args: &[&str]) -> Result<RunOutc
 }
 
 impl VbaModule {
-    /// Checks this module's source, naming it in any error.
+    /// [LLM-generated] Checks this module's source, naming it in any error.
     ///
     /// The name matters more than it looks: a workbook can hold many modules
     /// and `visi macro check` reports on all of them, so an error that does
@@ -339,42 +339,42 @@ impl VbaModule {
     }
 }
 
-/// What kind of VBA module a [`VbaModule`] is, which decides how it binds to
+/// [LLM-generated] What kind of VBA module a [`VbaModule`] is, which decides how it binds to
 /// the workbook.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VbaModuleKind {
-    /// A `.bas`-equivalent module with no host object binding.
+    /// [LLM-generated] A `.bas`-equivalent module with no host object binding.
     Standard,
-    /// A `.cls`-equivalent module (not validated end-to-end against real
+    /// [LLM-generated] A `.cls`-equivalent module (not validated end-to-end against real
     /// Excel yet -- see the feature plan's open-risk notes).
     Class,
-    /// `ThisWorkbook` or a worksheet's code-behind module. Must correspond
+    /// [LLM-generated] `ThisWorkbook` or a worksheet's code-behind module. Must correspond
     /// 1:1 with an existing sheet (or the workbook itself) via
     /// `bound_sheet_id`, mirroring Excel's own codeName wiring.
     Document,
 }
 
-/// A single VBA module's editable content plus the opaque bytes needed to
+/// [LLM-generated] A single VBA module's editable content plus the opaque bytes needed to
 /// keep Excel happy on export.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VbaModule {
-    /// VB_Name -- must satisfy `validate_vba_module_name`.
+    /// [LLM-generated] VB_Name -- must satisfy `validate_vba_module_name`.
     pub name: String,
-    /// What kind of module this is, and so how it binds to the workbook.
+    /// [LLM-generated] What kind of module this is, and so how it binds to the workbook.
     pub kind: VbaModuleKind,
-    /// Plain VBA source text (no compression, no Attribute-line management
+    /// [LLM-generated] Plain VBA source text (no compression, no Attribute-line management
     /// beyond what the caller writes -- callers are expected to include the
     /// `Attribute VB_Name = "..."` line themselves, matching how real
     /// Excel-authored module streams are shaped).
     pub source: String,
-    /// Required iff `kind == Document`: the sheet this module's code
+    /// [LLM-generated] Required iff `kind == Document`: the sheet this module's code
     /// belongs to (or `None`/ignored for `ThisWorkbook`, which isn't tied to
     /// a specific sheet). Kept as a stable id (not a name) so sheet renames
     /// don't silently orphan the binding -- deliberately NOT cascaded the
     /// other direction (renaming this module does not rename the sheet, and
     /// vice versa; Excel allows the two names to diverge).
     pub bound_sheet_id: Option<u64>,
-    /// Opaque bytes forming the pre-TextOffset "p-code prefix" of this
+    /// [LLM-generated] Opaque bytes forming the pre-TextOffset "p-code prefix" of this
     /// module's stream. Never reparsed or validated by this codebase --
     /// proven (via the POC) that its *content* doesn't need to correspond
     /// to this module's actual source, only its presence matters, as long
@@ -386,12 +386,12 @@ pub struct VbaModule {
     /// zero-procedure cache -- see that module's doc comment.
     #[serde(default)]
     pub prefix_bytes: Vec<u8>,
-    /// The module stream's MODULECOOKIE record (`0x002C`) value. MS-OVBA
+    /// [LLM-generated] The module stream's MODULECOOKIE record (`0x002C`) value. MS-OVBA
     /// documents this as implementation-specific and ignorable on read.
     /// Preserved here so an imported module's original value survives re-export.
     #[serde(default = "default_module_cookie")]
     pub module_cookie: u16,
-    /// This module stream's already-compressed source, as read back
+    /// [LLM-generated] This module stream's already-compressed source, as read back
     /// verbatim from an imported file -- `None` for a module created fresh
     /// in this session (nothing to cache yet). `set_vba_module_source`
     /// clears this whenever `source` is replaced. Export reuses the cached
@@ -406,34 +406,34 @@ fn default_module_cookie() -> u16 {
 }
 
 impl VbaModule {
-    /// Whether this is a document module -- `ThisWorkbook` or a worksheet's
+    /// [LLM-generated] Whether this is a document module -- `ThisWorkbook` or a worksheet's
     /// code-behind -- as opposed to a standard or class module.
     pub fn is_document(&self) -> bool {
         self.kind == VbaModuleKind::Document
     }
 }
 
-/// A workbook's VBA project: its modules plus the raw material needed to
+/// [LLM-generated] A workbook's VBA project: its modules plus the raw material needed to
 /// patch (not rebuild from scratch) a `vbaProject.bin` on export.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VbaProject {
-    /// Project ID GUID, e.g. `"{7B4E3A2C-1F5D-4A6B-9C8E-2D3F4A5B6C7D}"`.
+    /// [LLM-generated] Project ID GUID, e.g. `"{7B4E3A2C-1F5D-4A6B-9C8E-2D3F4A5B6C7D}"`.
     /// Must stay internally consistent with `protection_lines` -- never
     /// mutated after import/creation, so it always is. If `CMG`/`DPB`/`GC`
     /// protection-state lines are ever made independently settable, they
     /// must correspond to this exact ID or Excel reports the whole project
     /// "unviewable" (a real finding from the POC, not a hypothetical).
     pub project_id: String,
-    /// The project's modules, in no particular order. Names are unique
+    /// [LLM-generated] The project's modules, in no particular order. Names are unique
     /// case-insensitively.
     pub modules: Vec<VbaModule>,
-    /// The full original `vbaProject.bin` bytes this project was imported
+    /// [LLM-generated] The full original `vbaProject.bin` bytes this project was imported
     /// from, or (for a project created fresh in this session)
     /// `vba_synth::synthetic_raw_donor()`'s from-scratch bytes -- export's
     /// patch base. See `vba_xlsx.rs`.
     #[serde(default)]
     pub raw_donor: Vec<u8>,
-    /// P-code prefix bytes to donate to the first module ever added to a
+    /// [LLM-generated] P-code prefix bytes to donate to the first module ever added to a
     /// project that started with none -- kept separate from `modules`
     /// rather than as a phantom placeholder module, so it never shows up in
     /// `list_vba_modules`/export. Once a project has at least one real
@@ -441,12 +441,12 @@ pub struct VbaProject {
     /// one, and this field goes unused.
     #[serde(default)]
     pub seed_prefix_bytes: Vec<u8>,
-    /// `VbaModule::module_cookie` to donate to the first module ever added
+    /// [LLM-generated] `VbaModule::module_cookie` to donate to the first module ever added
     /// to a project that started with none -- same donation scheme as
     /// `seed_prefix_bytes`, see there for why.
     #[serde(default = "default_module_cookie")]
     pub seed_module_cookie: u16,
-    /// The donor's original `PROJECT` stream `CMG=`/`DPB=`/`GC=` lines
+    /// [LLM-generated] The donor's original `PROJECT` stream `CMG=`/`DPB=`/`GC=` lines
     /// (joined with `\r\n`), reproduced verbatim on export -- `None` for a
     /// project created fresh in this session, which never had any. See
     /// `vba_xlsx::build_project_stream` for why these must be preserved
@@ -456,7 +456,7 @@ pub struct VbaProject {
 }
 
 impl VbaProject {
-    /// A brand-new, empty VBA project with no real Excel-authored file
+    /// [LLM-generated] A brand-new, empty VBA project with no real Excel-authored file
     /// behind it anywhere -- `raw_donor` and `seed_prefix_bytes` are built
     /// by `vba_synth` entirely from scratch. See `vba_synth`'s doc comment
     /// for why that's now possible.
@@ -471,27 +471,27 @@ impl VbaProject {
         }
     }
 
-    /// Finds a module by name, matched case-insensitively as VBA does.
+    /// [LLM-generated] Finds a module by name, matched case-insensitively as VBA does.
     pub fn find_module(&self, name: &str) -> Option<&VbaModule> {
         self.modules
             .iter()
             .find(|m| m.name.eq_ignore_ascii_case(name))
     }
 
-    /// [`VbaProject::find_module`], mutably.
+    /// [LLM-generated] [`VbaProject::find_module`], mutably.
     pub fn find_module_mut(&mut self, name: &str) -> Option<&mut VbaModule> {
         self.modules
             .iter_mut()
             .find(|m| m.name.eq_ignore_ascii_case(name))
     }
 
-    /// Whether a module of this name already exists, matched
+    /// [LLM-generated] Whether a module of this name already exists, matched
     /// case-insensitively.
     pub fn module_name_taken(&self, name: &str) -> bool {
         self.find_module(name).is_some()
     }
 
-    /// Checks every module, resolving names against the **whole project**.
+    /// [LLM-generated] Checks every module, resolving names against the **whole project**.
     ///
     /// This is the check to prefer wherever the project is in hand.
     /// [`VbaModule::check_syntax`] sees one module and so has to accept any
@@ -508,7 +508,7 @@ impl VbaProject {
         self.check_modules_scoped(true)
     }
 
-    /// [`check_modules`](Self::check_modules) for a project that is **not**
+    /// [LLM-generated] [`check_modules`](Self::check_modules) for a project that is **not**
     /// the whole story -- one whose procedures may live in a referenced
     /// project this `VbaProject` does not model.
     ///
@@ -521,7 +521,7 @@ impl VbaProject {
         self.check_modules_scoped(false)
     }
 
-    /// The body both of the above share, `complete` being
+    /// [LLM-generated] The body both of the above share, `complete` being
     /// [`resolve::Scope::complete_project`].
     fn check_modules_scoped(&self, complete: bool) -> Vec<(String, Result<ModuleSyntax, Error>)> {
         let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -552,7 +552,7 @@ impl VbaProject {
     }
 }
 
-/// A GUID-shaped project id (`{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`) for
+/// [LLM-generated] A GUID-shaped project id (`{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`) for
 /// a brand-new project, built from two `generate_unique_id()` draws rather
 /// than duplicating its getrandom/fallback logic.
 fn new_project_guid() -> String {
@@ -568,7 +568,7 @@ fn new_project_guid() -> String {
     )
 }
 
-/// VBA identifiers: must start with a letter, contain only letters/digits/
+/// [LLM-generated] VBA identifiers: must start with a letter, contain only letters/digits/
 /// underscore, and be at most 31 characters (the real VBE module-name
 /// limit).
 pub fn validate_vba_module_name(name: &str) -> Result<(), String> {
@@ -657,7 +657,7 @@ mod tests {
         assert!(!project.module_name_taken("Module2"));
     }
 
-    /// `sample_project()`'s shape with the sources the caller cares about,
+    /// [LLM-generated] `sample_project()`'s shape with the sources the caller cares about,
     /// one standard module per `(name, source)` pair.
     fn project_of(sources: &[(&str, &str)]) -> VbaProject {
         let mut project = sample_project();
@@ -679,7 +679,7 @@ mod tests {
     const CALLER: &str = "Public Sub Caller()\n    DoWork 1\nEnd Sub\n";
     const CALLEE: &str = "Public Sub DoWork(n As Long)\nEnd Sub\n";
 
-    /// The two scopes differ on exactly one thing, and only on it: a name
+    /// [LLM-generated] The two scopes differ on exactly one thing, and only on it: a name
     /// no supplied module declares.
     #[test]
     fn partial_scope_accepts_a_call_into_source_not_supplied() {

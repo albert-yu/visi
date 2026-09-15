@@ -1,4 +1,4 @@
-/// Excel's SIN/COS/TAN (and so anything built on them: COT, CSC, SEC)
+/// [LLM-generated] Excel's SIN/COS/TAN (and so anything built on them: COT, CSC, SEC)
 /// refuse an argument at or beyond `2^27` radians with `#NUM!`, rather
 /// than returning whatever a library sin/cos happens to reduce it to --
 /// past that magnitude a double's ~15-16 significant digits can no
@@ -336,7 +336,7 @@ pub fn arabic(text: &str) -> Result<f64, String> {
     }
 }
 
-/// Excel's ROMAN, including its four progressively "concise" forms.
+/// [LLM-generated] Excel's ROMAN, including its four progressively "concise" forms.
 ///
 /// Form 0 is classic notation, which only subtracts a power of ten one or
 /// two places below the numeral it precedes (CM, CD, XC, XL, IX, IV).

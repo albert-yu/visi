@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the `visi_core` extension module.
+"""[LLM-generated] Unit tests for the `visi_core` extension module.
 
 Run after building it into the venv:
 
@@ -20,7 +20,7 @@ visi_core = pytest.importorskip(
 )
 
 
-# ---------------------------------------------------------------- lifecycle
+# [LLM-generated] ---------------------------------------------------------------- lifecycle
 
 
 def test_new_empty_has_one_sheet():
@@ -76,15 +76,15 @@ def test_eval_file(tmp_path):
     assert visi_core.Workbook.load(dst).get_cell(0, 1) == 7
 
 
-# ------------------------------------------------------------ value mapping
+# [LLM-generated] ------------------------------------------------------------ value mapping
 
 
 @pytest.mark.parametrize(
     "src,expected,expected_type",
     [
-        # A numeric *literal* stays an integer ...
+        # [LLM-generated] A numeric *literal* stays an integer ...
         ("10", 10, int),
-        # ... while arithmetic goes through floats, as Excel's model does.
+        # [LLM-generated] ... while arithmetic goes through floats, as Excel's model does.
         ("=1+1", 2.0, float),
         ("=1.5+1", 2.5, float),
         ('=CONCATENATE("a","b")', "ab", str),
@@ -144,7 +144,7 @@ def test_error_value_is_cell_error():
 
 
 def test_error_and_text_are_distinguished_by_type_not_equality():
-    """The whole reason CellError exists.
+    """[LLM-generated] The whole reason CellError exists.
 
     A cell can hold the *text* `#DIV/0!`. Both compare equal to the code
     string -- they are equal as values, which is also how the harness's
@@ -159,8 +159,8 @@ def test_error_and_text_are_distinguished_by_type_not_equality():
     err, text = wb.get_cell(0, 0), wb.get_cell(0, 1)
     assert isinstance(err, visi_core.CellError)
     assert isinstance(text, str) and not isinstance(text, visi_core.CellError)
-    assert err == text  # equal as values ...
-    assert type(err) is not type(text)  # ... but never the same thing
+    assert err == text  # [LLM-generated] equal as values ...
+    assert type(err) is not type(text)  # [LLM-generated] ... but never the same thing
 
 
 def test_cell_error_hash_agrees_with_eq():
@@ -170,7 +170,7 @@ def test_cell_error_hash_agrees_with_eq():
 
 
 def test_get_display_renders_a_date():
-    """A date is a serial number plus a format; only get_display renders it."""
+    """[LLM-generated] A date is a serial number plus a format; only get_display renders it."""
     wb = visi_core.Workbook()
     wb.set_cell(0, 0, "6/22/26")
     wb.evaluate()
@@ -186,7 +186,7 @@ def test_get_src_returns_the_formula_text():
     assert wb.get_cell(0, 0) == 2
 
 
-# --------------------------------------------------------------- exceptions
+# [LLM-generated] --------------------------------------------------------------- exceptions
 
 
 def test_not_found_carries_structured_payload():
@@ -201,7 +201,7 @@ def test_not_found_carries_structured_payload():
 
 
 def test_exception_str_is_just_the_message():
-    """`args` stays a 1-tuple so str(exc) matches the CLI's stderr text."""
+    """[LLM-generated] `args` stays a 1-tuple so str(exc) matches the CLI's stderr text."""
     wb = visi_core.Workbook()
     with pytest.raises(visi_core.VisiError) as exc:
         wb.sheet_index("nope")
@@ -215,7 +215,7 @@ def test_unknown_enum_spelling_raises_invalid_argument():
     with pytest.raises(visi_core.InvalidArgumentError) as exc:
         wb.add_chart("Sheet1", "doughnut", "Sheet1!A1:B2")
     assert "doughnut" in str(exc.value)
-    assert "column" in str(exc.value)  # lists what is accepted
+    assert "column" in str(exc.value)  # [LLM-generated] lists what is accepted
 
 
 def test_value_field_without_aggregation_is_rejected():
@@ -229,7 +229,7 @@ def test_missing_file_raises_oserror(tmp_path):
         visi_core.Workbook.load(tmp_path / "does-not-exist.xlsx")
 
 
-# ------------------------------------------------------------------- charts
+# [LLM-generated] ------------------------------------------------------------------- charts
 
 
 def _sheet_with_data():
@@ -253,12 +253,12 @@ def test_add_chart_then_read_it_back():
 
 
 def test_chart_id_changes_across_a_roundtrip():
-    """Ids are re-derived on import, so a stale id must not be reused."""
+    """[LLM-generated] Ids are re-derived on import, so a stale id must not be reused."""
     wb, name = _sheet_with_data()
     wb.add_chart(name, "column", f"{name}!A1:B3")
     again = wb.roundtrip()
     assert len(again.charts()) == 1
-    # The point is not the specific value, it is that charts() is the only
+    # [LLM-generated] The point is not the specific value, it is that charts() is the only
     # trustworthy source after a round trip.
     assert again.charts()[0]["id"] == again.charts()[0]["id"]
 
@@ -292,7 +292,7 @@ def test_edit_chart_leaves_unmentioned_fields_alone():
     assert wb.charts()[0]["title"] == "keep"
 
 
-# ------------------------------------------------------------------- pivots
+# [LLM-generated] ------------------------------------------------------------------- pivots
 
 
 def _pivot_source():
@@ -328,7 +328,7 @@ def test_pivot_from_range_and_fields():
 
 
 def test_no_subtotal_is_applied():
-    """Mirrors the CLI's post-add mutation; without it --no-subtotal is a no-op."""
+    """[LLM-generated] Mirrors the CLI's post-add mutation; without it --no-subtotal is a no-op."""
     wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
@@ -342,7 +342,7 @@ def test_no_subtotal_is_applied():
 
 
 def test_subtotal_survives_a_roundtrip():
-    """Contradicts pivot_xlsx.rs's stale module doc; the importer does read it."""
+    """[LLM-generated] Contradicts pivot_xlsx.rs's stale module doc; the importer does read it."""
     wb, _name, last = _pivot_source()
     wb.add_pivot_from_range(
         "P", start_row=0, start_col=0, end_row=last, end_col=2, dest_row=0, dest_col=5
@@ -355,7 +355,7 @@ def test_subtotal_survives_a_roundtrip():
 
 
 def test_empty_filter_selection_is_expressible():
-    """The state `visi pivot filter` cannot reach: select nothing.
+    """[LLM-generated] The state `visi pivot filter` cannot reach: select nothing.
 
     None means "no filter"; [] means "nothing selected". The CLI only has the
     former (--clear) and a non-empty comma list.
@@ -379,7 +379,7 @@ def test_empty_filter_selection_is_expressible():
 
 
 def test_filter_selection_survives_a_roundtrip():
-    """A selection is written as `<sharedItems>` indices and read back as values.
+    """[LLM-generated] A selection is written as `<sharedItems>` indices and read back as values.
 
     This used not to hold -- the selection reset to "all" on import, so the
     filter had to be the last mutation before saving. It round-trips now.
@@ -398,7 +398,7 @@ def test_filter_selection_survives_a_roundtrip():
 
 
 def test_a_filter_selecting_everything_reads_back_as_no_filter():
-    """Nothing is marked hidden, so the file cannot tell the two apart.
+    """[LLM-generated] Nothing is marked hidden, so the file cannot tell the two apart.
 
     Harmless: an all-inclusive filter and no filter produce the same grid.
     """
@@ -415,7 +415,7 @@ def test_a_filter_selecting_everything_reads_back_as_no_filter():
     assert wb.roundtrip().pivots()[0]["filter_selections"]["Region"] is None
 
 
-# ------------------------------------------------------------------- macros
+# [LLM-generated] ------------------------------------------------------------------- macros
 
 
 MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    MsgBox "hi"\nEnd Sub\n'
@@ -437,7 +437,7 @@ def test_add_macro_then_read_it_back():
 
 
 def test_macro_survives_a_roundtrip():
-    """The property the whole VBA feature rests on: the CLI is a fresh process
+    """[LLM-generated] The property the whole VBA feature rests on: the CLI is a fresh process
     per invocation, so a module only persists by round-tripping through
     vbaProject.bin."""
     wb = visi_core.Workbook()

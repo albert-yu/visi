@@ -1,7 +1,7 @@
 use crate::core::SharedVec;
 use serde::{Deserialize, Serialize};
 
-/// One bit per row, recording which entries of a numeric [`ColumnData`] hold a
+/// [LLM-generated] One bit per row, recording which entries of a numeric [`ColumnData`] hold a
 /// value rather than a blank.
 ///
 /// A set bit means the value at that index is real; a clear bit means the cell
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bitmask {
     data: SharedVec<u8>,
-    /// How many bits are in use, which is the row count of the column this
+    /// [LLM-generated] How many bits are in use, which is the row count of the column this
     /// mask belongs to. Not the capacity of the backing bytes.
     pub len: usize,
 }
@@ -42,7 +42,7 @@ impl Bitmask {
         }
         self.len += 1;
     }
-    /// Whether the entry at `index` holds a value. `false` for an index at or
+    /// [LLM-generated] Whether the entry at `index` holds a value. `false` for an index at or
     /// past [`Bitmask::len`], so an out-of-range read is indistinguishable
     /// from a blank.
     pub fn get(&self, index: usize) -> bool {

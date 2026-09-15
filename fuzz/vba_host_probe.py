@@ -194,7 +194,7 @@ def build_module(cases):
 
 
 def build_workbook(path):
-    """The grid every case reads.
+    """[LLM-generated] The grid every case reads.
 
     `C1`/`C2`/`C3` are the date question: an integral serial, a fractional
     one, and one carrying a time format. `D1` is a formula, `D2` text that

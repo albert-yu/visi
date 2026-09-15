@@ -15,7 +15,7 @@ from fuzz_excel import SMOKE_BANNER, smoke_check
 
 
 class ChartFuzzGenerator:
-    """Generates a random source data grid plus a matching chart
+    """[LLM-generated] Generates a random source data grid plus a matching chart
     configuration (as plain dicts, not XML) that both `VisiChartDriver` and
     `ExcelChartDriver` build a real chart from.
 
@@ -57,7 +57,7 @@ class ChartFuzzGenerator:
         }
 
     def generate(self, source_path, num_rows):
-        """Writes a small source workbook (one category column, one numeric
+        """[LLM-generated] Writes a small source workbook (one category column, one numeric
         column) to `source_path` via openpyxl, and returns
         `(range_str, add_config, edit_config)`.
         """
@@ -128,7 +128,7 @@ from visi_driver import (
 
 
 class ExcelChartDriver:
-    """Drives Microsoft Excel's own chart object model to build a chart
+    """[LLM-generated] Drives Microsoft Excel's own chart object model to build a chart
     matching `edit_config` (the final target state -- see
     `ChartFuzzGenerator`'s docstring for why Excel doesn't need to mimic the
     add-then-edit history).
@@ -334,7 +334,7 @@ class ExcelChartDriver:
                 wb.Close()
                 last_err = None
                 break
-            except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+            except Exception as e:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
                 last_err = e
             finally:
                 excel.Quit()
@@ -343,7 +343,7 @@ class ExcelChartDriver:
 
 
 class ChartComparator:
-    """Extracts chart structure from `visi_out.xlsx` and `excel_out.xlsx`
+    """[LLM-generated] Extracts chart structure from `visi_out.xlsx` and `excel_out.xlsx`
     via `chart_xlsx_reader.read_charts` and diffs type/ranges/title/
     xlabel/ylabel/legend. Assumes exactly one chart per file -- a
     deliberate fuzz-scope limitation that avoids chart-matching/ordering
@@ -351,7 +351,7 @@ class ChartComparator:
     """
 
     def _normalize_range(self, ref):
-        """Strips `$` and surrounding single-quotes around a sheet name,
+        """[LLM-generated] Strips `$` and surrounding single-quotes around a sheet name,
         and lowercases the sheet-name portion, so e.g. an
         openpyxl/Excel-authored `'Sheet1'!$B$2:$B$4` compares equal to
         visi's `Sheet1!$B$1:$B$4`. New logic -- `fuzz_excel.py`'s
@@ -366,7 +366,7 @@ class ChartComparator:
         return f"{sheet}!{cell_range.replace('$', '')}"
 
     def compare(self, visi_xlsx_path, excel_xlsx_path):
-        """Returns (is_match, mismatches), the same shape as
+        """[LLM-generated] Returns (is_match, mismatches), the same shape as
         `DifferentialComparator.compare` in `fuzz_excel.py`, for a similar
         reporting loop in `main()`."""
         visi_charts = read_charts(visi_xlsx_path)
@@ -534,7 +534,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as err:  # noqa: BLE001 - [LLM-generated] fuzzers keep iterating after per-case failures.
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(

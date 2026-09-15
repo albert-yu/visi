@@ -2,7 +2,7 @@ use crate::core::ovba;
 use crate::core::vba_xlsx::write_record;
 use std::io::Write;
 
-/// [MS-OVBA] 2.3.4.1 PROJECTVERSION: a fixed 12-byte record regardless of
+/// [LLM-generated] [MS-OVBA] 2.3.4.1 PROJECTVERSION: a fixed 12-byte record regardless of
 /// its nominal size field (`vba_xlsx::read_dir_record` special-cases it).
 fn write_project_version_record(out: &mut Vec<u8>) {
     out.extend_from_slice(&0x0009u16.to_le_bytes());
@@ -11,7 +11,7 @@ fn write_project_version_record(out: &mut Vec<u8>) {
     out.extend_from_slice(&0u16.to_le_bytes());
 }
 
-/// A complete, reference-free `dir` stream: PROJECTINFORMATION with an
+/// [LLM-generated] A complete, reference-free `dir` stream: PROJECTINFORMATION with an
 /// empty PROJECTREFERENCES section, then an empty PROJECTMODULES list.
 /// `vba_xlsx::build_vba_project_bin` only ever reads the PROJECTINFORMATION
 /// prefix (everything before PROJECTMODULES) out of `raw_donor`'s dir
@@ -41,7 +41,7 @@ fn build_skeleton_dir() -> Vec<u8> {
     dir
 }
 
-/// The whole-project `_VBA_PROJECT` cache stream: just the 7-byte header
+/// [LLM-generated] The whole-project `_VBA_PROJECT` cache stream: just the 7-byte header
 /// ([MS-OVBA] 2.3.4.3 -- Reserved1 = 0x61CC, an implementation-defined
 /// version tag, Reserved2 = 0x00, Reserved3), with no cached data trailing
 /// it.
@@ -54,7 +54,7 @@ fn build_skeleton_vba_project_cache() -> Vec<u8> {
     cache
 }
 
-/// Builds a from-scratch `vbaProject.bin` CFB container holding just the
+/// [LLM-generated] Builds a from-scratch `vbaProject.bin` CFB container holding just the
 /// `dir` and `_VBA_PROJECT` streams -- everything `VbaProject::raw_donor`
 /// needs to exist for `vba_xlsx::build_vba_project_bin` to patch, without
 /// any of it being copied from a real file.
@@ -90,7 +90,7 @@ const PREFIX_LEN: usize = LINE_COUNT_OFFSET + 2;
 
 const CAFE_MAGIC: u16 = 0xCAFE;
 
-/// A minimal, self-consistent, zero-procedure p-code prefix -- see the
+/// [LLM-generated] A minimal, self-consistent, zero-procedure p-code prefix -- see the
 /// module doc comment for why this replaces borrowing real bytes from a
 /// donor module.
 pub fn synthetic_module_prefix() -> Vec<u8> {
@@ -124,7 +124,7 @@ mod tests {
         u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap())
     }
 
-    /// Independently walks `synthetic_module_prefix`'s output the same way
+    /// [LLM-generated] Independently walks `synthetic_module_prefix`'s output the same way
     /// a reader is understood to (see the module doc comment), as a
     /// consistency check on the layout rather than a proof it satisfies
     /// Excel.

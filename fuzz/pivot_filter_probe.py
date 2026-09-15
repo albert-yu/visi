@@ -76,7 +76,7 @@ def build_workbook(path):
 
 
 def run_and_save(driver, xlsm, out_path, macro="Build"):
-    """Opens the workbook, optionally runs a macro, and saves.
+    """[LLM-generated] Opens the workbook, optionally runs a macro, and saves.
 
     `macro=None` is the "just let Excel rewrite the file" case, which is what
     checking visi's own output needs -- and it avoids `run VB macro`, whose
@@ -122,7 +122,7 @@ def run_and_save(driver, xlsm, out_path, macro="Build"):
 
 
 def pretty(xml, keep):
-    """The elements worth reading, one per line, with the noise dropped."""
+    """[LLM-generated] The elements worth reading, one per line, with the noise dropped."""
     out = []
     for m in re.finditer(r"<[^>]+>", xml):
         tag = m.group(0)
@@ -133,7 +133,7 @@ def pretty(xml, keep):
 
 
 def can_excel_open(driver, path, timeout=60):
-    """Whether Excel opens the workbook at all.
+    """[LLM-generated] Whether Excel opens the workbook at all.
 
     Returns (ok, detail). A timeout means a modal dialog -- Excel offering to
     *repair* a file it considers damaged -- which is indistinguishable from a
@@ -175,7 +175,7 @@ def can_excel_open(driver, path, timeout=60):
 
 
 def visi_written(driver, full):
-    """Can real Excel open a pivot table that visi wrote?
+    """[LLM-generated] Can real Excel open a pivot table that visi wrote?
 
     `AGENTS.md` records that visi's pivot XML was validated against openpyxl
     and never against Excel, because the automation grant could not be
