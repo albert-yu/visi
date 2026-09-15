@@ -1697,7 +1697,7 @@ fn test_cell_type_string_preserves_date_and_number_as_text() {
         sheet.get_result_data(&CellRef::new(4, 0)),
         ResultData::Float(f) if (f - 46195.0).abs() < f64::EPSILON
     ));
-    assert_eq!(sheet.get_cell_type(&CellRef::new(4, 0)), CellType::Number);
+    assert_eq!(sheet.get_cell_type(&CellRef::new(4, 0)), CellType::DateTime);
     assert!(
         sheet
             .get_cell_style(4, 0)

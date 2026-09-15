@@ -212,7 +212,7 @@ impl Sheet {
             && row < column.src.len()
         {
             column.src[row] = src.clone();
-            column.cell_types[row] = CellType::Auto;
+            column.cell_types[row] = CellType::Empty;
             let compiled = crate::core::parser::compile_formula(&src, &[table_clone]);
             column.compiled_src[row] = compiled;
             column.mark_dirty(row);

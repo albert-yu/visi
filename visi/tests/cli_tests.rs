@@ -1737,7 +1737,7 @@ fn test_cli_set_cell_type_flag_parsing() {
         "--cell",
         "B2",
         "--cell-type",
-        "number",
+        "float",
         "-i",
     ])
     .expect("should parse set with --cell-type alias");
@@ -1746,7 +1746,7 @@ fn test_cli_set_cell_type_flag_parsing() {
         panic!("expected Commands::Set");
     };
     assert_eq!(set_args2.cell, vec!["B2"]);
-    assert_eq!(set_args2.cell_type, Some(visi::cli::CellTypeArg::Number));
+    assert_eq!(set_args2.cell_type, Some(visi::cli::CellTypeArg::Float));
 }
 
 #[test]
@@ -1764,13 +1764,7 @@ fn test_workbook_set_cell_type_and_roundtrip() {
         visi_core::core::CellType::String,
     );
     wb.set_cell(0, 0, 1, "12345".to_string());
-    wb.set_cell_with_type(
-        0,
-        0,
-        2,
-        "TRUE".to_string(),
-        visi_core::core::CellType::Boolean,
-    );
+    wb.set_cell_with_type(0, 0, 2, "TRUE".to_string(), visi_core::core::CellType::Bool);
     wb.set_cell(0, 0, 3, "999".to_string());
     wb.set_cell_type(0, 0, 3, visi_core::core::CellType::String);
 

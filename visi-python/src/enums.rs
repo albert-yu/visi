@@ -18,18 +18,20 @@ pub fn parse_chart_type(s: &str) -> PyResult<ChartType> {
     }
 }
 
-/// Parses a cell type name (`"auto"`, `"empty"`, `"number"`, `"string"`, `"boolean"`, `"error"`, `"formula"`).
+/// [AI-Agent] Parses a cell type name matching `visi_core::core::CellType`.
 pub fn parse_cell_type(s: &str) -> PyResult<CellType> {
     match s.to_ascii_lowercase().as_str() {
-        "auto" => Ok(CellType::Auto),
         "empty" => Ok(CellType::Empty),
-        "number" => Ok(CellType::Number),
+        "int" => Ok(CellType::Int),
+        "float" => Ok(CellType::Float),
         "string" => Ok(CellType::String),
-        "boolean" => Ok(CellType::Boolean),
+        "bool" => Ok(CellType::Bool),
+        "date-time" => Ok(CellType::DateTime),
+        "date-time-iso" => Ok(CellType::DateTimeIso),
+        "duration-iso" => Ok(CellType::DurationIso),
         "error" => Ok(CellType::Error),
-        "formula" => Ok(CellType::Formula),
         other => Err(invalid_argument(format!(
-            "unknown cell type {other:?}; expected one of: auto, empty, number, string, boolean, error, formula"
+            "unknown cell type {other:?}; expected one of: empty, int, float, string, bool, date-time, date-time-iso, duration-iso, error"
         ))),
     }
 }
@@ -84,7 +86,15 @@ mod tests {
             assert!(parse_chart_type(s).is_ok(), "chart type {s:?}");
         }
         for s in [
-            "auto", "empty", "number", "string", "boolean", "error", "formula",
+            "empty",
+            "int",
+            "float",
+            "string",
+            "bool",
+            "date-time",
+            "date-time-iso",
+            "duration-iso",
+            "error",
         ] {
             assert!(parse_cell_type(s).is_ok(), "cell type {s:?}");
         }
@@ -141,22 +151,26 @@ mod tests {
     #[test]
     fn every_cell_type_has_a_spelling() {
         for ct in [
-            CellType::Auto,
             CellType::Empty,
-            CellType::Number,
+            CellType::Int,
+            CellType::Float,
             CellType::String,
-            CellType::Boolean,
+            CellType::Bool,
+            CellType::DateTime,
+            CellType::DateTimeIso,
+            CellType::DurationIso,
             CellType::Error,
-            CellType::Formula,
         ] {
             let name = match ct {
-                CellType::Auto => "auto",
                 CellType::Empty => "empty",
-                CellType::Number => "number",
+                CellType::Int => "int",
+                CellType::Float => "float",
                 CellType::String => "string",
-                CellType::Boolean => "boolean",
+                CellType::Bool => "bool",
+                CellType::DateTime => "date-time",
+                CellType::DateTimeIso => "date-time-iso",
+                CellType::DurationIso => "duration-iso",
                 CellType::Error => "error",
-                CellType::Formula => "formula",
             };
             assert_eq!(parse_cell_type(name).unwrap(), ct);
         }

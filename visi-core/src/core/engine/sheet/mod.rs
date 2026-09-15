@@ -349,21 +349,67 @@ impl Sheet {
                 .columns
                 .get(cell_ref.col)
                 .and_then(|c| c.cell_types.get(cell_ref.row).copied())
-                .unwrap_or(CellType::Auto);
+                .unwrap_or(CellType::Empty);
 
             let mut detected_num_format: Option<String> = None;
-            let (result, new_deps, compiled_to_cache, final_cell_type) = {
+            let (result, new_deps, compiled_to_cache, mut final_cell_type) = {
                 let src = self.get_src_str_ref(&cell_ref).unwrap_or("");
-                if cell_type_hint == CellType::String {
+                if !src.starts_with('=') && cell_type_hint == CellType::String {
                     let val = if src.starts_with('"') && src.ends_with('"') && src.len() >= 2 {
                         src[1..src.len() - 1].to_string()
                     } else {
                         src.to_string()
                     };
                     (ResultData::String(val), vec![], None, CellType::String)
-                } else if !src.starts_with('=') && cell_type_hint != CellType::Formula {
+                } else if !src.starts_with('=') {
                     let (res, c_type) = if let Some(stripped) = src.strip_prefix('\'') {
                         (ResultData::String(stripped.to_string()), CellType::String)
+                    } else if matches!(
+                        cell_type_hint,
+                        CellType::DateTimeIso | CellType::DurationIso
+                    ) {
+                        (ResultData::String(src.to_string()), cell_type_hint)
+                    } else if cell_type_hint == CellType::DateTime {
+                        if let Ok(f) = src.trim().parse::<f64>() {
+                            (ResultData::Float(f), CellType::DateTime)
+                        } else if let Some((date, format)) = crate::core::date::parse_date_with_locale(
+                            src.trim_matches(' '),
+                            &self.locale,
+                        ) {
+                            detected_num_format = Some(format.to_format_code());
+                            (
+                                ResultData::Float(crate::core::date::date_to_excel_serial(date)),
+                                CellType::DateTime,
+                            )
+                        } else if let Some(f) = crate::core::date_fn::parse_time_fraction(src) {
+                            (ResultData::Float(f), CellType::DateTime)
+                        } else {
+                            (ResultData::String(src.to_string()), CellType::String)
+                        }
+                    } else if cell_type_hint == CellType::Float {
+                        if let Ok(f) = src.trim().parse::<f64>()
+                            && f.is_finite()
+                        {
+                            (ResultData::Float(f), CellType::Float)
+                        } else {
+                            (ResultData::String(src.to_string()), CellType::String)
+                        }
+                    } else if cell_type_hint == CellType::Int {
+                        if let Ok(i) = src.trim().parse::<i64>() {
+                            (ResultData::Integer(i), CellType::Int)
+                        } else {
+                            (ResultData::String(src.to_string()), CellType::String)
+                        }
+                    } else if cell_type_hint == CellType::Bool {
+                        if src == "1" || src.eq_ignore_ascii_case("true") {
+                            (ResultData::Boolean(true), CellType::Bool)
+                        } else if src == "0" || src.eq_ignore_ascii_case("false") {
+                            (ResultData::Boolean(false), CellType::Bool)
+                        } else {
+                            (ResultData::String(src.to_string()), CellType::String)
+                        }
+                    } else if cell_type_hint == CellType::Error {
+                        (ResultData::Error(src.to_uppercase()), CellType::Error)
                     } else if src.is_empty() {
                         (ResultData::None, CellType::Empty)
                     } else if src.starts_with('"') && src.ends_with('"') && src.len() >= 2 {
@@ -372,17 +418,17 @@ impl Sheet {
                             CellType::String,
                         )
                     } else if let Ok(i) = src.trim().parse::<i64>() {
-                        (ResultData::Integer(i), CellType::Number)
+                        (ResultData::Integer(i), CellType::Int)
                     } else if let Ok(f) = src.trim().parse::<f64>()
                         && f.is_finite()
                     {
-                        (ResultData::Float(f), CellType::Number)
+                        (ResultData::Float(f), CellType::Float)
                     } else if crate::core::engine::result_data::is_excel_error_code(src) {
                         (ResultData::Error(src.to_uppercase()), CellType::Error)
                     } else if src.eq_ignore_ascii_case("true") {
-                        (ResultData::Boolean(true), CellType::Boolean)
+                        (ResultData::Boolean(true), CellType::Bool)
                     } else if src.eq_ignore_ascii_case("false") {
-                        (ResultData::Boolean(false), CellType::Boolean)
+                        (ResultData::Boolean(false), CellType::Bool)
                     } else if let Some((date, format)) = crate::core::date::parse_date_with_locale(
                         src.trim_matches(' '),
                         &self.locale,
@@ -390,10 +436,10 @@ impl Sheet {
                         detected_num_format = Some(format.to_format_code());
                         (
                             ResultData::Float(crate::core::date::date_to_excel_serial(date)),
-                            CellType::Number,
+                            CellType::DateTime,
                         )
                     } else if let Some(f) = crate::core::date_fn::parse_time_fraction(src) {
-                        (ResultData::Float(f), CellType::Number)
+                        (ResultData::Float(f), CellType::DateTime)
                     } else {
                         (ResultData::String(src.to_string()), CellType::String)
                     };
@@ -417,7 +463,16 @@ impl Sheet {
                     } else {
                         res
                     };
-                    (final_res, deps, Some(compiled), CellType::Formula)
+                    let final_cell_type = match &final_res {
+                        ResultData::None => CellType::Empty,
+                        ResultData::Integer(_) => CellType::Int,
+                        ResultData::Float(_) => CellType::Float,
+                        ResultData::String(_) => CellType::String,
+                        ResultData::Boolean(_) => CellType::Bool,
+                        ResultData::Error(_) => CellType::Error,
+                        ResultData::List(_) | ResultData::Dict(_) => CellType::String,
+                    };
+                    (final_res, deps, Some(compiled), final_cell_type)
                 }
             };
 
@@ -459,7 +514,7 @@ impl Sheet {
             }
 
             let inherited = if detected_num_format.is_some()
-                || !matches!(result, ResultData::Float(_) | ResultData::Integer(_))
+                || !matches!(&result, ResultData::Float(_) | ResultData::Integer(_))
             {
                 None
             } else {
@@ -469,6 +524,9 @@ impl Sheet {
                     .and_then(|ast| self.inherited_date_format(&ast))
             };
             if let Some(code) = detected_num_format.or(inherited) {
+                if matches!(&result, ResultData::Float(_) | ResultData::Integer(_)) {
+                    final_cell_type = CellType::DateTime;
+                }
                 let existing = self
                     .get_cell_style(cell_ref.row, cell_ref.col)
                     .and_then(|s| s.num_format.clone());

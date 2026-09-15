@@ -332,7 +332,7 @@ impl DataColumn {
             width: None,
             data: ColumnData::new(size),
             src: vec![String::new(); size].into(),
-            cell_types: vec![CellType::Auto; size].into(),
+            cell_types: vec![CellType::Empty; size].into(),
             compiled_src: vec![CompiledFormula::default(); size].into(),
             dirty_indices: SharedVec::new(),
             styles: vec![None; size].into(),
@@ -419,7 +419,7 @@ impl DataColumn {
     pub(crate) fn rebuild_after_load(&mut self) {
         let size = self.src.len();
         self.data.resize(size);
-        self.cell_types.resize(size, CellType::Auto);
+        self.cell_types.resize(size, CellType::Empty);
         self.compiled_src = vec![CompiledFormula::default(); size].into();
         self.styles.resize(size, None);
     }
@@ -427,7 +427,7 @@ impl DataColumn {
     /// Appends an empty row to every parallel vector.
     pub(crate) fn push_row(&mut self) {
         self.src.push(String::new());
-        self.cell_types.push(CellType::Auto);
+        self.cell_types.push(CellType::Empty);
         self.compiled_src.push(CompiledFormula::default());
         self.data.push(ResultData::None);
         self.styles.push(None);
@@ -441,7 +441,7 @@ impl DataColumn {
             return;
         }
         self.src.insert(index, String::new());
-        self.cell_types.insert(index, CellType::Auto);
+        self.cell_types.insert(index, CellType::Empty);
         self.compiled_src.insert(index, CompiledFormula::default());
         self.data.insert(index, ResultData::None);
         self.styles.insert(index, None);
