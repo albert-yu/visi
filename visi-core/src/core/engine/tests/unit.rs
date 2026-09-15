@@ -1482,6 +1482,20 @@ fn test_number_format_affects_display_without_changing_value() {
     ));
 }
 
+#[test]
+fn test_fuzz_number_format_optional_decimal_keeps_decimal_point() {
+    let mut sheet = create_sheet(&[["4500", "=A1*2"]]);
+    sheet.commit(None).unwrap();
+    for col in 0..=1 {
+        sheet.update_cell_style(0, col, |style| {
+            style.num_format = Some("0.###".to_string());
+        });
+    }
+
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 0)), "4500.");
+    assert_eq!(sheet.get_display_string(&CellRef::new(0, 1)), "9000.");
+}
+
 /// Inheritance follows the operator, not the number of cells read: `=YEAR(A1)`
 /// touches exactly one date cell and returns a year, which must stay a plain
 /// number rather than being rendered as a 1905 date.
