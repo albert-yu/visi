@@ -137,7 +137,62 @@ pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
     (row_idx, col_idx)
 }
 
-fn parse_cell_ref(s: &str) -> Option<(usize, usize, bool, bool)> {
+/// Parse a cell reference string like "A1", "C10", or "Sheet1!B5"
+/// Returns (optional_sheet_name, row_idx, col_idx)
+pub fn parse_cell_ref(cell_str: &str) -> Result<(Option<String>, usize, usize), String> {
+    let trimmed = cell_str.trim();
+    if trimmed.is_empty() {
+        return Err("Cell reference cannot be empty".to_string());
+    }
+
+    let (sheet_part, cell_part) = split_sheet_reference(trimmed);
+    let (row_idx, col_idx, _, _) = parse_cell_ref_parts(cell_part)
+        .ok_or_else(|| format!("Invalid cell reference format: '{}'", cell_str))?;
+
+    Ok((sheet_part, row_idx, col_idx))
+}
+
+/// Parse a range reference string (e.g."A1:C10", "Sheet1!A1:B5", or "A1")
+/// Returns (optional_sheet_name, start_row, start_col, end_row, end_col)
+pub fn parse_range_ref(
+    range_str: &str,
+) -> Result<(Option<String>, usize, usize, usize, usize), String> {
+    let trimmed = range_str.trim();
+    if trimmed.is_empty() {
+        return Err("Range reference cannot be empty".to_string());
+    }
+
+    let (sheet_part, range_part) = split_sheet_reference(trimmed);
+
+    if let Some((start_str, end_str)) = range_part.split_once(':') {
+        let (_, start_row, start_col) = parse_cell_ref(start_str)?;
+        let (_, end_row, end_col) = parse_cell_ref(end_str)?;
+
+        Ok((
+            sheet_part,
+            start_row.min(end_row),
+            start_col.min(end_col),
+            start_row.max(end_row),
+            start_col.max(end_col),
+        ))
+    } else {
+        let (_, row_idx, col_idx) = parse_cell_ref(range_part)?;
+        Ok((sheet_part, row_idx, col_idx, row_idx, col_idx))
+    }
+}
+
+fn split_sheet_reference(reference: &str) -> (Option<String>, &str) {
+    if let Some(pos) = reference.rfind('!') {
+        (
+            Some(reference[..pos].trim_matches('\'').to_string()),
+            &reference[pos + 1..],
+        )
+    } else {
+        (None, reference)
+    }
+}
+
+fn parse_cell_ref_parts(s: &str) -> Option<(usize, usize, bool, bool)> {
     let chars: Vec<char> = s.chars().collect();
     let mut idx = 0;
 
@@ -168,6 +223,9 @@ fn parse_cell_ref(s: &str) -> Option<(usize, usize, bool, bool)> {
         idx += 1;
     }
     if row_str.is_empty() {
+        return None;
+    }
+    if row_str.parse::<usize>().ok()? == 0 {
         return None;
     }
 
@@ -1574,7 +1632,7 @@ fn range_ref_from_texts(sheet: Option<String>, start: &str, end: &str) -> Result
     if let (
         Some((s_row, s_col, s_row_abs, s_col_abs)),
         Some((e_row, e_col, e_row_abs, e_col_abs)),
-    ) = (parse_cell_ref(start), parse_cell_ref(end))
+    ) = (parse_cell_ref_parts(start), parse_cell_ref_parts(end))
     {
         Ok(Expr::RangeRef {
             sheet,
@@ -1820,7 +1878,7 @@ impl<'a> Parser<'a> {
 
                         return range_ref_from_texts(Some(val), &target_str, &end_str);
                     } else {
-                        let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
+                        let (row, col, row_abs, col_abs) = parse_cell_ref_parts(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
                         return Ok(Expr::CellRef {
                             sheet: Some(val),
@@ -1913,7 +1971,7 @@ impl<'a> Parser<'a> {
 
                         return range_ref_from_texts(Some(id_name.clone()), &target_str, &end_str);
                     } else {
-                        let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
+                        let (row, col, row_abs, col_abs) = parse_cell_ref_parts(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
                         return Ok(Expr::CellRef {
                             sheet: Some(id_name.clone()),
@@ -1925,7 +1983,7 @@ impl<'a> Parser<'a> {
                     }
                 }
 
-                if let Some((row, col, row_abs, col_abs)) = parse_cell_ref(&id_name) {
+                if let Some((row, col, row_abs, col_abs)) = parse_cell_ref_parts(&id_name) {
                     if self.peek() == Some(&EvalToken::Colon) {
                         self.next();
                         let end_tok = self
@@ -1940,8 +1998,9 @@ impl<'a> Parser<'a> {
                                 ));
                             }
                         };
-                        let (e_row, e_col, e_row_abs, e_col_abs) = parse_cell_ref(&end_str)
-                            .ok_or_else(|| format!("Invalid end cell: {}", end_str))?;
+                        let (e_row, e_col, e_row_abs, e_col_abs) =
+                            parse_cell_ref_parts(&end_str)
+                                .ok_or_else(|| format!("Invalid end cell: {}", end_str))?;
                         return Ok(Expr::RangeRef {
                             sheet: None,
                             start_row: row,
