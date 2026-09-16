@@ -5,16 +5,13 @@ pub const EXIT_USAGE_ERROR: i32 = 1;
 pub const EXIT_IO_ERROR: i32 = 2;
 pub const EXIT_ENGINE_ERROR: i32 = 3;
 
-/// Exit the program with a specific exit code and print error message to stderr.
-///
-/// Takes anything `Display`, so `&str`, `String` and `visi_core::Error` all
-/// pass straight through.
 pub fn exit_with_error(msg: impl std::fmt::Display, code: i32) -> ! {
     eprintln!("Error: {}", msg);
     process::exit(code);
 }
 
-/// Convert column index (0-based) to Excel letter notation (e.g. 0 -> "A", 25 -> "Z", 26 -> "AA")
+/// Convert column index (0-based) to Excel letter notation
+/// (e.g. 0 -> "A", 25 -> "Z", 26 -> "AA")
 pub fn col_idx_to_letters(mut col: usize) -> String {
     let mut letters = String::new();
     loop {
@@ -28,7 +25,8 @@ pub fn col_idx_to_letters(mut col: usize) -> String {
     letters
 }
 
-/// Convert Excel letter notation (e.g. "A", "Z", "AA") to 0-based column index
+/// Convert Excel letter notation (e.g. "A", "Z", "AA")
+/// to 0-based column index
 pub fn col_letters_to_idx(letters: &str) -> Result<usize, String> {
     let s = letters.trim().to_uppercase();
     if s.is_empty() {
@@ -48,26 +46,8 @@ pub fn col_letters_to_idx(letters: &str) -> Result<usize, String> {
     }
 }
 
-/// Parse column index from string, accepting either letters ("A", "BC") or 1-based number ("1", "5")
-pub fn parse_col_spec(spec: &str) -> Result<usize, String> {
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
-        return Err("Column specification cannot be empty".to_string());
-    }
-    if trimmed.chars().all(|c| c.is_ascii_digit()) {
-        let num: usize = trimmed
-            .parse()
-            .map_err(|_| format!("Invalid column number '{}'", trimmed))?;
-        if num == 0 {
-            return Err("Column index must be 1-based (minimum 1)".to_string());
-        }
-        Ok(num - 1)
-    } else {
-        col_letters_to_idx(trimmed)
-    }
-}
-
-/// Parse row index from string, expecting 1-based row number ("1", "100") -> 0-based index
+/// Parse row label from string,
+/// expecting 1-based row number ("1", "100") -> 0-based index
 pub fn parse_row_spec(spec: &str) -> Result<usize, String> {
     let trimmed = spec.trim();
     let num: usize = trimmed
@@ -128,7 +108,7 @@ pub fn parse_cell_ref(cell_str: &str) -> Result<(Option<String>, usize, usize), 
     Ok((sheet_part, row_idx, col_idx))
 }
 
-/// Parse a range reference string like "A1:C10", "Sheet1!A1:B5", or "A1"
+/// Parse a range reference string (e.g."A1:C10", "Sheet1!A1:B5", or "A1")
 /// Returns (optional_sheet_name, start_row, start_col, end_row, end_col)
 pub fn parse_range_ref(
     range_str: &str,
