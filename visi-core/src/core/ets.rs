@@ -24,10 +24,6 @@ pub struct Model {
     pub step: f64,
 }
 
-/// Excel's optimizer reports its smoothing parameters to three decimals and
-/// never returns 0 or 1 for alpha/beta (a perfectly linear series comes back
-/// as alpha = 0.9, beta = 0.001), so the search runs over the same
-/// three-decimal grid within these bounds.
 const PARAM_MIN: f64 = 0.001;
 const PARAM_MAX: f64 = 0.9;
 const PARAM_QUANTUM: f64 = 0.001;
@@ -178,7 +174,6 @@ pub fn detect_period(values: &[f64]) -> usize {
     if best.1 >= 0.3 { best.0 } else { 0 }
 }
 
-/// Least-squares line through `(i, ys[i])`, returned as `(intercept, slope)`.
 fn linreg(ys: &[f64]) -> (f64, f64) {
     let n = ys.len() as f64;
     if n < 2.0 {
@@ -197,20 +192,6 @@ fn linreg(ys: &[f64]) -> (f64, f64) {
     (mean_y - slope * mean_x, slope)
 }
 
-/// Seeds level/trend/season, and reports how many leading observations were
-/// consumed doing so.
-///
-/// Two details matter for a clean series to forecast exactly:
-///  - Seasonal indices are measured against a fitted trend line, not against
-///    each cycle's own mean. A per-cycle mean sits at the *centre* of its
-///    cycle, so deseasonalizing with it leaves a piecewise-constant
-///    staircase rather than a straight line, and the trend seeded from that
-///    staircase is off by half a cycle of drift.
-///  - The returned level is the state at index `warmup - 1`, i.e. just
-///    before the first observation the recurrences will actually score.
-///    Seeding at index 0 and *also* feeding observation 0 through the update
-///    consumes that point twice, which alone is enough to stop a perfectly
-///    linear series forecasting exactly.
 fn initial_state(values: &[f64], period: usize) -> (f64, f64, Vec<f64>, usize) {
     let n = values.len();
     let m = period.max(1);
@@ -272,8 +253,6 @@ fn initial_state(values: &[f64], period: usize) -> (f64, f64, Vec<f64>, usize) {
     (level, slope, seasons, warmup)
 }
 
-/// Runs the AAA recurrences for a fixed parameter triple, collecting the
-/// one-step-ahead residuals the optimizer scores and STAT reports.
 fn smooth(values: &[f64], period: usize, alpha: f64, beta: f64, gamma: f64) -> Model {
     let (mut level, mut trend, mut seasons, warmup) = initial_state(values, period);
     let m = period.max(1);
@@ -399,7 +378,6 @@ impl Model {
         self.level + (h as f64) * self.trend + seasonal
     }
 
-    /// Residual standard deviation, the basis for the prediction interval.
     fn residual_sd(&self) -> f64 {
         let tail = &self.residuals[..];
         if tail.len() < 2 {

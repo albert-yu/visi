@@ -137,16 +137,6 @@ pub fn days_in_month(year: i32, month: i32) -> i32 {
     }
 }
 
-/// DATEDIF's calendar difference, decomposed into whole years, whole
-/// months and leftover days -- the shared basis for all six unit codes.
-///
-/// The point of the borrowing below is that DATEDIF counts *completed*
-/// intervals. If the end day-of-month hasn't reached the start's yet,
-/// that month isn't complete: the day difference borrows the length of
-/// the month preceding the end date, and the month count drops by one
-/// (which can in turn borrow a year). Computing the parts independently
-/// instead -- plain `m2 - m1`, plain `d2 - d1` -- overcounts by a month
-/// whenever the end day is earlier, and can even go negative.
 fn datedif_parts(start: f64, end: f64) -> (i32, i32, i32) {
     let (y1, m1, d1) = serial_to_ymd(start);
     let (y2, m2, d2) = serial_to_ymd(end);

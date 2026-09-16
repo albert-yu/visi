@@ -4,18 +4,6 @@ use crate::core::xlsx::{escape_xml, get_attr, get_zip_file_content, parse_workbo
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
-/// The real root cause behind why real Excel never recognized any workbook
-/// this codebase exported as having a VBA project at all (`has vb project`
-/// false, `run VB macro` silently no-op) despite the `vbaProject.bin` CFB
-/// container itself being byte-correct: this was pointing at
-/// `schemas.openxmlformats.org`, a standard ECMA-376 namespace that has no
-/// `vbaProject` relationship type. `vbaProject` is a Microsoft-specific
-/// OOXML extension (not part of ECMA-376/ISO 29500) whose real relationship
-/// type lives under `schemas.microsoft.com` -- confirmed by diffing this
-/// exact relationship element against a real, Excel-authored macro-enabled
-/// workbook's `workbook.xml.rels`. With the wrong namespace, Excel opens
-/// the file fine (it's still valid OOXML) but never associates the
-/// `vbaProject.bin` part with the workbook as its VBA project.
 const REL_VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
 /// Reads `xl/vbaProject.bin` out of an xlsx zip, if present, and reconstructs
@@ -144,7 +132,6 @@ fn read_stream_string<F: Read + std::io::Seek>(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The `PROJECT` stream's `ID="{...}"` line.
 fn parse_project_id(project_text: &str) -> Option<String> {
     for line in project_text.lines() {
         if let Some(rest) = line.strip_prefix("ID=") {
@@ -154,7 +141,6 @@ fn parse_project_id(project_text: &str) -> Option<String> {
     None
 }
 
-/// Every module name named in a `Document=Name/&H...` line.
 fn parse_document_module_names(project_text: &str) -> HashSet<String> {
     project_text
         .lines()
@@ -164,9 +150,6 @@ fn parse_document_module_names(project_text: &str) -> HashSet<String> {
         .collect()
 }
 
-/// The `PROJECT` stream's `CMG=`/`DPB=`/`GC=` lines verbatim, in their
-/// original order, if present. See `VbaProject::protection_lines` for why
-/// these are captured and preserved rather than dropped.
 fn parse_protection_lines(project_text: &str) -> Option<String> {
     let lines: Vec<&str> = project_text
         .lines()
@@ -181,8 +164,6 @@ fn parse_protection_lines(project_text: &str) -> Option<String> {
     }
 }
 
-/// Maps each `<sheet>` element's `name` to its `codeName` attribute, for
-/// sheets that have one.
 fn parse_sheet_code_names(workbook_xml: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut reader = quick_xml::reader::Reader::from_str(workbook_xml);
@@ -217,9 +198,6 @@ struct ModuleSpec {
     module_cookie: u16,
 }
 
-/// Generic Id(u16)+Size(u32)+Data record reader, with the one documented
-/// fixed-layout exception (PROJECTVERSION, id=0x0009, 12 bytes total).
-/// Returns `(id, data, next_pos)`.
 fn read_dir_record(dir: &[u8], pos: usize) -> Result<(u16, &[u8], usize), String> {
     if pos + 6 > dir.len() {
         return Err("dir stream truncated while reading a record header".to_string());
@@ -247,8 +225,6 @@ fn read_dir_record(dir: &[u8], pos: usize) -> Result<(u16, &[u8], usize), String
     Ok((id, &dir[data_start..data_end], data_end))
 }
 
-/// Finds the byte offset of the PROJECTMODULES record (0x000F), i.e. the
-/// end of the PROJECTINFORMATION+PROJECTREFERENCES prefix.
 fn find_projectmodules_start(dir: &[u8]) -> Result<usize, String> {
     let mut pos = 0;
     while pos + 6 <= dir.len() {
@@ -388,15 +364,6 @@ pub fn export_vba_project(
     )
 }
 
-/// Adds `codeName="ThisWorkbook"` to `<workbookPr>` and a matching
-/// `codeName="..."` to each `<sheet>` element bound to a Document module.
-/// `sheet_id_to_worksheet_name` must map each sheet id to the name it was
-/// *actually* written under in `workbook_xml` -- `xlsx::export_xlsx_data`
-/// truncates names over 31 chars and de-duplicates collisions, so matching
-/// against a module's bound `Sheet::name` directly could
-/// silently fail to find the element for a long or colliding sheet name,
-/// leaving that Document module's codeName -- and so its sheet binding --
-/// unattached in the saved file.
 fn patch_workbook_code_names(
     workbook_xml: &str,
     project: &VbaProject,
@@ -575,9 +542,6 @@ pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
     Ok(cf.into_inner().into_inner())
 }
 
-/// Writes a `dir`-stream Id(u16)+Size(u32)+Data record. Shared with
-/// `vba_synth.rs`, which builds a from-scratch `dir` stream using the same
-/// record shape.
 pub(crate) fn write_record(out: &mut Vec<u8>, id: u16, data: &[u8]) {
     out.extend_from_slice(&id.to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -588,17 +552,6 @@ fn utf16le(s: &str) -> Vec<u8> {
     s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
 }
 
-/// `project.protection_lines` (the donor's original `CMG`/`DPB`/`GC` lines,
-/// if any) is reproduced verbatim right after `VersionCompatible32=`,
-/// matching real Excel's own line order -- discovered missing while
-/// investigating why every workbook this codebase exports failed real
-/// Excel's `has vb project` check, by diffing a re-exported real donor
-/// project's `/PROJECT` stream against the original and finding these three
-/// lines silently dropped. Safe to reproduce unconditionally because
-/// `project_id` never changes after import/creation (see its own doc
-/// comment): a fresh, synthetic project never had any such lines to carry
-/// forward, and an imported one keeps the exact ID they were captured
-/// alongside.
 fn build_project_stream(project: &VbaProject) -> String {
     let mut s = String::new();
     s.push_str(&format!("ID=\"{}\"\r\n", project.project_id));
@@ -645,13 +598,6 @@ mod tests {
     use super::*;
     use crate::core::vba::{VbaModuleKind, VbaProject};
 
-    /// Deliberately sets `source` and `cached_compressed_source` to
-    /// non-matching content so the test can tell, from the exported bytes
-    /// alone, which one `build_vba_project_bin` actually used -- a stale
-    /// cache being reused verbatim (correct behavior when `source` hasn't
-    /// changed, which is what `set_vba_module_source` enforces by clearing
-    /// the cache) vs. `source` being recompressed fresh (correct only when
-    /// there's no cache at all, i.e. `None`).
     #[test]
     fn build_vba_project_bin_reuses_cached_compressed_source() {
         let mut project = VbaProject::new_empty();

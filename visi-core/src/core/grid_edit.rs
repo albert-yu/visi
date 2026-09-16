@@ -1,6 +1,5 @@
 use crate::core::formula::{CompiledFormula, FormulaPart};
 
-/// Which axis a structural edit runs along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Axis {
     /// Rows were inserted or deleted, moving cells vertically.
@@ -9,12 +8,6 @@ pub(crate) enum Axis {
     Col,
 }
 
-/// A row or column insert/delete on one sheet.
-///
-/// Carries the sheet it happened on because the rewrite runs workbook-wide:
-/// a formula on `Sheet2` referring to `Sheet1!A3` has to move when a row is
-/// inserted on `Sheet1`, and must *not* move when one is inserted on
-/// `Sheet2`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GridEdit {
     /// The sheet whose grid changed, by stable id.
@@ -113,13 +106,6 @@ impl GridEdit {
         }
     }
 
-    /// Whether an inclusive column span lies entirely inside the band, which
-    /// is the whole test for whether a reference moves. A whole-row edit has
-    /// no band and so covers everything.
-    ///
-    /// Also the test for whether an Excel Table or pivot rectangle moves --
-    /// same rule, since a table straddling the band's edge is in exactly the
-    /// position a straddling range reference is.
     pub(crate) fn covers_columns(&self, first_col: usize, last_col: usize) -> bool {
         match self.band {
             None => true,
@@ -127,24 +113,15 @@ impl GridEdit {
         }
     }
 
-    /// Where a single index on this edit's axis ends up, or `None` if it was
-    /// deleted.
     fn point(&self, index: usize) -> Option<usize> {
         shift_point(index, self.at, self.count, self.insert)
     }
 
-    /// Where an inclusive span on this edit's axis ends up, or `None` if all
-    /// of it was deleted.
     fn span(&self, start: usize, end: usize) -> Option<(usize, usize)> {
         shift_span(start, end, self.at, self.count, self.insert)
     }
 }
 
-/// Where a single index ends up after `count` rows or columns are inserted
-/// before `at`, or deleted starting at `at`.
-///
-/// `None` means the index itself was deleted -- the caller turns that into
-/// `#REF!` or drops the object, depending on what holds the coordinate.
 pub(crate) fn shift_point(index: usize, at: usize, count: usize, insert: bool) -> Option<usize> {
     if insert {
         Some(if index >= at { index + count } else { index })
@@ -157,15 +134,6 @@ pub(crate) fn shift_point(index: usize, at: usize, count: usize, insert: bool) -
     }
 }
 
-/// Where an inclusive `start..=end` span ends up after the same edit.
-///
-/// `None` means every index in the span was deleted. A partly-deleted span
-/// survives as the part that is left, which is how `SUM(A2:A4)` becomes
-/// `SUM(A2:A3)` rather than `#REF!` when row 3 goes.
-///
-/// `end` must be a real index. Callers holding a compiled formula have to
-/// screen out the unbounded-row sentinel (`usize::MAX`, as in `A:C`) first,
-/// which is what the `debug_assert` is here to catch.
 pub(crate) fn shift_span(
     start: usize,
     end: usize,
@@ -190,11 +158,6 @@ pub(crate) fn shift_span(
     }
 }
 
-/// Where a rectangle ends up after the edit, or `None` if the edit deleted
-/// every row or every column of it.
-///
-/// Both bounds are inclusive. Used for the coordinate-holding objects that
-/// are not formulas: Excel Table extents and pivot source ranges.
 pub(crate) fn shift_rect(
     edit: &GridEdit,
     start_row: usize,
@@ -214,13 +177,6 @@ pub(crate) fn shift_rect(
     }
 }
 
-/// Rewrites a compiled formula's references for the edit, returning `None`
-/// if nothing in it was affected.
-///
-/// `deleted_col_ids` are the ids of columns the edit is about to remove,
-/// which is what a whole-column reference (`=SUM(B:B)`, held by column id
-/// rather than by position) has to be checked against -- once the column is
-/// gone there is nothing left to compare with.
 pub(crate) fn shift_formula(
     formula: &CompiledFormula,
     edit: &GridEdit,
@@ -239,10 +195,6 @@ pub(crate) fn shift_formula(
     changed.then_some(CompiledFormula { parts })
 }
 
-/// The text a reference collapses to once what it pointed at is gone.
-///
-/// Only the reference is replaced, so the rest of the formula still
-/// evaluates and the error propagates through it the way Excel's does.
 const REF_ERROR: &str = "#REF!";
 
 fn shift_part(part: &FormulaPart, edit: &GridEdit, deleted_col_ids: &[u64]) -> (FormulaPart, bool) {

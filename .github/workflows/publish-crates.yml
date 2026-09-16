@@ -1,19 +1,4 @@
-# Publishes the workspace's library/CLI crates to crates.io.
-#
-# This is a dist *custom publish job*: it is invoked by release.yml (which dist
-# generates) because dist-workspace.toml lists `./publish-crates` in
-# `publish-jobs`, and it runs after the GitHub Release exists, alongside the
-# homebrew publish. dist has no built-in crates.io publisher.
-#
-# Two things make this more than a bare `cargo publish --workspace`:
-#
-# * `visi-core` versions independently of `visi` (see the comment in
-#   visi-core/Cargo.toml), so a `v0.1.3` tag does not imply a new `visi-core`.
-#   Each crate is therefore published only if the version in *its* manifest is
-#   not already on crates.io, which makes the job idempotent and lets either
-#   crate move on its own.
-# * `visi` depends on `visi-core` by version, so `visi-core` has to be on the
-#   registry (and be the version `visi` asks for) before `visi` can go up.
+# Publishes library and CLI crates to crates.io.
 name: Publish crates
 
 on:
@@ -22,8 +7,6 @@ on:
       plan:
         required: true
         type: string
-  # Lets you re-run just this half of a release from the Actions tab if
-  # crates.io was down, a token had expired, or a version bump was missed.
   workflow_dispatch:
     inputs:
       dry-run:
@@ -46,11 +29,6 @@ jobs:
       - name: Install Rust
         run: rustup update stable --no-self-update && rustup default stable
 
-      # `visi = { version = "X" }` in visi/Cargo.toml is not checked by cargo
-      # against the local visi-core when both are in the workspace -- the path
-      # dependency wins locally. So a visi-core bump that forgets to bump the
-      # requirement would publish a `visi` pinned to the *old* visi-core, and
-      # nothing would fail. Catch it here instead.
       - name: Check visi -> visi-core version requirement
         run: |
           set -euo pipefail
@@ -63,9 +41,6 @@ jobs:
             exit 1
           fi
 
-      # Order matters: visi-core must be on the registry before visi's
-      # verification build can resolve it. `cargo publish` already polls the
-      # index until the new version is visible, so no manual sleep is needed.
       - name: Publish
         run: |
           set -euo pipefail

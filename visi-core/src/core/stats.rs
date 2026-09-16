@@ -216,16 +216,6 @@ pub fn inv_gamma_p(a: f64, p: f64) -> Result<f64, String> {
     Ok(x)
 }
 
-/// Regularized incomplete beta function I_x(a, b)
-/// Gamma for the integer and half-integer arguments the F, t, chi-square
-/// and beta families produce (every one of them is some `df / 2`), built
-/// by recurrence from `sqrt(pi)` rather than taken from `libm::tgamma`.
-///
-/// The recurrence multiplies small exact half-integers, so it stays near
-/// half an ULP where this crate's `tgamma` drifts: `tgamma(1.5)` is 2.6
-/// ULP high, and that error lands directly in the beta prefactor of
-/// `incbeta`. Returns `None` for anything else, leaving the caller on
-/// `tgamma`.
 fn gamma_half_integer(a: f64) -> Option<f64> {
     let two_a = a * 2.0;
     if two_a <= 0.0 || two_a.fract() != 0.0 || two_a > 400.0 {
@@ -249,8 +239,6 @@ fn gamma_half_integer(a: f64) -> Option<f64> {
     }
 }
 
-/// `Gamma(a)` for the incomplete-beta prefactor, preferring the exact
-/// recurrence where it applies.
 fn beta_gamma(a: f64) -> f64 {
     gamma_half_integer(a).unwrap_or_else(|| libm::tgamma(a))
 }

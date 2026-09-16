@@ -13,14 +13,6 @@ use crate::core::{
 };
 use crate::{Error, ObjectKind};
 
-/// Keeps a table's column names lined up with its sheet columns after a
-/// column insert or delete cut through it.
-///
-/// `ExcelTable::columns` has one entry per sheet column in
-/// `start_col..=end_col`, so a column added or removed inside that span has to
-/// add or remove a name at the matching offset -- otherwise every name past
-/// the edit describes the wrong column. Called with the table's *pre-edit*
-/// extent still in place, which is what `edit.at` is compared against.
 fn resize_table_columns(
     table: &mut ExcelTable,
     new_start_col: usize,
@@ -103,9 +95,6 @@ pub struct WorkbookManager {
     pub locale: Locale,
 }
 
-/// Quotes a materialized pivot label that would otherwise be re-parsed as a
-/// number, boolean, or formula by `Sheet::commit`'s literal-cell parsing
-/// (mirrors `xlsx::text_cell_src`'s treatment of imported text cells).
 fn pivot_label_literal(text: &str) -> String {
     if text.is_empty() {
         String::new()
@@ -120,9 +109,6 @@ fn pivot_label_literal(text: &str) -> String {
     }
 }
 
-/// Renders one aggregated pivot value as literal cell text; errors (e.g.
-/// `AVERAGE` over zero numeric records) are written as their Excel error
-/// string rather than `ResultData`'s human-readable `"Error: ..."` form.
 fn pivot_value_literal(v: &ResultData) -> String {
     match v {
         ResultData::Error(e) => e.clone(),
@@ -225,13 +211,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Evaluates one Excel function against this workbook, outside any cell.
-    ///
-    /// What `Application.WorksheetFunction.X` calls. Every sheet is in the
-    /// context, so an argument naming a range on any of them resolves; the
-    /// call itself is hosted on the first sheet, which only matters for the
-    /// handful of functions that read the calling cell's position -- and a
-    /// macro's call has no calling cell to read.
     pub(crate) fn call_worksheet_function(
         &self,
         name: &str,
@@ -551,23 +530,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Runs a structural edit, keeping everything that holds a coordinate
-    /// pointing at what it pointed at before.
-    ///
-    /// Three phases, and the order is the whole point:
-    ///
-    /// 1. **Before the edit**, compile every formula in the workbook and
-    ///    shift its references. Compiling needs the grid the formula text was
-    ///    written against.
-    /// 2. Apply the edit itself, via `apply`.
-    /// 3. **After the edit**, serialize the shifted formulas back to text and
-    ///    write each one at wherever its own cell moved to.
-    ///
-    /// Phase 3 cannot be folded into phase 1. A whole-column reference
-    /// renders as the column's *current* letter, so serializing `=SUM(B:B)`
-    /// before a column is inserted to its left would write `B:B` into a cell
-    /// where `B` now names a different column -- and `src` is what the next
-    /// recompile reads, so the wrong text wins.
     fn apply_grid_edit(
         &mut self,
         edit: GridEdit,
@@ -603,8 +565,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Where the cell at `(row, col)` on `sheet_idx` ends up after `edit`, or
-    /// `None` if the edit deleted it.
     fn moved_cell(
         &self,
         edit: &GridEdit,
@@ -624,11 +584,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Moves the Excel Table and pivot rectangles the edit passed through.
-    ///
-    /// A table or a pivot source whose every row (or every column) was
-    /// deleted has nothing left to describe, so it is dropped -- the same
-    /// thing Excel does when you delete the last row of a one-row table.
     fn shift_table_and_pivot_ranges(&mut self, edit: &GridEdit) {
         use crate::core::grid_edit::{shift_point, shift_rect};
 
@@ -1124,10 +1079,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Rewrites every formula in the workbook that structurally references
-    /// `table_name` (optionally renaming the table and/or one column),
-    /// mirroring how Excel keeps structured references in sync when a Table
-    /// or one of its column headers is renamed.
     fn rewrite_table_references(
         &mut self,
         table_name: &str,
@@ -1531,9 +1482,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Blanks every cell in the given rectangular range (inclusive),
-    /// clipped to the sheet's current bounds. Used to wipe a pivot table's
-    /// previous output before re-rendering a possibly smaller grid.
     fn clear_range(
         &mut self,
         sheet_idx: usize,

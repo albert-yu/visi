@@ -44,7 +44,6 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     Parser::new(tokens).parse_module()
 }
 
-/// Keywords that, at the start of a statement, close an enclosing block.
 fn closes_block(t: &Token, next: &Token) -> bool {
     if t.is_kw("end") {
         return next.is_kw("sub")
@@ -64,22 +63,10 @@ fn closes_block(t: &Token, next: &Token) -> bool {
         || t.is_kw("case")
 }
 
-/// Statement keywords whose syntax is irregular enough that Phase 0 records
-/// them as [`Stmt::Opaque`] rather than modelling them. See that variant.
 const OPAQUE_IO_KEYWORDS: &[&str] = &[
     "print", "write", "input", "put", "get", "seek", "lock", "unlock", "width",
 ];
 
-/// The built-in scalar type keywords, which unlike most VBA keywords
-/// (contextual and freely reusable as identifiers -- see this module's own
-/// doc comment on that) cannot themselves be used as a declared name: a
-/// `Dim`/`Const` variable or a parameter. Measured directly against real
-/// Excel (Windows), found via `fuzz/fuzz_vba_parse.py`: `Dim Long As
-/// Integer`, `Const Long = 5`, and a parameter named `Long` all fail to
-/// compile, and the same holds for every other name here. `Object` is
-/// deliberately not in this list -- `Dim Object As Long` compiles fine,
-/// even though `Object` is itself a valid type in an `As` clause; real
-/// Excel does not treat it as reserved the way it treats these.
 const RESERVED_TYPE_NAMES: &[&str] = &[
     "boolean", "byte", "currency", "date", "double", "integer", "long", "single", "string",
     "variant",
@@ -181,10 +168,6 @@ impl Parser {
         }
     }
 
-    /// Like [`Self::expect_ident`], but for a name that is being *declared*
-    /// (a `Dim`/`Const` variable, a parameter) rather than merely
-    /// referenced -- those positions additionally reject
-    /// [`RESERVED_TYPE_NAMES`], which real Excel refuses to compile there.
     fn expect_declarable_ident(&mut self) -> Result<(String, Pos), ParseError> {
         let (name, pos) = self.expect_ident()?;
         if RESERVED_TYPE_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
@@ -210,30 +193,6 @@ impl Parser {
         }
     }
 
-    /// A block that was opened and never closed.
-    ///
-    /// Reported at the **opener**, not at whatever turned up where the closer
-    /// was due, and worded the way VBA's own compiler words it ("Block If
-    /// without End If", "For without Next", ...). Pointing at the opener is
-    /// the more useful of the two: in
-    ///
-    /// ```text
-    /// Sub S()
-    ///     If x Then
-    /// End Sub
-    /// ```
-    ///
-    /// the defect is the `If` on line 2, and blaming the `End Sub` on line 3
-    /// sends the reader to a line that is perfectly correct. It matters most
-    /// in a long procedure, where the two can be hundreds of lines apart.
-    ///
-    /// The wording and the choice of position follow VBA's documented
-    /// compile errors; they could not be read back from Excel directly,
-    /// because a compile error surfaces only as a modal dialog, which is
-    /// unreadable to the AppleScript bridge (it is the hang the fuzz harness
-    /// works around) and, in the environment this was written in, to UI
-    /// scripting and screenshots as well. Worth re-checking by hand in the
-    /// VBE if these strings ever matter for more than readability.
     fn unclosed(&self, what: &str, pos: Pos) -> ParseError {
         ParseError {
             message: what.to_string(),
@@ -266,8 +225,6 @@ impl Parser {
         }
     }
 
-    /// Consumes tokens to the end of the current statement, tracking nesting
-    /// so a `:` or newline inside parentheses does not end it early.
     fn skip_to_stmt_end(&mut self) {
         let mut depth = 0usize;
         loop {
@@ -378,7 +335,6 @@ impl Parser {
         Ok(ModuleItem::Declaration(stmt))
     }
 
-    /// `#If` / `#ElseIf` / `#Else` / `#End If`, and `#Const`.
     fn parse_conditional(&mut self) -> Result<ModuleItem, ParseError> {
         let pos = self.pos();
         self.expect_punct("#")?;
@@ -806,13 +762,6 @@ impl Parser {
         self.parse_assign_or_call(pos)
     }
 
-    /// The file-I/O and legacy statements Phase 0 records verbatim.
-    ///
-    /// Each guard is deliberately narrow, because every one of these words is
-    /// also an ordinary identifier or method name: `Print` is a statement only
-    /// before a `#`, `Line` only before `Input`, `Name` only in
-    /// `Name a As b`. Without the guards, `Application.Width = 100` or a
-    /// variable called `Get` would stop parsing.
     fn try_parse_opaque(&mut self, lower: &str, pos: Pos) -> Option<Stmt> {
         let matched = match lower {
             "open" => true,
@@ -833,8 +782,6 @@ impl Parser {
         Some(Stmt::Opaque { keyword, pos })
     }
 
-    /// Whether the rest of this statement contains the given keyword outside
-    /// parentheses.
     fn statement_has_kw(&self, kw: &str) -> bool {
         let mut j = self.i;
         let mut depth = 0usize;
@@ -852,7 +799,6 @@ impl Parser {
         false
     }
 
-    /// A jump target, which VBA lets be either a name or a line number.
     fn parse_label_ref(&mut self) -> Result<String, ParseError> {
         match &self.peek().kind {
             TokenKind::Ident(s) => {
@@ -1138,8 +1084,6 @@ impl Parser {
         })
     }
 
-    /// Statements on one line, as in the single-line `If` form, stopping at
-    /// `Else` or the line break.
     fn parse_inline_stmts(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut out = Vec::new();
         loop {
@@ -1267,8 +1211,6 @@ impl Parser {
         })
     }
 
-    /// Consumes the `Next` closing a loop, handling `Next i, j` closing
-    /// several at once by leaving a count for the enclosing loops.
     fn finish_next(&mut self, opener: Pos) -> Result<(), ParseError> {
         if self.pending_next > 0 {
             self.pending_next -= 1;
@@ -1320,7 +1262,6 @@ impl Parser {
         }
     }
 
-    /// `While ... Wend`, normalised into the equivalent `Do While ... Loop`.
     fn parse_while(&mut self, pos: Pos) -> Result<Stmt, ParseError> {
         self.expect_kw("while")?;
         let cond = self.parse_expr()?;
@@ -1417,11 +1358,6 @@ impl Parser {
         })
     }
 
-    /// An assignment, or a call with or without parentheses.
-    ///
-    /// The two are told apart only after parsing the left side: `x = 1` is an
-    /// assignment, `MsgBox "hi"` is a call whose arguments are bare, and
-    /// `Foo` alone is a call with none.
     fn parse_assign_or_call(&mut self, pos: Pos) -> Result<Stmt, ParseError> {
         let target = self.parse_postfix()?;
 
@@ -1468,26 +1404,6 @@ impl Parser {
         })
     }
 
-    /// A `Print` method's output list: `Debug.Print "a"; 1`.
-    ///
-    /// This is deliberately **not** the bare-argument list above. VBA gives
-    /// `Print` its own grammar (MS-VBAL's `output-item = [output-clause]
-    /// [output-item-separator]`, with both halves optional), and every way
-    /// it differs was measured with `fuzz/vba_compile_probe.py` against
-    /// real Excel rather than read off the spec:
-    ///
-    /// - `;` separates items as `,` does (`Debug.Print "a"; 1`).
-    /// - A **trailing** separator is legal, and meaningful -- it suppresses
-    ///   the newline: `Debug.Print "a";`, `Debug.Print "a",`.
-    /// - So is a leading or a repeated one, which prints an empty item:
-    ///   `Debug.Print , "a"`, `Debug.Print ; "a"`, `Debug.Print "a";; "b"`.
-    /// - A separator may be omitted between two items entirely:
-    ///   `Debug.Print "a" "b"` compiles.
-    ///
-    /// Which separator was written is not recorded. It only decides output
-    /// spacing, and `Print` is outside the interpreter's scope by the
-    /// security posture in `docs/vba-macro-support.md`, so the only
-    /// question this path answers is `macro check`'s: does it compile.
     fn parse_print_output_list(&mut self) -> Result<Vec<Arg>, ParseError> {
         let mut args = Vec::new();
         while !self.at_stmt_end() && !self.peek().is_kw("else") {
@@ -1510,7 +1426,6 @@ impl Parser {
         Ok(args)
     }
 
-    /// Entry point; see this module's docs for the precedence table.
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_imp()
     }
@@ -1570,7 +1485,6 @@ impl Parser {
         Ok(lhs)
     }
 
-    /// `Not` binds looser than comparison, so `Not a = b` is `Not (a = b)`.
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
         if self.peek().is_kw("not") {
             let pos = self.pos();
@@ -1675,7 +1589,6 @@ impl Parser {
         Ok(lhs)
     }
 
-    /// Unary sign binds *looser* than `^`, which is why `-2 ^ 2` is `-4`.
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         let pos = self.pos();
         if self.peek().is_punct("-") {
@@ -1699,11 +1612,6 @@ impl Parser {
         self.parse_pow()
     }
 
-    /// `^`, left-associative -- `2 ^ 3 ^ 2` is `64`, not `512`.
-    ///
-    /// The right operand is [`Self::parse_pow_operand`] rather than
-    /// [`Self::parse_pow`], which is what keeps it left-associative while
-    /// still allowing a signed exponent (`2 ^ -3`).
     fn parse_pow(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_postfix()?;
         while self.peek().is_punct("^") {
@@ -1930,13 +1838,6 @@ impl Parser {
     }
 }
 
-/// Whether a bare-argument statement's target is a `Print` method, and so
-/// takes an output list rather than an argument list.
-///
-/// The gate is the *member name*, measured both ways: `x.Print "a"; 1`
-/// compiles for an object that is not `Debug`, while `Debug.Assert "a"; 1`
-/// does not, and neither does a bare `Print "a"; 1` -- unqualified `Print`
-/// is a statement only before a `#`, which `try_parse_opaque` already takes.
 fn is_print_member(target: &Expr) -> bool {
     matches!(target, Expr::Member { name, .. } if name.eq_ignore_ascii_case("print"))
 }
@@ -1989,8 +1890,6 @@ mod tests {
         }
     }
 
-    /// Renders an expression as a fully-parenthesised string, so a
-    /// precedence test states the tree shape rather than poking at it.
     fn shape(e: &Expr) -> String {
         match e {
             Expr::Literal(Literal::Number { value, .. }) => format!("{value}"),
@@ -2435,7 +2334,6 @@ mod tests {
         assert!(!body.iter().any(|s| matches!(s, Stmt::Opaque { .. })));
     }
 
-    /// Shapes the single statement of a one-line `Sub`.
     fn stmt_shape(src: &str) -> String {
         let m = parse(&format!(
             "Sub S()
@@ -2532,9 +2430,6 @@ End Sub
         assert!(err.message.contains("expected an expression"), "{err}");
     }
 
-    /// An unclosed block is blamed on the line that opened it, matching how
-    /// VBA words and places its own compile errors -- not on whatever token
-    /// arrived where the closer was due, which is usually a correct line.
     #[test]
     fn an_unclosed_block_is_blamed_on_its_opener() {
         let cases = [

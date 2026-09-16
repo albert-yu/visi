@@ -78,9 +78,6 @@ fn decompress_chunk(chunk_data: &[u8], out: &mut Vec<u8>) -> Result<(), String> 
     Ok(())
 }
 
-/// MS-OVBA 2.4.1.3.19: smallest number of bits (clamped 4..=12) such that
-/// `decompressed_current <= 2^bit_count` -- governs the offset/length bit
-/// split for a copy token at this point in the chunk.
 fn bit_count_for(decompressed_current: usize) -> u32 {
     let mut bit_count = 0u32;
     while (1usize << bit_count) < decompressed_current {

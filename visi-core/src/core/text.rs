@@ -166,13 +166,6 @@ pub fn detectlanguage(_text: &str) -> Result<String, String> {
     Ok("en".to_string())
 }
 
-/// Rounds half away from zero at `decimals` places, the rule Excel's
-/// DOLLAR/FIXED display uses. Rust's `format!("{:.N}", x)` instead rounds
-/// the *binary* value to nearest-even, so a decimal literal like 3395.85
-/// (whose nearest f64 is a hair below 3395.85) formats down to "3395.8"
-/// where Excel shows "3395.9". Confirmed against real Excel:
-/// DOLLAR(3395.85, 1) = "$3,395.9", DOLLAR(2.5, 0) = "$3",
-/// DOLLAR(-2.5, 0) = "($3)".
 fn round_half_away_from_zero(value: f64, decimals: usize) -> f64 {
     let factor = 10f64.powi(decimals as i32);
     let scaled = value * factor;

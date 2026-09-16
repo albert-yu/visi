@@ -1,7 +1,7 @@
 # visi monorepo
 
 > [!NOTE]
-> While ~99% of the code is LLM-authored, the _prose_
+> While ~99.9999% of the code is LLM-authored, the _prose_
 > should not be. See the [LLM policy](#llm-policy).
 
 [![CI](https://github.com/albert-yu/visi/actions/workflows/ci.yml/badge.svg)](https://github.com/albert-yu/visi/actions/workflows/ci.yml)
@@ -12,9 +12,10 @@
 
 ### Goals
 
-- Match Excel's execution behavior 100%, including pivot tables, macros (VBA), and error messages.
+- Match Excel's execution behavior 100%, including pivot tables and macros (VBA).
   - In some cases, `visi` even produces more numerically accurate results
   - Excludes some functionality that require Microsoft web services
+  - `visi` aims to match the classes of errors that Excel produces, but not the error message itself (`visi` may be able to improve upon Excel here)
 - Prioritize performance
   - Written in Rust to maximize potential performance capacity
   - Fast startup time
@@ -25,8 +26,8 @@
 LLMs are good at authoring spreadsheets with existing tools
 (such as `openpyxl` for Python), but in order
 to _evaluate_ the formula results, you need a real
-spreadsheet application (such as Excel). Excel is
-unsuitable for headlessly evaluation of
+spreadsheet application. Excel is
+unsuitable for headless evaluation of
 spreadsheet files, especially on non-Windows
 platforms (e.g. no COM automation).
 

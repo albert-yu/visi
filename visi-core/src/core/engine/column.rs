@@ -397,12 +397,6 @@ impl DataColumn {
         }
     }
 
-    /// A named column holding `src`, with every parallel vector sized to
-    /// match.
-    ///
-    /// The values start empty -- `Sheet::commit` is what fills them in from
-    /// the source text. Test-only: production builds sheets through
-    /// `Sheet::new` and `ensure_capacity`.
     #[cfg(test)]
     pub(crate) fn from_src(name: impl Into<String>, src: Vec<String>) -> Self {
         let mut col = Self::new(src.len());
@@ -411,11 +405,6 @@ impl DataColumn {
         col
     }
 
-    /// Rebuilds what serialization drops, restoring the length invariant.
-    ///
-    /// Only `src`, `cell_types` and `styles` are persisted, and `styles`/`cell_types`
-    /// are optional, so a workbook saved without them loads with a length of 0. Everything
-    /// is sized back to `src`, which is the authoritative length.
     pub(crate) fn rebuild_after_load(&mut self) {
         let size = self.src.len();
         self.data.resize(size);
@@ -424,7 +413,6 @@ impl DataColumn {
         self.styles.resize(size, None);
     }
 
-    /// Appends an empty row to every parallel vector.
     pub(crate) fn push_row(&mut self) {
         self.src.push(String::new());
         self.cell_types.push(CellType::Empty);
@@ -433,8 +421,6 @@ impl DataColumn {
         self.styles.push(None);
     }
 
-    /// Inserts an empty row at `index` in every parallel vector, shifting the
-    /// rows below it down. Appends if `index` is at or past the end.
     pub(crate) fn insert_row(&mut self, index: usize) {
         if index >= self.len() {
             self.push_row();
@@ -448,8 +434,6 @@ impl DataColumn {
         self.shift_dirty_after_insert(index, 1);
     }
 
-    /// Removes row `index` from every parallel vector, shifting the rows below
-    /// it up. Ignored if `index` is past the end.
     pub(crate) fn remove_row(&mut self, index: usize) {
         if index >= self.len() {
             return;
@@ -462,10 +446,6 @@ impl DataColumn {
         self.drop_dirty_range(index, index + 1);
     }
 
-    /// Removes a range of rows from every parallel vector.
-    ///
-    /// The range is clamped to the column's length, so an out-of-range end is
-    /// not an error.
     pub(crate) fn drain_rows<R: std::ops::RangeBounds<usize>>(&mut self, range: R) {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&n) => n,
@@ -490,8 +470,6 @@ impl DataColumn {
         self.drop_dirty_range(start, end);
     }
 
-    /// Grows or shrinks every parallel vector to `len` rows, filling with
-    /// empties when growing.
     pub(crate) fn resize_rows(&mut self, len: usize) {
         while self.len() < len {
             self.push_row();
@@ -501,7 +479,6 @@ impl DataColumn {
         }
     }
 
-    /// Drops queued rows in `start..end` and rebases those below it.
     fn drop_dirty_range(&mut self, start: usize, end: usize) {
         let removed = end - start;
         self.dirty_indices.retain(|&i| i < start || i >= end);
@@ -512,7 +489,6 @@ impl DataColumn {
         }
     }
 
-    /// Rebases queued rows at or below `index` after an insert.
     fn shift_dirty_after_insert(&mut self, index: usize, count: usize) {
         for i in self.dirty_indices.iter_mut() {
             if *i >= index {
@@ -521,7 +497,6 @@ impl DataColumn {
         }
     }
 
-    /// Row is absolutely referenced
     pub(crate) fn insert(&mut self, position: ColumnPosition, input: &str) {
         let ColumnPosition { row, char_offset } = position;
         let index = row;

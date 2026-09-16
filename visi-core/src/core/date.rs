@@ -940,8 +940,6 @@ pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
 mod tests {
     use super::*;
 
-    /// Every case pins both the parsed date and the [`DateFormat`] that
-    /// `parse_date` inferred.
     #[test]
     fn test_date_parsing_and_format_detection() {
         let cases: &[(&str, SimpleDate, DateFormat)] = &[
@@ -1224,8 +1222,6 @@ mod tests {
         );
     }
 
-    /// The point of detecting a format at all: a date echoes back in the
-    /// notation it was typed in.
     #[test]
     fn test_format_date_round_trips_the_typed_notation() {
         let sources = [

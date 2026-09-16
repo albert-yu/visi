@@ -1140,12 +1140,6 @@ pub fn serialize_formula(formula: &CompiledFormula, sheets: &[Sheet]) -> String 
     result
 }
 
-/// Renders a structured reference's `[...]` suffix (everything after the
-/// leading table/sheet name), given its already-resolved column name (empty
-/// for a whole-table/whole-row reference), `is_this_row` flag, and section.
-/// Shared by `serialize_formula` (id-based re-rendering) and
-/// `rewrite_structured_table_reference` (text-based rename rewriting) so
-/// both stay in sync on the canonical bracket syntax.
 fn render_structured_ref_text(
     prefix: &str,
     col_name: &str,
@@ -1283,13 +1277,6 @@ pub fn rewrite_structured_table_reference(
     Some(result)
 }
 
-/// Extends a just-lexed number with a scientific-notation exponent, if one
-/// follows: `1E5`, `1E+5`, `2.5e-3`.
-///
-/// Only consumes the `e` when a digit actually follows it (after an optional
-/// sign), so a number butted against something else is left alone -- notably
-/// the `E` in a reference like `A1:E5`, where the digit run ends at the colon
-/// rather than at an `E`, and a bare trailing `E` that belongs to a name.
 fn take_number_exponent(chars: &[char], i: &mut usize, num_str: &mut String) {
     if *i >= chars.len() || !matches!(chars[*i], 'e' | 'E') {
         return;
@@ -1312,10 +1299,6 @@ fn take_number_exponent(chars: &[char], i: &mut usize, num_str: &mut String) {
     }
 }
 
-/// The Excel error value spelled at `start`, in its canonical casing, or
-/// `None` if the `#` starts something else.
-///
-/// Longest match wins, so a code that is a prefix of another cannot shadow it.
 fn match_error_code(chars: &[char], start: usize) -> Option<&'static str> {
     crate::core::engine::result_data::EXCEL_ERROR_CODES
         .iter()
@@ -2078,8 +2061,6 @@ pub fn parse_excel_formula(input: &str) -> Result<Expr, String> {
 mod tests {
     use super::*;
 
-    /// Scientific-notation literals are numbers, not a number followed by a
-    /// name.
     #[test]
     fn test_lex_scientific_notation_literals() {
         for (src, want) in [
@@ -2099,9 +2080,6 @@ mod tests {
         }
     }
 
-    /// The exponent is only consumed when a digit really follows, so an `E`
-    /// that belongs to something else is left alone -- notably the column
-    /// letter in a range like `A1:E5`, which must stay three tokens.
     #[test]
     fn test_lex_does_not_eat_e_that_starts_a_reference() {
         let tokens = lex_eval("A1:E5").unwrap();

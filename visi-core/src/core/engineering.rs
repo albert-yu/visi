@@ -403,8 +403,6 @@ fn c_cosh(c: ComplexNum) -> ComplexNum {
     }
 }
 
-/// 1/(a+bi) = (a-bi)/(a^2+b^2), keeping the operand's own `i`/`j` suffix
-/// (dividing a literal "1" by it would always come back suffixed `i`).
 fn c_recip(c: ComplexNum) -> Result<ComplexNum, String> {
     let denom = c.re * c.re + c.im * c.im;
     if denom == 0.0 {
@@ -459,19 +457,6 @@ pub fn imcosh(in_str: &str) -> Result<String, String> {
     Ok(format_complex(c_cosh(parse_complex(in_str)?)))
 }
 
-/// tan and cot via their double-angle forms
-///   tan(x+iy) = [sin 2x + i sinh 2y] / [cos 2x + cosh 2y]
-///   cot(x+iy) = [sin 2x - i sinh 2y] / [cosh 2y - cos 2x]
-/// rather than as a complex division of sin by cos.
-///
-/// The naive sin/cos quotient loses most of its significant digits once
-/// |y| grows: sin(z) and cos(z) both pick up components of order
-/// cosh(y)/sinh(y) (already ~550 by y = 7), and their ratio's real part
-/// is a tiny residual left after those large nearly-equal terms cancel.
-/// That showed up against real Excel as IMTAN/IMCOT agreeing only to
-/// about the 10th significant digit. Both identities below keep every
-/// intermediate the same magnitude as the result, so no cancellation
-/// happens at all.
 fn c_tan_parts(c: ComplexNum, cotangent: bool) -> Result<ComplexNum, String> {
     let two_x = 2.0 * c.re;
     let two_y = 2.0 * c.im;
@@ -618,9 +603,6 @@ fn factorial(n: usize) -> f64 {
     (1..=n).map(|i| i as f64).product()
 }
 
-/// The `m`th harmonic number `H_m = sum_{i=1}^m 1/i` (`H_0 = 0`), which is
-/// what `psi(m+1) = H_m - EULER_GAMMA` reduces to for non-negative integer
-/// `m` -- the digamma terms every Bessel-second-kind series below needs.
 fn harmonic(m: usize) -> f64 {
     (1..=m).map(|i| 1.0 / i as f64).sum()
 }

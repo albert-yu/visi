@@ -1,34 +1,17 @@
 use crate::core::CellStyle;
 
-/// `Interior.Color` on a cell with no fill. Measured: white, not zero and not
-/// an error.
 pub(crate) const NO_FILL_COLOR: i32 = 16_777_215;
 
-/// `Interior.ColorIndex` on a cell with no fill -- `xlNone`. Measured.
 pub(crate) const COLOR_INDEX_NONE: i32 = -4142;
 
-/// `Font.ColorIndex` on a cell with no explicit font colour. Measured:
-/// slot 1, which is black, rather than `xlNone`.
 pub(crate) const FONT_COLOR_INDEX_AUTOMATIC: i32 = 1;
 
-/// `Font.Size` on an unstyled cell, and the size a new cell is rendered at.
-/// Measured; note Excel reports it as a `Double`, not a `Long`.
 pub(crate) const DEFAULT_FONT_SIZE: f64 = 11.0;
 
-/// `Font.Name` on an unstyled cell. Measured.
 pub(crate) const DEFAULT_FONT_NAME: &str = "Calibri";
 
-/// `Range.NumberFormat` on a cell carrying no format. Measured.
 pub(crate) const GENERAL_FORMAT: &str = "General";
 
-/// Excel's 56-slot `ColorIndex` palette, slot 1 first.
-///
-/// Every entry was read out of Excel by `fuzz/vba_style_probe.py --palette`,
-/// which sets `Interior.ColorIndex = n` and reads the resulting `Color` back,
-/// rather than transcribed from a published table. Note that the palette is
-/// not injective -- slots 25..32 repeat 9..16 (`#000080` is both 11 and 25),
-/// which is why [`nearest_color_index`] breaks ties toward the lower slot and why
-/// `Color` is the representation `CellStyle` keeps.
 pub(crate) const COLOR_INDEX_PALETTE: [&str; 56] = [
     "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF",
     "#800000", "#008000", "#000080", "#808000", "#800080", "#008080", "#C0C0C0", "#808080",
@@ -39,30 +22,17 @@ pub(crate) const COLOR_INDEX_PALETTE: [&str; 56] = [
     "#003366", "#339966", "#003300", "#333300", "#993300", "#993366", "#333399", "#333333",
 ];
 
-/// `RGB(r, g, b)` -- the `Long` VBA composes from three components.
-///
-/// Measured: components above 255 clamp rather than overflowing into the next
-/// byte (`RGB(300, 0, 0)` is 255), and a negative component is error 5, which
-/// is the caller's job to raise since this returns the value only.
 pub(crate) fn rgb(r: i64, g: i64, b: i64) -> i32 {
     let clamp = |v: i64| v.clamp(0, 255) as i32;
     clamp(r) | (clamp(g) << 8) | (clamp(b) << 16)
 }
 
-/// A VBA colour `Long` as the `"#RRGGBB"` [`CellStyle`] stores.
-///
-/// The byte swap is the whole point; see this module's doc comment.
 pub(crate) fn bgr_to_hex(color: i32) -> String {
     let v = color as u32;
     let (r, g, b) = (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF);
     format!("#{r:02X}{g:02X}{b:02X}")
 }
 
-/// A `CellStyle` colour string as the `Long` VBA reports.
-///
-/// Accepts what `CellStyle` accepts: `"#RRGGBB"`, a bare `"RRGGBB"`, and the
-/// handful of colour names the CLI's `--color` takes, so a fill set by
-/// `visi style` reads back through a macro rather than erroring.
 pub(crate) fn hex_to_bgr(text: &str) -> Option<i32> {
     let hex = named_color(text).unwrap_or_else(|| text.trim().trim_start_matches('#'));
     if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -74,21 +44,6 @@ pub(crate) fn hex_to_bgr(text: &str) -> Option<i32> {
     Some(r | (g << 8) | (b << 16))
 }
 
-/// The palette slot Excel reports for a colour.
-///
-/// **Not** an exact-match lookup: measured, Excel maps an off-palette colour
-/// to the *nearest* slot rather than reporting `xlNone`. `RGB(250, 10, 10)`
-/// reports slot 3 (pure red), `RGB(10, 200, 10)` reports slot 4 (pure green),
-/// and `RGB(1, 2, 3)` reports slot 1 (black). An exact match falls out of the
-/// same search at distance zero.
-///
-/// Ties go to the lower slot, which is what makes an exact `#000080` report
-/// 11 rather than 25 -- the palette repeats itself from slot 25 on.
-///
-/// The metric is squared Euclidean distance in RGB, which reproduces every
-/// measured point; it is a fit to three off-palette samples rather than a
-/// documented rule, so a case that disagrees is a reason to re-measure rather
-/// than to assume this is right.
 pub(crate) fn nearest_color_index(hex: &str) -> Option<i32> {
     let (r, g, b) = components(hex)?;
     let mut best = (u32::MAX, 0usize);
@@ -103,15 +58,11 @@ pub(crate) fn nearest_color_index(hex: &str) -> Option<i32> {
     Some(best.1 as i32 + 1)
 }
 
-/// The `(r, g, b)` components of a colour string, in 0..=255.
 fn components(text: &str) -> Option<(i32, i32, i32)> {
     let bgr = hex_to_bgr(text)?;
     Some((bgr & 0xFF, (bgr >> 8) & 0xFF, (bgr >> 16) & 0xFF))
 }
 
-/// The colour names `CellStyle` documents, so a style set through the CLI is
-/// legible to a macro. Not Excel's -- Excel has no colour names in this
-/// position at all; this is only about reading back what visi itself wrote.
 fn named_color(text: &str) -> Option<&'static str> {
     Some(match text.trim().to_ascii_lowercase().as_str() {
         "black" => "000000",
@@ -127,7 +78,6 @@ fn named_color(text: &str) -> Option<&'static str> {
     })
 }
 
-/// What `Interior.Color` reports for a cell, styled or not.
 pub(crate) fn interior_color(style: Option<&CellStyle>) -> i32 {
     style
         .and_then(|s| s.bg_color.as_deref())
@@ -135,8 +85,6 @@ pub(crate) fn interior_color(style: Option<&CellStyle>) -> i32 {
         .unwrap_or(NO_FILL_COLOR)
 }
 
-/// What `Font.Color` reports for a cell. Measured: an unstyled cell is 0,
-/// i.e. black, rather than an error or a sentinel.
 pub(crate) fn font_color(style: Option<&CellStyle>) -> i32 {
     style
         .and_then(|s| s.font_color.as_deref())

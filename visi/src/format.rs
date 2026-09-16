@@ -62,7 +62,6 @@ pub fn render_grid(
     }
 }
 
-/// Render pretty ASCII table
 fn render_ascii_table(
     _sheet: &Sheet,
     min_row: usize,
@@ -150,7 +149,6 @@ fn render_ascii_table(
     out
 }
 
-/// Render CSV / TSV delimited text
 fn render_delimited(matrix: &[Vec<String>], delimiter: &str, _use_headers: bool) -> String {
     let mut out = String::new();
 
@@ -172,7 +170,6 @@ fn render_delimited(matrix: &[Vec<String>], delimiter: &str, _use_headers: bool)
     out
 }
 
-/// Render JSON array of rows or JSON array of objects if headers is true
 fn render_json(matrix: &[Vec<String>], min_col: usize, use_headers: bool) -> String {
     if matrix.is_empty() {
         return "[]".to_string();
@@ -208,7 +205,6 @@ fn render_json(matrix: &[Vec<String>], min_col: usize, use_headers: bool) -> Str
     }
 }
 
-/// Convert string into appropriate JSON primitive type (number, bool, or string)
 fn parse_json_value(s: &str) -> Value {
     let trimmed = s.trim();
     if trimmed.is_empty() {

@@ -158,11 +158,6 @@ impl fmt::Display for LexError {
     }
 }
 
-/// Multi-character operators, longest first so `<=` wins over `<`.
-///
-/// `:=` is lexed as one token rather than `:` + `=` so that a line label
-/// (`Failed:`) and a named argument (`Foo bar:=1`) cannot be confused: both
-/// start with an identifier followed by a colon.
 const MULTI_PUNCT: &[&str] = &[":=", "<=", ">=", "<>", "=<", "=>"];
 const SINGLE_PUNCT: &[char] = &[
     '(', ')', ',', '.', '=', '+', '-', '*', '/', '\\', '^', '&', '<', '>', ':', ';', '!', '#', '$',
@@ -236,7 +231,6 @@ impl Lexer {
         self.space_before = false;
     }
 
-    /// Whether the token just emitted can carry a trailing type suffix.
     fn last_takes_suffix(&self) -> bool {
         matches!(
             self.out.last().map(|t| &t.kind),
@@ -284,11 +278,6 @@ impl Lexer {
         Ok(self.out)
     }
 
-    /// A `_` is a continuation only when whitespace precedes it and nothing
-    /// but whitespace follows it on the line. Otherwise it is part of an
-    /// identifier (`my_var`) -- it can never *start* one, since VBA has no
-    /// name beginning with an underscore (measured; see the `'_'` arm in
-    /// [`Lexer::run`]).
     fn is_line_continuation(&self) -> bool {
         let prev_ok = self.i == 0
             || self
@@ -358,8 +347,6 @@ impl Lexer {
         Ok(())
     }
 
-    /// `#` is three different things: a type suffix (`x#`), a date literal
-    /// (`#1/1/2000#`), and the lead-in to a compiler directive (`#If`).
     fn lex_hash(&mut self) -> Result<(), LexError> {
         let pos = self.pos();
 
@@ -394,7 +381,6 @@ impl Lexer {
         Ok(())
     }
 
-    /// Rewrites the token just emitted to carry a type suffix.
     fn attach_suffix(&mut self, suffix: TypeSuffix) {
         if let Some(last) = self.out.last_mut() {
             match &mut last.kind {
@@ -555,7 +541,6 @@ impl Lexer {
         }
     }
 
-    /// Whether the token about to be emitted is the first of a statement.
     fn starts_statement(&self) -> bool {
         match self.out.last().map(|t| &t.kind) {
             None | Some(TokenKind::Newline) => true,
@@ -564,14 +549,6 @@ impl Lexer {
         }
     }
 
-    /// A sigil directly after an identifier or number is a type suffix unless
-    /// it reads as an operator instead.
-    ///
-    /// `&` and `!` are the two that overlap: `a & b` concatenates, `a$ & b$`
-    /// concatenates two suffixed names, `rs!Field` is a dictionary access.
-    /// The rule is that a suffix cannot be followed by something that would
-    /// begin an operand, which is what separates `a& = 1` from `a&b` and
-    /// `rs!F`.
     fn suffix_would_be_operator(&self, sigil: char) -> bool {
         if sigil != '&' && sigil != '!' {
             return false;
@@ -626,7 +603,6 @@ impl Lexer {
     }
 }
 
-/// `&'static str` spellings parallel to [`SINGLE_PUNCT`].
 const SINGLE_PUNCT_STR: &[&str] = &[
     "(", ")", ",", ".", "=", "+", "-", "*", "/", "\\", "^", "&", "<", ">", ":", ";", "!", "#", "$",
     "%", "@", "?", "{", "}", "[", "]", "~", "|",

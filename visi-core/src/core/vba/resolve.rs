@@ -5,7 +5,6 @@ use super::builtin_names::is_builtin;
 use super::parser::ParseError;
 use std::collections::HashMap;
 
-/// What a declared name is known to be, as far as this pass can tell.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// A `Sub`, `Function`, `Property` or `Declare` -- a legitimate call
@@ -25,10 +24,6 @@ enum Kind {
     Opaque,
 }
 
-/// VBA's primitive scalar type keywords. An untyped `Dim` defaults to
-/// `Variant`, and `Variant` is on this list too -- measured directly: a bare
-/// `Dim x` is exactly the case `docs/vba-macro-support.md`'s transcript
-/// shows Excel rejecting as a call target.
 const PRIMITIVE_SCALAR_TYPES: &[&str] = &[
     "integer", "long", "single", "double", "currency", "string", "boolean", "byte", "date",
     "variant",
@@ -50,24 +45,8 @@ fn is_primitive_scalar(name: &str) -> bool {
     PRIMITIVE_SCALAR_TYPES.contains(&name.to_ascii_lowercase().as_str())
 }
 
-/// VBA's type-declaration characters, in the spelling the lexer folds into
-/// an identifier's name.
 const TYPE_SUFFIXES: [char; 6] = ['$', '%', '&', '!', '#', '@'];
 
-/// A name as this pass keys it: lowercased, with any trailing
-/// type-declaration character removed.
-///
-/// `lexer.rs` deliberately folds a type suffix back into an identifier's
-/// spelling, since `a$` is how the name was written -- but, as its own
-/// comment says, **`a$` and `a` are the same variable**, and `Trim$` is the
-/// same function as `Trim`. Resolution therefore has to strip it, and has to
-/// do so on the declaring side and the referencing side alike or the two
-/// stop meeting in the middle.
-///
-/// Getting this wrong rejected every `$` string intrinsic there is --
-/// `Left$`, `Trim$`, `Mid$`, `Format$`, `UCase$` -- none of which the
-/// generated fuzz grammar happens to emit, so it took hand-written
-/// real-world VBA to surface.
 fn norm(name: &str) -> String {
     name.strip_suffix(TYPE_SUFFIXES)
         .unwrap_or(name)
@@ -157,10 +136,6 @@ fn check_items(
     Ok(())
 }
 
-/// Every `Sub`/`Function`/`Property`/`Declare` and module-level
-/// `Dim`/`Const`/`Private`/`Public`/`Global` in the module, flattened across
-/// `#If` branches exactly as [`Module::procedures`] already does -- which
-/// branch is live depends on `#Const` values parsing alone cannot decide.
 fn collect_module_symbols(module: &Module) -> HashMap<String, Kind> {
     let mut syms = HashMap::new();
     collect_module_items(&module.items, &mut syms);
@@ -244,7 +219,6 @@ fn check_procedure(
     check_block(&proc.body, &ctx)
 }
 
-/// Everything one procedure's body resolves a name against.
 struct Ctx<'a> {
     module: &'a HashMap<String, Kind>,
     locals: &'a HashMap<String, Kind>,
@@ -259,18 +233,11 @@ impl Ctx<'_> {
             .copied()
     }
 
-    /// Whether the name exists at all, anywhere this pass can see.
     fn known(&self, lower: &str) -> bool {
         self.kind_of(lower).is_some() || self.scope.knows(lower)
     }
 }
 
-/// `Dim`/`Static`/`Const` are procedure-scoped in VBA, not block-scoped, so
-/// this is a flat walk of every statement the procedure body contains,
-/// regardless of how deeply nested in `If`/`For`/`Do`/`With`/`Select Case`
-/// it is. VBA has no `#If` inside a procedure body (only at module level),
-/// so unlike [`collect_module_items`] there is no conditional branch to
-/// flatten here.
 fn collect_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     for stmt in body {
         match stmt {
@@ -316,21 +283,6 @@ fn collect_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     }
 }
 
-/// Names VBA creates implicitly, with no `Dim` at all, when `Option
-/// Explicit` is off: the target of a plain (non-`Set`) assignment, and a
-/// `For` loop's counter. Both are unambiguously plain scalars -- a `Set`
-/// target holds an object reference and is left `Opaque` by omission here,
-/// and a `For Each` element variable is left alone for the same reason,
-/// since either could legitimately be an object with a default member.
-///
-/// This is a second, separate walk (rather than folded into
-/// [`collect_locals`]) so an explicit `Dim`/`Const`/parameter -- collected
-/// first -- always wins regardless of where in the procedure text an
-/// assignment to the same name happens to sit; VBA's own scoping does not
-/// care about textual order either. Real VBA scoping makes a procedure-local
-/// shadow anything external unconditionally, so treating it as a known
-/// plain scalar here carries the same safety argument as the explicit-`Dim`
-/// case, not a new risk of a false positive.
 fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     for stmt in body {
         match stmt {
@@ -388,48 +340,6 @@ fn collect_implicit_locals(body: &[Stmt], locals: &mut HashMap<String, Kind>) {
     }
 }
 
-/// VBA's "Duplicate declaration in current scope", over every route into
-/// procedure scope that has been measured.
-///
-/// Unlike everything else here this pass is **order-sensitive**, and has to
-/// be: `Dim x As Long` followed by `x = 1` is ordinary code, while the same
-/// two lines the other way round is a compile error. Measured
-/// (`fuzz/vba_compile_probe.py --only dup:`):
-///
-/// ```text
-/// Dim x As Long          : Dim x As Long    ' FAILS -- declared twice
-/// x = 1                  : Dim x As Long    ' FAILS -- assigning first creates it
-/// x = Helper(1)          : Dim x As Long    ' FAILS -- likewise
-/// Set x = New Collection : Dim x As Object  ' FAILS -- so does a Set target
-/// ReDim arr(1 To 5)      : Dim arr()        ' FAILS -- a plain ReDim declares
-/// For x = 1 To 3 ... Next x   : Dim x As Long   ' FAILS -- so does a counter
-/// For Each x In rng ... Next  : Dim x As Long   ' FAILS -- and an element var
-/// Sub Gen(ByVal x As Long)    : Dim x As Long   ' FAILS -- and a parameter
-/// Dim x As Long          : x = 1            ' compiles
-/// Dim arr()              : ReDim arr(1 To 5)' compiles -- ReDim never collides
-/// ```
-///
-/// So a name enters procedure scope by being declared, assigned to, `Set`,
-/// `ReDim`'d, used as a `For`/`For Each` loop variable, or taken as a
-/// parameter -- and declaring one that is already there is the error. Each
-/// of the last five was confirmed with a control running the same route
-/// *without* the trailing `Dim`, so the rejection is the duplicate and not
-/// the route statement being unacceptable on its own.
-///
-/// Only a `Dim`/`Static`/`Const` *reports*. A `ReDim` of a name already in
-/// scope is the ordinary resize and compiles, which is why the routes only
-/// add to the set and the check lives on the declaration.
-///
-/// One route is still unmeasured: the procedure's own name, which is
-/// assignable inside a `Function` and so plausibly collides with a `Dim` of
-/// it. The harness compiles one fixed `Sub`, so the `Function` half of that
-/// question cannot be asked yet. Leaving it out under-reports, which is the
-/// safe direction; guessing it in would risk rejecting working code.
-///
-/// The walk is flat because VBA scoping is: a `Dim` inside an `If` is
-/// procedure-scoped, not block-scoped, so two of them in opposite branches
-/// still collide. Statements are visited in source order, nested bodies
-/// included, which is what makes the ordering rule fall out.
 fn check_duplicate_declarations(body: &[Stmt], params: &[Param]) -> Result<(), ParseError> {
     let mut in_scope: std::collections::HashSet<String> =
         params.iter().map(|p| norm(&p.name)).collect();
@@ -648,13 +558,6 @@ fn expr_is_literal_false(expr: &Expr) -> bool {
     matches!(expr, Expr::Literal(Literal::Bool(false)))
 }
 
-/// Walks an expression, checking every **call target** in it.
-///
-/// A bare `Expr::Ident` on its own is deliberately never checked: an
-/// undeclared name with no call syntax is a legal implicit Variant, which
-/// real Excel compiles happily (measured -- `x = a _ + b` with neither `a`
-/// nor `b` declared is accepted). Only `name(...)` and the bare-argument
-/// statement form force resolution.
 fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     match expr {
         Expr::Call { target, args, .. } => {
@@ -683,7 +586,6 @@ fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     }
 }
 
-/// The one rule, applied to a name used with call syntax.
 fn check_call_name(name: &str, pos: super::lexer::Pos, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     let lower = norm(name);
     match ctx.kind_of(&lower) {
@@ -706,24 +608,18 @@ mod tests {
     use super::{Scope, check_module, norm};
     use std::collections::HashSet;
 
-    /// The self-contained scope: `src` is the whole project, so an
-    /// unresolvable name is an error. What `check_syntax` does.
     fn check(src: &str) -> Result<(), String> {
         let module = parse_module(src).expect("should parse");
         let empty = HashSet::new();
         check_module(&module, &Scope::self_contained(&empty)).map_err(|e| e.message)
     }
 
-    /// The partial scope: other modules exist but were not supplied, so an
-    /// unresolvable name must be accepted. What `VbaModule::check_syntax`
-    /// does.
     fn check_partial(src: &str) -> Result<(), String> {
         let module = parse_module(src).expect("should parse");
         let empty = HashSet::new();
         check_module(&module, &Scope::partial(&empty)).map_err(|e| e.message)
     }
 
-    /// A self-contained scope that additionally knows `names` from siblings.
     fn check_with_external(src: &str, names: &[&str]) -> Result<(), String> {
         let module = parse_module(src).expect("should parse");
         let external: HashSet<String> = names.iter().map(|n| norm(n)).collect();

@@ -36,13 +36,6 @@ struct PivotXmlUnit {
 
 use crate::core::pivot::field_is_numeric as is_all_numeric;
 
-/// One `<item x="N"/>` per value in *display* order, where `N` is that
-/// value's index in the cache's `<sharedItems>` -- which is in a different
-/// (first-seen) order. Optionally followed by the `<item t="default"/>`
-/// subtotal placeholder.
-///
-/// The indices are the whole point: they are what ties a pivot field's items
-/// back to the cache.
 fn build_items_xml(shared_idx: &[usize], with_default: bool) -> String {
     let count = shared_idx.len() + usize::from(with_default);
     let mut s = format!("<items count=\"{count}\">");
@@ -56,11 +49,6 @@ fn build_items_xml(shared_idx: &[usize], with_default: bool) -> String {
     s
 }
 
-/// The `<items>` child for a page/filter pivotField: every value in display
-/// order, marked `h="1"` (hidden) when it isn't in `selected`.
-///
-/// `display` pairs each value with its `<sharedItems>` index, for the same
-/// reason [`build_items_xml`] takes them.
 fn build_filter_items_xml(display: &[(usize, String)], selected: &Option<Vec<String>>) -> String {
     let mut s = format!("<items count=\"{}\">", display.len() + 1);
     for (idx, value) in display {
@@ -77,10 +65,6 @@ fn build_filter_items_xml(display: &[(usize, String)], selected: &Option<Vec<Str
     s
 }
 
-/// Encodes one axis (row or column) of flattened groups into the
-/// `rowItems`/`colItems` `<i>` sequence, applying Excel's leading-field
-/// repeat suppression (`r="N"` = "the first N fields are unchanged from
-/// the previous item, so aren't repeated here").
 fn build_axis_items_xml(
     axis: &[PivotAxisItem],
     field_idxs: &[usize],
@@ -156,10 +140,6 @@ fn build_axis_items_xml(
     out
 }
 
-/// When there are 2+ value fields, Excel places an implicit "Values"
-/// pseudo-field as the innermost column level (field index `-2`); this
-/// duplicates each column-axis group once per value field so
-/// `build_axis_items_xml` can encode that extra level like any other.
 fn expand_col_axis_with_values(
     axis: &[PivotAxisItem],
     value_labels: &[String],
@@ -282,7 +262,6 @@ fn build_pivot_xml_unit(
         })
         .collect();
 
-    /// Just the `<sharedItems>` indices, in display order.
     fn shared_idx_for(
         field_items: &HashMap<usize, Vec<String>>,
         cache_items: &HashMap<usize, Vec<String>>,
@@ -297,9 +276,6 @@ fn build_pivot_xml_unit(
         .collect()
     }
 
-    /// A display-ordered field's values paired with their `<sharedItems>`
-    /// index. Values are matched case-insensitively, the same way
-    /// `distinct_strings` dedups them.
     fn display_with_shared_idx(display: &[String], cache: &[String]) -> Vec<(usize, String)> {
         display
             .iter()
@@ -1132,7 +1108,6 @@ fn parse_cache_definition_xml(xml: &str) -> Option<ParsedCacheDefinition> {
     }
 }
 
-/// Parses an A1 cell reference (e.g. "C4") into 0-based (row, col).
 fn parse_a1_cell(s: &str) -> Option<(usize, usize)> {
     let col_end = s.find(|c: char| c.is_ascii_digit())?;
     let (col_part, row_part) = s.split_at(col_end);
@@ -1150,8 +1125,6 @@ fn parse_a1_cell(s: &str) -> Option<(usize, usize)> {
     Some((row.checked_sub(1)?, col - 1))
 }
 
-/// Parses an A1 range (e.g. "A1:C4", or a single cell "A1") into 0-based
-/// `(start_row, start_col, end_row, end_col)`.
 pub(crate) fn parse_a1_range(s: &str) -> Option<(usize, usize, usize, usize)> {
     if let Some((start, end)) = s.split_once(':') {
         let (r0, c0) = parse_a1_cell(start)?;
