@@ -1,7 +1,7 @@
 # visi monorepo
 
 > [!NOTE]
-> While ~99% of the code is LLM-authored, the _prose_
+> While ~99.9999% of the code is LLM-authored, the _prose_
 > should not be. See the [LLM policy](#llm-policy).
 
 [![CI](https://github.com/albert-yu/visi/actions/workflows/ci.yml/badge.svg)](https://github.com/albert-yu/visi/actions/workflows/ci.yml)
