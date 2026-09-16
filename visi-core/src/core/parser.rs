@@ -123,8 +123,7 @@ pub fn col_letters_to_idx(col_str: &str) -> usize {
             col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
         }
     }
-    let col_idx = if col > 0 { col - 1 } else { 0 };
-    col_idx
+    if col > 0 { col - 1 } else { 0 }
 }
 
 /// Converts an already-split A1 reference into a 0-based `(row, col)`.
