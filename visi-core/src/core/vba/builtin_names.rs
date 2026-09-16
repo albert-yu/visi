@@ -5,17 +5,6 @@ pub(super) fn is_builtin(name: &str) -> bool {
     BUILTIN_NAMES.contains(&lower.as_str())
 }
 
-/// Every built-in name, lowercased, grouped by where it comes from.
-///
-/// Deliberately a **linear** scan in [`is_builtin`] rather than a sorted
-/// binary search. Sorting would mean one flat alphabetical run, throwing
-/// away the grouping that documents each name's provenance -- and a
-/// binary search over a hand-maintained list fails *silently* when an entry
-/// lands out of order, which is a false positive on working code, the one
-/// direction this module must never fail in. (That is not hypothetical: the
-/// first draft here was a binary search over a list grouped exactly like
-/// this, and it could not find `MsgBox`.) A couple of hundred string
-/// compares once per call target is nothing next to parsing the module.
 #[rustfmt::skip]
 static BUILTIN_NAMES: &[&str] = &[
     "cbool", "cbyte", "ccur", "cdate", "cdbl", "cdec", "cint", "clng", "clnglng", "clngptr",
@@ -116,17 +105,6 @@ mod tests {
         assert!(!is_builtin("MyOwnSub"));
     }
 
-    /// Every intrinsic the interpreter implements must also be a name this
-    /// registry knows.
-    ///
-    /// The two lists are maintained separately and answer different
-    /// questions -- `builtins.rs` is "what can this engine evaluate?",
-    /// this is "what will Excel's compiler accept?" -- but one direction is
-    /// not optional: an intrinsic `builtins::call` handles is by definition
-    /// a real VBA name, so omitting it here rejects working code. Adding
-    /// `Hex`, `Oct` and `Val` to `builtins.rs` without adding them here is
-    /// exactly the slip this catches; it had already happened when the test
-    /// was written.
     #[test]
     fn every_implemented_intrinsic_is_a_known_builtin() {
         for name in super::super::builtins::implemented_names() {

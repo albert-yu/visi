@@ -552,10 +552,6 @@ pub(crate) fn parse_xlsx_table_style(name: &str) -> rust_xlsxwriter::TableStyle 
     }
 }
 
-/// The numeric serial to export for a date-formatted cell, if this is one.
-///
-/// A date cell keeps the typed text in `src` and the serial in `data`, so the
-/// value -- not the source -- is what Excel needs alongside the `numFmt`.
 fn date_serial_for_export(
     style: Option<&crate::core::CellStyle>,
     col: &crate::core::engine::DataColumn,
@@ -1674,8 +1670,6 @@ pub(crate) fn get_attr(e: &quick_xml::events::BytesStart, name: &[u8]) -> Option
     None
 }
 
-/// Escapes text for use inside an XML attribute value. Shared by
-/// `pivot_xlsx.rs` and `vba_xlsx.rs`.
 pub(crate) fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1754,14 +1748,6 @@ fn parse_sheet_drawing_rels(xml: &str) -> Option<String> {
     drawing_target
 }
 
-/// Collects the table parts a worksheet's `_rels/sheetN.xml.rels` points at,
-/// as bare filenames (`table1.xml`). Every table part lives in `xl/tables/`,
-/// so taking the basename via `get_filename` sidesteps resolving the
-/// `Target` attribute's form entirely: `../tables/table1.xml` (what Excel
-/// and `rust_xlsxwriter` emit) and `/xl/tables/table1.xml` (the absolute
-/// package path `openpyxl` emits) both reduce to the same name. A worksheet can own several tables, hence a `Vec` -- unlike
-/// `parse_sheet_drawing_rels`, which stops at the first match because a
-/// worksheet has at most one drawing.
 fn parse_sheet_table_rels(xml: &str) -> Vec<String> {
     let mut targets = Vec::new();
     let mut reader = quick_xml::reader::Reader::from_str(xml);
@@ -2083,12 +2069,6 @@ pub(crate) fn get_zip_file_content(
     Some(content)
 }
 
-/// One Excel Table (ListObject) as declared by its own `xl/tables/*.xml`
-/// part. Everything here is read straight out of that XML rather than
-/// through calamine: `Xlsx::table_by_name` panics outright on a table with a
-/// header row and zero data rows (it derives a data-only range whose start
-/// is past its end), which is a shape this crate's own export produces. See
-/// `import_tables_from_zip`.
 struct ParsedTablePart {
     name: String,
     columns: Vec<String>,
@@ -2103,14 +2083,6 @@ struct ParsedTablePart {
     has_insert_row: bool,
 }
 
-/// Parses one `xl/tables/tableN.xml` part. Returns `None` if the XML has no
-/// `<table>` element with a `displayName`, which is the only field a table
-/// can't sensibly be reconstructed without.
-///
-/// `headerRowCount` defaults to 1 and `totalsRowCount` to 0 when absent,
-/// matching both the OOXML default and how most real-world tables are
-/// configured -- `rust_xlsxwriter` omits both attributes for an ordinary
-/// header-and-data table.
 fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -2174,18 +2146,6 @@ fn parse_table_part_xml(xml: &str) -> Option<ParsedTablePart> {
     })
 }
 
-/// Discovers every Excel Table in the workbook by walking the zip directly,
-/// pairing each with the name of the sheet that owns it.
-///
-/// This deliberately replaces calamine's `load_tables`/`table_by_name`. That
-/// API panics ("invalid range bounds") on a table with a header row and zero
-/// data rows -- a shape `export_xlsx_data` itself produces.
-/// Reading the parts here avoids that issue; calamine is now used only for cell data.
-///
-/// Within a sheet, tables keep their relationship order. Across sheets the
-/// order is irrelevant -- each table is attached to its own sheet -- but the
-/// worksheet parts are still walked in sorted order so that iteration
-/// doesn't inherit `HashMap`'s randomized ordering.
 fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)>, String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer))
         .map_err(|e| format!("Failed to open zip: {}", e))?;
@@ -2217,7 +2177,6 @@ fn import_tables_from_zip(buffer: &[u8]) -> Result<Vec<(String, ParsedTablePart)
     Ok(tables)
 }
 
-/// [AI-Agent] Built-in OOXML `numFmtId` codes whose display strings can be preserved on import.
 const BUILTIN_NUM_FMTS: &[(u32, &str)] = &[
     (0, "General"),
     (1, "0"),
@@ -2267,8 +2226,6 @@ fn builtin_num_fmt_code(id: u32) -> Option<&'static str> {
         .map(|(_, code)| *code)
 }
 
-/// Date format codes per cell, keyed by sheet name and then by 0-based
-/// `(row, col)`.
 type SheetCellNumberFormats =
     std::collections::HashMap<String, std::collections::HashMap<(usize, usize), String>>;
 
@@ -2626,16 +2583,6 @@ fn parse_sheet_cell_styles(
     out
 }
 
-/// Maps each cell that carries a date number format to that format's code,
-/// keyed by sheet name and then by `(row, col)` -- both 0-based, matching the
-/// engine.
-///
-/// calamine reports a date-formatted cell as `Data::DateTime` but does not
-/// expose the format code behind it, and the code is the whole point here: it
-/// is what lets `6/22/26` come back as `6/22/26` rather than `2026-06-22`. So
-/// this walks the zip directly, joining each worksheet's per-cell style index
-/// (`<c s="3">`) through `xl/styles.xml`'s `<cellXfs>` to a `numFmtId`, and
-/// then to either a custom `<numFmt>` code or a built-in one.
 #[allow(dead_code)]
 fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, String> {
     use std::collections::HashMap;
@@ -2672,8 +2619,6 @@ fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, S
     Ok(out)
 }
 
-/// Resolves `xl/styles.xml` into "cell style index -> date format code",
-/// keeping only the entries that denote a date.
 fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String> {
     use std::collections::HashMap;
 
@@ -2730,8 +2675,6 @@ fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String>
     out
 }
 
-/// Pulls `(row, col) -> date format code` out of one worksheet part, for the
-/// cells whose style index resolves to a date format.
 fn parse_sheet_cell_formats(
     xml: &str,
     xf_to_code: &std::collections::HashMap<u32, String>,
@@ -2760,8 +2703,6 @@ fn parse_sheet_cell_formats(
     out
 }
 
-/// `"B3"` -> `(2, 1)`, 0-based. Trailing `$` anchors are not expected in a
-/// cell's `r` attribute and are not accepted.
 fn parse_a1_cell(reference: &str) -> Option<(usize, usize)> {
     let split = reference.find(|c: char| c.is_ascii_digit())?;
     let (letters, digits) = reference.split_at(split);
@@ -2779,11 +2720,6 @@ fn parse_a1_cell(reference: &str) -> Option<(usize, usize)> {
     Some((row - 1, col - 1))
 }
 
-/// Derives a stable chart id from its sheet name and position within that
-/// sheet's charts, so re-importing the same unchanged xlsx always assigns
-/// the same id to the same chart. Uses `DefaultHasher`, which (unlike
-/// `HashMap`'s default `RandomState`) is not seeded per-process, so this is
-/// deterministic across separate CLI invocations of the same binary.
 fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -2793,12 +2729,6 @@ fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
     hasher.finish() & 0x001F_FFFF_FFFF_FFFF
 }
 
-/// Maps each worksheet part's bare filename (`sheet1.xml`) to the sheet name
-/// the workbook declares for it, by joining `xl/workbook.xml`'s
-/// `<sheet name= r:id=>` entries against `xl/_rels/workbook.xml.rels`. The
-/// part filenames are not in workbook order and carry no reliable
-/// relationship to the sheet's position, so this join is the only way to get
-/// from a part back to its name. Shared by the chart and table importers.
 fn build_sheet_file_to_name(
     archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
@@ -3095,22 +3025,6 @@ mod tests {
         );
     }
 
-    /// A date cell has to survive as a *date*: the value goes out as a
-    /// numeric serial (Excel cannot do date arithmetic on text) while the
-    /// notation goes out as the cell's `numFmt` and comes back from it. The
-    /// CLI is a fresh process per invocation, so this round trip is the only
-    /// thing that makes a date still look like one on the next command.
-    /// A worksheet string cell that arrives as the empty string has to stay
-    /// a *text* cell rather than becoming blank: Excel reports TYPE 2 and a
-    /// text comparison for it, and a fuzz grid containing one disagreed with
-    /// Excel in three separate formulas while visi rebuilt it as blank.
-    ///
-    /// This is reached in practice via whitespace: OOXML strips whitespace-only
-    /// `<t>` content that is not marked `xml:space="preserve"` -- which
-    /// `openpyxl` omits -- so calamine reports what is left as `String("")`
-    /// rather than as `Data::Empty`. Excel strips it the same way and likewise
-    /// keeps a text cell. (visi's own writer *does* emit `xml:space`, so a
-    /// space survives a visi-to-visi round trip; this covers the other case.)
     #[test]
     fn test_empty_string_cell_stays_text_not_blank() {
         let mut sheet = Sheet::new(crate::core::SheetInit {
@@ -3166,8 +3080,6 @@ mod tests {
         }
     }
 
-    /// Text that merely looks like a date must not become one on import --
-    /// Excel handed it over as a string cell, so it stays a string.
     #[test]
     fn test_xlsx_date_looking_text_stays_text() {
         let col = DataColumn::from_src("A", vec!["\"22-Jun\"".to_string()]);
@@ -3488,8 +3400,6 @@ mod tests {
         assert_eq!(imported_sheet.tables[0].columns, vec!["Name", "Amount"]);
     }
 
-    /// Rewrites the `ref` attribute of every `xl/tables/*.xml` part in an
-    /// exported workbook, leaving the rest of the zip byte-for-byte intact.
     fn rewrite_table_ref(xlsx_data: &[u8], new_ref_attr: &str) -> Vec<u8> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(xlsx_data)).unwrap();
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -3869,11 +3779,6 @@ mod tests {
         }
     }
 
-    /// The emitted pivot XML, as one string per part, for shape assertions.
-    ///
-    /// These stand in for a check CI cannot run: the only authority on
-    /// whether Excel accepts a pivot part is Excel, and
-    /// `fuzz/pivot_filter_probe.py --variant visi` is what actually asks it.
     fn emitted_pivot_parts(
         sheets: &[Sheet],
         pivots: &[crate::core::pivot::PivotTable],

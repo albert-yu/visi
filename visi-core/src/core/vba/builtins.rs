@@ -1,6 +1,5 @@
 use super::value::{self, VResult, Variant, VbaError};
 
-/// Intrinsics that inspect a `Null` rather than propagating or rejecting it.
 const HANDLES_NULL: &[&str] = &[
     "isnull",
     "isempty",
@@ -14,14 +13,6 @@ const HANDLES_NULL: &[&str] = &[
     "iif",
 ];
 
-/// Intrinsics that raise error 94 on a `Null` argument.
-///
-/// Measured, not derived, because no principle is visible behind the split:
-/// `Hex` and `Oct` propagate a `Null` while `Chr` and `Asc` reject it;
-/// `String` propagates while `Space` rejects; `Trim` propagates while
-/// `StrReverse` rejects. Everything not listed here (and not in
-/// [`HANDLES_NULL`]) propagates -- including `CVar`, the one `C*` conversion
-/// that does.
 const REJECTS_NULL: &[&str] = &[
     "cstr",
     "cint",
@@ -48,7 +39,6 @@ const REJECTS_NULL: &[&str] = &[
     "replace",
 ];
 
-/// One argument, or `Empty` when it was omitted.
 fn arg(args: &[Variant], i: usize) -> Variant {
     args.get(i).cloned().unwrap_or(Variant::Empty)
 }
@@ -57,7 +47,6 @@ fn need(args: &[Variant], i: usize) -> VResult<Variant> {
     args.get(i).cloned().ok_or_else(VbaError::invalid_call)
 }
 
-/// `Null` in, `Null` out — the rule almost every intrinsic follows.
 fn any_null(args: &[Variant]) -> bool {
     args.iter().any(|a| a.is_null())
 }
@@ -300,11 +289,6 @@ fn vartype(v: &Variant) -> i16 {
     }
 }
 
-/// A numeric argument for the explicit conversions, which unlike arithmetic
-/// accept an error value and give its `CVErr` number back.
-///
-/// Measured: `v = Application.VLookup(...)` failing makes `CLng(v)` `2042`,
-/// while `v + 1` is error 13. Only this path may look through an error value.
 fn numeric_arg(args: &[Variant], i: usize) -> VResult<f64> {
     let v = need(args, i)?;
     match v.error_number() {
@@ -323,8 +307,6 @@ fn is_numeric(v: &Variant) -> bool {
     }
 }
 
-/// `Val` stops at the first character that cannot continue a number, and
-/// returns 0 rather than erroring — unlike implicit coercion.
 fn val_of(v: &Variant) -> f64 {
     let Ok(s) = v.to_vba_string() else {
         return 0.0;
@@ -349,8 +331,6 @@ fn sgn(v: f64) -> i16 {
     }
 }
 
-/// Applies a numeric function while keeping the argument's width, which is
-/// what makes `Int(-1.5)` a `Double` and `Abs(-1%)` an `Integer`.
 fn same_width(v: &Variant, f: impl Fn(f64) -> f64) -> VResult<Variant> {
     let r = f(v.to_f64()?);
     Ok(match v {
@@ -396,9 +376,6 @@ fn to_i64(v: f64) -> VResult<i64> {
     Ok(r as i64)
 }
 
-/// A count argument, which VBA rounds rather than truncates.
-///
-/// Measured: `Space(2.6)` is three spaces, not two.
 fn to_count(v: f64) -> VResult<usize> {
     let r = value::bankers_round(v);
     if r < 0.0 {
@@ -423,8 +400,6 @@ fn char_from_code(code: f64) -> VResult<char> {
     char::from_u32(c as u32).ok_or_else(VbaError::invalid_call)
 }
 
-/// `InStr` in both its arities: `InStr(haystack, needle)` and
-/// `InStr(start, haystack, needle)`.
 fn instr(args: &[Variant]) -> VResult<Variant> {
     let (start, hay, needle) = if args.len() >= 3 {
         let s = need(args, 0)?.to_f64()?;
@@ -467,13 +442,6 @@ fn instr(args: &[Variant]) -> VResult<Variant> {
 mod tests {
     use super::*;
 
-    /// Every name in [`IMPLEMENTED_NAMES`] is really dispatched by [`call`].
-    ///
-    /// `call` returns `Ok(None)` for a name it does not know, which is
-    /// exactly the discriminator needed: anything else -- a value, or an
-    /// error about the arguments -- means the arm exists. Passing no
-    /// arguments is fine, since an arity complaint still proves the name
-    /// was recognised.
     #[test]
     fn every_listed_name_is_dispatched() {
         for name in IMPLEMENTED_NAMES {

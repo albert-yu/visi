@@ -86,7 +86,6 @@ pub fn check_syntax_partial(source: &str) -> Result<ModuleSyntax, Error> {
     check_source(source, None, &resolve::Scope::partial(&empty))
 }
 
-/// [`check_syntax`]'s body, with the resolution scope chosen by the caller.
 fn check_source(
     source: &str,
     module_name: Option<&str>,
@@ -130,11 +129,6 @@ pub struct RunOutcome {
     pub mutated: bool,
 }
 
-/// Turns command-line argument text into the `Variant`s a procedure receives.
-///
-/// Arguments arrive as text -- they come from a CLI or a fuzz harness -- and
-/// are given the type VBA would give the same literal, so `-a 1` is an
-/// `Integer` and `-a 1.5` a `Double`.
 fn parse_args(args: &[&str]) -> Vec<value::Variant> {
     args.iter()
         .map(|a| match value::parse_vba_number(a) {
@@ -248,8 +242,6 @@ impl crate::core::WorkbookManager {
         })
     }
 
-    /// The source text to run, resolving `module` the way
-    /// [`WorkbookManager::run_macro`] documents.
     fn macro_source_for(&self, module: Option<&str>, procedure: &str) -> Result<String, Error> {
         let project = self
             .vba_project
@@ -521,8 +513,6 @@ impl VbaProject {
         self.check_modules_scoped(false)
     }
 
-    /// The body both of the above share, `complete` being
-    /// [`resolve::Scope::complete_project`].
     fn check_modules_scoped(&self, complete: bool) -> Vec<(String, Result<ModuleSyntax, Error>)> {
         let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
         let parsed: Vec<_> = self
@@ -552,9 +542,6 @@ impl VbaProject {
     }
 }
 
-/// A GUID-shaped project id (`{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`) for
-/// a brand-new project, built from two `generate_unique_id()` draws rather
-/// than duplicating its getrandom/fallback logic.
 fn new_project_guid() -> String {
     let hi = crate::core::engine::generate_unique_id();
     let lo = crate::core::engine::generate_unique_id();
@@ -657,8 +644,6 @@ mod tests {
         assert!(!project.module_name_taken("Module2"));
     }
 
-    /// `sample_project()`'s shape with the sources the caller cares about,
-    /// one standard module per `(name, source)` pair.
     fn project_of(sources: &[(&str, &str)]) -> VbaProject {
         let mut project = sample_project();
         project.modules = sources
@@ -679,8 +664,6 @@ mod tests {
     const CALLER: &str = "Public Sub Caller()\n    DoWork 1\nEnd Sub\n";
     const CALLEE: &str = "Public Sub DoWork(n As Long)\nEnd Sub\n";
 
-    /// The two scopes differ on exactly one thing, and only on it: a name
-    /// no supplied module declares.
     #[test]
     fn partial_scope_accepts_a_call_into_source_not_supplied() {
         assert!(check_syntax(CALLER).is_err());

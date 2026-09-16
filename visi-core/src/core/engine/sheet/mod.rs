@@ -47,13 +47,6 @@ impl<'a> Context<'a> {
     }
 }
 
-/// A chain of LET name/value bindings in scope while evaluating a single
-/// formula. This is a linked list (not a cloned `HashMap`) because LET
-/// binds names one at a time -- each value expression, and the final
-/// calculation, must see all *earlier* bindings from the same LET (and any
-/// outer LET it's nested inside), and a name can shadow an outer binding of
-/// the same spelling. `evaluate_let` builds this chain by recursing one
-/// pair at a time rather than mutating a shared map.
 enum LetScope<'a> {
     Empty,
     Bound {
@@ -195,7 +188,6 @@ impl Default for SheetInit {
     }
 }
 
-/// How a blank cell is treated by the strict numeric flatteners.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlankPolicy {
     /// Counts as 0 (MULTINOMIAL).
@@ -264,9 +256,6 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    /// Every sheet a formula on this one could refer to -- this sheet first,
-    /// then the rest of `context` -- as the name-to-id lookup table that
-    /// `compile_formula` resolves references against.
     pub(crate) fn get_all_sheets_for_compilation(&self, context: Option<&Context>) -> Vec<Sheet> {
         let mut list = vec![self.clone()];
         let mut seen = std::collections::HashSet::new();
@@ -1280,13 +1269,6 @@ impl Sheet {
         }
     }
 
-    /// `SORT`/`SORTBY`-specific comparator: Microsoft documents that both
-    /// functions always place blank cells last, regardless of ascending
-    /// vs. descending order -- unlike `compare_excel_values`'s general
-    /// blank-coerces-to-0/""/false rule (correct for comparison operators,
-    /// MATCH, etc.), which would otherwise rank a blank ahead of every
-    /// negative number once descending order reverses the comparison.
-    /// E.g. `SORT({-215.8,,-100,-240.97,-88},1,-1)` puts the blank last.
     fn sort_compare_blanks_last(
         l: &ResultData,
         r: &ResultData,
@@ -1379,12 +1361,6 @@ impl Sheet {
         a.len().cmp(&b.len())
     }
 
-    /// Snaps a float to its 15-significant-digit rounding when the two are
-    /// within floating-point noise of each other, so accumulated error does
-    /// not leak into a result Excel would show as exact.
-    ///
-    /// Left alone if the rounding moves the value by more than that, and for
-    /// zero and non-finite values.
     pub(crate) fn clean_float(val: f64) -> f64 {
         if val == 0.0 || !val.is_finite() {
             return val;
@@ -1401,15 +1377,6 @@ impl Sheet {
         val
     }
 
-    /// Coerces a value to a number the way an Excel arithmetic operator does:
-    /// a blank is 0, a boolean is 0 or 1, and text is converted if it reads as
-    /// a number or a date (a date becoming its serial).
-    ///
-    /// `None` for text that is not numeric and for every other value,
-    /// including errors -- callers turn that into `#VALUE!`.
-    ///
-    /// Not every function coerces this way; the stricter families reject text
-    /// and booleans outright.
     pub(crate) fn to_f64(&self, val: &ResultData) -> Option<f64> {
         match val {
             ResultData::None => Some(0.0),
@@ -1521,11 +1488,6 @@ impl Sheet {
         }
     }
 
-    /// Flattens a single argument (which may be a range/array `List`) into
-    /// an ordered `Vec<f64>` for the financial functions that take a
-    /// cashflow series (`NPV`, `IRR`, `MIRR`, `XNPV`, `XIRR`, `FVSCHEDULE`).
-    /// Mirrors `sum_helper`'s convention: booleans/text only count when
-    /// passed directly (not through a range).
     fn flatten_finance_numbers(&self, arg: &ResultData, is_direct: bool) -> Vec<f64> {
         match arg {
             ResultData::Float(f) => vec![*f],
@@ -1578,12 +1540,6 @@ impl Sheet {
         }
     }
 
-    /// Flattens one argument positionally: `Some(n)` for a numeric cell,
-    /// `None` for anything real Excel excludes from a paired statistical
-    /// calculation (text, boolean, blank). Unlike flatten_stat_numbers,
-    /// excluded cells still occupy a slot, so two ranges of the same
-    /// shape always produce vectors of the same length and element `i` of
-    /// one still lines up with element `i` of the other.
     fn flatten_positional(
         &self,
         arg: &ResultData,
@@ -1620,28 +1576,6 @@ impl Sheet {
         out
     }
 
-    /// Excel's paired statistical functions (CORREL/PEARSON/COVAR/
-    /// COVARIANCE.P/COVARIANCE.S/SLOPE/INTERCEPT/RSQ/STEYX/FORECAST/
-    /// TREND/LINEST/GROWTH/LOGEST/T.TEST/SUMX2PY2/SUMXMY2/SUMX2MY2/PROB)
-    /// compare the two ranges' *raw* element counts first -- a mismatch
-    /// is #N/A regardless of content -- and then drop every (x, y) pair
-    /// where either side is non-numeric, keeping what survives aligned.
-    ///
-    /// Verified directly against real Excel: `COVAR(A1:A4, B1:B4)` with
-    /// one text cell in B returns exactly the value of the 3-element
-    /// ranges with that whole pair physically removed, and the same holds
-    /// for SLOPE/INTERCEPT/RSQ/PEARSON/STEYX/FORECAST/T.TEST/SUMX*.
-    /// Booleans and blanks are excluded the same way text is.
-    ///
-    /// This is deliberately *not* the same as flattening each side
-    /// independently (what flatten_stat_numbers does): dropping a
-    /// non-numeric from only one side shifts every later element against
-    /// its partner, silently correlating the wrong values together.
-    /// F.TEST/FTEST is the exception that genuinely does want independent
-    /// per-array flattening -- it compares two samples' variances and
-    /// doesn't require equal sizes at all (confirmed against real Excel:
-    /// `FTEST(4-cell-with-text, ...)` equals `FTEST(full-4-cell, ...)`
-    /// against the 3-cell survivor, i.e. each side shrinks on its own).
     fn pair_and_filter(
         xs_raw: Vec<Option<f64>>,
         ys_raw: Vec<Option<f64>>,
@@ -1660,7 +1594,6 @@ impl Sheet {
         Ok((xs, ys))
     }
 
-    /// pair_and_filter over two argument slots.
     fn paired_args(
         &self,
         x_arg: Option<&ResultData>,
@@ -1690,36 +1623,6 @@ impl Sheet {
         Self::pair_and_filter(xs_raw, ys_raw)
     }
 
-    /// Like flatten_stat_numbers, but errors instead of silently dropping
-    /// a cell real Excel won't accept. Excel's array/matrix-argument
-    /// functions don't ignore text the way SUM/AVERAGE-style aggregates
-    /// do -- one bad cell makes the whole call #VALUE!.
-    ///
-    /// `blanks` selects between the three blank-handling behaviours real
-    /// Excel actually exhibits here, each established by probing it
-    /// directly:
-    ///  - `BlankPolicy::Zero` (MULTINOMIAL): a blank counts as 0 and the
-    ///    call still succeeds -- `MULTINOMIAL(3, <blank>)` is 1, the
-    ///    blank participating as a zero.
-    ///  - `BlankPolicy::Skip` (GCD/LCM/SERIESSUM): a blank is dropped
-    ///    outright rather than zero-filled. `LCM(1, <blank>)` is 1 (as if
-    ///    `LCM(1)`), not `LCM(1, 0)` = 0. For SERIESSUM this also shifts
-    ///    every later coefficient down a power:
-    ///    `SERIESSUM(0.5, 0, 2, {4, 6, <blank>, 8})` is 6.0 -- exactly the
-    ///    3-coefficient answer -- not the 5.625 a zero in that slot gives.
-    ///  - `BlankPolicy::Reject` (LINEST/TREND/GROWTH/LOGEST/MMULT): blanks
-    ///    are #VALUE! too, same as text and booleans.
-    ///
-    /// `coerce_text` selects separately whether a numeric-looking string
-    /// is accepted (converted the same way `to_f64` would) or rejected
-    /// outright as #VALUE! -- this does *not* track the blank policy,
-    /// since GCD/LCM (`Skip`) coerce text (`GCD("12", 8)` = 4) while
-    /// SERIESSUM (also `Skip`) does not (`SERIESSUM(1.49, 1, 2,
-    /// {<blank>, "2", 27, -35})` is #VALUE! in real Excel, not the number
-    /// the coerced "2" would give -- fuzz/fuzz_excel.py seed 107768).
-    /// Booleans are always rejected regardless of either policy -- `GCD(TRUE,
-    /// 8)` is #VALUE! -- which is why this can't just fall through to
-    /// `to_f64`, the lenient coercion used for scalar arguments.
     fn flatten_strict_inner(
         &self,
         arg: &ResultData,
@@ -1768,8 +1671,6 @@ impl Sheet {
         Ok(out)
     }
 
-    /// flatten_strict_numbers with blanks dropped rather than zero-filled,
-    /// for GCD/LCM (which also coerce numeric text, like MULTINOMIAL).
     fn flatten_skipping_blanks(&self, arg: Option<&ResultData>) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
         if let Some(a) = arg {
@@ -1778,12 +1679,6 @@ impl Sheet {
         Ok(out)
     }
 
-    /// Like `flatten_skipping_blanks`, but a numeric-looking string is
-    /// #VALUE! rather than coerced -- SERIESSUM's coefficients, unlike
-    /// GCD/LCM's operands, don't accept text at all (measured:
-    /// `SERIESSUM(1.49, 1, 2, {<blank>, "2", 27, -35})` is #VALUE! in real
-    /// Excel, not the value the coerced "2" would give -- see
-    /// `flatten_strict_inner`'s doc comment).
     fn flatten_skipping_blanks_no_text_coercion(
         &self,
         arg: Option<&ResultData>,
@@ -1795,22 +1690,12 @@ impl Sheet {
         Ok(out)
     }
 
-    /// flatten_strict_numbers with the stricter "a blank is also #VALUE!"
-    /// rule the regression-array and matrix functions use.
     fn flatten_numbers_only(&self, arg: &ResultData) -> Result<Vec<f64>, String> {
         let mut out = Vec::new();
         self.flatten_strict_inner(arg, BlankPolicy::Reject, false, &mut out)?;
         Ok(out)
     }
 
-    /// The value of one cell of a SUMIF/AVERAGEIF/MAXIFS/MINIFS-style
-    /// *aggregate* range. Only a real number counts: Excel silently skips
-    /// text and booleans in the range being summed/averaged/compared
-    /// (confirmed directly -- `SUMIF` over a range holding
-    /// `{100, TRUE, 200, "txt", 300}` is 600, and MAXIFS over the same
-    /// range is 300, not the boolean coerced to 1). Using the lenient
-    /// `to_f64` here instead folded `TRUE` in as a 1, which both shifted
-    /// sums/averages and could win a MAX/MIN outright.
     fn aggregate_range_number(val: &ResultData) -> Option<f64> {
         match val {
             ResultData::Float(f) => Some(*f),
@@ -1826,19 +1711,6 @@ impl Sheet {
         }
     }
 
-    /// `flatten_stat_numbers` across an argument list, applying Excel's rule
-    /// for text supplied *directly* as an argument: it is coerced if it
-    /// looks numeric, and is `#VALUE!` if it does not. Text reached through
-    /// a reference is skipped instead, which is what `flatten_stat_numbers`
-    /// already does on its own.
-    ///
-    /// The split matters because silently skipping uncoercible direct text
-    /// turns a wrong formula into a plausible number: `DEVSQ("abc",3,4,5)`
-    /// answered 2 (the spread of the remaining three) where Excel answers
-    /// `#VALUE!`. Verified against real Excel for SUM, AVERAGE, DEVSQ,
-    /// STDEV, VAR, MEDIAN, MAX, MIN, PRODUCT, SUMSQ, GEOMEAN, AVEDEV, SKEW
-    /// and KURT. COUNT is the deliberate exception -- it never errors, it
-    /// just doesn't count what it can't read -- and does not call this.
     fn flatten_args_stat_numbers(
         &self,
         args: &[ResultData],
@@ -1855,22 +1727,6 @@ impl Sheet {
         Ok(out)
     }
 
-    /// Flatten arguments for the `*A` statistical family (AVERAGEA, MAXA,
-    /// MINA, STDEVA, STDEVPA, VARA, VARPA), which count text and booleans
-    /// rather than skipping them.
-    ///
-    /// Text is where the family gets interesting, and the rule depends on
-    /// *how* the text arrived. Inside a reference it counts as 0, which is
-    /// the documented behaviour everyone knows. Passed directly as an
-    /// argument it is coerced instead, and a value that will not coerce is
-    /// an error rather than a zero. Against real Excel, with A1 holding the
-    /// text "12":
-    ///
-    /// ```text
-    /// AVERAGEA(A1, 3)     = 1.5        text in a reference counts as 0
-    /// AVERAGEA("12", 3)   = 7.5        direct text is coerced
-    /// AVERAGEA("abc", 3)  = #VALUE!    ... and must coerce
-    /// ```
     fn flatten_stat_numbers_a(
         &self,
         arg: &ResultData,
@@ -1903,8 +1759,6 @@ impl Sheet {
         })
     }
 
-    /// `flatten_stat_numbers_a` over a whole argument list, using the
-    /// caller's per-argument direct/reference classification.
     fn flatten_args_stat_numbers_a(
         &self,
         args: &[ResultData],
@@ -1945,16 +1799,6 @@ impl Sheet {
         }
     }
 
-    /// Reshapes a range argument's flat evaluated list back into a 2D
-    /// row-major matrix using the *reference's* own width.
-    ///
-    /// A plain rectangular range like `F1:G2` evaluates to a flat
-    /// `List` of 4 scalars with no nesting, so extract_matrix (which can
-    /// only treat a nested `List` as a row) turned it into a 4x1 column
-    /// instead of a 2x2 square -- and every matrix function then reported
-    /// #VALUE! on a perfectly valid square range. MMULT already
-    /// reconstructed its operands' shapes from the argument expression
-    /// this way; this shares that logic with MDETERM/MINVERSE.
     fn matrix_from_arg(
         &self,
         expr: &crate::core::parser::Expr,
@@ -1990,42 +1834,12 @@ impl Sheet {
         flat.chunks(cols).map(|c| c.to_vec()).collect()
     }
 
-    /// An optional numeric argument. An *absent* argument falls back to
-    /// `default`, but one that is present and non-numeric is #VALUE! --
-    /// the `.and_then(to_f64).unwrap_or(default)` shape used in places
-    /// conflates the two, so e.g. `LOG(3.14, "E")` quietly computed
-    /// base-10 instead of erroring.
-    /// `#DIV/0!` when either operand of a paired sum contains no numeric
-    /// value at all.
-    ///
-    /// This is *not* the same as "no pair survived exclusion", which is
-    /// simply 0. Real Excel, with a column [53, TRUE] against a row
-    /// [TRUE, -10]: every pair is dropped (each holds a boolean), yet the
-    /// answer is 0 rather than an error, because each range does hold a
-    /// number. Swap in a range that is entirely text or entirely booleans
-    /// and it becomes #DIV/0!.
-    ///
-    /// Fitted against eleven real-Excel cases spanning text, booleans and
-    /// mixtures, at one, two and three elements per range.
     fn paired_sum_has_no_numbers(&self, arg: Option<&ResultData>) -> bool {
         let mut ignored = None;
         let slots = self.positional_numbers(arg, &mut ignored);
         slots.iter().all(|v| v.is_none())
     }
 
-    /// True when an argument is a *single-cell* operand that is empty.
-    ///
-    /// Excel treats that as a missing operand and answers #VALUE!, rather
-    /// than as a one-element array of nothing. The distinction is
-    /// specifically about a single cell: `SUMPRODUCT(<one blank cell>)` is
-    /// #VALUE! while `SUMPRODUCT(<two blank cells>)` is 0, and
-    /// `SUMPRODUCT(-50, <blank>)` is #VALUE! too. Same for MULTINOMIAL and
-    /// the paired statistical functions.
-    ///
-    /// A one-cell range evaluates to a one-element `List` rather than a
-    /// bare scalar, so both spellings have to be unwrapped. Note this is
-    /// about blankness only -- a one-cell operand holding text or a
-    /// boolean behaves differently again.
     fn is_empty_scalar_operand(arg: &ResultData) -> bool {
         let scalar = match arg {
             ResultData::List(items) if items.len() == 1 => &items[0],
@@ -2034,15 +1848,6 @@ impl Sheet {
         matches!(scalar, ResultData::None)
     }
 
-    /// True when the first argument is a boolean and the function is one
-    /// of the few that refuse them.
-    ///
-    /// Excel's numeric coercion is not uniform here. SQRT, FACT, SIGN,
-    /// INT, EXP, ROMAN and most of their neighbours take TRUE as 1
-    /// without complaint, but ERF, ERFC, FACTDOUBLE and SQRTPI all answer
-    /// #VALUE! -- verified one function at a time against real Excel,
-    /// because the split does not follow from anything about the
-    /// functions themselves.
     fn first_arg_is_boolean(args: &[ResultData]) -> bool {
         matches!(args.first(), Some(ResultData::Boolean(_)))
     }
@@ -2263,15 +2068,6 @@ impl Sheet {
         self.to_bool_opt(val).unwrap_or(false)
     }
 
-    /// Strict "is this a genuine number" check for range-value aggregation
-    /// (DCOUNT/DSUM/DAVERAGE/... and friends), as opposed to `to_f64`'s
-    /// scalar-arithmetic coercion (which maps blank -> 0 and booleans ->
-    /// 1/0). Confirmed against real Excel via the differential fuzzer that
-    /// blank and boolean database cells must be excluded here the same
-    /// way SUM/COUNT/AVERAGE ignore them within a range argument -- using
-    /// `to_f64` instead let a blank row zero out DPRODUCT entirely and
-    /// skewed DCOUNT/DSUM/DAVERAGE by counting/summing blanks and
-    /// TRUE/FALSE as 0/1.
     fn range_numeric(val: &ResultData) -> Option<f64> {
         match val {
             ResultData::Integer(i) => Some(*i as f64),
@@ -2280,15 +2076,6 @@ impl Sheet {
         }
     }
 
-    /// Exact-match ("match_type 0" / "range_lookup FALSE") comparison for
-    /// MATCH/VLOOKUP/HLOOKUP/XLOOKUP.
-    ///
-    /// A *blank* lookup value is coerced to 0 (Excel's usual empty-cell
-    /// coercion) and a blank cell in the searched range never matches
-    /// anything. Comparing the two blanks as equal strings instead --
-    /// which is what a plain `to_string()` comparison does, since both
-    /// render as "" -- made `MATCH(A1, A1:A4, 0)` over a blank A1 report
-    /// a hit at position 1 where real Excel reports #N/A.
     fn exact_lookup_matches(lookup: &ResultData, candidate: &ResultData) -> bool {
         if matches!(candidate, ResultData::None) {
             return false;
@@ -2370,11 +2157,6 @@ impl Sheet {
         }
     }
 
-    /// Resolves an argument `Expr` to its raw `(sheet, start_row, start_col,
-    /// end_row, end_col)` range bounds, for functions (like the database
-    /// `D*` family below) that need genuine 2D shape and can't work off the
-    /// pre-flattened `ResultData::List` every other argument already went
-    /// through in `evaluated_args`.
     fn range_bounds(
         expr: &crate::core::parser::Expr,
     ) -> Option<(Option<String>, usize, usize, usize, usize)> {
@@ -2395,12 +2177,6 @@ impl Sheet {
         }
     }
 
-    /// Reads a range's cells into a row-major grid, resolving a whole-column
-    /// range's `end_row` sentinel and cross-sheet references via `context`.
-    /// Materializing into an owned `Vec<Vec<ResultData>>` (rather than
-    /// keeping a live `&Sheet` around) sidesteps the local-vs-remote
-    /// lifetime split for the rest of the database-function logic, and
-    /// database/criteria ranges are small enough that this is cheap.
     fn materialize_range(
         &self,
         sheet_opt: &Option<String>,
@@ -2443,19 +2219,6 @@ impl Sheet {
         Some(grid)
     }
 
-    /// Shared implementation for the 12 database `D*` functions
-    /// (DAVERAGE/DCOUNT/DCOUNTA/DGET/DMAX/DMIN/DPRODUCT/DSTDEV/DSTDEVP/
-    /// DSUM/DVAR/DVARP): each reduces to "match database rows against the
-    /// criteria table, then aggregate one field column of the matches" --
-    /// they differ only in which aggregation runs at the end.
-    ///
-    /// `database`/`criteria` are read from the raw `args` AST nodes (not
-    /// `evaluated_args`) specifically to recover real row/column bounds;
-    /// `field` (name or 1-based index) still comes from `evaluated_args`
-    /// since it's a scalar. Criteria semantics match Excel's: multiple
-    /// criteria *rows* are OR'd together, multiple non-blank cells within
-    /// one criteria row are AND'd, and a blank criteria cell imposes no
-    /// constraint on that field.
     fn evaluate_database_function(
         &self,
         func_name: &str,
@@ -2643,12 +2406,6 @@ impl Sheet {
         ((year, m, d), (hour, minute, second))
     }
 
-    /// Evaluates Excel's LET(name1, value1, [name2, value2, ...],
-    /// calculation). Binds each name/value pair in order -- value2 (and
-    /// later pairs, and the final calculation) can reference name1, per
-    /// Excel's LET semantics -- by recursing one pair at a time so each
-    /// level's scope chain only needs to borrow the *previous* level's
-    /// binding rather than mutate a shared map (see `LetScope`).
     fn evaluate_let(
         &self,
         args: &[crate::core::parser::Expr],
@@ -2690,14 +2447,6 @@ impl Sheet {
         self.evaluate_let(&args[2..], context, row, col, deps, &inner_scope)
     }
 
-    /// Recognizes `expr` as a `LAMBDA(param1, [param2, ...], body)` call
-    /// and, if so, returns its declared parameter names alongside the
-    /// (still-unevaluated) body expression. Used by every function below
-    /// that takes a lambda argument: the lambda is never evaluated as an
-    /// ordinary function call (there's no value a bare LAMBDA could
-    /// produce on its own -- see the `#CALC!` case in `evaluate_function`)
-    /// -- callers instead inspect its raw AST here and invoke the body
-    /// themselves, once per element, via `invoke_lambda`.
     fn extract_lambda(
         expr: &crate::core::parser::Expr,
     ) -> Option<(Vec<&str>, &crate::core::parser::Expr)> {
@@ -2722,11 +2471,6 @@ impl Sheet {
         Some((param_names, body))
     }
 
-    /// Evaluates a lambda's body with each of `params` bound (via
-    /// `LetScope`) to the corresponding entry of `values`, which must be
-    /// the same length. `values` is borrowed rather than consumed so
-    /// callers can reuse per-element storage across many invocations
-    /// (e.g. MAP calling this once per array element).
     #[allow(clippy::too_many_arguments)]
     fn invoke_lambda<'v>(
         &self,
@@ -2752,9 +2496,6 @@ impl Sheet {
         }
     }
 
-    /// Flattens `expr` (evaluated) into a `Vec<ResultData>`, treating a
-    /// scalar as a single-element array -- shared by MAP/REDUCE/SCAN,
-    /// which all iterate an "array" argument that might just be one cell.
     fn eval_as_array(
         &self,
         expr: &crate::core::parser::Expr,
@@ -2772,15 +2513,6 @@ impl Sheet {
         )
     }
 
-    /// `SEQUENCE`/`MUNIT` (unlike every array-*reshaping* function added
-    /// this session) return their 2D result as a genuinely nested
-    /// `List(List(row_values), ...)`, one inner list per row, rather than
-    /// a flat row-major list -- that's the only place in this engine a
-    /// `ResultData::List` still carries real shape. Detect that shape
-    /// here and flatten it so downstream consumers (`array_shape`,
-    /// `INDEX`, reshape functions) don't need to special-case it; a list
-    /// that isn't uniformly nested (the flat convention) passes through
-    /// unchanged, with `None` signaling "no shape recovered here".
     fn flatten_row_major(items: Vec<ResultData>) -> (Vec<ResultData>, Option<usize>) {
         if !items.is_empty() && items.iter().all(|v| matches!(v, ResultData::List(_))) {
             let cols = match &items[0] {
@@ -2800,13 +2532,6 @@ impl Sheet {
         }
     }
 
-    /// Infers `(flat_values, num_cols)` for an array-like argument: real
-    /// column count from a `RangeRef`/`CellRef` AST node when available,
-    /// otherwise treats the flattened result as a single row -- the same
-    /// convention `INDEX`'s 3-arg form already uses (see its `num_cols`
-    /// match on `args[0]`), since a computed/nested array result (e.g. the
-    /// output of another array function) carries no shape of its own in
-    /// this engine's flat-`ResultData::List` representation.
     fn array_shape(
         &self,
         expr: &crate::core::parser::Expr,
@@ -2838,13 +2563,6 @@ impl Sheet {
         Ok((flat, num_cols))
     }
 
-    /// Recovers the column count an array-reshaping function call's result
-    /// would have, purely from its argument expressions -- needed because
-    /// this engine's flat `ResultData::List` carries no shape of its own,
-    /// so nesting one of these calls inside another (e.g.
-    /// `INDEX(EXPAND(A1:B2,3,3,0),3,3)`) requires recovering the 2D shape.
-    /// Returns `None` for anything not in this known set, so callers fall
-    /// back to the single-row assumption.
     #[allow(clippy::too_many_arguments)]
     fn function_call_cols(
         &self,
@@ -2981,9 +2699,6 @@ impl Sheet {
         }
     }
 
-    /// Shared `[start, end)` bound computation for `TAKE`/`DROP`: a
-    /// positive count counts from the start, negative from the end;
-    /// `is_take` selects which side of that split is kept.
     fn drop_take_bounds(total: isize, n: isize, is_take: bool) -> (isize, isize) {
         let n = n.clamp(-total, total);
         if is_take {
@@ -2995,14 +2710,6 @@ impl Sheet {
         }
     }
 
-    /// Shared implementation for MAP/BYROW/BYCOL/REDUCE/SCAN/MAKEARRAY:
-    /// each applies a `LAMBDA` argument to some shape of input (parallel
-    /// arrays, rows, columns, an accumulator, or generated row/col
-    /// indices) and collects the results -- see each branch for the
-    /// specific shape. Dynamic-array results are returned as a flat,
-    /// row-major `ResultData::List`, the same convention `SEQUENCE`/
-    /// `MUNIT`/etc. already use, since this engine doesn't spill formulas
-    /// across cells; callers pull out a single value with `INDEX`.
     #[allow(clippy::too_many_arguments)]
     fn evaluate_lambda_function(
         &self,
@@ -3159,14 +2866,6 @@ impl Sheet {
         }
     }
 
-    /// Minimal A1-notation string parser for `INDIRECT`: `"A1"`,
-    /// `"B2:C5"`, `"Sheet1!A1"`, `"Sheet1!A1:B2"`, with optional `$`
-    /// absolute markers and an optional `'quoted sheet name'!` prefix.
-    /// Deliberately small and local rather than shared with
-    /// `visi/src/utils.rs`'s equivalent parser (`parse_cell_ref`/
-    /// `parse_range_ref`): `visi-core` cannot depend on the `visi` crate
-    /// (the dependency direction is the other way), so this necessarily
-    /// duplicates that logic in miniature.
     fn parse_a1_reference(text: &str) -> Option<(Option<String>, usize, usize, usize, usize)> {
         let text = text.trim();
         let (sheet_part, ref_part) = match text.rfind('!') {
@@ -3206,12 +2905,6 @@ impl Sheet {
         }
     }
 
-    /// Reads a single cell, registering the appropriate local/remote
-    /// dependency -- the same local-vs-remote branch used throughout this
-    /// file (see e.g. `evaluate_ast`'s `Expr::CellRef` arm), factored out
-    /// since `CELL`/`FORMULATEXT`/`ISFORMULA`/`INDIRECT`/`OFFSET` all need
-    /// it for a reference resolved dynamically rather than parsed as an
-    /// AST node.
     fn read_cell_with_deps(
         &self,
         sheet_opt: &Option<String>,
@@ -3239,14 +2932,6 @@ impl Sheet {
         }
     }
 
-    /// Shared implementation for the range/reference-introspection and
-    /// workbook-metadata functions: ROW/ROWS/COLUMN/COLUMNS need the raw
-    /// reference's real bounds (not a flattened `evaluated_args` value);
-    /// AREAS/ISREF are purely syntactic checks on the argument's AST
-    /// shape; FORMULATEXT/ISFORMULA need the cell's raw source text;
-    /// INDIRECT/OFFSET build a reference dynamically instead of relying
-    /// on one already resolved at parse time; SHEET/SHEETS/CELL/INFO
-    /// report workbook/environment metadata.
     #[allow(clippy::too_many_arguments)]
     fn evaluate_range_info_function(
         &self,
@@ -3553,12 +3238,6 @@ impl Sheet {
         }
     }
 
-    /// `GETPIVOTDATA(data_field, pivot_table_ref, [field, item]...)`.
-    /// `pivot_table_ref` must stay an unevaluated cell reference (not a
-    /// flattened value) so its sheet/row/col can be matched against
-    /// `context.pivot_tables`' rendered destination ranges -- the same
-    /// reason `ROW`/`OFFSET`/etc. go through `evaluate_range_info_function`
-    /// instead of the generic eagerly-evaluated-args path below.
     fn evaluate_getpivotdata(
         &self,
         args: &[crate::core::parser::Expr],
@@ -3627,20 +3306,6 @@ impl Sheet {
         }
     }
 
-    /// Shared implementation for the dynamic-array reshaping functions.
-    /// All operate on `array_shape`'s `(flat, num_cols)` view and return a
-    /// flat, row-major `ResultData::List` -- the same convention
-    /// `SEQUENCE`/`MUNIT`/`MAKEARRAY`/etc. already use, since this engine
-    /// doesn't spill formulas across cells (a caller pulls out a single
-    /// value with `INDEX`, or consumes the whole list with e.g. `SUM`).
-    ///
-    /// Known simplifications, each accepted given limited fuzzing time
-    /// against real Excel for this batch: `UNIQUE`'s `by_col` and `SORT`'s
-    /// `by_col` arguments are ignored (both always operate row-wise);
-    /// `SORTBY` only supports a single `by_array`/`sort_order` pair, not
-    /// the documented repeating list; `XMATCH`'s wildcard match mode and
-    /// binary/reverse search modes aren't implemented (falls through to a
-    /// forward linear scan).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_array_reshape_function(
         &self,

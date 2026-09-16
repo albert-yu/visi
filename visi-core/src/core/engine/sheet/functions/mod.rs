@@ -57,12 +57,6 @@ pub(super) fn res_to_rd(res: Result<f64, String>) -> Result<ResultData, EngineEr
     }
 }
 
-/// A NaN can only come from a math function evaluated outside its domain
-/// (ASIN/ACOS of |x|>1, SQRT/LN/LOG10 of a negative, ...), and an infinity
-/// only from one that overflowed (POWER(42, 600), EXP(1000)). Excel has
-/// neither -- it reports #NUM! for both -- so rather than bolting a
-/// domain/overflow guard onto each of those call sites, normalize here at the
-/// single point every function result flows through.
 fn post_process(r: Result<ResultData, EngineError>) -> Result<ResultData, EngineError> {
     match r {
         Ok(ResultData::Float(f)) if !f.is_finite() => Ok(ResultData::Error("#NUM!".to_string())),
@@ -71,20 +65,6 @@ fn post_process(r: Result<ResultData, EngineError>) -> Result<ResultData, Engine
 }
 
 impl Sheet {
-    /// Evaluates a worksheet function from already-built argument
-    /// expressions, outside any cell.
-    ///
-    /// The entry point `Application.WorksheetFunction.X` reaches, so that the
-    /// VBA host bridges onto the *existing* function library rather than
-    /// reimplementing it. Deliberately `pub(crate)` and deliberately not a
-    /// widening of [`Sheet::evaluate_function`]'s visibility: the caller
-    /// supplies arguments and a context and gets a value, with no access to
-    /// the dependency plumbing or the `LET` scope a real cell evaluation
-    /// carries.
-    ///
-    /// Dependencies are discarded because there is no cell to record them
-    /// against -- a macro's call is a one-off read, not an edge in the
-    /// recalculation graph.
     pub(crate) fn call_worksheet_function(
         &self,
         name: &str,

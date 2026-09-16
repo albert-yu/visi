@@ -56,15 +56,10 @@ pub fn nper(rate: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64) -> Option<f64>
     }
 }
 
-/// Newton-Raphson root find, starting from `guess`. Shared by
-/// `rate`/`irr`/`xirr`, which are all "solve this TVM/cashflow equation for
-/// a rate" problems differing only in `f`.
 fn newton_raphson(f: impl Fn(f64) -> f64, guess: f64) -> Option<f64> {
     newton_raphson_bounded(f, guess, None, true)
 }
 
-/// Reverse-engineered Newton-Raphson solver with step halving, step capping,
-/// and configurable domain boundary protection matching Excel.
 fn newton_raphson_bounded(
     f: impl Fn(f64) -> f64,
     guess: f64,
@@ -172,14 +167,6 @@ pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) ->
     if r <= -0.999 { None } else { Some(r) }
 }
 
-/// Interest accrued during `period` on the outstanding balance, walked
-/// forward one period at a time rather than via the closed-form
-/// `pv*(1+rate)^(period-1)` expression: for large (rate, period) that
-/// exponential dwarfs `pv`/`payment` and the two nearly-equal huge
-/// intermediate terms cancel catastrophically in `f64`, even though the
-/// true remaining balance stays a modest, bounded number throughout
-/// amortization (confirmed against real Excel via the differential
-/// fuzzer -- Excel stays accurate at these extremes, so this must too).
 fn ipmt_ordinary(rate: f64, period: f64, pv: f64, payment: f64) -> f64 {
     let mut balance = pv;
     let periods = period.round() as i64;
@@ -255,13 +242,6 @@ fn npv_from_period_zero(rate: f64, values: &[f64]) -> f64 {
         .sum()
 }
 
-/// Retries once from 0.0 if the caller's own guess (0.1 by default,
-/// matching Excel) fails to converge. Verified against the differential
-/// fuzzer to recover real cases without reintroducing the false positives
-/// a broader multi-guess sweep caused (see git history) -- real Excel's
-/// IRR/XIRR occasionally succeed from a guess this doesn't reach, so this
-/// narrow, specifically-verified-safe retry is a deliberate compromise,
-/// not a general "keep trying harder" policy.
 fn newton_raphson_with_zero_fallback(
     f: impl Fn(f64) -> f64,
     guess: f64,
@@ -632,10 +612,6 @@ pub fn ispmt(rate: f64, per: f64, nper: f64, pv: f64) -> f64 {
 
 use crate::core::date_fn;
 
-/// Actual or 30/360 day count between two dates, matching whichever
-/// convention `basis` selects. Actual/actual (`basis == 1`) also resolves
-/// to a plain actual-day count here -- the "actual" divisor for annualizing
-/// it is handled separately by `coupdays`/`basis_year_days`.
 fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     match basis as i64 {
         0 => date_fn::days_30_360_nasd(start, end),
@@ -644,16 +620,6 @@ fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     }
 }
 
-/// `basis_days_between`, but for `PRICEMAT`/`YIELDMAT`'s issue/settlement/
-/// maturity legs, which measured out to a different basis-0 rule than
-/// every other caller of `basis_days_between` (see
-/// `date_fn::days_30_360_bond_ex`'s doc comment) -- each end's
-/// February-month-end bump applies independently rather than only when
-/// both ends qualify, except that a settlement date is never bumped this
-/// way, only issue and maturity are. `settlement_is_start`/
-/// `settlement_is_end` say which argument (if either) plays that role;
-/// every other basis behaves exactly like `basis_days_between`, which has
-/// no such asymmetry.
 fn basis_days_between_pricemat_leg(
     start: f64,
     end: f64,
@@ -667,23 +633,6 @@ fn basis_days_between_pricemat_leg(
     }
 }
 
-/// Year length used to annualize a discount/interest rate. For basis 1
-/// (actual/actual), confirmed against real Excel via the differential
-/// fuzzer that this was falling through to the 360 default (basis 1 isn't
-/// 30/360), and that for a `start`/`end` span of a year or less it comes
-/// down to whether `start`'s calendar year is a leap year -- for spans
-/// longer than a year (unusual for these short-term-instrument functions,
-/// but reachable via e.g. `PRICEMAT`/`YIELDMAT`'s issue-to-maturity gap)
-/// real Excel's exact algorithm couldn't be fully pinned down from a
-/// handful of probes, so this falls back to the average Julian year
-/// length, which matched every multi-year case found so far.
-/// Fraction of a year `AMORLINC`/`AMORDEGRC` prorate their first
-/// (partial) depreciation period by. Confirmed against real Excel via the
-/// differential fuzzer that, on basis 1, this is *not* the standalone
-/// `YEARFRAC` function's actual/actual convention (which averages 365/366
-/// across every calendar year a span touches) -- it's specifically
-/// `date_purchased`'s own calendar year, matching the same single-year
-/// leap check `PRICEMAT`/`YIELDMAT` use for their basis-1 year length.
 fn amort_first_period_frac(date_purchased: f64, first_period: f64, basis: f64) -> f64 {
     let diff = basis_days_between(date_purchased, first_period, basis);
     let year = basis_year_days(basis, date_purchased, date_purchased);
@@ -706,25 +655,6 @@ fn round_half_away_from_zero(x: f64) -> f64 {
     }
 }
 
-/// The regular coupon date on or before `settlement` -- found by walking
-/// backward from `maturity` in `12/frequency`-month steps, since Excel
-/// anchors the whole quasi-coupon schedule at maturity rather than at
-/// issue.
-/// Steps `k` whole periods of `months_per_period` months from `anchor`,
-/// recomputing directly from `anchor` every time rather than by chaining
-/// `EDATE` calls. Confirmed as a real bug via the differential fuzzer:
-/// chaining lets a single short-month clamp (e.g. day 31 clamped to day
-/// 30 in April) permanently overwrite the day-of-month for every later
-/// step, whereas Excel's real coupon schedule re-derives each quasi-
-/// coupon date from the anchor, so a later 31-day month correctly gets
-/// its 31st back.
-///
-/// When the anchor is the *last day of its month* the schedule is an
-/// end-of-month one, and every date on it is the last day of its own
-/// month rather than the anchor's day number. Excel does this: stepping
-/// back a year from a 28 Feb 2039 maturity lands on 29 Feb 2024, not
-/// 28 Feb 2024 -- confirmed directly (COUPNCD there is 2024-02-29, and at
-/// semi-annual frequency COUPPCD is 2023-08-31, i.e. the 31st).
 fn step_months(anchor: f64, months_per_period: f64, k: f64) -> f64 {
     let stepped = date_fn::edate(anchor, months_per_period * k).unwrap_or(anchor);
     let (ay, am, ad) = date_fn::serial_to_ymd(anchor);
@@ -735,18 +665,6 @@ fn step_months(anchor: f64, months_per_period: f64, k: f64) -> f64 {
     date_fn::ymd_to_serial(sy, sm, date_fn::days_in_month(sy, sm))
 }
 
-/// Number of whole periods back from `maturity` needed to reach (or pass)
-/// `settlement` -- the shared basis for `COUPPCD`/`COUPNCD`/`COUPNUM`, all
-/// derived from the *same* anchor-relative index so they stay consistent
-/// with each other regardless of any day-of-month clamping along the way.
-///
-/// The comparison is deliberately non-strict. A settlement that really does
-/// land on a coupon date is that period's start, so COUPPCD is the
-/// settlement date and COUPNCD is one period later. (The case that looks
-/// like an exception -- settling 28 Feb 2024 against a 28 Feb 2039 annual
-/// bond, where Excel reports COUPPCD 2023-02-28 -- is not one: on an
-/// end-of-month schedule the 2024 coupon falls on the 29th, so the
-/// settlement date simply isn't a coupon date at all. See step_months.)
 fn coupon_period_index(settlement: f64, maturity: f64, frequency: f64) -> f64 {
     let months = 12.0 / frequency;
     let mut k = 0.0;
@@ -810,10 +728,6 @@ pub fn coupdaysnc(settlement: f64, maturity: f64, frequency: f64, basis: f64) ->
     coupon_end_days(settlement, ncd, basis)
 }
 
-/// Shared by `PRICE`/`YIELD`: present value (per 100 face) of a regular
-/// bond's remaining cashflows at a given yield. Excel switches to simple
-/// (linear) discounting once fewer than one coupon period remains (`n<=1`)
-/// rather than compounding fractional-period discount factors.
 fn bond_price_from_yield(
     settlement: f64,
     maturity: f64,
@@ -871,9 +785,6 @@ pub fn yield_(
     bisection(f, -0.99, 10.0)
 }
 
-/// Generic bisection root-finder used by the yield-solving bond functions,
-/// which (unlike `RATE`/`IRR`) are monotonic in the unknown but don't have
-/// a cheap closed-form derivative worth hand-deriving.
 fn bisection(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> Option<f64> {
     let mut f_lo = f(lo);
     let f_hi = f(hi);
@@ -1057,10 +968,6 @@ pub fn accrintm(
     Ok(par * rate * frac)
 }
 
-/// Builds the ascending quasi-coupon-date schedule spanning `[lo, hi]`,
-/// anchored at `anchor` (typically `first_interest`) and stepping in
-/// `12/frequency`-month increments -- shared by `ACCRINT`'s period-by-period
-/// accrual walk.
 fn quasi_coupon_schedule(anchor: f64, lo: f64, hi: f64, frequency: f64) -> Vec<f64> {
     let months = 12.0 / frequency;
     let mut dates = vec![anchor];
@@ -1350,16 +1257,6 @@ pub fn oddfyield(
     bisection(f, -0.99, 10.0)
 }
 
-/// E, the length of the regular coupon period `ODDLPRICE`/`ODDLYIELD`
-/// treat the odd last period as a fraction of. Confirmed against real
-/// Excel via the differential fuzzer, across bases 0-4 and multiple
-/// frequencies, to be the *actual* (or 30/360, per basis) length of the
-/// regular period immediately *following* `last_interest` -- not the
-/// period immediately preceding `maturity`.
-/// Day count for an ODDLPRICE/ODDLYIELD span whose end date is a **coupon
-/// date** rather than the settlement date. On basis 0 those spans pull a
-/// month-end end date back to the 30th; every other basis just uses its
-/// ordinary count. See `date_fn::days_30_360_coupon_end`.
 fn coupon_end_days(start: f64, end: f64, basis: f64) -> f64 {
     if basis as i64 == 0 {
         date_fn::days_30_360_coupon_end(start, end)
@@ -1422,17 +1319,6 @@ pub fn oddlyield(
     (numerator / denominator - 1.0) * (frequency * e / dsc)
 }
 
-/// Fixed euro-conversion rate (1 EUR = N units of `code`), permanently
-/// fixed by EU regulation on each currency's euro-adoption date -- these
-/// are legal constants, not derived values that could drift.
-///
-/// NOTE: unlike every other function in this file, this couldn't be
-/// validated against real Excel via the differential fuzzer -- `EUROCONVERT`
-/// requires the "Euro Currency Tools" add-in, which isn't loaded in this
-/// environment's Excel installation (confirmed: it returns `#NAME?` here
-/// regardless of arguments). The rates and rounding rule below follow
-/// Microsoft's published documentation and are tested against Microsoft's
-/// own documented examples instead.
 fn euro_rate(code: &str) -> Option<f64> {
     match code.to_uppercase().as_str() {
         "EUR" => Some(1.0),

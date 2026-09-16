@@ -17,14 +17,6 @@ pub const MAX_ROWS: u32 = 1_048_576;
 /// Columns in an Excel worksheet (`A` through `XFD`).
 pub const MAX_COLS: u32 = 16_384;
 
-/// How many cells a macro may cause to be *allocated*.
-///
-/// Excel's grid is sparse; `visi`'s [`Sheet`] is a dense `Vec` per column, so
-/// `ws.Range("XFD1048576").Value = 1` would ask for 17 billion cells. Excel
-/// would shrug; this would exhaust memory and take the process down, which is
-/// not an outcome a guard may have. Error 7 ("Out of memory") is what VBA
-/// itself reports when an allocation fails, so a macro that trips this sees a
-/// number it could plausibly have seen from Excel.
 const MAX_ALLOCATED_CELLS: u64 = 4_000_000;
 
 /// A reference to a host object, or `Nothing`.
@@ -230,7 +222,6 @@ pub fn is_host_name(name: &str) -> bool {
     )
 }
 
-/// Error 438, naming the construct that is out of scope.
 fn unsupported(what: &str) -> VbaError {
     VbaError::new(
         438,
@@ -238,22 +229,12 @@ fn unsupported(what: &str) -> VbaError {
     )
 }
 
-/// What `PivotField.CurrentPage` reads as when the field is unfiltered --
-/// and, measured, also when *several* items are selected. It only ever
-/// reflects a single selection.
 const ALL_PAGES: &str = "(All)";
 
-/// Error 1004 -- what Excel reports for a bad address, an out-of-sheet
-/// `Offset`, and a `WorksheetFunction` call that fails. All measured.
 fn app_defined(message: impl Into<String>) -> VbaError {
     VbaError::new(1004, message.into())
 }
 
-/// Reaching a member through a `Range` whose cells were all deleted.
-///
-/// The message is Excel's, verbatim. The *number* is not: see
-/// [`RangeState::Dead`] for why Excel's is not reproducible and why 1004 is
-/// what visi raises instead.
 fn dead_range(member: &str) -> VbaError {
     VbaError::new(1004, format!("Method '{member}' of object 'Range' failed"))
 }
@@ -378,13 +359,6 @@ impl<'w> Host<'w> {
         ObjRef::Range(self.next_token)
     }
 
-    /// Where the range behind a handle currently points.
-    ///
-    /// `name` is the member being reached through it, purely so a dead range
-    /// reports the same `Method '<name>' of object 'Range' failed` Excel
-    /// does. An unknown handle cannot happen -- handles are only minted by
-    /// [`Host::new_range`] and never removed -- but is reported rather than
-    /// panicking, since a `Variant` holding one crosses the interpreter.
     fn range(&self, token: u64, name: &str) -> VResult<RangeRef> {
         match self.ranges.get(&token).copied() {
             Some(RangeState::Live(r)) => Ok(r),
@@ -750,10 +724,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// `Worksheets(x)`, where `x` is a 1-based index or a name.
-    ///
-    /// Measured: both a missing name and an out-of-range index are error 9,
-    /// and the name match is case-insensitive.
     fn worksheet_by_key(&mut self, key: &Variant) -> VResult<ObjRef> {
         if let Variant::Str(name) = key {
             return self
@@ -809,7 +779,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// `Range("A1")`, `Range("A1:B2")` and `Range(cell1, cell2)`.
     fn resolve_range_args(&mut self, sheet_id: u64, args: &[Variant]) -> VResult<ObjRef> {
         let first = args.first().ok_or_else(VbaError::invalid_call)?;
         if args.len() >= 2 {
@@ -834,12 +803,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// One corner of a two-argument `Range(cell1, cell2)`, as `(row, col)`.
-    ///
-    /// Takes no sheet: an address is a sheet-free coordinate, and a `Range`
-    /// passed as a corner contributes only its top-left. `Range(a, b)` on one
-    /// worksheet with a corner from *another* therefore lands on the first,
-    /// which is what Excel does too.
     fn corner(&self, v: &Variant) -> VResult<(u32, u32)> {
         match v {
             Variant::Object(ObjRef::Range(token)) => {
@@ -856,9 +819,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// Takes the handle rather than the rectangle so that a dead range names
-    /// the member the macro actually reached for, exactly as Excel's
-    /// `Method '<name>' of object 'Range' failed` does.
     fn range_member(&mut self, token: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
         let r = self.range(token, name)?;
         match name.to_ascii_lowercase().as_str() {
@@ -966,14 +926,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// The sheet index and a snapshot of the table with this id.
-    ///
-    /// Returns a copy for the same reason every host object is a value: the
-    /// caller needs the workbook mutably a moment later. Tables are small
-    /// (an extent plus its column names), and this is not a hot path.
-    ///
-    /// A table that no longer exists reports error 9, the same number every
-    /// other "no such table" case does -- measured for the lookup cases.
     fn table(&self, id: u64) -> VResult<(usize, ExcelTable)> {
         self.wb
             .sheets
@@ -989,7 +941,6 @@ impl<'w> Host<'w> {
             .ok_or_else(VbaError::subscript)
     }
 
-    /// The id of the table covering a cell, or `None` if it is in no table.
     fn table_at(&self, sheet_id: u64, row: u32, col: u32) -> Option<u64> {
         let (row, col) = (row as usize, col as usize);
         self.wb
@@ -1004,10 +955,6 @@ impl<'w> Host<'w> {
             .map(|t| t.id)
     }
 
-    /// `ListObjects(x)`, where `x` is a 1-based index or a name.
-    ///
-    /// Measured: a missing name and an out-of-range index are both error 9,
-    /// and the name match is case-insensitive.
     fn table_by_key(&mut self, sheet_id: u64, key: &Variant) -> VResult<ObjRef> {
         let sheet = self.sheet(sheet_id)?;
         let table = match key {
@@ -1042,10 +989,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// A `Range` over a table sub-rectangle, or `Nothing` when the part does
-    /// not exist -- which is measured behaviour for all three of
-    /// `HeaderRowRange` on a headerless table, `TotalsRowRange` without a
-    /// totals row, and `DataBodyRange` on a table with zero data rows.
     fn table_part(&mut self, t: &ExcelTable, rows: Option<(usize, usize)>) -> Variant {
         match rows {
             Some((first, last)) if first <= last => Variant::Object(self.new_range(
@@ -1198,13 +1141,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// `ListRows.Add([Position])`, which appends by default.
-    ///
-    /// Measured: the new row is blank, the table grows by one row, and the
-    /// returned object is a `ListRow` pointing at it. A table sitting on its
-    /// insert-row placeholder already has the row reserved, so that case only
-    /// clears the flag -- which is why `.Add` on an emptied table leaves the
-    /// extent at `A1:C2` rather than growing it to `A1:C3`.
     fn list_rows_add(&mut self, id: u64, args: &[Variant]) -> VResult<Variant> {
         let (sheet_idx, t) = self.table(id)?;
         let position = match args.first().filter(|v| !v.is_empty()) {
@@ -1238,13 +1174,6 @@ impl<'w> Host<'w> {
         Ok(Variant::Object(ObjRef::ListRow(id, position as u32)))
     }
 
-    /// Sets a table's bottom edge to `old_end_row + delta`, or marks it as
-    /// sitting on its insert row when that would leave it with no data.
-    ///
-    /// Assigns absolutely rather than adding, because
-    /// `WorkbookManager::apply_grid_edit` may already have grown the extent:
-    /// an insert *inside* the table moves its bottom edge, an insert just
-    /// past it does not, and the caller should not have to know which.
     fn resize_table_rows(&mut self, id: u64, old_end_row: usize, delta: isize) -> VResult<()> {
         let (sheet_idx, _) = self.table(id)?;
         let Some(table) = self.wb.sheets[sheet_idx]
@@ -1262,8 +1191,6 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
-    /// Whether a pivot field actually has an item with this value, matched
-    /// the way the pivot engine merges them (case-insensitively).
     fn pivot_field_has_item(&self, p: &PivotTable, column: &str, wanted: &str) -> VResult<bool> {
         let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
         let (src, names, cols, rows) =
@@ -1275,7 +1202,6 @@ impl<'w> Host<'w> {
         }))
     }
 
-    /// A snapshot of the pivot with this id, and its index.
     fn pivot(&self, id: u64) -> VResult<(usize, PivotTable)> {
         self.wb
             .pivot_tables
@@ -1285,8 +1211,6 @@ impl<'w> Host<'w> {
             .ok_or_else(|| app_defined("The pivot table no longer exists"))
     }
 
-    /// The source column names of a pivot, which is what `PivotFields`
-    /// enumerates -- one entry per source column, whatever area it occupies.
     fn pivot_source_columns(&self, pivot: &PivotTable) -> VResult<Vec<String>> {
         let sheets: Vec<&Sheet> = self.wb.sheets.iter().collect();
         crate::core::pivot::resolve_source(&sheets, &pivot.source)
@@ -1377,11 +1301,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// The pivot's rendered bottom-right corner.
-    ///
-    /// Prefers the extent the last refresh recorded, and computes one
-    /// otherwise so that reading a range is a read -- refreshing here would
-    /// make a property access mutate the workbook.
     fn pivot_extent(&self, p: &PivotTable) -> VResult<(usize, usize)> {
         if let (Some(r), Some(c)) = (p.last_output_end_row, p.last_output_end_col) {
             return Ok((r, c));
@@ -1464,14 +1383,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// A style attribute read over a range, or `Null` where the cells
-    /// disagree.
-    ///
-    /// Measured, and the asymmetry is Excel's: `Font.Bold`, `Font.Size`,
-    /// `Font.Name`, `NumberFormat` and `Interior.ColorIndex` all report
-    /// `Null` over a range whose cells differ, but `Interior.Color` reports
-    /// **0**. Callers pass `mixed` for that one case rather than it being
-    /// inferred, because 0 is also a legitimate uniform value (black).
     fn style_fold<T: PartialEq>(
         &mut self,
         r: RangeRef,
@@ -1494,7 +1405,6 @@ impl<'w> Host<'w> {
         Ok(seen.map(wrap).unwrap_or(Variant::Empty))
     }
 
-    /// Applies a style change to every cell of a range.
     fn style_write(&mut self, r: RangeRef, edit: impl Fn(&mut CellStyle)) -> VResult<()> {
         if r.count() > MAX_ALLOCATED_CELLS {
             return Err(VbaError::new(7, "Out of memory: range too large to style"));
@@ -1581,8 +1491,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// Writing `Interior.X` / `Font.X`, which is where the BGR conversion
-    /// actually happens.
     fn style_set(&mut self, obj: &ObjRef, name: &str, value: &Variant) -> VResult<()> {
         let (token, on_font) = match obj {
             ObjRef::Interior(t) => (*t, false),
@@ -1652,13 +1560,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// `Rows(n).Insert` / `.Delete` and the column equivalents.
-    ///
-    /// Only a whole-row or whole-column band is accepted. Excel *does* accept
-    /// a partial range and picks the shift direction from its shape -- and
-    /// measured, `Range("A2:A3").Insert` shifts **right**, not down, which is
-    /// the opposite of what the obvious reading suggests. Guessing at that
-    /// silently moves a macro's data sideways, so it is refused instead.
     fn structural_edit(&mut self, r: RangeRef, insert: bool, member: &str) -> VResult<()> {
         let (axis, at, count) = if r.width == MAX_COLS {
             (Axis::Row, r.row, r.height)
@@ -1723,13 +1624,6 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
-    /// Moves every live `Range` this run has handed out.
-    ///
-    /// This is what makes a `Range` track the edit the way Excel's does, and
-    /// it deliberately reuses [`shift_span`] rather than reimplementing the
-    /// geometry: `fuzz/vba_range_tracking_probe.py` found Excel's rules for a
-    /// `Range` object to be the same ones, case for case, that it applies to
-    /// a formula's range reference.
     fn shift_ranges(&mut self, edit: &GridEdit) {
         for state in self.ranges.values_mut() {
             let RangeState::Live(r) = state else {
@@ -1769,10 +1663,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// `range(r, c)`, 1-based and relative to the range's own top-left.
-    ///
-    /// Excel lets this run outside the range -- `ws.Cells(2, 3)` works
-    /// because `ws.Cells` starts at `A1` -- so only the sheet bounds apply.
     fn range_index(&mut self, r: RangeRef, args: &[Variant]) -> VResult<Variant> {
         let row = int_arg(args, 0)?;
         let col = if args.len() > 1 { int_arg(args, 1)? } else { 1 };
@@ -1789,11 +1679,6 @@ impl<'w> Host<'w> {
         ))
     }
 
-    /// `.Value` / `.Value2`.
-    ///
-    /// A single cell reads as a scalar; anything larger reads as a 2-D array
-    /// indexed `(row, column)` from 1, which is what makes
-    /// `v = ws.Range("A1:B2").Value` legal and `CStr(v)` error 13.
     fn read_range(&mut self, r: RangeRef, value2: bool) -> VResult<Variant> {
         self.recalculate();
         if r.is_single() {
@@ -1817,8 +1702,6 @@ impl<'w> Host<'w> {
         })))
     }
 
-    /// `.Formula`, which is the cell's source text -- `"=A1*2"` for a
-    /// formula, `"hi"` for text, `""` for an empty cell. All measured.
     fn read_formula(&mut self, r: RangeRef) -> VResult<Variant> {
         self.recalculate();
         let sheet = self.sheet(r.sheet_id)?;
@@ -1841,10 +1724,6 @@ impl<'w> Host<'w> {
         })))
     }
 
-    /// Writes one value across every cell of a range.
-    ///
-    /// Measured: assigning to a multi-cell range fills all of it, and
-    /// assigning an *array* to a single cell writes only its first element.
     fn write_range(&mut self, r: RangeRef, value: &Variant) -> VResult<()> {
         let value = match value {
             Variant::Object(o) => {
@@ -1902,8 +1781,6 @@ impl<'w> Host<'w> {
         Ok(())
     }
 
-    /// `Application.<name>`, which is either an object or a non-raising
-    /// worksheet function.
     fn application_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
         if name.eq_ignore_ascii_case("worksheetfunction") {
             return Ok(Variant::Object(ObjRef::WorksheetFunction));
@@ -1914,13 +1791,6 @@ impl<'w> Host<'w> {
         self.worksheet_function(name, args, false)
     }
 
-    /// Calls an Excel worksheet function through the engine's own
-    /// implementation.
-    ///
-    /// `raises` is the whole difference between the two call paths:
-    /// `WorksheetFunction.VLookup` failing is a trappable error 1004, while
-    /// `Application.VLookup` failing returns an error `Variant` that
-    /// `IsError` detects. Both measured.
     fn worksheet_function(
         &mut self,
         name: &str,
@@ -1955,12 +1825,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// One VBA argument as the formula AST the engine evaluates.
-    ///
-    /// A `Range` becomes a real range reference so the function sees cells --
-    /// which is what makes `Sum` skip the text and booleans inside one, while
-    /// `Sum("1", 2)` coerces the string. Both measured, and both fall out of
-    /// reusing the formula path rather than being coded twice.
     fn arg_expr(&mut self, v: &Variant) -> VResult<FExpr> {
         Ok(match v {
             Variant::Object(ObjRef::Range(token)) => {
@@ -1995,7 +1859,6 @@ impl<'w> Host<'w> {
     }
 }
 
-/// A scalar VBA value as a formula literal.
 fn scalar_expr(v: &Variant) -> VResult<FExpr> {
     Ok(match v {
         Variant::Boolean(b) => FExpr::Boolean(*b),
@@ -2005,7 +1868,6 @@ fn scalar_expr(v: &Variant) -> VResult<FExpr> {
     })
 }
 
-/// One argument as a whole number, for `Offset`/`Resize`/`Cells`.
 fn int_arg(args: &[Variant], i: usize) -> VResult<i64> {
     let v = args.get(i).cloned().unwrap_or(Variant::Empty);
     let f = v.to_f64()?;
@@ -2015,17 +1877,11 @@ fn int_arg(args: &[Variant], i: usize) -> VResult<i64> {
     Ok(crate::core::vba::value::bankers_round(f) as i64)
 }
 
-/// A colour or palette index written to a style property.
-///
-/// Excel's colour properties are typed `Long`, so a fractional value rounds
-/// rather than erroring; `int_arg`'s banker's rounding is the conversion the
-/// rest of the interpreter uses.
 fn long_arg(v: &Variant) -> VResult<i32> {
     let n = int_arg(std::slice::from_ref(v), 0)?;
     i32::try_from(n).map_err(|_| VbaError::overflow())
 }
 
-/// A `Resize` dimension, which Excel rejects at zero or below.
 fn positive_dim(v: &Variant) -> VResult<u32> {
     let f = crate::core::vba::value::bankers_round(v.to_f64()?);
     if f < 1.0 || f > f64::from(MAX_ROWS) {
@@ -2034,16 +1890,6 @@ fn positive_dim(v: &Variant) -> VResult<u32> {
     Ok(f as u32)
 }
 
-/// `$A$1` / `$A$1:$B$2`, and the whole-row form Excel uses for a range that
-/// spans every column (`ws.Cells.Address` is `$1:$1048576`, measured).
-/// The `(start, count)` a `Rows(...)` / `Columns(...)` argument selects,
-/// 0-based.
-///
-/// Accepts the three spellings Excel does: nothing at all (the whole axis),
-/// a 1-based number, and a string that is either one index or an `a:b` band
-/// -- `ws.Columns("B")` and `ws.Rows("5:7")` both being ordinary VBA.
-/// `parse_one` is what turns one side of that string into a 0-based index,
-/// which is where rows and columns differ (`"5"` versus `"B"`).
 fn band_args(
     args: &[Variant],
     axis_len: u32,
@@ -2099,8 +1945,6 @@ fn format_address(r: &RangeRef, row_abs: bool, col_abs: bool) -> String {
     format!("{start}:{cd}{}{rd}{r2}", col_idx_to_letters(c2 as usize))
 }
 
-/// `"A1"`, `"A1:B2"`, `"A:B"`, `"3:5"` -> `(row, col, height, width)`, all
-/// 0-based. `None` for anything else, which the caller turns into 1004.
 fn parse_address(text: &str) -> Option<(u32, u32, u32, u32)> {
     let text = text.trim();
     if text.is_empty() {
@@ -2168,15 +2012,6 @@ fn parse_row(s: &str) -> Option<u32> {
     Some(row - 1)
 }
 
-/// One cell as `.Value` or `.Value2` reports it.
-///
-/// Two measured rules do all the work here. A numeric cell always reads back
-/// as a `Double`, never an `Integer` -- `TypeName(ws.Range("A1").Value)` is
-/// `Double` for a cell holding `1`. And a cell whose style carries a date
-/// number format reads back as a `Date` through `.Value` and a `Double`
-/// through `.Value2`, which is the whole reason [`Variant::Date`] exists:
-/// the engine stores only the serial (see `core/date.rs`), and the notation
-/// lives on the cell.
 fn cell_value(sheet: &Sheet, row: u32, col: u32, value2: bool) -> Variant {
     let cell = CellRef::new(row as usize, col as usize);
     let is_date = !value2
@@ -2197,14 +2032,6 @@ fn cell_value(sheet: &Sheet, row: u32, col: u32, value2: bool) -> Variant {
     }
 }
 
-/// One cell as `.Formula` reports it: its source text.
-///
-/// Measured: a formula cell gives `"=A1*2"`, a text cell gives `"hi"` and an
-/// empty cell gives `""`. The one adjustment is the quoting -- `visi` stores
-/// a text cell whose content would otherwise re-parse as a number, a boolean
-/// or a date in a quoted literal (`xlsx::text_cell_src`), and that quoting is
-/// storage, not something a user ever typed. Excel's `.Formula` shows what
-/// was typed, so it comes back off.
 fn cell_formula(sheet: &Sheet, row: u32, col: u32) -> String {
     let cell = CellRef::new(row as usize, col as usize);
     let src = sheet.get_src_str(&cell);
@@ -2217,13 +2044,6 @@ fn cell_formula(sheet: &Sheet, row: u32, col: u32) -> String {
     src
 }
 
-/// A `Variant` as the cell source text that reproduces it.
-///
-/// A string is written *verbatim*, which is not laziness: measured,
-/// `.Value = "=G1*3"` really does make the cell a formula, and
-/// `.Value = "6/22/2026"` really does make it a date. `Sheet::commit` already
-/// parses a literal exactly the way Excel parses typed-in text, so handing it
-/// the raw string reproduces Excel's behaviour instead of re-deriving it.
 fn cell_src(v: &Variant) -> VResult<String> {
     Ok(match v {
         Variant::Empty | Variant::Null => String::new(),
@@ -2244,11 +2064,6 @@ fn cell_src(v: &Variant) -> VResult<String> {
     })
 }
 
-/// An engine result as a `Variant`.
-///
-/// No date handling: a worksheet function's result carries no cell and so no
-/// number format, and `WorksheetFunction.Sum` over date cells is measured to
-/// return a plain `Double` serial.
 fn result_to_variant(v: &ResultData) -> Variant {
     match v {
         ResultData::None => Variant::Empty,
@@ -2261,8 +2076,6 @@ fn result_to_variant(v: &ResultData) -> Variant {
     }
 }
 
-/// Excel's error strings and their `CVErr` numbers, which are what `CLng` on
-/// an error `Variant` gives back (measured: 2042 for a failed lookup).
 const ERROR_CODES: &[(&str, i32)] = &[
     ("#NULL!", 2000),
     ("#DIV/0!", 2007),
@@ -2294,12 +2107,6 @@ mod tests {
     use crate::core::engine::{Sheet, SheetInit};
     use crate::core::workbook::WorkbookManager;
 
-    /// The same grid `fuzz/vba_host_probe.py` builds, so an expectation here
-    /// can be read straight off a probe run against real Excel.
-    ///
-    /// `A1:A3` = 1/2/3, `B1:B3` = 10/20/30, `C1` a date-formatted serial,
-    /// `C2` a fractional one, `D1` a formula, `D2` text, `E1` a boolean,
-    /// `E2` empty, `F1` an error.
     fn fixture() -> WorkbookManager {
         let mut wb = WorkbookManager {
             sheets: vec![
@@ -2339,9 +2146,6 @@ mod tests {
         wb
     }
 
-    /// Runs one expression as a macro over the fixture and reports
-    /// `TypeName|CStr`, or `ERR|number` -- the exact shape
-    /// `fuzz/vba_host_probe.py` prints from Excel.
     fn probe(setup_and_expr: &str) -> String {
         let (setup, expr) = match setup_and_expr.rsplit_once("::") {
             Some((s, e)) => (s.replace("\\n", "\n    "), e.to_string()),
@@ -2850,9 +2654,6 @@ mod tests {
         }
     }
 
-    /// 1..10 down column A, 101..110 down B, 201..210 down C, plus an empty
-    /// `Sheet2` -- distinct per row so a tracked range can be asked what it
-    /// now reads, not only where it now points.
     fn tracking_fixture() -> WorkbookManager {
         let mut wb = WorkbookManager {
             sheets: vec![

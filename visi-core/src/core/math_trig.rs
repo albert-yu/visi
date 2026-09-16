@@ -1,13 +1,3 @@
-/// Excel's SIN/COS/TAN (and so anything built on them: COT, CSC, SEC)
-/// refuse an argument at or beyond `2^27` radians with `#NUM!`, rather
-/// than returning whatever a library sin/cos happens to reduce it to --
-/// past that magnitude a double's ~15-16 significant digits can no
-/// longer resolve which multiple of 2*pi the value is near, so any
-/// answer would be numerically meaningless. Measured directly (win32com,
-/// real Windows Excel): `SIN(134217727)` (2^27 - 1) is a real number,
-/// `SIN(134217728)` (2^27) is `#NUM!`, and COS/TAN share the identical
-/// boundary. fuzz/fuzz_excel.py seed 676008 hit this via
-/// `CSC(F4^47)` where `F4^47` is on the order of 1e101.
 pub(crate) const TRIG_ARG_LIMIT: f64 = 134_217_728.0;
 
 pub(crate) fn check_trig_domain(x: f64) -> Result<(), String> {

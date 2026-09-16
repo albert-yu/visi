@@ -7,13 +7,9 @@ use super::host::{Host, ObjRef};
 use super::value::{self, ArithMode, Operand, VResult, Variant, VbaError};
 use super::{VbaModule, VbaModuleKind, VbaProject};
 
-/// How many statements a single `run` may execute before giving up.
 const DEFAULT_MAX_OPS: u64 = 5_000_000;
-/// How deep procedure calls may nest.
 const DEFAULT_MAX_DEPTH: usize = 64;
 
-/// Error 438 — the "object doesn't support this property or method" that
-/// everything outside the implemented scope reports.
 fn out_of_scope(what: &str) -> VbaError {
     VbaError::new(
         438,
@@ -21,7 +17,6 @@ fn out_of_scope(what: &str) -> VbaError {
     )
 }
 
-/// The same refusal, for something that needs a workbook when none is attached.
 fn needs_workbook(what: &str) -> VbaError {
     VbaError::new(
         438,
@@ -31,7 +26,6 @@ fn needs_workbook(what: &str) -> VbaError {
     )
 }
 
-/// Non-local control flow out of a statement.
 #[derive(Debug, Clone, PartialEq)]
 enum Flow {
     /// Fall through to the next statement.
@@ -47,7 +41,6 @@ enum Flow {
     Goto(String),
 }
 
-/// What `On Error` is currently set to.
 #[derive(Debug, Clone, PartialEq)]
 enum Handler {
     /// No handler: an error propagates out of the procedure.
@@ -264,7 +257,6 @@ pub struct UserClassInstance {
     pub terminating: bool,
 }
 
-/// One procedure activation.
 struct Frame {
     locals: HashMap<String, Variant>,
     auto_new_locals: HashMap<String, String>,
@@ -293,7 +285,6 @@ impl Frame {
     }
 }
 
-/// The state `Err` exposes.
 #[derive(Debug, Clone, Default)]
 struct ErrState {
     number: i32,
@@ -1125,7 +1116,6 @@ impl<'w> Interpreter<'w> {
         Ok(ret)
     }
 
-    /// Runs a procedure body, resolving `GoTo` against its top-level labels.
     fn exec_procedure_body(&mut self, body: &[Stmt], frame: &mut Frame) -> VResult<()> {
         let mut pc = 0usize;
         while pc < body.len() {
@@ -2591,10 +2581,6 @@ impl<'w> Interpreter<'w> {
     }
 }
 
-/// VBA reports an undefined label and a bad assignment target as compile
-/// errors, which have no `Err.Number`. 13 is the closest runtime analogue and
-/// keeps the differential comparison meaningful rather than inventing a
-/// number Excel would never produce.
 fn erl_label_error() -> i32 {
     13
 }
@@ -2628,12 +2614,6 @@ fn compare_with(op: BinOp, ord: std::cmp::Ordering) -> bool {
     }
 }
 
-/// Whether an expression is a compile-time constant.
-///
-/// This is *constness*, not static typing, and the two come apart in both
-/// directions -- see [`is_statically_typed`], which is what decides whether
-/// arithmetic overflows or promotes (§28). `CInt(32767)` is statically typed
-/// and not constant; `(Empty + 1)` is constant and not statically typed.
 fn is_constant(e: &Expr) -> bool {
     match e {
         Expr::Literal(Literal::Null) => false,
@@ -2645,34 +2625,10 @@ fn is_constant(e: &Expr) -> bool {
     }
 }
 
-/// Intrinsics whose return type is declared numeric rather than `Variant`.
-///
-/// This matters for comparison, not for arithmetic. `value::compare_ctx`'s
-/// "constant" case is really "the compiler knows this side's numeric type
-/// statically", and a call to one of these qualifies just as a literal does:
-/// `(1.5 & "abc") <> CLng(a)` is error 13, while `(1.5 & "abc") <> a` with
-/// `a = -1` compares fine, because `a` is a `Variant` and the runtime
-/// number-sorts-before-string rule applies instead. Measured.
-///
-/// `Len`, `Val` and `Sgn` belong here alongside the `C*` conversions, and the
-/// discriminating case has to hold the *string* side constant to show it:
-/// against `(-32768 & -2.5)` all four raise error 13 while `Int(a)`, `Abs(a)`
-/// and a bare `a` do not. `Int` and `Abs` stay out for a reason that is visible
-/// in their signatures: they return the type they were handed, so a Variant
-/// argument makes them Variant, where `Len` is always `Long`.
 const STATICALLY_NUMERIC: &[&str] = &[
     "cint", "clng", "cdbl", "csng", "ccur", "cbool", "cbyte", "len", "val", "sgn",
 ];
 
-/// Intrinsics whose return type is declared `Boolean`.
-///
-/// The same "the compiler knows this statically" idea as
-/// [`STATICALLY_NUMERIC`] (which lists `cbool` too, for the numeric
-/// comparison rule), used by `Select Case` to decide whether to convert its
-/// case values with `CBool`. Measured for `CBool`, `IsNumeric`, `IsNull`,
-/// `IsEmpty`, `IsDate` and `IsObject`; `IsArray` and `IsError` measure the
-/// same way in Excel but are not implemented here yet, and are listed so they
-/// arrive with the right behaviour rather than silently as Variants.
 const STATICALLY_BOOLEAN: &[&str] = &[
     "cbool",
     "isnumeric",
@@ -2684,46 +2640,8 @@ const STATICALLY_BOOLEAN: &[&str] = &[
     "iserror",
 ];
 
-/// Intrinsics whose return type is declared `String`.
-///
-/// The pair `True Eqv CStr(True)` (error 13) against `LCase("TRUE") Eqv True`
-/// (True) is what pins the distinction down -- see [`value::logical_pair`].
-///
-/// `TypeName` was added on the strength of a measurement, not its signature:
-/// `TypeName(32767) >= False` is error 13 in Excel while
-/// `LCase("Integer") >= (Not True)` is True, and the difference is exactly
-/// that `TypeName` returns `String` where `LCase` returns `Variant`. Found by
-/// `fuzz/fuzz_vba.py`. `LCase`, `UCase`, `Left` and the rest stay out for the
-/// reason above -- it is their `$`-suffixed forms that are typed `String`.
-///
-/// `StrReverse`, `Replace` and `Join` are the members of that same family with
-/// **no** `$` form, so the plain name is the typed-`String` one. Measured, and
-/// the contrast with their Variant-returning neighbours is what places them:
-///
-///   StrReverse("abc")        > True    error 13
-///   Replace("abc", "a", "z") > True    error 13
-///   Join(Array("a", "b"))    > True    error 13
-///   Trim("abc")              > True    True
-///   LTrim("abc")             > True    True
-///
-/// `StrReverse` is the one `fuzz/fuzz_vba.py` found, as a whole procedure
-/// diverging on which error it raised: Excel stopped at the comparison with
-/// 13 while visi ran on to a later division by zero and raised 11.
-///
-/// `Join` is listed though it is not implemented yet (the call raises 35
-/// first), for the reason `IsArray` is listed in [`STATICALLY_BOOLEAN`] -- so
-/// it arrives with the right type rather than silently as a Variant.
 const STATICALLY_STRING: &[&str] = &["cstr", "typename", "strreverse", "replace", "join"];
 
-/// Whether an expression's *static* type is `Boolean`, as the VBA compiler
-/// would know it.
-///
-/// This is the distinction `Select Case` turns on, and it is invisible in the
-/// value: `Select Case CBool(a)` matches `Case 1`, while `Select Case a` with
-/// `a = True` does not, though both subjects are `True` at run time. A
-/// constant expression qualifies because the compiler folds it (`Select Case
-/// (1 = 1)` behaves as `Select Case True`); a Variant never does, whatever it
-/// happens to hold.
 fn is_statically_boolean(e: &Expr) -> bool {
     match e {
         Expr::Paren { expr, .. } => is_statically_boolean(expr),
@@ -2765,47 +2683,6 @@ fn is_literal_string(e: &Expr) -> bool {
     }
 }
 
-/// Whether the compiler knows this expression's type without its value.
-///
-/// A call to one of the declared-return-type intrinsics qualifies, and so
-/// does **arithmetic over them** -- `Len(CStr(a)) / 2` is a `Double` as
-/// surely as `Len(CStr(a))` is a `Long`, because every operand's type is
-/// known. One `Variant` operand loses it for the whole expression, which is
-/// why `Len(CStr(a)) + a` is not static.
-///
-/// The propagation is measured, not assumed:
-///
-/// ```text
-/// a = -3 : Len(CStr(a))       = "-7False"   error 13   (bare call)
-/// a = -3 : (Len(CStr(a)) / 2) = "-7False"   error 13   (propagated)
-/// a = -3 : (Len(CStr(a)) + 1) = "-7False"   error 13   (propagated)
-/// a = -3 : (Len(CStr(a)) + a) = "-7False"   False      (a Variant operand)
-/// a = -3 : (a / (-32768))     = "-7False"   False      (no static operand)
-/// a = -3 : (CLng(a) * 2)      = "-6.0"      True       (numeric, not text)
-/// ```
-///
-/// That last row is the positive half: against a statically typed number the
-/// string must parse *and then compares numerically*, where a `Variant`
-/// partner would compare it as text and say False.
-///
-/// **Comparison and `&` propagate too**, which §18 left open for want of a
-/// measurement and §24 supplied. A comparison is statically `Boolean` only
-/// when both its operands are statically typed, because a `Variant` operand
-/// could make it `Null` -- and that is the whole of the rule §16 had written
-/// as a 4x4 table with an unexplained cell:
-///
-/// ```text
-/// "0" >= (3# >= CDbl(0))       True    every operand statically typed
-/// "0" >= (Len(CStr(0)) >= 1)   True    likewise
-/// "0" >= ("1" >= -7)           True    a string *literal* is statically typed
-/// "0" >= (3# >= Empty)         False   `Empty` is a Variant, so this is not
-/// b = 1 : "0" >= (3# >= b)     False   nor is a variable
-/// "0" >= IsEmpty(Empty)        True    but a declared-Boolean call is
-/// ```
-///
-/// The last two rows are what say this is about the static *type* rather than
-/// about `Empty` appearing anywhere: `IsEmpty(Empty)` is declared `Boolean`
-/// and converts, while `(3# >= Empty)` does not.
 fn is_statically_typed(e: &Expr) -> bool {
     match e {
         Expr::Literal(Literal::Empty | Literal::Null) => false,
@@ -2846,7 +2723,6 @@ fn is_statically_typed(e: &Expr) -> bool {
     }
 }
 
-/// How `value::compare_ctx` should treat an operand.
 fn operand_kind(e: &Expr) -> Operand {
     let statically_typed = is_statically_typed(e);
     match e {
@@ -2872,22 +2748,6 @@ fn operand_kind(e: &Expr) -> Operand {
     }
 }
 
-/// The one constant-folding quirk this interpreter reproduces.
-///
-/// `True Mod "12"` is the **Boolean** `False`, and `True \ "12"` is `True`,
-/// where the same expressions with either operand in a variable give the
-/// ordinary `Long` results. The model that fits every measurement is that
-/// when the *left* operand is a constant `Boolean` and the right is a
-/// constant `String`, `\` and `Mod` convert **both** sides with `CBool` and
-/// return a `Boolean`.
-///
-/// Confirmed against eighteen cases, including the ones that pin down how
-/// narrow it is: `"12" Mod True` is `Long 0` (so it is left-specific),
-/// `True Mod 12` is `Integer -1` (so the partner must be a String),
-/// `a = True : a Mod "12"` is `Long -1` (so both must be constants), and
-/// `True And "12"` is `Long 12` (so it is only `\` and `Mod`).
-/// `True Mod "0"` is error 11, which the CBool conversion explains: `"0"`
-/// becomes `False`, i.e. zero.
 fn constant_bool_int_op(op: BinOp, a: &Variant, b: &Variant, mode: ArithMode) -> Option<()> {
     (mode == ArithMode::Constant
         && matches!(op, BinOp::IntDiv | BinOp::Mod)
@@ -2936,20 +2796,8 @@ fn eval_binary(
     }
 }
 
-/// Builtins that must see an object rather than its default member.
-///
-/// Short on purpose. `TypeName` and `VarType` exist to report *what a value
-/// is*, and `IsObject` to report whether it is one at all, so dereferencing
-/// their argument would make them structurally unable to answer. Everything
-/// else -- `Len`, `IsNumeric`, `CStr` -- is asking about the value, which for
-/// a `Range` means the cell.
 const OBJECT_AWARE_BUILTINS: &[&str] = &["typename", "vartype", "isobject"];
 
-/// `Is`: reference identity.
-///
-/// Both operands must be objects. `Nothing` is one, which is what makes
-/// `r Is Nothing` the ordinary way to test an unset reference; anything else
-/// is error 424, VBA's "Object required".
 fn is_comparison(a: &Variant, b: &Variant) -> VResult<Variant> {
     match (a.as_object(), b.as_object()) {
         (Some(x), Some(y)) => Ok(Variant::Boolean(x.same_object(y))),
@@ -2957,22 +2805,6 @@ fn is_comparison(a: &Variant, b: &Variant) -> VResult<Variant> {
     }
 }
 
-/// A statically typed `String` on the **left** of a logical operator, with
-/// `Null` on the right, is error 94.
-///
-/// | Expression | Excel |
-/// | --- | --- |
-/// | `"  3  " Imp Null`, `"3" And Null`, `"1.5" Or Null`, `"0" Or Null` | error 94 |
-/// | `("  " & "3") Or Null`, `CStr(3) Or Null` | error 94 |
-/// | `a = Null : "  3  " Or a` | error 94 -- the *Null* may be a variable |
-/// | `a = "  3  " : a Imp Null` | not an error -- the **String** may not |
-/// | `Null Or "  3  "`, `Null And "  3  "`, `Null Xor "  3  "` | not an error -- it is left-specific |
-/// | `"abc" Imp Null`, `"True" Or Null` | error 13 -- the string's own conversion is checked first |
-/// | `3 Imp Null`, `255 Imp Null` | not an error -- the operand must be a String |
-///
-/// Which is why this wraps the operator rather than short-circuiting it: the
-/// conversion failures have to surface as themselves, and only a *successful*
-/// operation becomes the 94. Measured with `fuzz/vba_expr_probe.py`.
 fn null_on_the_right(
     lhs: &Variant,
     rhs: &Variant,
@@ -3019,8 +2851,6 @@ fn literal_to_variant(l: &Literal) -> Variant {
     }
 }
 
-/// A `For` counter keeps the type its bounds imply, so `For i = 1 To 3`
-/// counts in `Integer`s and `For x = 1.5 To 3` in `Double`s.
 fn number_like(current: f64, start: f64, step: f64) -> Variant {
     let integral = current.fract() == 0.0 && start.fract() == 0.0 && step.fract() == 0.0;
     Variant::from_literal(current, !integral)
@@ -3055,9 +2885,6 @@ mod tests {
     use super::super::parser::parse_module;
     use super::*;
 
-    /// Runs a body inside a Function and reports `TypeName|CStr` -- the same
-    /// pair `fuzz/vba_variant_probe.bas` prints from Excel, so a test's
-    /// expected string can be pasted straight from a probe run.
     fn run(body: &str) -> String {
         let src = format!("Function F()\n{body}\nEnd Function\n");
         let module = parse_module(&src).unwrap_or_else(|e| panic!("{e}\n{src}"));
@@ -3298,8 +3125,6 @@ mod tests {
         );
     }
 
-    /// The reason `exec_block` handles errors rather than only the procedure
-    /// loop: resuming has to continue inside the loop body, not after it.
     #[test]
     fn resume_next_resumes_inside_a_nested_block() {
         assert_eq!(
@@ -3511,10 +3336,6 @@ mod tests {
         );
     }
 
-    /// A `Select Case` whose subject is a *constant* string compares as
-    /// text, even against numeric cases -- and the same string held in a
-    /// variable does not. Both halves measured; the split is the same
-    /// constant-vs-runtime one the arithmetic and comparison rules have.
     #[test]
     fn a_constant_string_select_subject_compares_as_text() {
         let sel = |subject: &str| {
@@ -3999,8 +3820,6 @@ mod tests {
         );
     }
 
-    /// Which operators coerce a `Null`'s partner before propagating, and
-    /// which short-circuit. Measured in both directions with `IsNull`.
     #[test]
     fn only_plus_short_circuits_past_a_bad_partner() {
         assert_eq!(expr("IsNull(Null + \"Z\")"), "Boolean|True");
@@ -4104,8 +3923,6 @@ mod tests {
         );
     }
 
-    /// The constant-folding quirk in `constant_bool_int_op`, with the
-    /// negative controls that pin down how narrow it is.
     #[test]
     fn a_constant_boolean_over_a_constant_string_folds_to_a_boolean() {
         assert_eq!(expr("True Mod \"12\""), "Boolean|False");
@@ -4147,10 +3964,6 @@ mod tests {
         );
     }
 
-    /// The whole `Null` table, from a sweep of every intrinsic against real
-    /// Excel. There is no principle behind the split, so the test enumerates
-    /// it -- `Hex` propagates but `Chr` rejects, `String` propagates but
-    /// `Space` rejects, `CVar` propagates where every other `C*` rejects.
     #[test]
     fn every_intrinsic_handles_null_the_way_excel_does() {
         for f in [

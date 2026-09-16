@@ -189,8 +189,6 @@ pub enum ArithMode {
     Promote,
 }
 
-/// Where a numeric result's type comes from, ordered by width so the wider
-/// of two operands wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NumClass {
     Integer,
@@ -367,12 +365,6 @@ impl Variant {
         }
     }
 
-    /// Packs an `f64` into the given numeric class.
-    ///
-    /// In [`ArithMode::Promote`] a value that does not fit widens to the next
-    /// class up rather than erroring, which is what runtime Variant
-    /// arithmetic does. In [`ArithMode::Constant`] -- both operands literal --
-    /// it errors instead, which is what `32767 + 1` does.
     fn pack_mode(value: f64, class: NumClass, mode: ArithMode) -> VResult<Variant> {
         if mode == ArithMode::Constant {
             return Self::pack(value, class);
@@ -424,12 +416,6 @@ impl Variant {
         })
     }
 
-    /// The result class of an arithmetic operation on two operands.
-    ///
-    /// Normally the wider of the two, but `Single` combined with `Long` is
-    /// `Double` rather than `Single` -- a `Single` cannot hold every `Long`,
-    /// so VBA widens past both. Measured: `2! + 1` is a `Single` (the other
-    /// side is an `Integer`) while `2! * 1&` is a `Double`.
     fn arith_type(lhs: &Variant, rhs: &Variant) -> VResult<NumClass> {
         let l = lhs.num_class().ok_or_else(VbaError::invalid_null)?;
         let r = rhs.num_class().ok_or_else(VbaError::invalid_null)?;
@@ -460,13 +446,6 @@ pub fn bool_word(s: &str) -> Option<bool> {
     }
 }
 
-/// A logical/bitwise operand, with a `"True"`/`"False"` string folded to a
-/// `Boolean` so the ordinary rules take over from there.
-///
-/// Folding to `Boolean` rather than to a number is what makes
-/// `Not "True"` a `Boolean` while `"True" Xor 1` is an `Integer`: the first
-/// stays inside [`not`]'s boolean branch, the second falls into the bitwise
-/// one because only one side is a `Boolean`.
 fn logical_operand(v: &Variant) -> Variant {
     match v {
         Variant::Str(s) => match bool_word(s) {
@@ -477,27 +456,6 @@ fn logical_operand(v: &Variant) -> Variant {
     }
 }
 
-/// The pair of operands for a logical operator, with the `"True"`/`"False"`
-/// fold applied only where Excel applies it.
-///
-/// Against a `Boolean` partner the fold is suppressed exactly when **both**
-/// operands' types are known statically -- a literal, a constant expression,
-/// or a call whose declared return type says so:
-///
-/// | Expression | Excel | Why |
-/// | --- | --- | --- |
-/// | `True Eqv "True"` | error 13 | Boolean literal, String literal |
-/// | `True Eqv CStr(True)` | error 13 | `CStr` is declared `As String` |
-/// | `a = 3.75 : IsNumeric(a) Eqv CStr(True)` | error 13 | both declared |
-/// | `LCase("TRUE") Eqv True` | `True` | `LCase` returns a *Variant* |
-/// | `a = True : a Eqv "True"` | `True` | `a` is a Variant |
-/// | `a = "false" : a Eqv False` | `True` | same, other way round |
-///
-/// The `CStr`/`LCase` pair is the one that pins it down, and it is not
-/// arbitrary: `CStr` returns `String`, while `LCase` (like `UCase`, `Left`
-/// and friends, whose `$`-suffixed forms are the String-typed ones) returns
-/// `Variant`. A non-Boolean partner always folds -- `"True" Xor 1` is `-2`
-/// between two literals.
 fn logical_pair(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> (Variant, Variant) {
     let both_static = kinds.0 != Operand::Runtime && kinds.1 != Operand::Runtime;
     let l_bool = matches!(lhs, Variant::Boolean(_));
@@ -680,15 +638,6 @@ pub fn sub(lhs: &Variant, rhs: &Variant, mode: ArithMode) -> VResult<Variant> {
     keep_date(lhs, rhs, arith(lhs, rhs, mode, |a, b| a - b)?)
 }
 
-/// A date plus or minus a number is still a date; a date minus a date is a
-/// count of days and is not.
-///
-/// Measured: `TypeName(#6/22/2026# + 1)` is `Date` and `CStr` of it is
-/// `6/23/26`, while `#6/22/2026# - #6/21/2026#` is `1`. The rule keys off
-/// *exactly one* operand being a `Date`, which is the same shape as the
-/// engine's own `Sheet::inherited_date_format` -- and, as there, it applies
-/// to `+` and `-` only. `*` and `/` are not measured and do not preserve the
-/// subtype here; a date multiplied by anything is not a date in any reading.
 fn keep_date(lhs: &Variant, rhs: &Variant, result: Variant) -> VResult<Variant> {
     let one_date = matches!(lhs, Variant::Date(_)) != matches!(rhs, Variant::Date(_));
     if !one_date {
@@ -821,8 +770,6 @@ fn zip3(a: Option<i64>, b: Option<i64>, class: NumClass) -> Option<(i64, i64, Nu
     Some((a?, b?, class))
 }
 
-/// Rounds both operands to integers and decides the result class, shared by
-/// `\` and `Mod`.
 fn int_operands(lhs: &Variant, rhs: &Variant) -> VResult<(Option<i64>, Option<i64>, NumClass)> {
     fn one(v: &Variant) -> VResult<Option<i64>> {
         if v.is_null() {
@@ -1051,17 +998,6 @@ pub fn imp(lhs: &Variant, rhs: &Variant, kinds: (Operand, Operand)) -> VResult<V
     or(&not(lhs)?, rhs, kinds)
 }
 
-/// The shared half of [`and`] and [`or`]: when one side is `Null`, the other
-/// decides the result if its truthiness is the deciding one.
-///
-/// Returns the deciding operand converted the way the bitwise operation
-/// would have converted it: a `Boolean` stays a `Boolean`, and anything else
-/// becomes the `Integer` or `Long` the operator works in.
-///
-/// The conversion is not cosmetic. `vb = 0.1 - 2147483647` then
-/// `vb Or Null` is the **`Long`** `-2147483647` in Excel, not the `Double`
-/// `-2147483646.9` -- the operand is rounded and narrowed before `Or` looks
-/// at it, and returning it unchanged was a mismatch fuzz/fuzz_vba.py caught.
 fn three_valued(
     lhs: &Variant,
     rhs: &Variant,
@@ -1227,11 +1163,6 @@ pub fn compare_ctx(
     }
 }
 
-/// A `Boolean` as the number it *is*, which is what ordering compares.
-///
-/// `True` is -1, so it sorts below `False`. Rust's own `bool: Ord` has it the
-/// other way round, and using that here reversed every `<`/`>` between a
-/// string and a Boolean.
 fn bool_as_number(b: bool) -> f64 {
     if b { -1.0 } else { 0.0 }
 }

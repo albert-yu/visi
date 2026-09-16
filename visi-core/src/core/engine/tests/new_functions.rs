@@ -1,6 +1,5 @@
 use super::*;
 
-/// Evaluates a standalone formula (no cell grid needed) and returns its result.
 fn eval1(source: &str) -> ResultData {
     let sheet = Sheet::new(SheetInit::default());
     sheet.eval(source, None).unwrap().0

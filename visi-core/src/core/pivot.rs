@@ -319,20 +319,6 @@ pub struct PivotTable {
     pub last_output_end_col: Option<usize>,
 }
 
-/// Width, in columns, reserved for row-field labels: one column per row
-/// field when there are any. With no row fields at all, Excel only
-/// reserves a single placeholder column when there's *exactly one* value
-/// field *and* at least one column field for it to sit to the left of --
-/// that lone cell holds the value field's own label (e.g. "Max of
-/// Amount"), the same way the header's "Row Labels | Sum of X" corner
-/// would if there were row fields. With no column fields either (the fully
-/// "flat" single-aggregate pivot) or with more than one value field (whose
-/// labels already show up elsewhere in the header), there's nothing
-/// unambiguous to put in a corner, so Excel reserves no column there at
-/// all. All three shapes verified against real Excel via
-/// fuzz/fuzz_pivot.py. Shared between `compute_pivot` (which must actually
-/// size `PivotBodyRow::row_labels` this way) and `pivot_xlsx.rs` (which
-/// needs the same number for `firstDataCol`).
 pub(crate) fn row_label_width(pivot: &PivotTable) -> usize {
     if !pivot.row_fields.is_empty() {
         return pivot.row_fields.len();
@@ -426,11 +412,6 @@ impl PivotGrid {
     }
 }
 
-/// A flattened, labeled group of source records along one axis (row or
-/// column), produced by recursively grouping by each field in that axis in
-/// turn. `record_indices` is the union of every record folded into this
-/// group -- for a leaf group that's just its own bucket, for a subtotal or
-/// grand-total pseudo-group it's every record under it.
 struct FlatGroup {
     /// One label per field in this axis; `None` past the group's own depth
     /// (e.g. a subtotal group has no label for deeper fields).
@@ -454,21 +435,6 @@ pub(crate) fn group_key(result: &ResultData) -> String {
     }
 }
 
-/// Whether every non-blank value of `records[..][field_idx]` is a genuine
-/// number (`Integer`/`Float`), as opposed to text that merely looks
-/// numeric (e.g. a zero-padded code like `"08"`, or digits kept as text on
-/// purpose). Determines sort order for that field's pivot groups --
-/// Excel sorts a real numeric field numerically but a text field
-/// alphabetically even when its values happen to look like numbers
-/// (verified against real Excel via fuzz/fuzz_pivot.py's `NumStr` column,
-/// whose whole purpose is generating quoted numeric-looking text to probe
-/// exactly this) -- with one refinement found on Windows: a value that
-/// looks like a *negative* number sorts by its digits with the leading
-/// `-` stripped, not by the `-` character itself. See
-/// `sort_group_entries` and `text_sort_key`. Grouping already collapsed
-/// values to strings by this point (`group_key`), which can no longer
-/// tell a real `22` from a text `"22"` -- this has to be decided from the
-/// original `ResultData`s.
 pub(crate) fn field_is_numeric(records: &[Vec<ResultData>], field_idx: usize) -> bool {
     !records.is_empty()
         && records.iter().all(|r| {
@@ -479,22 +445,6 @@ pub(crate) fn field_is_numeric(records: &[Vec<ResultData>], field_idx: usize) ->
         })
 }
 
-/// The key `sort_group_entries`'s text-field branch compares siblings by:
-/// the value itself, lowercased, *unless* it looks like a negative number
-/// (`"-7"`, `"-25"`), in which case the leading `-` is stripped first.
-/// Measured on Windows real Excel across three independent sibling sets
-/// (fuzz/fuzz_pivot.py's `NumStr` column):
-///   `{-7, .0152, 13, 34, 4}`        -> `.0152, 13, 34, 4, -7`
-///   `{-46, .097, 01, 02, 1, 10, 35}` -> `.097, 01, 02, 1, 10, 35, -46`
-///   `{-25, .0599, .0839, 01, 02, 08, 1, 12, 37}`
-///                                   -> `.0599, .0839, 01, 02, 08, 1, 12, -25, 37`
-/// A "sorts last" rule (visi's first attempt at this) fits the first two
-/// but not the third, where "-25" lands *before* "37" -- comparing "25"
-/// (the stripped digits) against the other keys fits all three: "25"
-/// falls between "12" and "37" alphabetically, exactly where Excel put
-/// "-25". Not tested (no evidence either way): two negative-looking
-/// siblings compared against each other -- both get stripped, so they
-/// fall back to comparing their digit strings.
 fn text_sort_key(s: &str) -> String {
     let trimmed = s.trim();
     let key = match trimmed.strip_prefix('-') {
@@ -552,9 +502,6 @@ fn build_group_tree(
         .collect()
 }
 
-/// Recursively flattens a group tree into a list of `FlatGroup`s: every leaf
-/// group, plus (when enabled for that field) a subtotal pseudo-group after
-/// each non-innermost group's children.
 fn flatten_groups(
     nodes: &[GroupNode],
     fields: &[PivotField],
@@ -593,9 +540,6 @@ fn flatten_groups(
     }
 }
 
-/// Builds the flattened axis groups for `fields` over `record_indices`,
-/// optionally appending a grand-total pseudo-group. Returns a single
-/// implicit "all records" group when `fields` is empty.
 fn build_axis(
     record_indices: &[usize],
     keys: &[Vec<String>],
@@ -686,11 +630,6 @@ fn aggregate(sheet: &Sheet, values: &[ResultData], agg: PivotAggregation) -> Res
     }
 }
 
-/// Resolves a `PivotSource` against the workbook's sheets, returning the
-/// owning sheet, the source's column names (in source-column order), the
-/// matching absolute sheet-column indices, and the absolute sheet-row
-/// indices holding data (i.e. excluding any header/totals row).
-/// (owning sheet, source column names, absolute sheet-column indices, absolute data-row indices).
 pub(crate) type ResolvedSource<'a> = (&'a Sheet, Vec<String>, Vec<usize>, Vec<usize>);
 
 pub(crate) fn resolve_source<'a>(
@@ -1123,15 +1062,6 @@ pub fn compute_pivot(sheets: &[&Sheet], pivot: &PivotTable) -> Result<PivotGrid,
     })
 }
 
-/// Finds the unique row/col-axis group matching `criteria` -- `(field
-/// depth, item text)` pairs restricted to one axis -- for `GETPIVOTDATA`.
-/// Empty `criteria` means "the axis's grand total". A non-empty `criteria`
-/// that doesn't specify every field on the axis matches the subtotal group
-/// at that depth (mirrors Excel: naming only the outer field(s) of a nested
-/// row/col axis returns that branch's subtotal, not an arbitrary leaf under
-/// it); naming every field down to the innermost one matches the leaf.
-/// Ambiguous or absent matches are both reported as `#REF!`, matching real
-/// Excel's error for a `GETPIVOTDATA` criteria pair that doesn't resolve.
 fn match_pivot_axis(
     axis: &[PivotAxisItem],
     criteria: &[(usize, &str)],
@@ -1246,10 +1176,6 @@ pub fn getpivotdata(
         .ok_or_else(|| "#REF!".to_string())
 }
 
-/// Returns the distinct values of `values`, sorted the same way pivot
-/// groups are (ascending numeric if every value parses as a number,
-/// otherwise case-insensitive ascending text) -- used by the xlsx exporter
-/// to build a pivot field's flat `<items>` enumeration.
 pub(crate) fn sorted_distinct_strings(values: &[String], numeric: bool) -> Vec<String> {
     let mut pairs: Vec<(String, Vec<usize>)> = distinct_strings(values)
         .into_iter()
@@ -1259,19 +1185,6 @@ pub(crate) fn sorted_distinct_strings(values: &[String], numeric: bool) -> Vec<S
     pairs.into_iter().map(|(s, _)| s).collect()
 }
 
-/// The distinct values in **first-seen** order, which is the order a pivot
-/// cache stores them in.
-///
-/// Measured: Excel's `<sharedItems>` are in source order while a pivot
-/// field's `<items>` are sorted for display and reference sharedItems by
-/// index, so the two orders are both needed and are different. See
-/// `fuzz/pivot_filter_probe.py`.
-///
-/// Case-insensitive dedup (first-seen casing kept), matching
-/// `build_group_tree`'s merge -- this feeds the exported pivot cache, so it
-/// must agree with how `compute_pivot` actually groups these same values or a
-/// reimported or refreshed pivot's item list falls out of sync with its own
-/// displayed grouping.
 pub(crate) fn distinct_strings(values: &[String]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for v in values {
@@ -2248,13 +2161,6 @@ mod tests {
     const FUZZ_CATEGORIES: [&str; 5] = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
     const FUZZ_CASE_VARIANTS: [&str; 5] = ["East", "east", "WEST", "west", "North"];
 
-    /// Builds a random source sheet with columns chosen to exercise
-    /// grouping edge cases: a low-cardinality category column with
-    /// occasional blanks, a case-variant category column (case-insensitive
-    /// grouping parity), a quoted numeric-looking-string column (the
-    /// numeric-vs-text sort ambiguity `sort_group_entries` has to resolve),
-    /// two numeric columns (ints and floats, including negative/zero), and
-    /// a boolean column (ignored by Sum/Average/Max/Min).
     fn fuzz_source_sheet(rng: &mut StdRng, num_rows: usize) -> (Sheet, Vec<String>) {
         let mut sheet = Sheet::new(SheetInit {
             name: Some("FuzzData".to_string()),
@@ -2307,12 +2213,6 @@ mod tests {
         }
     }
 
-    /// Builds a random, always-valid `PivotTable` config over `sheet`:
-    /// 0-2 row fields and 0-2 col fields (drawn without replacement from
-    /// the categorical columns), 1-2 value fields (from the numeric
-    /// columns), an optional filter field with a random subset of its
-    /// actual distinct values selected (including the all-excluded case),
-    /// and random per-field subtotal / grand-total toggles.
     fn fuzz_pivot_config(
         rng: &mut StdRng,
         sheet: &Sheet,
@@ -2422,24 +2322,12 @@ mod tests {
         }
     }
 
-    /// A row/col axis label vector (`Some` per own depth, `None` past it --
-    /// see `FlatGroup`) is a *partial key*: `None` positions are wildcards.
-    /// This is exactly what a subtotal or grand-total group represents, so
-    /// the same matcher works uniformly for leaf, subtotal, and grand-total
-    /// groups.
     fn matches_partial(key: &[String], labels: &[Option<String>]) -> bool {
         key.iter()
             .zip(labels)
             .all(|(k, want)| want.as_ref().is_none_or(|w| w.eq_ignore_ascii_case(k)))
     }
 
-    /// Cross-checks every cell of `grid` against an aggregate computed by a
-    /// structurally independent path: instead of `compute_pivot`'s
-    /// recursive group-tree + flatten, this filters the same record set by
-    /// simple partial-key matching against each axis item's labels. Catches
-    /// bugs in the tree-based grouping/flattening/subtotal-insertion logic
-    /// specifically, since the aggregation math itself (`aggregate`) is
-    /// shared and already covered by the fixed-data tests above.
     fn verify_grid_matches_records(sheet: &Sheet, pivot: &PivotTable, grid: &PivotGrid) {
         let (_, col_names, sheet_cols, data_rows) =
             resolve_source(&[sheet], &pivot.source).unwrap();
@@ -2536,12 +2424,6 @@ mod tests {
         }
     }
 
-    /// A grand-total pseudo-group is appended whenever the toggle is on,
-    /// *except* when the axis has no fields at all (`build_axis`'s
-    /// no-fields early return never adds one -- there's no separate
-    /// grouping to total distinctly from the single implicit group).
-    /// Otherwise Excel shows it regardless of how many real groups exist,
-    /// even just one (confirmed against real Excel via fuzz/fuzz_pivot.py).
     fn verify_grand_total_placement(
         axis: &[PivotAxisItem],
         grand_total_requested: bool,

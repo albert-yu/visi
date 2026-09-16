@@ -185,9 +185,6 @@ impl Sheet {
             .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
-    /// Reads the header text for sheet column `col_idx` at `header_row`, if
-    /// non-blank; otherwise falls back to a default "ColumnN" name (N is
-    /// 1-based within the table).
     fn table_column_header(&self, header_row: usize, col_idx: usize, local_idx: usize) -> String {
         let computed = self
             .columns

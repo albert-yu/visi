@@ -54,7 +54,6 @@ fn main() {
     }
 }
 
-/// Ensure output target (either --output or --in-place) is specified
 fn resolve_output_path(output: Option<String>, in_place: bool, input_file: &str) -> String {
     if in_place {
         if input_file == "-" {
