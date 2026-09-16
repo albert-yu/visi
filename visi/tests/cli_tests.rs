@@ -5,7 +5,6 @@ use visi::cli::{
     RowSubcommands,
 };
 use visi::engine::{WorkbookFile, WorkbookManager};
-use visi::utils::{parse_cell_ref, parse_range_ref};
 
 fn try_parse<'a>(args: &'a [&'a str]) -> Result<Cli, usage::Error<'static, 'a>> {
     let os_strs: Vec<&OsStr> = args.iter().copied().map(OsStr::new).collect();
@@ -967,19 +966,6 @@ fn test_cross_sheet_circular_reference_terminates_without_hanging() {
             other => panic!("expected a finite numeric result for {label}, got {other:?}"),
         }
     }
-}
-
-#[test]
-fn test_coordinate_parsing() {
-    let (sheet, row, col) = parse_cell_ref("Sheet2!D10").unwrap();
-    assert_eq!(sheet, Some("Sheet2".to_string()));
-    assert_eq!(row, 9);
-    assert_eq!(col, 3);
-
-    let (sheet, s_row, s_col, e_row, e_col) = parse_range_ref("A1:B5").unwrap();
-    assert_eq!(sheet, None);
-    assert_eq!((s_row, s_col), (0, 0));
-    assert_eq!((e_row, e_col), (4, 1));
 }
 
 #[test]

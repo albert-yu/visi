@@ -2121,6 +2121,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_cell_ref() {
+        let (sheet, row, col) = parse_cell_ref("A1").unwrap();
+        assert_eq!(sheet, None);
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+
+        let (sheet, row, col) = parse_cell_ref("Sheet1!C5").unwrap();
+        assert_eq!(sheet, Some("Sheet1".to_string()));
+        assert_eq!(row, 4);
+        assert_eq!(col, 2);
+    }
+
+    #[test]
+    fn test_parse_range_ref() {
+        let (sheet, s_row, s_col, e_row, e_col) = parse_range_ref("A1:C10").unwrap();
+        assert_eq!(sheet, None);
+        assert_eq!((s_row, s_col), (0, 0));
+        assert_eq!((e_row, e_col), (9, 2));
+
+        let (sheet, s_row, s_col, e_row, e_col) = parse_range_ref("'Data Sheet'!B2:D4").unwrap();
+        assert_eq!(sheet, Some("Data Sheet".to_string()));
+        assert_eq!((s_row, s_col), (1, 1));
+        assert_eq!((e_row, e_col), (3, 3));
+    }
+
+    #[test]
     fn test_lex_scientific_notation_literals() {
         for (src, want) in [
             ("1E5", 1e5),
