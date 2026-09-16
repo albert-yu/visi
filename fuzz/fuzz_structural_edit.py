@@ -194,7 +194,7 @@ class VisiStructuralDriver:
         for edit in edits:
             axis = "row" if "row" in edit.kind else "col"
             verb = "insert" if edit.kind.startswith("insert") else "delete"
-            idx = str(edit.index if axis == "row" else col_name(edit.index))
+            label = str(edit.index if axis == "row" else col_name(edit.index))
             run(
                 [
                     self.binary_path,
@@ -203,8 +203,8 @@ class VisiStructuralDriver:
                     output,
                     "--sheet",
                     edit.sheet,
-                    "--index",
-                    idx,
+                    "--label",
+                    label,
                     "--in-place",
                     "--quiet",
                 ]

@@ -354,9 +354,9 @@ pub struct RowArgs {
 
 #[derive(Subcommands, Debug)]
 pub enum RowSubcommands {
-    /// Insert a new row at specified 1-based index
+    /// Insert a new row at the specified position
     Insert(RowOpArgs),
-    /// Delete a row at specified 1-based index
+    /// Delete a row at the specified position
     Delete(RowOpArgs),
 }
 
@@ -367,9 +367,12 @@ pub struct RowOpArgs {
     /// Target worksheet name
     #[usage(short, long)]
     pub sheet: Option<String>,
-    /// 1-based row index (e.g. 1, 5)
-    #[usage(short = 'x', long)]
-    pub index: usize,
+    /// 0-based row offset (e.g. 0, 4)
+    #[usage(short = 'x', long, conflicts = "--label")]
+    pub index: Option<usize>,
+    /// Spreadsheet row label, using 1-based numbering (e.g. 1, 5)
+    #[usage(long, conflicts = "--index")]
+    pub label: Option<usize>,
     /// Write updated workbook to target output file
     #[usage(short, long)]
     pub output: Option<String>,
@@ -386,9 +389,9 @@ pub struct ColArgs {
 
 #[derive(Subcommands, Debug)]
 pub enum ColSubcommands {
-    /// Insert a new column at specified index or letter
+    /// Insert a new column at the specified position
     Insert(ColOpArgs),
-    /// Delete a column at specified index or letter
+    /// Delete a column at the specified position
     Delete(ColOpArgs),
 }
 
@@ -399,9 +402,12 @@ pub struct ColOpArgs {
     /// Target worksheet name
     #[usage(short, long)]
     pub sheet: Option<String>,
-    /// Column letter or 1-based index (e.g. "B" or "2")
-    #[usage(short = 'x', long)]
-    pub index: String,
+    /// 0-based column offset (e.g. 0, 1)
+    #[usage(short = 'x', long, conflicts = "--label")]
+    pub index: Option<usize>,
+    /// Spreadsheet column label, using letters (e.g. A, B, AA)
+    #[usage(long, conflicts = "--index")]
+    pub label: Option<String>,
     /// Write updated workbook to target output file
     #[usage(short, long)]
     pub output: Option<String>,

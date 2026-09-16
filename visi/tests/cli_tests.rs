@@ -1,12 +1,95 @@
 use std::ffi::OsStr;
 use std::fs;
-use visi::cli::{ChartSubcommands, Cli, Commands, MacroSubcommands, PivotSubcommands};
+use visi::cli::{
+    ChartSubcommands, Cli, ColSubcommands, Commands, MacroSubcommands, PivotSubcommands,
+    RowSubcommands,
+};
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::utils::{parse_cell_ref, parse_range_ref};
 
 fn try_parse<'a>(args: &'a [&'a str]) -> Result<Cli, usage::Error<'static, 'a>> {
     let os_strs: Vec<&OsStr> = args.iter().copied().map(OsStr::new).collect();
     Cli::try_parse_from(&os_strs)
+}
+
+#[test]
+fn test_row_and_col_positions_parse_index_or_label() {
+    let cli = try_parse(&[
+        "visi",
+        "row",
+        "insert",
+        "data.xlsx",
+        "--sheet",
+        "Sheet1",
+        "--index",
+        "1",
+        "-i",
+    ])
+    .expect("should parse row index");
+    let Commands::Row(row_args) = cli.command else {
+        panic!("expected Commands::Row");
+    };
+    let RowSubcommands::Insert(row_insert_args) = row_args.command else {
+        panic!("expected RowSubcommands::Insert");
+    };
+    assert_eq!(row_insert_args.index, Some(1));
+    assert_eq!(row_insert_args.label, None);
+
+    let cli = try_parse(&[
+        "visi",
+        "col",
+        "delete",
+        "data.xlsx",
+        "--sheet",
+        "Sheet1",
+        "--label",
+        "C",
+        "-i",
+    ])
+    .expect("should parse column label");
+    let Commands::Col(col_args) = cli.command else {
+        panic!("expected Commands::Col");
+    };
+    let ColSubcommands::Delete(col_delete_args) = col_args.command else {
+        panic!("expected ColSubcommands::Delete");
+    };
+    assert_eq!(col_delete_args.index, None);
+    assert_eq!(col_delete_args.label.as_deref(), Some("C"));
+}
+
+#[test]
+fn test_row_and_col_positions_reject_index_and_label_together() {
+    assert!(
+        try_parse(&[
+            "visi",
+            "row",
+            "insert",
+            "data.xlsx",
+            "--index",
+            "1",
+            "--label",
+            "2",
+        ])
+        .is_err()
+    );
+    assert!(
+        try_parse(&[
+            "visi",
+            "col",
+            "delete",
+            "data.xlsx",
+            "--index",
+            "1",
+            "--label",
+            "B",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn test_col_index_requires_a_zero_based_number() {
+    assert!(try_parse(&["visi", "col", "insert", "data.xlsx", "--index", "B"]).is_err());
 }
 
 #[test]

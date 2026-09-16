@@ -9,8 +9,8 @@ use visi::cli::{
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::format::{get_cell_display_val, render_grid};
 use visi::utils::{
-    EXIT_ENGINE_ERROR, EXIT_IO_ERROR, EXIT_USAGE_ERROR, col_idx_to_letters, exit_with_error,
-    parse_cell_ref, parse_col_spec, parse_range_ref, parse_row_spec,
+    EXIT_ENGINE_ERROR, EXIT_IO_ERROR, EXIT_USAGE_ERROR, col_idx_to_letters, col_letters_to_idx,
+    exit_with_error, parse_cell_ref, parse_range_ref, parse_row_spec,
 };
 use visi_core::core::chart::ChartType;
 use visi_core::core::{PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
@@ -508,6 +508,38 @@ fn handle_sheet(args: SheetArgs, quiet: bool) {
     }
 }
 
+fn resolve_row_arg(index: Option<usize>, label: Option<usize>) -> (usize, String) {
+    match (index, label) {
+        (Some(index), None) => (index, format!("index {index}")),
+        (None, Some(label)) => {
+            let row_idx = parse_row_spec(&label.to_string()).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_USAGE_ERROR);
+            });
+            (row_idx, format!("label {label}"))
+        }
+        _ => exit_with_error(
+            "Specify exactly one of --index or --label",
+            EXIT_USAGE_ERROR,
+        ),
+    }
+}
+
+fn resolve_col_arg(index: Option<usize>, label: Option<String>) -> (usize, String) {
+    match (index, label) {
+        (Some(index), None) => (index, format!("index {index}")),
+        (None, Some(label)) => {
+            let col_idx = col_letters_to_idx(&label).unwrap_or_else(|e| {
+                exit_with_error(e, EXIT_USAGE_ERROR);
+            });
+            (col_idx, format!("label {label}"))
+        }
+        _ => exit_with_error(
+            "Specify exactly one of --index or --label",
+            EXIT_USAGE_ERROR,
+        ),
+    }
+}
+
 fn handle_row(args: RowArgs, quiet: bool) {
     match args.command {
         RowSubcommands::Insert(row_args) => {
@@ -518,9 +550,7 @@ fn handle_row(args: RowArgs, quiet: bool) {
                 .find_sheet_index(row_args.sheet.as_deref())
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
-            let row_idx = parse_row_spec(&row_args.index.to_string()).unwrap_or_else(|e| {
-                exit_with_error(e, EXIT_USAGE_ERROR);
-            });
+            let (row_idx, position) = resolve_row_arg(row_args.index, row_args.label);
 
             wb.insert_row(sheet_idx, row_idx).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_ENGINE_ERROR);
@@ -531,10 +561,7 @@ fn handle_row(args: RowArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!(
-                    "Inserted row at index {} and saved to '{}'.",
-                    row_args.index, save_path
-                );
+                eprintln!("Inserted row at {position} and saved to '{save_path}'.");
             }
         }
         RowSubcommands::Delete(row_args) => {
@@ -545,9 +572,7 @@ fn handle_row(args: RowArgs, quiet: bool) {
                 .find_sheet_index(row_args.sheet.as_deref())
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
-            let row_idx = parse_row_spec(&row_args.index.to_string()).unwrap_or_else(|e| {
-                exit_with_error(e, EXIT_USAGE_ERROR);
-            });
+            let (row_idx, position) = resolve_row_arg(row_args.index, row_args.label);
 
             wb.delete_row(sheet_idx, row_idx).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_ENGINE_ERROR);
@@ -558,10 +583,7 @@ fn handle_row(args: RowArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!(
-                    "Deleted row at index {} and saved to '{}'.",
-                    row_args.index, save_path
-                );
+                eprintln!("Deleted row at {position} and saved to '{save_path}'.");
             }
         }
     }
@@ -577,9 +599,7 @@ fn handle_col(args: ColArgs, quiet: bool) {
                 .find_sheet_index(col_args.sheet.as_deref())
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
-            let col_idx = parse_col_spec(&col_args.index).unwrap_or_else(|e| {
-                exit_with_error(e, EXIT_USAGE_ERROR);
-            });
+            let (col_idx, position) = resolve_col_arg(col_args.index, col_args.label);
 
             wb.insert_col(sheet_idx, col_idx).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_ENGINE_ERROR);
@@ -590,10 +610,7 @@ fn handle_col(args: ColArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!(
-                    "Inserted column '{}' and saved to '{}'.",
-                    col_args.index, save_path
-                );
+                eprintln!("Inserted column at {position} and saved to '{save_path}'.");
             }
         }
         ColSubcommands::Delete(col_args) => {
@@ -604,9 +621,7 @@ fn handle_col(args: ColArgs, quiet: bool) {
                 .find_sheet_index(col_args.sheet.as_deref())
                 .unwrap_or_else(|e| exit_with_error(e, EXIT_USAGE_ERROR));
 
-            let col_idx = parse_col_spec(&col_args.index).unwrap_or_else(|e| {
-                exit_with_error(e, EXIT_USAGE_ERROR);
-            });
+            let (col_idx, position) = resolve_col_arg(col_args.index, col_args.label);
 
             wb.delete_col(sheet_idx, col_idx).unwrap_or_else(|e| {
                 exit_with_error(e, EXIT_ENGINE_ERROR);
@@ -617,10 +632,7 @@ fn handle_col(args: ColArgs, quiet: bool) {
                 exit_with_error(e, EXIT_IO_ERROR);
             });
             if !quiet {
-                eprintln!(
-                    "Deleted column '{}' and saved to '{}'.",
-                    col_args.index, save_path
-                );
+                eprintln!("Deleted column at {position} and saved to '{save_path}'.");
             }
         }
     }
