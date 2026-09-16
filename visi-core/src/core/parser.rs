@@ -137,7 +137,127 @@ pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
     (row_idx, col_idx)
 }
 
-fn parse_cell_ref(s: &str) -> Option<(usize, usize, bool, bool)> {
+/// Convert Excel letter notation (e.g. "A", "Z", "AA")
+/// to 0-based column index
+pub fn col_letters_to_idx(letters: &str) -> Result<usize, String> {
+    let s = letters.trim().to_uppercase();
+    if s.is_empty() {
+        return Err("Column letter string cannot be empty".to_string());
+    }
+    let mut col = 0usize;
+    for c in s.chars() {
+        if !c.is_ascii_alphabetic() {
+            return Err(format!("Invalid character '{}' in column letters", c));
+        }
+        col = col * 26 + (c as usize - 'A' as usize + 1);
+    }
+    if col == 0 {
+        Err("Invalid column specification".to_string())
+    } else {
+        Ok(col - 1)
+    }
+}
+
+/// Parse row label from string,
+/// expecting 1-based row number ("1", "100") -> 0-based index
+pub fn parse_row_spec(spec: &str) -> Result<usize, String> {
+    let trimmed = spec.trim();
+    let num: usize = trimmed
+        .parse()
+        .map_err(|_| format!("Invalid row number '{}'", trimmed))?;
+    if num == 0 {
+        return Err("Row number must be 1-based (minimum 1)".to_string());
+    }
+    Ok(num - 1)
+}
+
+/// Parse a cell reference string like "A1", "C10", or "Sheet1!B5"
+/// Returns (optional_sheet_name, row_idx, col_idx)
+pub fn parse_cell_ref(cell_str: &str) -> Result<(Option<String>, usize, usize), String> {
+    let trimmed = cell_str.trim();
+    if trimmed.is_empty() {
+        return Err("Cell reference cannot be empty".to_string());
+    }
+
+    let (sheet_part, cell_part) = if let Some(pos) = trimmed.rfind('!') {
+        let sheet = &trimmed[..pos];
+        let cell = &trimmed[pos + 1..];
+        (Some(sheet.trim_matches('\'').to_string()), cell)
+    } else {
+        (None, trimmed)
+    };
+
+    let chars: Vec<char> = cell_part.chars().collect();
+    let mut letters = String::new();
+    let mut digits = String::new();
+
+    for &c in &chars {
+        if c == '$' {
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            if !digits.is_empty() {
+                return Err(format!("Invalid cell reference format: '{}'", cell_str));
+            }
+            letters.push(c);
+        } else if c.is_ascii_digit() {
+            digits.push(c);
+        } else {
+            return Err(format!("Invalid character '{}' in cell reference", c));
+        }
+    }
+
+    if letters.is_empty() || digits.is_empty() {
+        return Err(format!(
+            "Invalid cell reference '{}', must combine column letter(s) and row number (e.g. A1)",
+            cell_str
+        ));
+    }
+
+    let col_idx = col_letters_to_idx(&letters)?;
+    let row_idx = parse_row_spec(&digits)?;
+
+    Ok((sheet_part, row_idx, col_idx))
+}
+
+/// Parse a range reference string (e.g."A1:C10", "Sheet1!A1:B5", or "A1")
+/// Returns (optional_sheet_name, start_row, start_col, end_row, end_col)
+pub fn parse_range_ref(
+    range_str: &str,
+) -> Result<(Option<String>, usize, usize, usize, usize), String> {
+    let trimmed = range_str.trim();
+    if trimmed.is_empty() {
+        return Err("Range reference cannot be empty".to_string());
+    }
+
+    let (sheet_part, range_part) = if let Some(pos) = trimmed.rfind('!') {
+        let sheet = &trimmed[..pos];
+        let range = &trimmed[pos + 1..];
+        (Some(sheet.trim_matches('\'').to_string()), range)
+    } else {
+        (None, trimmed)
+    };
+
+    if let Some(colon_pos) = range_part.find(':') {
+        let start_str = &range_part[..colon_pos];
+        let end_str = &range_part[colon_pos + 1..];
+
+        let (_, start_row, start_col) = parse_cell_ref(start_str)?;
+        let (_, end_row, end_col) = parse_cell_ref(end_str)?;
+
+        let min_row = start_row.min(end_row);
+        let max_row = start_row.max(end_row);
+        let min_col = start_col.min(end_col);
+        let max_col = start_col.max(end_col);
+
+        Ok((sheet_part, min_row, min_col, max_row, max_col))
+    } else {
+        let (_, row_idx, col_idx) = parse_cell_ref(range_part)?;
+        Ok((sheet_part, row_idx, col_idx, row_idx, col_idx))
+    }
+}
+
+fn parse_formula_cell_ref(s: &str) -> Option<(usize, usize, bool, bool)> {
     let chars: Vec<char> = s.chars().collect();
     let mut idx = 0;
 
@@ -1574,7 +1694,7 @@ fn range_ref_from_texts(sheet: Option<String>, start: &str, end: &str) -> Result
     if let (
         Some((s_row, s_col, s_row_abs, s_col_abs)),
         Some((e_row, e_col, e_row_abs, e_col_abs)),
-    ) = (parse_cell_ref(start), parse_cell_ref(end))
+    ) = (parse_formula_cell_ref(start), parse_formula_cell_ref(end))
     {
         Ok(Expr::RangeRef {
             sheet,
@@ -1820,7 +1940,7 @@ impl<'a> Parser<'a> {
 
                         return range_ref_from_texts(Some(val), &target_str, &end_str);
                     } else {
-                        let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
+                        let (row, col, row_abs, col_abs) = parse_formula_cell_ref(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
                         return Ok(Expr::CellRef {
                             sheet: Some(val),
@@ -1913,7 +2033,7 @@ impl<'a> Parser<'a> {
 
                         return range_ref_from_texts(Some(id_name.clone()), &target_str, &end_str);
                     } else {
-                        let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
+                        let (row, col, row_abs, col_abs) = parse_formula_cell_ref(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
                         return Ok(Expr::CellRef {
                             sheet: Some(id_name.clone()),
@@ -1925,7 +2045,7 @@ impl<'a> Parser<'a> {
                     }
                 }
 
-                if let Some((row, col, row_abs, col_abs)) = parse_cell_ref(&id_name) {
+                if let Some((row, col, row_abs, col_abs)) = parse_formula_cell_ref(&id_name) {
                     if self.peek() == Some(&EvalToken::Colon) {
                         self.next();
                         let end_tok = self
@@ -1940,7 +2060,7 @@ impl<'a> Parser<'a> {
                                 ));
                             }
                         };
-                        let (e_row, e_col, e_row_abs, e_col_abs) = parse_cell_ref(&end_str)
+                        let (e_row, e_col, e_row_abs, e_col_abs) = parse_formula_cell_ref(&end_str)
                             .ok_or_else(|| format!("Invalid end cell: {}", end_str))?;
                         return Ok(Expr::RangeRef {
                             sheet: None,
