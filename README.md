@@ -113,18 +113,22 @@ visi sheet delete data.xlsx --name "OldSheet" -i
 
 #### 6. Manipulate Rows and Columns
 
+_The following content is LLM-generated._
+
+Use exactly one of `--index` for a 0-based offset, or `--label` for the spreadsheet-facing row number or column letter.
+
 ```bash
-# Insert a new row at row 2 (1-based index)
-visi row insert data.xlsx --sheet Sheet1 --index 2 -i
+# Insert a new row at 0-based offset 1
+visi row insert data.xlsx --sheet Sheet1 --index 1 -i
 
-# Delete row 5
-visi row delete data.xlsx --sheet Sheet1 --index 5 -i
+# Delete row label 5 (spreadsheet 1-based row number)
+visi row delete data.xlsx --sheet Sheet1 --label 5 -i
 
-# Insert a column at column 'B'
-visi col insert data.xlsx --sheet Sheet1 --index B -i
+# Insert a column at 0-based offset 1
+visi col insert data.xlsx --sheet Sheet1 --index 1 -i
 
-# Delete column 'C'
-visi col delete data.xlsx --sheet Sheet1 --index C -i
+# Delete column label 'C' (spreadsheet column letter)
+visi col delete data.xlsx --sheet Sheet1 --label C -i
 ```
 
 #### 7. Export Sheet Data
