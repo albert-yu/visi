@@ -14,25 +14,13 @@ pub fn col_idx_to_letters(col: usize) -> String {
     visi_core::core::col_idx_to_letters(col)
 }
 
-/// Convert Excel letter notation (e.g. "A", "Z", "AA")
-/// to 0-based column index
 pub fn col_letters_to_idx(letters: &str) -> Result<usize, String> {
     let s = letters.trim().to_uppercase();
     if s.is_empty() {
         return Err("Column letter string cannot be empty".to_string());
     }
-    let mut col = 0usize;
-    for c in s.chars() {
-        if !c.is_ascii_alphabetic() {
-            return Err(format!("Invalid character '{}' in column letters", c));
-        }
-        col = col * 26 + (c as usize - 'A' as usize + 1);
-    }
-    if col == 0 {
-        Err("Invalid column specification".to_string())
-    } else {
-        Ok(col - 1)
-    }
+    let col = visi_core::core::col_letters_to_idx(&s);
+    Ok(col)
 }
 
 /// Parse row label from string,

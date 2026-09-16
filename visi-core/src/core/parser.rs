@@ -114,15 +114,9 @@ pub fn col_idx_to_letters(mut col: usize) -> String {
     letters
 }
 
-/// Converts an already-split A1 reference into a 0-based `(row, col)`.
-///
-/// `col_str` is the letters and `row_str` the digits, so `("B", "3")` gives
-/// `(2, 1)`. Case-insensitive, and non-alphabetic characters in `col_str` are
-/// skipped.
-///
-/// Lenient rather than validating: an unparseable row, or a row or column of
-/// 0, clamps to index 0 instead of failing.
-pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
+/// Convert Excel letter notation (e.g. "A", "Z", "AA")
+/// to 0-based column index. Clamps result to 0 if input is invalid.
+pub fn col_letters_to_idx(col_str: &str) -> usize {
     let mut col = 0;
     for c in col_str.chars() {
         if c.is_ascii_alphabetic() {
@@ -130,6 +124,18 @@ pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
         }
     }
     let col_idx = if col > 0 { col - 1 } else { 0 };
+    col_idx
+}
+
+/// Converts an already-split A1 reference into a 0-based `(row, col)`.
+///
+/// `col_str` is the letters and `row_str` the digits, so `("B", "3")` gives
+/// `(2, 1)`. Case-insensitive, and non-alphabetic characters in `col_str` are
+/// skipped.
+///
+/// Clamps to index 0 instead of failing.
+pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
+    let col_idx = col_letters_to_idx(col_str);
 
     let row_val: usize = row_str.parse().unwrap_or(1);
     let row_idx = if row_val > 0 { row_val - 1 } else { 0 };

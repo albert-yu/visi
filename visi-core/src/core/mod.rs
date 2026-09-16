@@ -50,7 +50,9 @@ pub use engine::{
 };
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
 pub use locale::{DateOrder, Locale};
-pub use parser::{col_idx_to_letters, parse_a1_coordinates, parse_cell_ref, parse_range_ref};
+pub use parser::{
+    col_idx_to_letters, col_letters_to_idx, parse_a1_coordinates, parse_cell_ref, parse_range_ref,
+};
 pub use pivot::{
     PivotAggregation, PivotArea, PivotBodyRow, PivotField, PivotFilterField, PivotGrid,
     PivotSource, PivotTable, PivotValueField, compute_pivot, value_field_labels,
