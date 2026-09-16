@@ -2153,6 +2153,19 @@ mod tests {
     }
 
     #[test]
+    fn test_col_conversions() {
+        assert_eq!(col_idx_to_letters(0), "A");
+        assert_eq!(col_idx_to_letters(25), "Z");
+        assert_eq!(col_idx_to_letters(26), "AA");
+        assert_eq!(col_idx_to_letters(27), "AB");
+
+        assert_eq!(col_letters_to_idx("A"), 0);
+        assert_eq!(col_letters_to_idx("z"), 25);
+        assert_eq!(col_letters_to_idx("AA"), 26);
+        assert_eq!(col_letters_to_idx("AB"), 27);
+    }
+
+    #[test]
     fn test_lex_scientific_notation_literals() {
         for (src, want) in [
             ("1E5", 1e5),

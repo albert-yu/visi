@@ -45,21 +45,3 @@ pub fn parse_range_ref(
 ) -> Result<(Option<String>, usize, usize, usize, usize), String> {
     visi_core::core::parse_range_ref(range_str)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_col_conversions() {
-        assert_eq!(col_idx_to_letters(0), "A");
-        assert_eq!(col_idx_to_letters(25), "Z");
-        assert_eq!(col_idx_to_letters(26), "AA");
-        assert_eq!(col_idx_to_letters(27), "AB");
-
-        assert_eq!(col_letters_to_idx("A").unwrap(), 0);
-        assert_eq!(col_letters_to_idx("z").unwrap(), 25);
-        assert_eq!(col_letters_to_idx("AA").unwrap(), 26);
-        assert_eq!(col_letters_to_idx("AB").unwrap(), 27);
-    }
-}
