@@ -144,12 +144,6 @@ fn abs_val(x: f64) -> f64 {
     x.abs()
 }
 
-/// Mirrors Excel's `RATE`, which also fails to converge (`#NUM!`) for some
-/// inputs -- confirmed against the differential fuzzer to matter in both
-/// directions: trying extra starting guesses beyond the caller's own found
-/// mathematically valid roots that real Excel's own (single-guess, less
-/// exhaustive) solver doesn't bother finding, so this deliberately stays
-/// single-guess to track Excel's behavior rather than "more correct" math.
 pub fn rate(nper: f64, pmt: f64, pv: f64, fv: f64, pmt_type: f64, guess: f64) -> Option<f64> {
     let total_cf = pv + pmt * nper + fv;
     if guess < 0.0 && pmt_type == 1.0 && nper >= 36.0 && total_cf > 0.0 {
@@ -301,7 +295,6 @@ pub fn mirr(values: &[f64], finance_rate: f64, reinvest_rate: f64) -> Option<f64
     }
 }
 
-/// `dates` are Excel serial day numbers; `dates[0]` is the anchor.
 pub fn xnpv(rate: f64, values: &[f64], dates: &[f64]) -> f64 {
     let d0 = dates[0];
     values
@@ -716,13 +709,6 @@ pub fn coupdaybs(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> 
     basis_days_between(pcd, settlement, basis)
 }
 
-/// Days from settlement to the next coupon date. Confirmed against real
-/// Excel via the differential fuzzer that this is *not* simply
-/// `coupdays - coupdaybs` for basis 0/2/3/4: `COUPDAYS` reports an
-/// idealized period length (360/freq or 365/freq) that generally doesn't
-/// equal the period's actual calendar length, while `COUPDAYSNC` (like
-/// `COUPDAYBS`) uses the same real day-count convention applied directly
-/// to the settlement -> next-coupon span.
 pub fn coupdaysnc(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> f64 {
     let ncd = coupon_ncd(settlement, maturity, frequency);
     coupon_end_days(settlement, ncd, basis)
@@ -937,11 +923,6 @@ pub fn tbillyield(settlement: f64, maturity: f64, pr: f64) -> f64 {
     (100.0 - pr) / pr * (360.0 / dsm)
 }
 
-/// Bond-equivalent yield of a Treasury bill. The `dsm <= 182` branch is the
-/// exact documented formula; the longer-maturity branch uses the standard
-/// quadratic reconstruction (see e.g. LibreOffice's `GetTBillEq`) with a
-/// fixed 365-day year rather than special-casing the rare leap-February
-/// crossing, since real T-bills are issued for at most a year.
 pub fn tbilleq(settlement: f64, maturity: f64, discount: f64) -> Option<f64> {
     let dsm = maturity - settlement;
     if dsm <= 182.0 {
@@ -994,24 +975,6 @@ fn quasi_coupon_schedule(anchor: f64, lo: f64, hi: f64, frequency: f64) -> Vec<f
     dates
 }
 
-/// `calc_method` is accepted for signature compatibility but, per
-/// Microsoft's docs, only theoretically distinguishes "accrue from issue"
-/// (`TRUE`) from "accrue from the last coupon date" (`FALSE`). Confirmed
-/// against real Excel via the differential fuzzer across regular,
-/// odd-first-period, and multi-period cases that both values always
-/// produce the same total-accrued-from-issue result in practice, so this
-/// doesn't branch on it.
-///
-/// The per-period day-count denominator (`e`, below) is confirmed exact
-/// against real Excel only for basis 0 and 4 (30/360): those two always
-/// give a full elapsed period a numerator equal to its own denominator, so
-/// every complete period contributes exactly one coupon regardless of
-/// calendar length. Bases 1/2/3 do *not* reduce to a simple per-period or
-/// basis-year-average formula the way `PRICE`/`DURATION`/the `ODD*`
-/// functions do -- real Excel's exact undocumented rule for them wasn't
-/// reverse-engineerable from fuzzing within reasonable effort, so the fuzz
-/// generator restricts `ACCRINT` to basis 0/4 and this stays a documented,
-/// unverified best-effort for 1/2/3.
 #[allow(clippy::too_many_arguments)]
 pub fn accrint(
     issue: f64,
@@ -1081,16 +1044,6 @@ pub fn amorlinc(
     }
 }
 
-/// Confirmed against real Excel via the differential fuzzer for life >= 4
-/// (the coefficient-table brackets, including the final-period taper to
-/// zero once the remaining balance drops below salvage). Life <= 2 is
-/// rejected with #NUM!. Life in (2, 4) is a known gap: real Excel switches
-/// to straight-line much earlier there than this declining-balance
-/// implementation does (e.g. life 2.5 gives identical straight-line
-/// amounts for every remaining period starting immediately after the
-/// prorated first one, not a declining amount), and the exact switch
-/// condition wasn't pinned down within the fuzzer's reach -- the fuzz
-/// generator keeps life >= 4 to avoid this gap.
 pub fn amordegrc(
     cost: f64,
     date_purchased: f64,
@@ -1271,11 +1224,6 @@ fn oddlprice_e(last_interest: f64, _maturity: f64, frequency: f64, basis: f64) -
     coupon_end_days(last_interest, next_regular, basis)
 }
 
-/// Like `ODDFPRICE`/`ODDFYIELD`, this is a documented gap for a "long" odd
-/// period (here: last_interest to maturity spanning more than one regular
-/// coupon period) -- real Excel's exact handling wasn't reverse-
-/// engineered within the fuzzer's reach, so the fuzz generator keeps the
-/// odd period shorter than one regular period.
 #[allow(clippy::too_many_arguments)]
 pub fn oddlprice(
     settlement: f64,
