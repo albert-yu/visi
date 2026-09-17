@@ -64,21 +64,7 @@ pub struct WorkbookSummary {
     pub sheets: Vec<SheetSummary>,
 }
 
-/// A whole workbook: its sheets, charts, pivot tables and VBA project, and the
-/// operations that span more than one of them.
-///
-/// The entry point to this crate, and the layer an embedder should drive.
-/// Two behaviors are only correct at this level:
-///
-/// - **Cross-sheet recalculation.** [`Sheet::commit`] only propagates local
-///   dependencies; [`WorkbookManager::evaluate`] is what carries values across
-///   sheets.
-/// - **Pivot tables.** Nothing recomputes one implicitly.
-///   [`WorkbookManager::refresh_pivot_table`] is the only thing that writes a
-///   computed grid into cells.
-///
-/// Editing the [`Sheet`]s directly is allowed -- the fields are public -- but
-/// skips both, so cross-sheet formulas and pivot output go stale silently.
+/// An entire Excel Workbook
 pub struct WorkbookManager {
     /// The worksheets, in workbook order. Cell coordinates within them are
     /// 0-based.
@@ -143,10 +129,6 @@ impl WorkbookManager {
     }
 
     /// Serialize the workbook to `.xlsx` bytes.
-    ///
-    /// The byte-level counterpart to [`Self::load_bytes`]. Callers that want
-    /// to read or write an actual file supply their own IO -- the `visi` CLI
-    /// does so through its `WorkbookFile` trait.
     pub fn save_bytes(&self) -> crate::Result<Vec<u8>> {
         export_xlsx_data(
             &self.sheets,
@@ -302,11 +284,6 @@ impl WorkbookManager {
     }
 
     /// Merges `style` into one cell's existing style.
-    ///
-    /// Row and column are 0-based, like every other coordinate on this type.
-    /// A1 notation is a CLI/parser-boundary concern: callers holding a
-    /// string like `"Sheet2!B3"` parse it themselves and resolve the sheet
-    /// prefix against `sheet_name` before calling in.
     pub fn set_cell_style(
         &mut self,
         sheet_name: Option<&str>,
@@ -431,11 +408,7 @@ impl WorkbookManager {
         }
     }
 
-    /// Insert row at 0-based index.
-    ///
-    /// Formulas throughout the workbook are rewritten to follow the cells
-    /// that moved, as in Excel, and Excel Table and pivot ranges move with
-    /// the cells they cover. See `core::grid_edit` for the rules.
+    /// Insert row at 0-based index
     pub fn insert_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
         let sheet = &self.sheets[sheet_idx];
         let at = row_idx.min(sheet.row_count());
@@ -489,13 +462,7 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Excel's *Insert cells, shift down* over an inclusive column band,
-    /// with the workbook-wide formula rewrite that goes with it.
-    ///
-    /// This is what `ListRows.Add` is: only `first_col..=last_col` move, so a
-    /// formula beside the band stays put while one inside it shifts. See
-    /// `core::grid_edit`'s `band` field for the reference rules, which are
-    /// measured rather than assumed.
+    /// Excel's *Insert cells, shift down* over an inclusive column band
     pub fn insert_cells_shift_down(
         &mut self,
         sheet_idx: usize,

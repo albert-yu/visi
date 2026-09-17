@@ -591,12 +591,6 @@ impl Workbook {
     /// `source` is written verbatim -- callers include their own
     /// `Attribute VB_Name = "..."` line, matching how real Excel-authored
     /// module streams are shaped, and nothing reconciles it against `name`.
-    ///
-    /// Excel only loads macros from a `.xlsm`, so save the result with that
-    /// extension. Unlike the CLI, which refuses any other extension outright,
-    /// this does not police the filename -- `save_bytes` has no filename to
-    /// police, and a fuzz harness writing to a temp path shouldn't have to
-    /// care.
     #[pyo3(signature = (name, source, *, kind="standard", sheet=None))]
     fn add_macro(
         &mut self,
@@ -637,25 +631,7 @@ impl Workbook {
         Ok(())
     }
 
-    /// Runs one of this workbook's macros **against** this workbook, mirroring
-    /// `visi macro run FILE`.
-    ///
-    /// Returns `(type_name, value, mutated)`. Unlike the module-level
-    /// `visi_core.run_macro`, which takes loose source text and has no
-    /// workbook to touch, this gives the macro the Phase 2 host object model:
-    /// it can read and write cells, walk the sheets, and call
-    /// `Application.WorksheetFunction`. Anything it changes is in this
-    /// `Workbook` afterwards, and `save`/`save_bytes` is what persists it --
-    /// there is no implicit write, exactly as in the CLI.
-    ///
-    /// `module` picks which module to take the procedure from; omitted, every
-    /// module is searched for one declaring it. That resolution lives in
-    /// `visi-core` rather than here precisely so this and the CLI cannot
-    /// drift apart -- `edit_chart` and `add_pivot_field` show what the other
-    /// choice costs.
-    ///
-    /// **This executes code the workbook's author wrote.** Nothing else in
-    /// these bindings does: not `load`, not `evaluate`, not `roundtrip`.
+    /// Runs one of this workbook's macros
     #[pyo3(signature = (procedure, *, module=None, args=None))]
     fn run_macro(
         &mut self,
@@ -687,10 +663,6 @@ impl Workbook {
     }
 
     /// The VBA modules, as dicts.
-    ///
-    /// Carries the keys `visi macro list --json` emits (`name`, `kind`,
-    /// `source_lines`), plus `source` itself and `bound_sheet_id` -- the two
-    /// things that command does not report but that a round trip can lose.
     fn macros<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let modules = self.inner.list_vba_modules();
         let mut out = Vec::with_capacity(modules.len());
