@@ -30,6 +30,8 @@ impl Bitmask {
         }
         self.len += 1;
     }
+    /// Whether the entry at `index` holds a value,
+    /// returns false for out-of-bounds
     pub fn get(&self, index: usize) -> bool {
         if index >= self.len {
             return false;

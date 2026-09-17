@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// A random 53-bit identifier for a sheet or column.
 ///
-/// Capped to `2^53 - 1` so it survives a round trip through a JSON number,
-/// which is what a JavaScript host would deserialize it as. Falls back to the
-/// wall clock if the system random source is unavailable.
+/// Capped to `2^53 - 1` for JSON compatibility
 pub fn generate_unique_id() -> u64 {
     let mut buf = [0u8; 8];
     let val = if getrandom::getrandom(&mut buf).is_err() {
