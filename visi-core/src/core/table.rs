@@ -2,18 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Sheet, generate_unique_id};
 
-/// A named, rectangular range within a single worksheet, mirroring an Excel
-/// Table (a.k.a. `ListObject`): a header row, a body of data rows, and an
-/// optional totals row, all with stable per-column names that formulas can
-/// reference via structured references (e.g. `Sales[Amount]`).
-///
-/// This is a distinct concept from a `Sheet`: elsewhere in this codebase a
-/// `Sheet` is informally called a "table" (see `Sheet::new`'s default name
-/// `"table_1"`), but an `ExcelTable` is a sub-range that lives *on* a sheet,
-/// exactly like a real Excel Table can occupy only part of a worksheet.
+/// Mirrors an Excel Table (a.k.a. `ListObject`)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExcelTable {
-    /// Workbook-unique identifier, stable across renames.
+    /// Workbook-unique identifier
     pub id: u64,
     /// The table's name, as a structured reference spells it. Unique
     /// workbook-wide and matched case-insensitively.
@@ -33,24 +25,13 @@ pub struct ExcelTable {
     pub has_header_row: bool,
     /// Whether the last row is a totals row rather than data.
     pub has_totals_row: bool,
-    /// Column names, in sheet-column order, one per column in
-    /// `start_col..=end_col`. Kept in sync with the header row's cell text
-    /// (when `has_header_row` is true) by the CRUD methods in this file.
+    /// Column names, in sheet-column order
     pub columns: Vec<String>,
     /// Visual style theme name (e.g. "TableStyleMedium9", "TableStyleLight1", or custom theme)
     #[serde(default)]
     pub style_name: Option<String>,
-    /// Whether the last row of the range is Excel's *insert row* placeholder
-    /// rather than data -- i.e. the table has **zero data rows**.
-    ///
-    /// This cannot be inferred from the extent, which is the surprise:
-    /// deleting a one-data-row table's only row leaves `ref` at `A1:C2` and
-    /// sets `insertRow="1"` in `xl/tables/tableN.xml`, so a zero-row table
-    /// and a table with one *blank* data row have identical bounds. Excel
-    /// tells them apart by this flag and so must we -- `ListObject`'s
-    /// `.DataBodyRange` is `Nothing` and `.ListRows.Count` is 0 for the
-    /// former and a real range and 1 for the latter. Measured with
-    /// `fuzz/vba_table_probe.py --empty`.
+    /// Whether the last row of the range is Excel's *insert row* placeholder,
+    /// i.e. the table has **zero data rows**.
     #[serde(default)]
     pub has_insert_row: bool,
 }
@@ -78,11 +59,6 @@ impl ExcelTable {
 
     /// Last row of the table's actual data body, excluding the totals row
     /// and Excel's insert-row placeholder.
-    ///
-    /// May be less than `data_start_row()` for a table with no data rows, so
-    /// callers building a range from the pair must handle the empty case
-    /// rather than assuming `start..=end` is non-empty. See
-    /// [`ExcelTable::data_row_count`].
     pub fn data_end_row(&self) -> usize {
         self.end_row
             .saturating_sub(usize::from(self.has_totals_row))
@@ -91,10 +67,6 @@ impl ExcelTable {
 
     /// How many data rows the table actually has, which is 0 for a table
     /// sitting on its insert-row placeholder.
-    ///
-    /// Use this rather than comparing `data_start_row()` with
-    /// `data_end_row()`: an empty table's end is *below* its start, so the
-    /// subtraction underflows.
     pub fn data_row_count(&self) -> usize {
         (self.data_end_row() + 1).saturating_sub(self.data_start_row())
     }
@@ -112,8 +84,7 @@ impl ExcelTable {
     }
 
     /// Index (0-based, relative to the table's own columns) of the column
-    /// with the given name, matched case-insensitively as Excel does for
-    /// structured references.
+    /// with the given name, matched case-insensitively
     pub fn local_column_index(&self, name: &str) -> Option<usize> {
         self.columns
             .iter()
@@ -205,10 +176,7 @@ impl Sheet {
 
     /// Defines a new Excel Table over the rectangular range
     /// `start_row..=end_row` x `start_col..=end_col` (0-based, inclusive)
-    /// on this sheet. Column names are read from the header row's existing
-    /// cell text when `has_header_row` is true, falling back to "ColumnN"
-    /// for blank cells; otherwise every column gets a default "ColumnN"
-    /// name.
+    /// on this sheet.
     #[allow(clippy::too_many_arguments)]
     pub fn add_table(
         &mut self,
@@ -302,16 +270,8 @@ impl Sheet {
 
     /// Renames a table on this sheet.
     ///
-    /// Renaming here does *not* rewrite the formulas that reference the table
-    /// -- that cascade is `WorkbookManager::rename_table`'s job, and it is
-    /// what keeps `Sales[Amount]` pointing at the renamed table. Prefer that
-    /// entry point unless you are rewriting the references yourself.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message if the new name is not a valid table name, if
-    /// another table on this sheet already has it, or if no table on this
-    /// sheet has `old_name`.
+    /// Renaming here does *not* rewrite the formulas that reference the table.
+    /// `WorkbookManager::rename_table` handles that.
     pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> Result<(), String> {
         validate_table_name(new_name)?;
         if self.tables.iter().any(|t| {
@@ -329,9 +289,6 @@ impl Sheet {
 
     /// Extends or shrinks a table's range by moving its bottom-right corner
     /// to `new_end_row`/`new_end_col` (the top-left corner never moves).
-    /// Column names for any newly-included columns are read from the
-    /// header row (or default to "ColumnN"); names for columns that
-    /// already existed are preserved by position.
     pub fn resize_table(
         &mut self,
         name: &str,

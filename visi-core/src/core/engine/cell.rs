@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// A random 53-bit identifier for a sheet or column.
 ///
-/// Capped to `2^53 - 1` so it survives a round trip through a JSON number,
-/// which is what a JavaScript host would deserialize it as. Falls back to the
-/// wall clock if the system random source is unavailable.
+/// Capped to `2^53 - 1` for JSON compatibility
 pub fn generate_unique_id() -> u64 {
     let mut buf = [0u8; 8];
     let val = if getrandom::getrandom(&mut buf).is_err() {
@@ -19,7 +17,7 @@ pub fn generate_unique_id() -> u64 {
     val & 0x001F_FFFF_FFFF_FFFF
 }
 
-/// [AI-Agent] The intrinsic data type of a cell, mirroring calamine worksheet value variants.
+/// The intrinsic data type of a cell, mirroring calamine worksheet value variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum CellType {
     /// Empty cell (`calamine::Data::Empty`).
@@ -44,12 +42,12 @@ pub enum CellType {
 }
 
 impl CellType {
-    /// [AI-Agent] Whether this cell type is explicitly a string/text cell.
+    /// Whether this cell type is explicitly a string/text cell.
     pub fn is_string(&self) -> bool {
         matches!(self, CellType::String)
     }
 
-    /// [AI-Agent] Stable lowercase spelling used by CLI and JSON output.
+    /// Stable lowercase spelling used by CLI and JSON output.
     pub fn as_str(&self) -> &'static str {
         match self {
             CellType::Empty => "empty",
@@ -68,10 +66,10 @@ impl CellType {
 /// For either a column or row
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RefType {
-    /// Written without a `$`, so it shifts when the formula is filled or
-    /// copied.
+    /// Written without a `$`, so it shifts
+    /// when the formula is filled or copied
     Relative,
-    /// Written with a `$`, so it stays put.
+    /// Written with a `$`, so it stays put
     Absolute,
 }
 
@@ -84,15 +82,12 @@ impl std::fmt::Display for RefType {
     }
 }
 
-/// A cell's position, plus whether it was written as absolute.
-///
-/// Coordinates are 0-based, as everywhere inside the engine; `A1` is
-/// `CellRef::new(0, 0)`.
+/// A cell's position, plus whether it was written as absolute
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CellRef {
-    /// Row index, 0-based.
+    /// Row index, 0-based
     pub row: usize,
-    /// Column index, 0-based.
+    /// Column index, 0-based
     pub col: usize,
     /// Whether the row was written with a `$`.
     pub row_ref_type: RefType,
@@ -122,18 +117,8 @@ impl CellRef {
     }
 }
 
-/// Something a formula reads, and therefore an edge in the recalculation
-/// graph.
-///
-/// The local/remote split is load-bearing. `Sheet::commit` propagates through
-/// the `Local` variants only -- a sheet cannot reach into its neighbors, so a
-/// remote edge it finds is recorded but not followed. Chasing those is
-/// `WorkbookManager::evaluate`'s job, which marks every sheet dirty and runs a
-/// fixed number of passes over the workbook; a cross-sheet chain deeper than
-/// that number of hops will not have converged when it stops.
-///
-/// Remote variants key on the sheet *name* rather than its id, since that is
-/// what a formula's text carries and what `Context` is indexed by.
+/// Something a formula reads, and therefore
+/// an edge in the recalculation graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dependency {
     /// A cell on the same sheet.
@@ -156,27 +141,21 @@ pub enum Dependency {
     },
 }
 
-/// A caret position: a cell plus an offset within its source text, for the
-/// text-editing operations `Sheet::insert` and `Sheet::delete`.
+/// A caret position: a cell plus an offset within its source text
 #[derive(Debug, Clone, Default)]
 pub struct TextCellRef {
-    /// Row index, 0-based.
+    /// Row index, 0-based
     pub row: usize,
-    /// Column index, 0-based.
+    /// Column index, 0-based
     pub col: usize,
-    /// Offset into the cell's source text, in characters rather than bytes.
+    /// Offset into the cell's source text, in characters rather than bytes
     pub char_offset: usize,
 }
 
-/// A formula that could not be evaluated at all.
-///
-/// Distinct from an Excel error value: `=1/0` evaluates successfully to
-/// `ResultData::Error("#DIV/0!")`, whereas this is for text that never became
-/// a computable formula.
+/// A formula that could not be evaluated at all
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
-    /// The formula could not be parsed, or named something unrecognized. The
-    /// string is the message, which for some failures is an Excel error code.
+    /// The formula could not be parsed, or named something unrecognized
     UnknownFunction(String),
 }
 

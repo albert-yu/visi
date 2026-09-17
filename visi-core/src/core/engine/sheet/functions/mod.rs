@@ -76,10 +76,6 @@ impl Sheet {
     }
 
     /// Evaluates a function call by name.
-    ///
-    /// Handles the lazy/short-circuit functions itself, since their arguments
-    /// must not be evaluated up front, then evaluates the remaining arguments
-    /// and offers the call to each family module in turn.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn evaluate_function(
         &self,

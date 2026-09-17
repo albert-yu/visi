@@ -1,14 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// A single edit made to a workbook, recorded so a host can observe or replay
-/// it.
-///
-/// `Sheet` appends one of these to `Sheet::uncommitted_actions` for each edit.
-/// Sheets are named rather than held by id, since an action is meant to
-/// survive being written down and applied elsewhere.
-///
-/// "Table" in the variant names means a *sheet*, following this codebase's
-/// older informal naming -- not an `ExcelTable`.
+/// A single edit made to a workbook, recorded so a
+/// host can observe or replay it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SheetAction {
     /// A cell's raw text was replaced.

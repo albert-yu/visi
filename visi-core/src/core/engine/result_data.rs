@@ -2,15 +2,13 @@ use serde::{Deserialize, Serialize};
 
 /// What a cell holds once it has been evaluated.
 ///
-/// There is deliberately **no date variant**. As in Excel, a date is a plain
-/// numeric serial and the notation it was typed in lives on the cell, as
-/// `CellStyle::num_format` -- so `ISNUMBER` is true for a date, `SUM` counts
-/// it, and every numeric path works on it untouched. Only rendering consults
-/// the format, through `Sheet::get_display_string`.
+/// We intentionally omit a date type. In Excel, a date is a plain
+/// numeric serial and the notation is saved separately, as
+/// `CellStyle::num_format`. This way, we can treat dates like
+/// any other numeric type (e.g. `SUM`).
 ///
-/// An Excel error is a *value*, not a Rust error: `=1/0` evaluates
-/// successfully to `Error("#DIV/0!")`. See [`EngineError`] for the failures
-/// that are not values.
+/// An Excel error is a *value*, not a Rust error, e.g. `=1/0` evaluates
+/// successfully to `Error("#DIV/0!")`. See [`EngineError`] for Rust errors.
 ///
 /// [`EngineError`]: crate::core::EngineError
 #[derive(Debug, Clone, Serialize, Deserialize)]

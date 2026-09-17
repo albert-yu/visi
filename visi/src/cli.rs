@@ -906,23 +906,9 @@ pub enum MacroSubcommands {
     Run(MacroRunArgs),
 }
 
-/// Running a macro executes code the workbook's author wrote, so it is never
-/// implicit: no other subcommand runs one, and `eval` in particular does not.
-///
-/// Given a workbook the macro runs *against* it and can read and write cells,
-/// so it needs `--output` or `--in-place` like any other write command -- a
-/// macro that changes the workbook with neither is an error rather than a
-/// silent discard. Given a `.bas` file there is no workbook, and anything
-/// reaching for one reports so rather than doing nothing quietly.
-///
-/// Only part of Excel's object model is implemented (`Range`, `Cells`,
-/// `Worksheets`, `WorksheetFunction`, and the properties in the Phase 2 list
-/// of `docs/vba-macro-support.md`). Everything else -- styles, tables,
-/// pivots, `CreateObject`, `MsgBox`, file and network I/O -- raises a
-/// run-time error naming the construct.
 #[derive(Args, Debug)]
 pub struct MacroRunArgs {
-    /// Input Excel file path, or a .bas source file, or - for stdin
+    /// Input Excel file path, a .bas source file, or - for stdin
     pub file: String,
     /// Name of the procedure to run
     #[usage(short, long)]
@@ -952,11 +938,6 @@ pub struct MacroCheckArgs {
     #[usage(short, long)]
     pub name: Option<String>,
     /// Treat the input as part of a larger project
-    ///
-    /// A name used with call syntax that resolves nowhere is accepted
-    /// rather than reported, since a module not supplied here -- a sibling
-    /// of a loose .bas file, or a referenced project -- may declare it.
-    /// Everything the source's own text disproves is still reported.
     #[usage(long)]
     pub partial: bool,
     /// Output results as JSON
@@ -968,8 +949,7 @@ pub struct MacroCheckArgs {
 pub enum VbaModuleKindArg {
     /// A plain module with no host object binding
     Standard,
-    /// A class module (not fully validated against real Excel -- see the
-    /// VBA feature's known limitations)
+    /// A class module
     Class,
     /// A document module (e.g. a worksheet's code-behind); requires
     /// --sheet

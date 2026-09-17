@@ -51,16 +51,6 @@ fn any_null(args: &[Variant]) -> bool {
     args.iter().any(|a| a.is_null())
 }
 
-/// Every intrinsic [`call`] dispatches on, lowercased.
-///
-/// Kept beside the dispatch it mirrors, and locked to it from both ends:
-/// `every_listed_name_is_dispatched` here proves each entry really is
-/// handled, and `builtin_names::every_implemented_intrinsic_is_a_known_builtin`
-/// proves each is also a name `macro check` will accept -- an intrinsic this
-/// engine evaluates is by definition real VBA, so a checker that rejected it
-/// would be calling working code broken.
-/// Only the two locking tests consult it, so it costs a non-test build
-/// nothing.
 #[cfg(test)]
 #[rustfmt::skip]
 pub(super) const IMPLEMENTED_NAMES: &[&str] = &[
@@ -72,13 +62,11 @@ pub(super) const IMPLEMENTED_NAMES: &[&str] = &[
     "strreverse", "tan", "trim", "typename", "ubound", "ucase", "val", "vartype",
 ];
 
-/// [`IMPLEMENTED_NAMES`], for callers outside this module.
 #[cfg(test)]
 pub(super) fn implemented_names() -> impl Iterator<Item = &'static str> {
     IMPLEMENTED_NAMES.iter().copied()
 }
 
-/// Calls an intrinsic by name, or returns `None` if there is no such name.
 pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
     let lower = name.to_ascii_lowercase();
 

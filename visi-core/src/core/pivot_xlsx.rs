@@ -639,9 +639,6 @@ fn extract_max_rid(rels_xml: &str) -> usize {
     max_id
 }
 
-/// Post-processes an already-exported xlsx buffer, adding native PivotTable
-/// parts for every entry in `pivots` whose destination sheet still exists.
-/// Returns the buffer unchanged if there's nothing to add.
 pub fn inject_pivot_tables(
     xlsx_bytes: Vec<u8>,
     sheets: &[Sheet],
@@ -864,32 +861,13 @@ struct ParsedPivotTable {
     row_grand_totals: bool,
     col_grand_totals: bool,
     location_ref: Option<String>,
-    /// Field indices (into the cache's `cacheFields`) used as row/col
-    /// fields, in order; the `-2` "Values" pseudo-field sentinel is
-    /// filtered out already.
     row_field_x: Vec<usize>,
     col_field_x: Vec<usize>,
     page_field_fld: Vec<usize>,
     /// (source field index, aggregation, display name).
     data_fields: Vec<(usize, PivotAggregation, String)>,
-    /// Per-`<pivotFields>`-position (same indexing as `row_field_x`/
-    /// `col_field_x`), whether that field's `<items>` included the
-    /// `<item t="default"/>` subtotal placeholder `build_items_xml` writes
-    /// -- i.e. the field's `PivotField::subtotal` toggle. Absent entries
-    /// (fields with no `<items>` at all, e.g. plain non-axis columns)
-    /// default to `true` at the lookup site, same as `PivotField::new`.
     field_has_subtotal_item: HashMap<usize, bool>,
-    /// Per `<pivotFields>` position, that field's `<items>` as
-    /// `(shared-items index, hidden)` pairs, in the order they appear -- the
-    /// display order. The `<item t="default"/>` placeholder is not included.
-    ///
-    /// This is what a filter selection is recorded against, in both of the
-    /// forms Excel writes: `h="1"` marks a hidden item in the multi-select
-    /// form, and a `<pageField item="N">` names a *position in this list* in
-    /// the single-select form. Measured; see `fuzz/pivot_filter_probe.py`.
     field_items: HashMap<usize, Vec<(usize, bool)>>,
-    /// Per page field, in `page_field_fld` order, the `item` attribute of its
-    /// `<pageField>` -- a position into that field's `field_items`.
     page_field_item: Vec<Option<usize>>,
 }
 
@@ -1058,9 +1036,6 @@ struct ParsedCacheDefinition {
     field_names: Vec<String>,
     source_sheet: String,
     source_ref: String,
-    /// Each field's `<sharedItems>` values, in the cache's own first-seen
-    /// order -- which is the index space an `<item x="N"/>` refers to.
-    /// Empty for a field that stores none (an aggregated-only column).
     shared_items: Vec<Vec<String>>,
 }
 
@@ -1136,12 +1111,6 @@ pub(crate) fn parse_a1_range(s: &str) -> Option<(usize, usize, usize, usize)> {
     }
 }
 
-/// Reconstructs every `PivotTable` definable from a workbook's pivot XML
-/// parts, matching sheets by name against `sheet_id_by_name` (the already
-/// -imported sheets, keyed by their possibly de-duplicated import name) and
-/// tables by name against `find_table`. Best-effort: silently skips any
-/// pivot table whose parts can't be fully resolved rather than failing the
-/// whole import.
 pub fn import_pivot_tables(
     buffer: &[u8],
     sheet_id_by_name: &HashMap<String, u64>,

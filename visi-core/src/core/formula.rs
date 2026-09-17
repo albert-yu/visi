@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// `Sales[#Headers]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SheetSection {
-    /// The body rows, excluding header and totals. The default.
+    /// The body rows, excluding header and totals (default)
     Data,
     /// The header row.
     Headers,
@@ -15,8 +15,7 @@ pub enum SheetSection {
     All,
 }
 
-/// One piece of a compiled formula: either literal text or a reference held by
-/// id.
+/// One piece of a compiled formula
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FormulaPart {
     /// A literal stretch of the formula -- operators, function names,
@@ -77,10 +76,7 @@ pub enum FormulaPart {
     },
 }
 
-/// A formula split into literal text and id-held references.
-///
-/// Cached per cell in `DataColumn::compiled_src`, and rendered back to A1 text
-/// on demand by `parser::serialize_formula`.
+/// A formula split into literal text and id-held references
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledFormula {
     /// The pieces, in the order they appear in the formula text.
@@ -89,22 +85,10 @@ pub struct CompiledFormula {
 
 impl CompiledFormula {
     /// Creates a plain formula from a raw string, without any parsed references.
-    /// Useful as a default constructor or fallback.
     pub fn plain(text: String) -> Self {
         Self {
             parts: vec![FormulaPart::Text(text)],
         }
-    }
-
-    /// Checks if the formula is empty
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.parts.is_empty()
-            || (self.parts.len() == 1
-                && match &self.parts[0] {
-                    FormulaPart::Text(s) => s.is_empty(),
-                    _ => false,
-                })
     }
 }
 

@@ -2,14 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-/// A `Vec` behind an [`Arc`], cheap to clone and copy-on-write to mutate.
-///
-/// The engine clones whole sheets freely -- to build a compilation context, to
-/// snapshot state -- and most of those clones never write. Sharing the backing
-/// buffer makes that cheap; the first mutation through [`DerefMut`] calls
-/// `Arc::make_mut` and takes a private copy if anyone else still holds one.
-///
-/// Derefs to `[T]` and `Vec<T>`, so it is used exactly like a `Vec`.
+/// A `Vec` behind an [`Arc`], cheap to clone and copy-on-write to mutate
 #[derive(Debug, Clone)]
 pub struct SharedVec<T>(Arc<Vec<T>>);
 

@@ -712,7 +712,6 @@ pub(crate) fn format_text_format(val: &str, format_text: &str) -> Option<String>
     Some(clean_format_literal(&section.chars().collect::<Vec<_>>()).replace('@', val))
 }
 
-/// [AI-Agent] A pragmatic subset of Excel's number-format mini-language for TEXT() and cell display.
 pub fn text_fn(val: f64, format_text: &str) -> Result<String, String> {
     format_number_format(val, format_text)
 }

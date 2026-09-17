@@ -326,24 +326,6 @@ pub fn arabic(text: &str) -> Result<f64, String> {
     }
 }
 
-/// Excel's ROMAN, including its four progressively "concise" forms.
-///
-/// Form 0 is classic notation, which only subtracts a power of ten one or
-/// two places below the numeral it precedes (CM, CD, XC, XL, IX, IV).
-/// Forms 1-4 unlock progressively longer "reaches" and additionally allow
-/// the half-power numerals (V, L, D) to be subtracted, which is how Excel
-/// gets its shorter non-classical spellings.
-///
-/// Writing the numerals in descending order M D C L X V I (indices 0..6),
-/// let `reach` be the index distance from the minuend to the subtrahend.
-/// The concision level a pair needs is then:
-///   * power-of-ten subtrahend (I, X, C):  `2 * ((reach - 1) / 2)`
-///   * half-power subtrahend  (V, L, D):   `1 + 2 * ((reach - 2) / 2)`
-///
-/// That reproduces every documented pair at exactly the form Excel first
-/// uses it: CD/XL/IV and CM/XC/IX at form 0; LD/LM/VL at 1; XD/XM at 2;
-/// VD/VM at 3; ID/IM at 4. Verified against real Excel across all five
-/// forms of 45, 499, 990, 1481 and 1999.
 pub fn roman(number: f64, form: Option<f64>) -> Result<String, String> {
     let n = number.floor() as i64;
     if !(1..=3999).contains(&n) {

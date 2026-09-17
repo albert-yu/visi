@@ -1,5 +1,3 @@
-/// Whether `name` is a VBA or Excel-host built-in, matched
-/// case-insensitively as VBA does.
 pub(super) fn is_builtin(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     BUILTIN_NAMES.contains(&lower.as_str())

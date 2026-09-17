@@ -7,20 +7,9 @@ use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// A `Sub`, `Function`, `Property` or `Declare` -- a legitimate call
-    /// target.
     Callable,
-    /// Declared with array bounds (`x()`, `x(10)`) -- `x(i)` is indexing,
-    /// not a call, so this is left alone rather than rejected.
     Array,
-    /// A plain scalar: no array bounds, and either untyped (defaults to
-    /// `Variant`) or typed as one of VBA's primitive scalar types. This is
-    /// the only kind an implicit-call statement is rejected for.
     PlainScalar,
-    /// An object-shaped declared type (`As New X`, `As SomeClass`, a dotted
-    /// path) -- could have a default member callable with arguments, and
-    /// this pass cannot resolve user-defined class shapes, so it is left
-    /// alone.
     Opaque,
 }
 
@@ -53,28 +42,12 @@ fn norm(name: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// What a call target may resolve against, beyond the module's own text.
 pub(super) struct Scope<'a> {
-    /// Names declared by *other* modules in the same project. Empty when
-    /// the caller has no project to consult.
     pub external: &'a std::collections::HashSet<String>,
-    /// Whether [`Scope::external`] is known to cover every other module in
-    /// the project.
-    ///
-    /// This gates the whole undeclared-name rule, and is the safety valve
-    /// the design turns on. Excel compiles a *project*, so `x = arr(1)` is
-    /// legal whenever any module declares `arr` -- meaning a checker
-    /// looking at one module of several genuinely cannot tell an
-    /// undeclared name from a cross-module reference. With this `false`,
-    /// an unresolvable name is accepted and only the
-    /// definitely-not-callable rule applies.
     pub complete_project: bool,
 }
 
 impl Scope<'_> {
-    /// A scope for source that is the whole project as far as anyone knows
-    /// -- a standalone `.bas`, or the single generated module the
-    /// differential harness asks Excel about.
     pub fn self_contained(empty: &std::collections::HashSet<String>) -> Scope<'_> {
         Scope {
             external: empty,
@@ -82,8 +55,6 @@ impl Scope<'_> {
         }
     }
 
-    /// A scope for one module of a project whose other modules were not
-    /// supplied. Never rejects an unresolvable name.
     pub fn partial(empty: &std::collections::HashSet<String>) -> Scope<'_> {
         Scope {
             external: empty,
@@ -96,16 +67,11 @@ impl Scope<'_> {
     }
 }
 
-/// Checks `module`'s call targets against the symbol table built from its
-/// own text plus `scope`, per this module's doc.
 pub(super) fn check_module(module: &Module, scope: &Scope<'_>) -> Result<(), ParseError> {
     let module_syms = collect_module_symbols(module);
     check_items(&module.items, &module_syms, scope)
 }
 
-/// Every name `module` declares at module level, already [`norm`]alised --
-/// what a sibling module's [`Scope::external`] is built from, and so keyed
-/// the same way [`Ctx::known`] will look them up.
 pub(super) fn declared_names(module: &Module) -> Vec<String> {
     collect_module_symbols(module).into_keys().collect()
 }

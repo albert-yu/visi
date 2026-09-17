@@ -41,10 +41,6 @@ fn build_skeleton_vba_project_cache() -> Vec<u8> {
     cache
 }
 
-/// Builds a from-scratch `vbaProject.bin` CFB container holding just the
-/// `dir` and `_VBA_PROJECT` streams -- everything `VbaProject::raw_donor`
-/// needs to exist for `vba_xlsx::build_vba_project_bin` to patch, without
-/// any of it being copied from a real file.
 pub fn synthetic_raw_donor() -> Vec<u8> {
     let dir_compressed =
         ovba::compress(&build_skeleton_dir()).expect("tiny synthetic dir stream always compresses");
@@ -77,9 +73,6 @@ const PREFIX_LEN: usize = LINE_COUNT_OFFSET + 2;
 
 const CAFE_MAGIC: u16 = 0xCAFE;
 
-/// A minimal, self-consistent, zero-procedure p-code prefix -- see the
-/// module doc comment for why this replaces borrowing real bytes from a
-/// donor module.
 pub fn synthetic_module_prefix() -> Vec<u8> {
     let mut buf = vec![0u8; PREFIX_LEN];
 

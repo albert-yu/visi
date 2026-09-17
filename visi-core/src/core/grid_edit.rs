@@ -20,20 +20,8 @@ pub(crate) struct GridEdit {
     pub count: usize,
     /// `true` for an insert, `false` for a delete.
     pub insert: bool,
-    /// Restricts the edit to an inclusive column range, for Excel's
-    /// *Insert / Delete cells, shift down / up* over a band -- which is what
-    /// `ListRows.Add` actually is, not a row insert.
-    ///
-    /// `None` is a whole-row edit. Only meaningful with [`Axis::Row`]; the
-    /// mirrored column-axis form (a shift-right over a *row* band) is not
-    /// implemented, and [`GridEdit::band_rows`] is the only constructor that
-    /// sets this.
-    ///
-    /// Measured: **a reference moves if and only if its columns lie entirely
-    /// inside the band**, and then the ordinary rules apply unchanged. A
-    /// range straddling the band's edge does not move at all -- it cannot
-    /// both shift and not shift, and Excel resolves that by leaving it
-    /// alone. See `fuzz/band_insert_probe.py`.
+    /// Restricts the edit to an inclusive column range.
+    /// `None` edits the whole row.
     pub band: Option<(usize, usize)>,
 }
 

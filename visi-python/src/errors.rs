@@ -100,10 +100,6 @@ create_exception!(
     "A worksheet can carry only one bound VBA document module."
 );
 
-/// Newtype around [`CoreError`] so `?` works inside `#[pymethods]`.
-///
-/// Needed because both `visi_core::Error` and `PyErr` are foreign to this
-/// crate, so the orphan rule forbids `impl From<CoreError> for PyErr`.
 pub struct Wrapped(pub CoreError);
 
 impl From<CoreError> for Wrapped {
@@ -183,15 +179,10 @@ impl From<Wrapped> for PyErr {
     }
 }
 
-/// An argument these bindings rejected before it reached visi-core.
-///
-/// Separate from [`Wrapped`] so argument validation and engine failures do not
-/// have to be spelled the same way at every call site.
 pub fn invalid_argument(msg: impl std::fmt::Display) -> PyErr {
     PyErr::new::<InvalidArgumentError, _>((msg.to_string(),))
 }
 
-/// Registers every exception class on the module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add("VisiError", py.get_type::<VisiError>())?;

@@ -19,33 +19,15 @@ pub mod value;
 use crate::{Error, ObjectKind};
 use serde::{Deserialize, Serialize};
 
-/// What [`check_syntax`] found in a module that parsed.
+/// [`check_syntax`] result
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct ModuleSyntax {
-    /// The names of every `Sub`, `Function` and `Property` declared, in source
-    /// order. Procedures inside a `#If` branch are all included: which branch
-    /// is live depends on `#Const` values, which parsing alone cannot decide.
+    /// Every `Sub`, `Function` and `Property` in source order
     pub procedures: Vec<String>,
 }
 
 /// Checks a VBA module's source for syntax errors.
-///
-/// Phase 0 of the plan in `docs/vba-macro-support.md`, plus the narrow
-/// name-resolution pass in [`resolve`]: it answers
-/// whether the source *compiles*, as far as parsing and resolving the names
-/// it can see will show. It does not check types or evaluate anything, so it
-/// will still accept a module that fails at run time -- and, being an
-/// independent implementation, may differ from Excel's compiler at the edges.
-///
-/// **`source` is treated as a self-contained project.** A name used with
-/// call syntax that resolves nowhere -- not in this module, not a VBA or
-/// Excel built-in -- is reported, which is right for a standalone `.bas` and
-/// for the single generated module the differential harness compiles, but
-/// would be wrong for one module of a larger project, where the name may
-/// live in a sibling. Use [`VbaProject::check_modules`] for that case -- it
-/// supplies each module the others' names -- or [`check_syntax_partial`]
-/// when the siblings are not available at all.
 ///
 /// ```
 /// use visi_core::core::check_syntax;
@@ -57,20 +39,8 @@ pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
     check_source(source, None, &resolve::Scope::self_contained(&empty))
 }
 
-/// [`check_syntax`] for source that is **one module of a larger project**
-/// whose other modules are not available.
-///
-/// Same parse and the same rules, with one exception: a name that resolves
-/// nowhere is accepted rather than reported, since a sibling module this
-/// call cannot see may well declare it. Everything the module's own text
-/// disproves -- a syntax error, a duplicate declaration, a plain local used
-/// as a call target -- is still reported.
-///
-/// This is strictly the weaker check, and is the scope
-/// [`VbaModule::check_syntax`] already uses. Prefer
-/// [`VbaProject::check_modules`] wherever the whole project is in hand;
-/// reach for this only when it genuinely is not, as for a `.bas` file cut
-/// out of a project that lives elsewhere.
+/// Check source that is part of a larger project
+/// where other modules may not be available.
 ///
 /// ```
 /// use visi_core::core::{check_syntax, check_syntax_partial};
@@ -78,7 +48,6 @@ pub fn check_syntax(source: &str) -> Result<ModuleSyntax, Error> {
 /// let src = "Sub Caller()\n    DoWork 1\nEnd Sub\n";
 /// assert!(check_syntax(src).is_err());
 /// assert!(check_syntax_partial(src).is_ok());
-/// // A fragment is still held to what its own text shows.
 /// assert!(check_syntax_partial("Sub Caller()\n").is_err());
 /// ```
 pub fn check_syntax_partial(source: &str) -> Result<ModuleSyntax, Error> {
@@ -104,28 +73,16 @@ fn check_source(
     })
 }
 
-/// The outcome of running a VBA procedure: its return value, rendered the way
-/// VBA would render it, plus the subtype name `TypeName()` reports.
-///
-/// Both halves matter. An interpreter that computes the right number with the
-/// wrong subtype has a real bug -- `1 + 1` is an `Integer` and `1 / 1` is a
-/// `Double` -- so the differential fuzzer compares the type as well as the
-/// value.
+/// The outcome of running a VBA procedure
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RunOutcome {
-    /// `TypeName()` of the returned value.
+    /// `TypeName()`
     pub type_name: String,
-    /// `CStr()` of the returned value, or `None` where VBA itself cannot
+    /// `CStr()`, or `None` where VBA itself cannot
     /// stringify it (`Null`).
     pub value: Option<String>,
-    /// Whether the run changed the workbook.
-    ///
-    /// Always `false` from [`run_macro`], which has no workbook to change.
-    /// From [`crate::core::WorkbookManager::run_macro`] this is what tells a caller
-    /// whether it has something worth saving -- and, for the `visi` CLI,
-    /// whether discarding the result silently would be a data loss rather
-    /// than a no-op.
+    /// Whether the run changed the workbook
     pub mutated: bool,
 }
 
@@ -165,23 +122,7 @@ fn to_runtime_error(e: value::VbaError) -> Error {
 }
 
 impl crate::core::WorkbookManager {
-    /// Runs one of this workbook's own VBA procedures **against** this
-    /// workbook.
-    ///
-    /// Phase 2 of `docs/vba-macro-support.md`, and the entry point that
-    /// separates it from Phase 1: the interpreter borrows the workbook for
-    /// the duration, so a macro can read and write cells, walk the sheets,
-    /// and call worksheet functions. [`run_macro`] stays as the text-only
-    /// form -- it is what `visi_core.run_macro` and `fuzz/fuzz_vba.py` drive,
-    /// and a macro that touches no workbook has no reason to need one.
-    ///
-    /// `module` picks which module to take the procedure from; `None`
-    /// searches every module for one that declares it, which is the common
-    /// single-module case. Resolving it here rather than in each caller is
-    /// Runs a VBA procedure in the workbook's project.
-    ///
-    /// The workbook is left recalculated, so a caller that saves afterwards
-    /// writes the values the macro itself would have read.
+    /// Runs one of this workbook's own VBA procedures
     pub fn run_macro(
         &mut self,
         module: Option<&str>,
@@ -276,16 +217,7 @@ impl crate::core::WorkbookManager {
     }
 }
 
-/// Parses `source` and runs one of its procedures.
-///
-/// Phase 1 of `docs/vba-macro-support.md`: expressions, control flow,
-/// `Sub`/`Function` calls and `On Error`. There is **no host object model**,
-/// so anything touching a workbook raises a run-time error naming what it
-/// was rather than silently doing nothing.
-///
-/// Execution is bounded -- a statement budget stops a runaway loop and a
-/// depth limit stops unbounded recursion -- because this runs source the
-/// caller did not necessarily write.
+/// Parses `source` and runs one of its procedures
 ///
 /// ```
 /// use visi_core::core::run_macro;
@@ -310,17 +242,7 @@ pub fn run_macro(source: &str, procedure: &str, args: &[&str]) -> Result<RunOutc
 }
 
 impl VbaModule {
-    /// Checks this module's source, naming it in any error.
-    ///
-    /// The name matters more than it looks: a workbook can hold many modules
-    /// and `visi macro check` reports on all of them, so an error that does
-    /// not say which one it came from is close to useless.
-    ///
-    /// A `VbaModule` does not know its project, so unlike the free
-    /// [`check_syntax`] this **cannot** conclude anything from a name it
-    /// fails to resolve -- a sibling module may well declare it. Reach for
-    /// [`VbaProject::check_modules`] when the project is available; it is
-    /// strictly the better check.
+    /// Checks this module's source, naming it in any error
     pub fn check_syntax(&self) -> Result<ModuleSyntax, Error> {
         let empty = std::collections::HashSet::new();
         check_source(
@@ -331,18 +253,16 @@ impl VbaModule {
     }
 }
 
-/// What kind of VBA module a [`VbaModule`] is, which decides how it binds to
+/// What kind [`VbaModule`] is, which decides how it binds to
 /// the workbook.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VbaModuleKind {
     /// A `.bas`-equivalent module with no host object binding.
     Standard,
-    /// A `.cls`-equivalent module (not validated end-to-end against real
-    /// Excel yet -- see the feature plan's open-risk notes).
+    /// A `.cls`-equivalent module).
+    /// TODO: fuzz this against real Excel
     Class,
-    /// `ThisWorkbook` or a worksheet's code-behind module. Must correspond
-    /// 1:1 with an existing sheet (or the workbook itself) via
-    /// `bound_sheet_id`, mirroring Excel's own codeName wiring.
+    /// `ThisWorkbook` or a worksheet's code-behind module
     Document,
 }
 
@@ -350,32 +270,17 @@ pub enum VbaModuleKind {
 /// keep Excel happy on export.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VbaModule {
-    /// VB_Name -- must satisfy `validate_vba_module_name`.
+    /// VB_Name -- must satisfy [`validate_vba_module_name`]
     pub name: String,
-    /// What kind of module this is, and so how it binds to the workbook.
+    /// What kind of module this is
     pub kind: VbaModuleKind,
-    /// Plain VBA source text (no compression, no Attribute-line management
-    /// beyond what the caller writes -- callers are expected to include the
-    /// `Attribute VB_Name = "..."` line themselves, matching how real
-    /// Excel-authored module streams are shaped).
+    /// Plain VBA source text
     pub source: String,
-    /// Required iff `kind == Document`: the sheet this module's code
-    /// belongs to (or `None`/ignored for `ThisWorkbook`, which isn't tied to
-    /// a specific sheet). Kept as a stable id (not a name) so sheet renames
-    /// don't silently orphan the binding -- deliberately NOT cascaded the
-    /// other direction (renaming this module does not rename the sheet, and
-    /// vice versa; Excel allows the two names to diverge).
+    /// Required iff `kind == Document`
     pub bound_sheet_id: Option<u64>,
     /// Opaque bytes forming the pre-TextOffset "p-code prefix" of this
-    /// module's stream. Never reparsed or validated by this codebase --
-    /// proven (via the POC) that its *content* doesn't need to correspond
-    /// to this module's actual source, only its presence matters, as long
-    /// as it's shaped the way real Excel's module loader expects (a
-    /// naively zero-filled placeholder of the same length is NOT enough).
-    /// For an imported module these are the real bytes read back from the
-    /// original file; for a module created in this codebase they're
-    /// `vba_synth::synthetic_module_prefix()`'s from-scratch, self-consistent
-    /// zero-procedure cache -- see that module's doc comment.
+    /// module's stream. Has nothing to do with the actual content of the
+    /// module
     #[serde(default)]
     pub prefix_bytes: Vec<u8>,
     /// The module stream's MODULECOOKIE record (`0x002C`) value. MS-OVBA
@@ -384,11 +289,8 @@ pub struct VbaModule {
     #[serde(default = "default_module_cookie")]
     pub module_cookie: u16,
     /// This module stream's already-compressed source, as read back
-    /// verbatim from an imported file -- `None` for a module created fresh
-    /// in this session (nothing to cache yet). `set_vba_module_source`
-    /// clears this whenever `source` is replaced. Export reuses the cached
-    /// bytes instead of recompressing `source` from scratch for every
-    /// module untouched by the CRUD operation that triggered the save.
+    /// verbatim from an imported file. Is `None` (empty cache) for a freshly
+    /// created module.
     #[serde(default)]
     pub cached_compressed_source: Option<Vec<u8>>,
 }
@@ -405,53 +307,33 @@ impl VbaModule {
     }
 }
 
-/// A workbook's VBA project: its modules plus the raw material needed to
-/// patch (not rebuild from scratch) a `vbaProject.bin` on export.
+/// VBA project for a workbook
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VbaProject {
     /// Project ID GUID, e.g. `"{7B4E3A2C-1F5D-4A6B-9C8E-2D3F4A5B6C7D}"`.
-    /// Must stay internally consistent with `protection_lines` -- never
-    /// mutated after import/creation, so it always is. If `CMG`/`DPB`/`GC`
-    /// protection-state lines are ever made independently settable, they
-    /// must correspond to this exact ID or Excel reports the whole project
-    /// "unviewable" (a real finding from the POC, not a hypothetical).
     pub project_id: String,
-    /// The project's modules, in no particular order. Names are unique
-    /// case-insensitively.
+    /// The project's modules, in no particular order
     pub modules: Vec<VbaModule>,
     /// The full original `vbaProject.bin` bytes this project was imported
-    /// from, or (for a project created fresh in this session)
-    /// `vba_synth::synthetic_raw_donor()`'s from-scratch bytes -- export's
+    /// from `vba_synth::synthetic_raw_donor()`'s from-scratch bytes -- export's
     /// patch base. See `vba_xlsx.rs`.
     #[serde(default)]
     pub raw_donor: Vec<u8>,
-    /// P-code prefix bytes to donate to the first module ever added to a
-    /// project that started with none -- kept separate from `modules`
-    /// rather than as a phantom placeholder module, so it never shows up in
-    /// `list_vba_modules`/export. Once a project has at least one real
-    /// module, new modules instead borrow prefix bytes from an existing
-    /// one, and this field goes unused.
+    /// P-code prefix bytes to donate to the first module
+    /// (weird vibe-coded workaround in order to create a valid module).
     #[serde(default)]
     pub seed_prefix_bytes: Vec<u8>,
-    /// `VbaModule::module_cookie` to donate to the first module ever added
-    /// to a project that started with none -- same donation scheme as
-    /// `seed_prefix_bytes`, see there for why.
+    /// Same donation scheme as `seed_prefix_bytes`
     #[serde(default = "default_module_cookie")]
     pub seed_module_cookie: u16,
-    /// The donor's original `PROJECT` stream `CMG=`/`DPB=`/`GC=` lines
-    /// (joined with `\r\n`), reproduced verbatim on export -- `None` for a
-    /// project created fresh in this session, which never had any. See
-    /// `vba_xlsx::build_project_stream` for why these must be preserved
+    /// See [`vba_xlsx::build_project_stream`] for why these must be preserved
     /// rather than dropped.
     #[serde(default)]
     pub protection_lines: Option<String>,
 }
 
 impl VbaProject {
-    /// A brand-new, empty VBA project with no real Excel-authored file
-    /// behind it anywhere -- `raw_donor` and `seed_prefix_bytes` are built
-    /// by `vba_synth` entirely from scratch. See `vba_synth`'s doc comment
-    /// for why that's now possible.
+    /// Create an empty project
     pub fn new_empty() -> Self {
         VbaProject {
             project_id: new_project_guid(),
@@ -463,7 +345,7 @@ impl VbaProject {
         }
     }
 
-    /// Finds a module by name, matched case-insensitively as VBA does.
+    /// Finds a module by name, matched case-insensitively
     pub fn find_module(&self, name: &str) -> Option<&VbaModule> {
         self.modules
             .iter()
@@ -483,32 +365,13 @@ impl VbaProject {
         self.find_module(name).is_some()
     }
 
-    /// Checks every module, resolving names against the **whole project**.
-    ///
-    /// This is the check to prefer wherever the project is in hand.
-    /// [`VbaModule::check_syntax`] sees one module and so has to accept any
-    /// name it cannot resolve, since a sibling may declare it; here the
-    /// siblings are known, so `x = arr(1)` with no `arr` anywhere is
-    /// reported the way Excel reports it -- Excel compiles a project, not a
-    /// file.
-    ///
-    /// Returns one entry per module, in `modules` order, pairing the
-    /// module's name with its result. A module whose *source* does not parse
-    /// still contributes whatever names it declares to the others, since a
-    /// parse failure in one module is not evidence about another.
+    /// Checks every module, resolving names against the **whole project**
     pub fn check_modules(&self) -> Vec<(String, Result<ModuleSyntax, Error>)> {
         self.check_modules_scoped(true)
     }
 
-    /// [`check_modules`](Self::check_modules) for a project that is **not**
-    /// the whole story -- one whose procedures may live in a referenced
-    /// project this `VbaProject` does not model.
-    ///
-    /// Modules still resolve against each other; the only thing that
-    /// changes is that a name resolving nowhere is accepted rather than
-    /// reported, as in [`check_syntax_partial`]. Nothing in a workbook
-    /// records whether such a reference exists, so this is a caller's
-    /// assertion, not something to infer.
+    /// [`check_modules`](Self::check_modules) for a project that may contain
+    /// other modules
     pub fn check_modules_partial(&self) -> Vec<(String, Result<ModuleSyntax, Error>)> {
         self.check_modules_scoped(false)
     }

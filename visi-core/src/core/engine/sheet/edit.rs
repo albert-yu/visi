@@ -1,14 +1,8 @@
 use super::super::column::{ColumnPosition, DataColumn};
 use super::{CellRef, CellType, Direction, ResultData, Sheet, TextCellRef};
 
-/// The word surrounding `char_offset` in `text`, as a half-open range of
-/// character indices.
-///
-/// A "word" is a run of alphanumerics and underscores, a run of whitespace, or
-/// a run of punctuation -- so double-clicking in a formula selects a function
-/// name or a cell reference rather than the whole line. An offset at the end
-/// of the text, or one just past a word onto whitespace, selects the word to
-/// its left.
+/// The word surrounding `char_offset` in `text`. The idea
+/// is to implement "highlight word on double click".
 pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, usize) {
     if text.is_empty() {
         return (0, 0);
@@ -69,13 +63,6 @@ pub fn get_word_boundaries_from_str(text: &str, char_offset: usize) -> (usize, u
 impl Sheet {
     /// The computed value of a cell, or [`ResultData::None`] if it is empty
     /// or outside the sheet's allocated grid.
-    ///
-    /// Reflects the last [`Sheet::commit`]; a cell edited since then still
-    /// reads as its old value.
-    ///
-    /// A date reads back as the plain numeric serial it is. Rendering it in
-    /// the notation the cell carries is `Sheet::get_display_string`'s job, and
-    /// only its -- do not format a `ResultData` directly if a user will see it.
     pub fn get_result_data(&self, cell: &CellRef) -> ResultData {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -87,17 +74,6 @@ impl Sheet {
 
     /// The date format a formula should inherit from the cells it reads, if
     /// any -- Excel's "date plus a number is still a date" behavior.
-    ///
-    /// The rule is deliberately about the *operator*, not about how many
-    /// cells the formula touches, because those come apart: `=YEAR(A1)` reads
-    /// exactly one date cell and returns a year, which is emphatically not a
-    /// date. So only two shapes inherit:
-    ///
-    /// - a bare reference to a date cell (`=A1`), and
-    /// - adding or subtracting a non-date from one (`=A1+1`, `=1+A1`).
-    ///
-    /// Everything else -- a function call, a product, a difference of two
-    /// dates (which is a count of days) -- declines, leaving a plain number.
     pub(super) fn inherited_date_format(&self, ast: &crate::core::parser::Expr) -> Option<String> {
         use crate::core::parser::{Expr, Op};
         match ast {
@@ -123,7 +99,8 @@ impl Sheet {
         }
     }
 
-    /// [AI-Agent] The cell's value as it should be shown, honoring dates and numeric number formats.
+    /// Interpolate the cell's value into a string, with
+    /// a specified cell format
     pub fn get_display_string(&self, cell: &CellRef) -> String {
         let value = self.get_result_data(cell);
         let Some(code) = self
@@ -188,10 +165,10 @@ impl Sheet {
         }
     }
 
-    /// Updates the src text of a particular cell but does
-    /// not automatically evaluate. Call [`Sheet::commit`] to evaluate
-    /// updated cells.
     /// Directly sets the src of a cell and marks it dirty.
+    /// Does not automatically evaluate it.
+    /// Call [`Sheet::commit`] to evaluate
+    /// updated cells.
     pub fn set_cell_src(&mut self, row: usize, col: usize, src: String) {
         let table_clone = self.clone();
         if let Some(column) = self.columns.get_mut(col)
@@ -215,10 +192,6 @@ impl Sheet {
 
     /// Inserts text into a cell's source at a character offset, as typing
     /// into it would, then recompiles and marks it dirty.
-    ///
-    /// This is a text edit within one cell, not a range insert; see
-    /// [`Sheet::insert_row`] and [`Sheet::insert_col`] for the structural
-    /// operations. Out-of-range positions are ignored.
     pub fn insert(&mut self, pos: TextCellRef, input: &str) {
         let TextCellRef {
             row,
@@ -266,10 +239,6 @@ impl Sheet {
 
     /// Deletes the text between two positions, recompiling and dirtying every
     /// cell it touches.
-    ///
-    /// Within a single cell this removes a character range; spanning cells it
-    /// truncates the first, clears those in between and trims the last.
-    /// Ignored if `end` precedes `start`.
     pub fn delete(&mut self, start: TextCellRef, end: TextCellRef) {
         if start.col > end.col || (start.col == end.col && start.row > end.row) {
             return;
@@ -315,9 +284,6 @@ impl Sheet {
     }
 
     /// Grows the sheet by one empty row or column on the given side.
-    ///
-    /// [`Direction::None`] does nothing. Rows are unbounded, but sideways
-    /// growth stops once the sheet has 26 columns.
     pub fn extend(&mut self, direction: Direction) {
         if self.columns.is_empty() {
             return;
@@ -393,9 +359,6 @@ impl Sheet {
     }
 
     /// The style set on a cell, or `None` if it has none.
-    ///
-    /// This is where a date cell's `num_format` lives -- the notation half of
-    /// a date, the value half being the serial in the cell.
     pub fn get_cell_style(&self, row: usize, col: usize) -> Option<&crate::core::CellStyle> {
         self.columns
             .get(col)
@@ -404,7 +367,7 @@ impl Sheet {
     }
 
     /// Replaces a cell's style, growing the sheet if the cell is past its
-    /// current bounds. An empty style is stored as no style at all.
+    /// current bounds
     pub fn set_cell_style(&mut self, row: usize, col: usize, style: crate::core::CellStyle) {
         self.ensure_capacity(row, col);
         if let Some(column) = self.columns.get_mut(col)
@@ -418,8 +381,7 @@ impl Sheet {
         }
     }
 
-    /// Mutates a cell's style in place, starting from the default if it has
-    /// none, so one attribute can be changed without disturbing the others.
+    /// Mutates a cell's style in place.
     ///
     /// Grows the sheet if needed; a style left empty is dropped.
     pub fn update_cell_style<F>(&mut self, row: usize, col: usize, f: F)
@@ -440,7 +402,7 @@ impl Sheet {
         }
     }
 
-    /// Removes a cell's style. Unlike the setters, this never grows the sheet.
+    /// Removes a cell's style
     pub fn clear_cell_style(&mut self, row: usize, col: usize) {
         if let Some(column) = self.columns.get_mut(col)
             && row < column.styles.len()
@@ -449,24 +411,24 @@ impl Sheet {
         }
     }
 
-    /// [GPT-5.5] Returns the custom width for the zero-based column, if one is set.
+    /// Returns the custom width for the zero-based column, if one is set.
     pub fn get_column_width(&self, col: usize) -> Option<f64> {
         self.columns.get(col).and_then(|column| column.width)
     }
 
-    /// [GPT-5.5] Sets or clears the custom width for an existing zero-based column.
+    /// Sets or clears the custom width for an existing zero-based column.
     pub fn set_column_width(&mut self, col: usize, width: Option<f64>) {
         if let Some(column) = self.columns.get_mut(col) {
             column.width = width.filter(|value| value.is_finite() && *value >= 0.0);
         }
     }
 
-    /// [GPT-5.5] Returns the custom height for the zero-based row, if one is set.
+    /// Returns the custom height for the zero-based row, if one is set.
     pub fn get_row_height(&self, row: usize) -> Option<f64> {
         self.row_heights.get(row).and_then(|height| *height)
     }
 
-    /// [GPT-5.5] Sets or clears the custom height for an existing zero-based row.
+    /// Sets or clears the custom height for an existing zero-based row.
     pub fn set_row_height(&mut self, row: usize, height: Option<f64>) {
         if row >= self.row_count() {
             return;
@@ -476,7 +438,7 @@ impl Sheet {
         self.row_heights[row] = height.filter(|value| value.is_finite() && *value >= 0.0);
     }
 
-    /// Insert a new empty row at the specified index
+    /// Insert a new empty row at the specified index.
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
         let row_count = self.row_count();
@@ -505,11 +467,6 @@ impl Sheet {
     }
 
     /// Deletes a row, shifting the rows below it up.
-    ///
-    /// Removes the entry from all three parallel per-row vectors together,
-    /// which is what keeps them the same length, and rebases the dirty queue.
-    /// Out-of-range indices are ignored. Everything is marked dirty, since
-    /// formulas above the deleted row may refer to it.
     pub fn delete_row(&mut self, index: usize) {
         let row_count = self.row_count();
         if index < row_count {
@@ -529,22 +486,6 @@ impl Sheet {
     }
 
     /// Excel's *Insert cells, shift down* over an inclusive column band.
-    ///
-    /// Unlike [`Sheet::insert_row`] this moves only `first_col..=last_col`,
-    /// leaving every other column where it is -- which is what
-    /// `ListRows.Add` actually does. Measured: adding a row to a table at
-    /// `A1:C4` moves `A8` down to `A9` but leaves `E2` alone.
-    ///
-    /// Every column keeps the same length: the sheet first grows by `count`
-    /// rows, so the rows pushed off the bottom of the band are the blank ones
-    /// just added rather than data. Everything moves through `DataColumn`'s
-    /// paired operations, so `src` / `data` / `compiled_src` / `styles` stay
-    /// aligned.
-    ///
-    /// Out-of-range bands and a zero `count` are no-ops. Formula references
-    /// are *not* rewritten here -- that is
-    /// `WorkbookManager::insert_cells_shift_down`'s job, since it spans
-    /// sheets.
     pub fn insert_cells_shift_down(
         &mut self,
         row: usize,
@@ -579,9 +520,6 @@ impl Sheet {
 
     /// Excel's *Delete cells, shift up* over an inclusive column band; the
     /// inverse of [`Sheet::insert_cells_shift_down`].
-    ///
-    /// The band's rows below `row` move up and blank rows appear at its
-    /// bottom, so the sheet keeps its shape and other columns are untouched.
     pub fn delete_cells_shift_up(
         &mut self,
         row: usize,
@@ -611,8 +549,6 @@ impl Sheet {
     }
 
     /// Deletes a column, shifting the columns to its right left.
-    ///
-    /// Out-of-range indices are ignored; everything is marked dirty.
     pub fn delete_col(&mut self, index: usize) {
         if index < self.columns.len() {
             self.columns.remove(index);
@@ -649,23 +585,17 @@ impl Sheet {
         self.mark_all_dirty();
     }
 
-    /// The sheet's columns.
-    ///
-    /// Read-only: every column must keep the same number of rows, so growing
-    /// or replacing one from outside would desync the sheet. Use
-    /// [`Sheet::insert_col`], [`Sheet::delete_col`] and [`Sheet::extend`] to
-    /// change the shape.
+    /// The sheet's columns
     pub fn columns(&self) -> &[DataColumn] {
         &self.columns
     }
 
-    /// Allocated rows, taken from the first column -- every column has the
-    /// same length.
+    /// Allocated rows
     pub fn row_count(&self) -> usize {
         self.columns.first().map(|c| c.src.len()).unwrap_or(0)
     }
 
-    /// Allocated columns.
+    /// Allocated columns
     pub fn col_count(&self) -> usize {
         self.columns.len()
     }

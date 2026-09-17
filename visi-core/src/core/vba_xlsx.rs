@@ -6,12 +6,6 @@ use std::io::{Read, Write};
 
 const REL_VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
-/// Reads `xl/vbaProject.bin` out of an xlsx zip, if present, and reconstructs
-/// a `VbaProject`. Returns `Ok(None)` if the workbook has no VBA project --
-/// never an error, matching how a plain `.xlsx` is the overwhelmingly common
-/// case. `sheet_id_by_name` maps each imported sheet's display name to its
-/// engine id, used to resolve document modules' `codeName` binding back to
-/// a sheet id.
 pub fn import_vba_project(
     buffer: &[u8],
     sheet_id_by_name: &HashMap<String, u64>,
@@ -36,10 +30,6 @@ pub fn import_vba_project(
     parse_vba_project_from_cfb_bytes(vba_bin, &sheet_id_by_code_name).map(Some)
 }
 
-/// Parses a raw (not zip-wrapped) `vbaProject.bin` byte buffer into a
-/// `VbaProject`. Shared by the xlsx-zip import path above and by seeding a
-/// brand-new project from the bundled template asset (which is stored as
-/// raw CFB bytes, not wrapped in a zip).
 pub fn parse_vba_project_from_cfb_bytes(
     vba_bin: Vec<u8>,
     sheet_id_by_code_name: &HashMap<String, u64>,
@@ -190,11 +180,7 @@ fn parse_sheet_code_names(workbook_xml: &str) -> HashMap<String, String> {
 struct ModuleSpec {
     name: String,
     text_offset: usize,
-    /// True if MODULETYPE was 0x0022 (document/class per spec), false if
-    /// 0x0021 (procedural/standard).
     is_document_shaped: bool,
-    /// MODULECOOKIE (0x002C) record value -- see `VbaModule::module_cookie`
-    /// for why this is captured and preserved rather than discarded.
     module_cookie: u16,
 }
 
@@ -296,9 +282,6 @@ fn parse_module_specs(dir: &[u8]) -> Result<Vec<ModuleSpec>, String> {
     Ok(specs)
 }
 
-/// Splices a rebuilt `vbaProject.bin` into an already-produced xlsx zip
-/// (patching `[Content_Types].xml`/`workbook.xml.rels`/`workbook.xml` as
-/// needed), or returns `xlsx_bytes` unchanged if `vba` is `None`.
 pub fn export_vba_project(
     xlsx_bytes: Vec<u8>,
     vba: Option<&VbaProject>,
@@ -458,11 +441,6 @@ fn rewrite_zip_with_vba_part(
     Ok(cursor.into_inner())
 }
 
-/// Builds a complete `vbaProject.bin` byte buffer: the donor's dir-stream
-/// PROJECTINFORMATION+PROJECTREFERENCES prefix and `_VBA_PROJECT` cache are
-/// copied verbatim; the dir stream's PROJECTMODULES section, `PROJECT`,
-/// `PROJECTwm`, and every module stream are rebuilt fresh from `project`'s
-/// current state.
 pub fn build_vba_project_bin(project: &VbaProject) -> Result<Vec<u8>, String> {
     let mut donor = cfb::CompoundFile::open(std::io::Cursor::new(project.raw_donor.clone()))
         .map_err(|e| format!("Failed to open donor vbaProject.bin: {}", e))?;

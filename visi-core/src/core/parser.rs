@@ -20,9 +20,6 @@ pub enum Expr {
     Number(f64),
     String(String),
     Boolean(bool),
-    /// An Excel error value written literally in the formula, as in `=#REF!`.
-    /// Evaluates to itself, so it propagates through enclosing operators and
-    /// functions exactly as an error read out of a cell does.
     Error(&'static str),
     CellRef {
         sheet: Option<String>,
@@ -76,8 +73,6 @@ pub enum EvalToken {
     String(String),
     Boolean(bool),
     Identifier(String),
-    /// An Excel error value written literally, as in `=#REF!`. One of
-    /// `result_data::EXCEL_ERROR_CODES`, canonically cased.
     Error(&'static str),
     Op(Op),
     OpenParen,
@@ -96,11 +91,8 @@ pub enum EvalToken {
     },
 }
 
-/// Renders a 0-based column index as its A1 column letters: 0 is `A`, 25 is
+/// Renders a 0-based column index in its letter form: 0 is `A`, 25 is
 /// `Z`, 26 is `AA`.
-///
-/// One half of the boundary between the engine's 0-based `(row, col)` and the
-/// A1 notation users type; [`parse_a1_coordinates`] is the other.
 pub fn col_idx_to_letters(mut col: usize) -> String {
     let mut letters = String::new();
     loop {
@@ -114,22 +106,27 @@ pub fn col_idx_to_letters(mut col: usize) -> String {
     letters
 }
 
-/// Converts an already-split A1 reference into a 0-based `(row, col)`.
-///
-/// `col_str` is the letters and `row_str` the digits, so `("B", "3")` gives
-/// `(2, 1)`. Case-insensitive, and non-alphabetic characters in `col_str` are
-/// skipped.
-///
-/// Lenient rather than validating: an unparseable row, or a row or column of
-/// 0, clamps to index 0 instead of failing.
-pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
+/// Convert Excel letter notation (e.g. "A", "Z", "AA")
+/// to 0-based column index. Clamps result to 0 if input is invalid.
+pub fn col_letters_to_idx(col_str: &str) -> usize {
     let mut col = 0;
     for c in col_str.chars() {
         if c.is_ascii_alphabetic() {
             col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
         }
     }
-    let col_idx = if col > 0 { col - 1 } else { 0 };
+    if col > 0 { col - 1 } else { 0 }
+}
+
+/// Converts an already-split A1 reference into a 0-based `(row, col)`.
+///
+/// `col_str` is the letters and `row_str` the digits, so `("B", "3")` gives
+/// `(2, 1)`. Case-insensitive, and non-alphabetic characters in `col_str` are
+/// skipped.
+///
+/// Clamps to index 0 instead of failing.
+pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
+    let col_idx = col_letters_to_idx(col_str);
 
     let row_val: usize = row_str.parse().unwrap_or(1);
     let row_idx = if row_val > 0 { row_val - 1 } else { 0 };
@@ -137,7 +134,62 @@ pub fn parse_a1_coordinates(col_str: &str, row_str: &str) -> (usize, usize) {
     (row_idx, col_idx)
 }
 
-fn parse_cell_ref(s: &str) -> Option<(usize, usize, bool, bool)> {
+/// Parse a cell reference string like "A1", "C10", or "Sheet1!B5"
+/// Returns (optional_sheet_name, row_idx, col_idx)
+pub fn parse_cell_ref(cell_str: &str) -> Result<(Option<String>, usize, usize), String> {
+    let trimmed = cell_str.trim();
+    if trimmed.is_empty() {
+        return Err("Cell reference cannot be empty".to_string());
+    }
+
+    let (sheet_part, cell_part) = split_sheet_reference(trimmed);
+    let (row_idx, col_idx, _, _) = parse_cell_ref_parts(cell_part)
+        .ok_or_else(|| format!("Invalid cell reference format: '{}'", cell_str))?;
+
+    Ok((sheet_part, row_idx, col_idx))
+}
+
+/// Parse a range reference string (e.g."A1:C10", "Sheet1!A1:B5", or "A1")
+/// Returns (optional_sheet_name, start_row, start_col, end_row, end_col)
+pub fn parse_range_ref(
+    range_str: &str,
+) -> Result<(Option<String>, usize, usize, usize, usize), String> {
+    let trimmed = range_str.trim();
+    if trimmed.is_empty() {
+        return Err("Range reference cannot be empty".to_string());
+    }
+
+    let (sheet_part, range_part) = split_sheet_reference(trimmed);
+
+    if let Some((start_str, end_str)) = range_part.split_once(':') {
+        let (_, start_row, start_col) = parse_cell_ref(start_str)?;
+        let (_, end_row, end_col) = parse_cell_ref(end_str)?;
+
+        Ok((
+            sheet_part,
+            start_row.min(end_row),
+            start_col.min(end_col),
+            start_row.max(end_row),
+            start_col.max(end_col),
+        ))
+    } else {
+        let (_, row_idx, col_idx) = parse_cell_ref(range_part)?;
+        Ok((sheet_part, row_idx, col_idx, row_idx, col_idx))
+    }
+}
+
+fn split_sheet_reference(reference: &str) -> (Option<String>, &str) {
+    if let Some(pos) = reference.rfind('!') {
+        (
+            Some(reference[..pos].trim_matches('\'').to_string()),
+            &reference[pos + 1..],
+        )
+    } else {
+        (None, reference)
+    }
+}
+
+fn parse_cell_ref_parts(s: &str) -> Option<(usize, usize, bool, bool)> {
     let chars: Vec<char> = s.chars().collect();
     let mut idx = 0;
 
@@ -168,6 +220,9 @@ fn parse_cell_ref(s: &str) -> Option<(usize, usize, bool, bool)> {
         idx += 1;
     }
     if row_str.is_empty() {
+        return None;
+    }
+    if row_str.parse::<usize>().ok()? == 0 {
         return None;
     }
 
@@ -1186,14 +1241,7 @@ fn render_structured_ref_text(
     }
 }
 
-/// Rewrites every structured reference to `table_name` within a single
-/// cell's formula source (e.g. `"=SUM(Sales[Amount])"`), so that renaming
-/// an ExcelTable (and/or one of its columns) can update dependent formulas
-/// the same way Excel does. `new_table_name` renames the table itself (in
-/// every matching reference's leading name); `col_rename` renames one
-/// column, `(old_name, new_name)`, wherever it's referenced on this table.
-/// Either or both may be supplied. Non-formula cells and formulas that
-/// don't reference `table_name` at all are left alone (returns `None`).
+/// Structural rewrite, provides plumbing for table renames
 pub fn rewrite_structured_table_reference(
     formula_src: &str,
     table_name: &str,
@@ -1574,7 +1622,7 @@ fn range_ref_from_texts(sheet: Option<String>, start: &str, end: &str) -> Result
     if let (
         Some((s_row, s_col, s_row_abs, s_col_abs)),
         Some((e_row, e_col, e_row_abs, e_col_abs)),
-    ) = (parse_cell_ref(start), parse_cell_ref(end))
+    ) = (parse_cell_ref_parts(start), parse_cell_ref_parts(end))
     {
         Ok(Expr::RangeRef {
             sheet,
@@ -1820,7 +1868,7 @@ impl<'a> Parser<'a> {
 
                         return range_ref_from_texts(Some(val), &target_str, &end_str);
                     } else {
-                        let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
+                        let (row, col, row_abs, col_abs) = parse_cell_ref_parts(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
                         return Ok(Expr::CellRef {
                             sheet: Some(val),
@@ -1913,7 +1961,7 @@ impl<'a> Parser<'a> {
 
                         return range_ref_from_texts(Some(id_name.clone()), &target_str, &end_str);
                     } else {
-                        let (row, col, row_abs, col_abs) = parse_cell_ref(&target_str)
+                        let (row, col, row_abs, col_abs) = parse_cell_ref_parts(&target_str)
                             .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
                         return Ok(Expr::CellRef {
                             sheet: Some(id_name.clone()),
@@ -1925,7 +1973,7 @@ impl<'a> Parser<'a> {
                     }
                 }
 
-                if let Some((row, col, row_abs, col_abs)) = parse_cell_ref(&id_name) {
+                if let Some((row, col, row_abs, col_abs)) = parse_cell_ref_parts(&id_name) {
                     if self.peek() == Some(&EvalToken::Colon) {
                         self.next();
                         let end_tok = self
@@ -1940,8 +1988,9 @@ impl<'a> Parser<'a> {
                                 ));
                             }
                         };
-                        let (e_row, e_col, e_row_abs, e_col_abs) = parse_cell_ref(&end_str)
-                            .ok_or_else(|| format!("Invalid end cell: {}", end_str))?;
+                        let (e_row, e_col, e_row_abs, e_col_abs) =
+                            parse_cell_ref_parts(&end_str)
+                                .ok_or_else(|| format!("Invalid end cell: {}", end_str))?;
                         return Ok(Expr::RangeRef {
                             sheet: None,
                             start_row: row,
@@ -2060,6 +2109,45 @@ pub fn parse_excel_formula(input: &str) -> Result<Expr, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_cell_ref() {
+        let (sheet, row, col) = parse_cell_ref("A1").unwrap();
+        assert_eq!(sheet, None);
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+
+        let (sheet, row, col) = parse_cell_ref("Sheet1!C5").unwrap();
+        assert_eq!(sheet, Some("Sheet1".to_string()));
+        assert_eq!(row, 4);
+        assert_eq!(col, 2);
+    }
+
+    #[test]
+    fn test_parse_range_ref() {
+        let (sheet, s_row, s_col, e_row, e_col) = parse_range_ref("A1:C10").unwrap();
+        assert_eq!(sheet, None);
+        assert_eq!((s_row, s_col), (0, 0));
+        assert_eq!((e_row, e_col), (9, 2));
+
+        let (sheet, s_row, s_col, e_row, e_col) = parse_range_ref("'Data Sheet'!B2:D4").unwrap();
+        assert_eq!(sheet, Some("Data Sheet".to_string()));
+        assert_eq!((s_row, s_col), (1, 1));
+        assert_eq!((e_row, e_col), (3, 3));
+    }
+
+    #[test]
+    fn test_col_conversions() {
+        assert_eq!(col_idx_to_letters(0), "A");
+        assert_eq!(col_idx_to_letters(25), "Z");
+        assert_eq!(col_idx_to_letters(26), "AA");
+        assert_eq!(col_idx_to_letters(27), "AB");
+
+        assert_eq!(col_letters_to_idx("A"), 0);
+        assert_eq!(col_letters_to_idx("z"), 25);
+        assert_eq!(col_letters_to_idx("AA"), 26);
+        assert_eq!(col_letters_to_idx("AB"), 27);
+    }
 
     #[test]
     fn test_lex_scientific_notation_literals() {

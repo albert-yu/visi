@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use crate::core::formula::CompiledFormula;
 use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;
@@ -40,58 +41,35 @@ fn resize_table_columns(
         .resize(new_end_col - new_start_col + 1, String::new());
 }
 
-/// A single sheet's line in a [`WorkbookSummary`].
 pub struct SheetSummary {
-    /// The sheet's name.
     pub name: String,
-    /// Allocated rows.
+
     pub row_count: usize,
-    /// Allocated columns.
+
     pub col_count: usize,
-    /// How many of its cells hold a formula rather than a literal.
+
     pub formula_count: usize,
 }
 
-/// An overview of a workbook's shape, for reporting rather than editing.
 pub struct WorkbookSummary {
-    /// The file the workbook was loaded from, as the caller named it.
     pub file_name: String,
-    /// How many sheets it has.
+
     pub sheet_count: usize,
-    /// How many charts it has.
+
     pub chart_count: usize,
-    /// One entry per sheet, in workbook order.
+
     pub sheets: Vec<SheetSummary>,
 }
 
-/// A whole workbook: its sheets, charts, pivot tables and VBA project, and the
-/// operations that span more than one of them.
-///
-/// The entry point to this crate, and the layer an embedder should drive.
-/// Two behaviors are only correct at this level:
-///
-/// - **Cross-sheet recalculation.** [`Sheet::commit`] only propagates local
-///   dependencies; [`WorkbookManager::evaluate`] is what carries values across
-///   sheets.
-/// - **Pivot tables.** Nothing recomputes one implicitly.
-///   [`WorkbookManager::refresh_pivot_table`] is the only thing that writes a
-///   computed grid into cells.
-///
-/// Editing the [`Sheet`]s directly is allowed -- the fields are public -- but
-/// skips both, so cross-sheet formulas and pivot output go stale silently.
 pub struct WorkbookManager {
-    /// The worksheets, in workbook order. Cell coordinates within them are
-    /// 0-based.
     pub sheets: Vec<Sheet>,
-    /// The charts. Workbook-level rather than sheet-scoped; which sheet a
-    /// chart is drawn on comes from its `data_range`.
+
     pub charts: Vec<Chart>,
-    /// The pivot table definitions. Workbook-level, since a pivot's source and
-    /// destination may be on different sheets.
+
     pub pivot_tables: Vec<PivotTable>,
-    /// The VBA project, if the workbook has macros.
+
     pub vba_project: Option<VbaProject>,
-    /// Regional locale for date and number parsing.
+
     pub locale: Locale,
 }
 
@@ -123,7 +101,6 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 }
 
 impl WorkbookManager {
-    /// Load Excel workbook from bytes buffer
     pub fn load_bytes(buffer: &[u8]) -> crate::Result<Self> {
         let (imported_sheets, charts, pivot_tables, vba_project) =
             import_xlsx_data(buffer, &[], |_, _, _| {})?;
@@ -142,11 +119,6 @@ impl WorkbookManager {
         })
     }
 
-    /// Serialize the workbook to `.xlsx` bytes.
-    ///
-    /// The byte-level counterpart to [`Self::load_bytes`]. Callers that want
-    /// to read or write an actual file supply their own IO -- the `visi` CLI
-    /// does so through its `WorkbookFile` trait.
     pub fn save_bytes(&self) -> crate::Result<Vec<u8>> {
         export_xlsx_data(
             &self.sheets,
@@ -156,7 +128,6 @@ impl WorkbookManager {
         )
     }
 
-    /// A new workbook containing a single empty sheet named `Sheet1`.
     pub fn new_empty() -> crate::Result<Self> {
         let locale = Locale::default();
         let mut wb = Self {
@@ -170,7 +141,6 @@ impl WorkbookManager {
         Ok(wb)
     }
 
-    /// Sets the regional locale on the workbook and propagates it to all sheets.
     pub fn set_locale(&mut self, locale: Locale) {
         self.locale = locale.clone();
         for sheet in &mut self.sheets {
@@ -178,7 +148,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Recalculate all formulas in all sheets using visi-core engine
     pub fn evaluate(&mut self) -> crate::Result<()> {
         if self.sheets.is_empty() {
             return Ok(());
@@ -230,7 +199,6 @@ impl WorkbookManager {
         host.call_worksheet_function(name, args, Some(&context))
     }
 
-    /// Find index of sheet by name, or return default index 0 if name is None.
     pub fn find_sheet_index(&self, name_opt: Option<&str>) -> crate::Result<usize> {
         if self.sheets.is_empty() {
             return Err(Error::EmptyWorkbook);
@@ -258,7 +226,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Get structural summary of workbook
     pub fn get_summary(&self, file_name: &str) -> WorkbookSummary {
         let sheet_summaries = self
             .sheets
@@ -293,7 +260,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Ensure sheet bounds can accommodate specified target_row and target_col
     pub fn ensure_capacity(&mut self, sheet_idx: usize, target_row: usize, target_col: usize) {
         if sheet_idx >= self.sheets.len() {
             return;
@@ -301,12 +267,6 @@ impl WorkbookManager {
         self.sheets[sheet_idx].ensure_capacity(target_row, target_col);
     }
 
-    /// Merges `style` into one cell's existing style.
-    ///
-    /// Row and column are 0-based, like every other coordinate on this type.
-    /// A1 notation is a CLI/parser-boundary concern: callers holding a
-    /// string like `"Sheet2!B3"` parse it themselves and resolve the sheet
-    /// prefix against `sheet_name` before calling in.
     pub fn set_cell_style(
         &mut self,
         sheet_name: Option<&str>,
@@ -319,7 +279,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Merges `style` into every cell of an inclusive 0-based range.
     pub fn set_range_style(
         &mut self,
         sheet_name: Option<&str>,
@@ -343,7 +302,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// The style applied to one 0-based cell, if it has one.
     pub fn get_cell_style(
         &self,
         sheet_name: Option<&str>,
@@ -354,12 +312,6 @@ impl WorkbookManager {
         Ok(self.sheets[sheet_idx].get_cell_style(row, col).cloned())
     }
 
-    /// Sets an Excel Table's visual style, looking the table up by name
-    /// across every sheet.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotFound`] if no table in the workbook has that name.
     pub fn set_table_style(&mut self, table_name: &str, style_name: &str) -> crate::Result<()> {
         for sheet in &mut self.sheets {
             for table in &mut sheet.tables {
@@ -372,11 +324,6 @@ impl WorkbookManager {
         Err(Error::not_found(ObjectKind::Table, table_name.to_string()))
     }
 
-    /// An Excel Table's visual style, or `None` if it has none set.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotFound`] if no table in the workbook has that name.
     pub fn get_table_style(&self, table_name: &str) -> crate::Result<Option<String>> {
         for sheet in &self.sheets {
             for table in &sheet.tables {
@@ -388,14 +335,12 @@ impl WorkbookManager {
         Err(Error::not_found(ObjectKind::Table, table_name.to_string()))
     }
 
-    /// Update cell source / value at (row, col)
     pub fn set_cell(&mut self, sheet_idx: usize, row: usize, col: usize, value: String) {
         self.ensure_capacity(sheet_idx, row, col);
         let sheet = &mut self.sheets[sheet_idx];
         sheet.set_cell_src(row, col, value);
     }
 
-    /// Update cell source and explicit cell type at (row, col)
     pub fn set_cell_with_type(
         &mut self,
         sheet_idx: usize,
@@ -409,7 +354,6 @@ impl WorkbookManager {
         sheet.set_cell_with_type(row, col, value, cell_type);
     }
 
-    /// Sets the intrinsic data type of a cell at (row, col).
     pub fn set_cell_type(
         &mut self,
         sheet_idx: usize,
@@ -422,7 +366,6 @@ impl WorkbookManager {
         sheet.set_cell_type(row, col, cell_type);
     }
 
-    /// Returns the cell type at (row, col)
     pub fn get_cell_type(&self, sheet_idx: usize, row: usize, col: usize) -> crate::core::CellType {
         if let Some(sheet) = self.sheets.get(sheet_idx) {
             sheet.get_cell_type(&crate::core::CellRef::new(row, col))
@@ -431,11 +374,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Insert row at 0-based index.
-    ///
-    /// Formulas throughout the workbook are rewritten to follow the cells
-    /// that moved, as in Excel, and Excel Table and pivot ranges move with
-    /// the cells they cover. See `core::grid_edit` for the rules.
     pub fn insert_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
         let sheet = &self.sheets[sheet_idx];
         let at = row_idx.min(sheet.row_count());
@@ -444,10 +382,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Delete row at 0-based index.
-    ///
-    /// References to the deleted row become `#REF!` and references below it
-    /// move up, as in Excel.
     pub fn delete_row(&mut self, sheet_idx: usize, row_idx: usize) -> crate::Result<()> {
         let sheet = &self.sheets[sheet_idx];
         if row_idx >= sheet.row_count() {
@@ -462,7 +396,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Insert column at 0-based index.
     pub fn insert_col(&mut self, sheet_idx: usize, col_idx: usize) -> crate::Result<()> {
         let sheet = &self.sheets[sheet_idx];
         let at = col_idx.min(sheet.col_count());
@@ -471,7 +404,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Delete column at 0-based index.
     pub fn delete_col(&mut self, sheet_idx: usize, col_idx: usize) -> crate::Result<()> {
         let sheet = &self.sheets[sheet_idx];
         if col_idx >= sheet.col_count() {
@@ -489,13 +421,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Excel's *Insert cells, shift down* over an inclusive column band,
-    /// with the workbook-wide formula rewrite that goes with it.
-    ///
-    /// This is what `ListRows.Add` is: only `first_col..=last_col` move, so a
-    /// formula beside the band stays put while one inside it shifts. See
-    /// `core::grid_edit`'s `band` field for the reference rules, which are
-    /// measured rather than assumed.
     pub fn insert_cells_shift_down(
         &mut self,
         sheet_idx: usize,
@@ -512,8 +437,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Excel's *Delete cells, shift up* over an inclusive column band; the
-    /// inverse of [`WorkbookManager::insert_cells_shift_down`].
     pub fn delete_cells_shift_up(
         &mut self,
         sheet_idx: usize,
@@ -657,7 +580,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Add new sheet with specified name
     pub fn add_sheet(&mut self, name: &str) -> crate::Result<()> {
         if self
             .sheets
@@ -694,7 +616,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Delete sheet by name
     pub fn delete_sheet(&mut self, name: &str) -> crate::Result<()> {
         let idx = self.find_sheet_index(Some(name))?;
         if self.sheets.len() <= 1 {
@@ -704,7 +625,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Rename sheet
     pub fn rename_sheet(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         let idx = self.find_sheet_index(Some(old_name))?;
         if self
@@ -722,7 +642,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Add chart to workbook
     #[allow(clippy::too_many_arguments)]
     pub fn add_chart(
         &mut self,
@@ -754,10 +673,6 @@ impl WorkbookManager {
         Ok(id)
     }
 
-    /// Edit an existing chart's properties. Every parameter is optional;
-    /// `None` leaves that field unchanged. `title`/`xlabel`/`ylabel` are
-    /// tri-state (`Option<Option<String>>`): outer `None` leaves the field
-    /// unchanged, `Some(None)` clears it, `Some(Some(text))` sets it.
     #[allow(clippy::too_many_arguments)]
     pub fn edit_chart(
         &mut self,
@@ -804,12 +719,10 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Whether the workbook carries a VBA project.
     pub fn has_vba_project(&self) -> bool {
         self.vba_project.is_some()
     }
 
-    /// Lists every module in the workbook's VBA project, if it has one.
     pub fn list_vba_modules(&self) -> Vec<&VbaModule> {
         self.vba_project
             .as_ref()
@@ -817,9 +730,6 @@ impl WorkbookManager {
             .unwrap_or_default()
     }
 
-    /// Creates an empty, entirely synthetic VBA project (see
-    /// `VbaProject::new_empty`) if this workbook doesn't already have one.
-    /// Idempotent.
     pub fn ensure_vba_project(&mut self) -> crate::Result<()> {
         if self.vba_project.is_some() {
             return Ok(());
@@ -828,15 +738,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Adds a new module to the workbook's VBA project (creating the
-    /// project from the bundled template first, if needed). `bound_sheet_id`
-    /// is required for `VbaModuleKind::Document` (except when `name` is
-    /// `"ThisWorkbook"`, which -- like real Excel's own always-present
-    /// ThisWorkbook module -- isn't tied to a specific sheet; any
-    /// `bound_sheet_id` passed alongside it is ignored rather than stored)
-    /// -- note this does NOT rename the sheet, or vice versa; Excel allows a
-    /// document module's own name and its sheet's display name to diverge,
-    /// and this codebase deliberately doesn't cascade one into the other.
     pub fn add_vba_module(
         &mut self,
         name: String,
@@ -901,12 +802,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Removes a VBA module by name, matched case-insensitively.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Vba`] if the workbook has no VBA project, or
-    /// [`Error::NotFound`] if it has no module by that name.
     pub fn remove_vba_module(&mut self, name: &str) -> crate::Result<()> {
         let project = self
             .vba_project
@@ -922,18 +817,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Renames a VBA module.
-    ///
-    /// Renames only the module; VBA source that calls into it is not
-    /// rewritten, so a module referenced by name elsewhere will no longer
-    /// resolve.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidName`] if `new_name` is not a valid VBA identifier,
-    /// [`Error::AlreadyExists`] if another module already has it,
-    /// [`Error::Vba`] if the workbook has no VBA project, or
-    /// [`Error::NotFound`] if it has no module called `old_name`.
     pub fn rename_vba_module(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         validate_vba_module_name(new_name).map_err(|reason| Error::InvalidName {
             kind: ObjectKind::VbaModule,
@@ -957,16 +840,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Replaces a VBA module's source text.
-    ///
-    /// The caller supplies the whole module body, including its
-    /// `Attribute VB_Name = "..."` line, matching how real Excel-authored
-    /// module streams are shaped.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Vba`] if the workbook has no VBA project, or
-    /// [`Error::NotFound`] if it has no module by that name.
     pub fn set_vba_module_source(&mut self, name: &str, source: String) -> crate::Result<()> {
         let project = self
             .vba_project
@@ -980,7 +853,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Delete chart by u64 ID
     pub fn delete_chart(&mut self, id: u64) -> crate::Result<()> {
         if let Some(pos) = self.charts.iter().position(|c| c.id == id) {
             self.charts.remove(pos);
@@ -990,16 +862,12 @@ impl WorkbookManager {
         }
     }
 
-    /// Find the sheet that owns the table with the given name, and the
-    /// table itself. Table names are unique across the whole workbook.
     pub fn find_table(&self, name: &str) -> Option<(&Sheet, &ExcelTable)> {
         self.sheets
             .iter()
             .find_map(|s| s.find_table(name).map(|t| (s, t)))
     }
 
-    /// List every table in the workbook, alongside the name of the sheet it
-    /// lives on.
     pub fn list_tables(&self) -> Vec<(&str, &ExcelTable)> {
         self.sheets
             .iter()
@@ -1020,9 +888,6 @@ impl WorkbookManager {
             .any(|s| s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name)))
     }
 
-    /// Define a new Excel Table over an existing cell range on a sheet.
-    /// Table names are unique across the entire workbook (not just the
-    /// sheet), matching how Excel itself scopes structured-reference names.
     #[allow(clippy::too_many_arguments)]
     pub fn add_table(
         &mut self,
@@ -1055,7 +920,6 @@ impl WorkbookManager {
             .map_err(Error::InvalidArgument)
     }
 
-    /// Delete a table by name (leaves the underlying cell contents alone).
     pub fn delete_table(&mut self, name: &str) -> crate::Result<()> {
         let idx = self.find_table_sheet_index(name)?;
         self.sheets[idx]
@@ -1063,7 +927,6 @@ impl WorkbookManager {
             .map_err(Error::InvalidArgument)
     }
 
-    /// Rename a table.
     pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         if !old_name.eq_ignore_ascii_case(new_name) && self.table_name_taken(new_name) {
             return Err(Error::NameTaken {
@@ -1103,7 +966,6 @@ impl WorkbookManager {
         }
     }
 
-    /// Resize a table by moving its bottom-right corner.
     pub fn resize_table(
         &mut self,
         name: &str,
@@ -1116,7 +978,6 @@ impl WorkbookManager {
             .map_err(Error::InvalidArgument)
     }
 
-    /// Rename one column (0-based, relative to the table) of a table.
     pub fn rename_table_column(
         &mut self,
         table_name: &str,
@@ -1139,7 +1000,6 @@ impl WorkbookManager {
         self.evaluate()
     }
 
-    /// Find a pivot table by name (case-insensitive).
     pub fn find_pivot_table(&self, name: &str) -> Option<&PivotTable> {
         self.pivot_tables
             .iter()
@@ -1153,7 +1013,6 @@ impl WorkbookManager {
             .ok_or_else(|| Error::not_found(ObjectKind::PivotTable, name))
     }
 
-    /// List every pivot table in the workbook.
     pub fn list_pivot_tables(&self) -> &[PivotTable] {
         &self.pivot_tables
     }
@@ -1164,9 +1023,6 @@ impl WorkbookManager {
             .any(|p| p.name.eq_ignore_ascii_case(name))
     }
 
-    /// Defines a new pivot table sourced from an existing Excel Table, with
-    /// no fields assigned yet -- mirroring Excel inserting an empty
-    /// PivotTable shell that fills in as fields are added to it.
     #[allow(clippy::too_many_arguments)]
     pub fn add_pivot_table_from_table(
         &mut self,
@@ -1210,8 +1066,6 @@ impl WorkbookManager {
         Ok(id)
     }
 
-    /// Defines a new pivot table sourced from a plain cell range (its first
-    /// row is treated as column headers), with no fields assigned yet.
     #[allow(clippy::too_many_arguments)]
     pub fn add_pivot_table_from_range(
         &mut self,
@@ -1262,8 +1116,6 @@ impl WorkbookManager {
         Ok(id)
     }
 
-    /// Deletes a pivot table definition and clears its last rendered output
-    /// range (leaves the source data untouched).
     pub fn delete_pivot_table(&mut self, name: &str) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(name)?;
         let pivot = self.pivot_tables.remove(idx);
@@ -1276,7 +1128,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Renames a pivot table (names are unique workbook-wide, like tables).
     pub fn rename_pivot_table(&mut self, old_name: &str, new_name: &str) -> crate::Result<()> {
         if !old_name.eq_ignore_ascii_case(new_name) && self.pivot_table_name_taken(new_name) {
             return Err(Error::NameTaken {
@@ -1289,19 +1140,6 @@ impl WorkbookManager {
         Ok(())
     }
 
-    /// Adds a field to one of a pivot table's four areas (Row/Column/
-    /// Value/Filter) and immediately refreshes its output, mirroring
-    /// Excel's live-updating field list.
-    ///
-    /// A field can only occupy one area at a time, exactly like dragging a
-    /// field to a new area in Excel's field list moves it rather than
-    /// duplicating it (confirmed via the win32com driver: setting
-    /// `PivotField.Orientation` a second time relocates the field). Value
-    /// fields are the one exception -- Excel allows the same source column
-    /// to appear as multiple value fields simultaneously (e.g. both "Sum of
-    /// Amount" and "Min of Amount"), so adding to `PivotArea::Value` does
-    /// not evict the column from Row/Column/Filter, and vice versa a
-    /// Row/Column/Filter add does not evict existing value fields.
     pub fn add_pivot_field(
         &mut self,
         pivot_name: &str,
@@ -1338,8 +1176,6 @@ impl WorkbookManager {
         self.refresh_pivot_table(pivot_name)
     }
 
-    /// Removes a field from one of a pivot table's four areas and
-    /// refreshes its output.
     pub fn remove_pivot_field(
         &mut self,
         pivot_name: &str,
@@ -1374,8 +1210,6 @@ impl WorkbookManager {
         self.refresh_pivot_table(pivot_name)
     }
 
-    /// Restricts (or clears, with `values: None`) a filter field's allowed
-    /// values and refreshes the pivot table's output.
     pub fn set_pivot_filter(
         &mut self,
         pivot_name: &str,
@@ -1397,10 +1231,6 @@ impl WorkbookManager {
         self.refresh_pivot_table(pivot_name)
     }
 
-    /// Recomputes a pivot table's aggregation and re-materializes it as
-    /// plain values onto its destination sheet. Like Excel, a pivot table
-    /// only updates on an explicit refresh, never automatically as its
-    /// source data changes.
     pub fn refresh_pivot_table(&mut self, pivot_name: &str) -> crate::Result<()> {
         let idx = self.find_pivot_table_index(pivot_name)?;
         let pivot = self.pivot_tables[idx].clone();
