@@ -28,30 +28,26 @@ fn needs_workbook(what: &str) -> VbaError {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Flow {
-    /// Fall through to the next statement.
     Normal,
-    /// `Exit Sub` / `Exit Function` / `Exit Property`.
+
     ExitProc,
-    /// `Exit For`.
+
     ExitFor,
-    /// `Exit Do` (and `Exit While`).
+
     ExitDo,
-    /// `GoTo`, or a jump into an error handler. Unwinds to the procedure
-    /// body, where labels live.
+
     Goto(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Handler {
-    /// No handler: an error propagates out of the procedure.
     None,
-    /// `On Error Resume Next`.
+
     ResumeNext,
-    /// `On Error GoTo <label>`.
+
     Goto(String),
 }
 
-/// Procedures sharing a name in a module (e.g. Sub/Function vs Property Get/Let/Set).
 #[derive(Debug, Clone, Default)]
 pub struct MemberProcs {
     pub sub_or_func: Option<Rc<Procedure>>,
@@ -80,7 +76,6 @@ impl MemberProcs {
     }
 }
 
-/// A parsed module environment in the VBA project.
 #[derive(Debug, Clone)]
 pub struct ModuleEnv {
     pub name: String,
@@ -291,7 +286,6 @@ struct ErrState {
     description: String,
 }
 
-/// Runs VBA procedures across single-module or multi-module projects.
 pub struct Interpreter<'w> {
     modules: HashMap<String, ModuleEnv>,
     instances: HashMap<u64, UserClassInstance>,
@@ -307,7 +301,6 @@ pub struct Interpreter<'w> {
 }
 
 impl<'w> Interpreter<'w> {
-    /// Builds an interpreter over a single parsed module.
     pub fn new(module: Module) -> Self {
         let mut name = "Module1".to_string();
         for item in &module.items {
@@ -340,7 +333,6 @@ impl<'w> Interpreter<'w> {
         }
     }
 
-    /// Builds an interpreter from a list of project modules.
     pub fn from_modules(modules_list: Vec<VbaModule>, target_module: Option<&str>) -> Self {
         let mut modules = HashMap::new();
         let mut default_active = String::new();
@@ -375,7 +367,6 @@ impl<'w> Interpreter<'w> {
         }
     }
 
-    /// Builds an interpreter from a `VbaProject`.
     pub fn from_project(project: &VbaProject, target_module: Option<&str>) -> VResult<Self> {
         let mut modules = HashMap::new();
         let mut default_active = String::new();
@@ -420,7 +411,6 @@ impl<'w> Interpreter<'w> {
         })
     }
 
-    /// Adds a parsed module to this interpreter.
     pub fn add_module(
         &mut self,
         name: &str,
@@ -432,18 +422,15 @@ impl<'w> Interpreter<'w> {
         self.modules.insert(name.to_ascii_lowercase(), env);
     }
 
-    /// Binds a workbook, enabling the host object model.
     pub fn with_host(mut self, host: Host<'w>) -> Self {
         self.host = Some(host);
         self
     }
 
-    /// Whether the run changed the workbook.
     pub fn mutated(&self) -> bool {
         self.host.as_ref().is_some_and(|h| h.mutated())
     }
 
-    /// Settles any outstanding recalculation.
     pub fn finish(&mut self) {
         if let Some(h) = self.host.as_mut() {
             h.finish();
@@ -463,18 +450,15 @@ impl<'w> Interpreter<'w> {
         self.host.as_mut().ok_or_else(|| needs_workbook(what))
     }
 
-    /// Caps how many statements a run may execute.
     pub fn with_max_ops(mut self, max_ops: u64) -> Self {
         self.max_ops = max_ops;
         self
     }
 
-    /// Whether events are currently enabled.
     pub fn enable_events(&self) -> bool {
         self.host.as_ref().is_none_or(|h| h.enable_events)
     }
 
-    /// Returns the resolved type name for a variant (e.g. "Class1" for UserClass).
     pub fn type_name_of(&self, v: &Variant) -> String {
         match v {
             Variant::Object(ObjRef::UserClass(id)) => {
@@ -496,7 +480,6 @@ impl<'w> Interpreter<'w> {
             .unwrap_or_else(|| "Object".to_string())
     }
 
-    /// Runs the named procedure and returns its value.
     pub fn run(&mut self, name: &str, args: Vec<Variant>) -> VResult<Variant> {
         self.ops = 0;
         self.init_all_modules()?;
@@ -505,7 +488,6 @@ impl<'w> Interpreter<'w> {
         Ok(res)
     }
 
-    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
     pub fn run_open_events(&mut self) -> VResult<()> {
         self.ops = 0;
         self.init_all_modules()?;
@@ -550,7 +532,6 @@ impl<'w> Interpreter<'w> {
         Ok(())
     }
 
-    /// Fires `Workbook_BeforeClose` event. Returns true if canceled.
     pub fn fire_workbook_before_close(&mut self) -> VResult<bool> {
         if !self.enable_events() {
             return Ok(false);
@@ -583,7 +564,6 @@ impl<'w> Interpreter<'w> {
         Ok(false)
     }
 
-    /// Fires `Workbook_BeforeSave` event. Returns true if canceled.
     pub fn fire_workbook_before_save(&mut self, save_as_ui: bool) -> VResult<bool> {
         if !self.enable_events() {
             return Ok(false);

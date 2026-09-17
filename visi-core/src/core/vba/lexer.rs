@@ -1,11 +1,9 @@
 use std::fmt;
 
-/// A source position, 1-based in both axes so it can be printed as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pos {
-    /// 1-based line number.
     pub line: u32,
-    /// 1-based column number, counted in characters rather than bytes.
+
     pub col: u32,
 }
 
@@ -15,32 +13,27 @@ impl fmt::Display for Pos {
     }
 }
 
-/// The numeric base a literal was written in, kept so a round trip can tell
-/// `&H10` from `16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumBase {
-    /// Ordinary decimal, possibly with a fraction and exponent.
     Decimal,
-    /// `&H`-prefixed hexadecimal.
+
     Hex,
-    /// `&O`-prefixed (or bare `&`-prefixed) octal.
+
     Octal,
 }
 
-/// A VBA type-declaration character: the trailing sigil in `count%`, `name$`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeSuffix {
-    /// `$` -- String.
     String,
-    /// `%` -- Integer.
+
     Integer,
-    /// `&` -- Long.
+
     Long,
-    /// `!` -- Single.
+
     Single,
-    /// `#` -- Double.
+
     Double,
-    /// `@` -- Currency.
+
     Currency,
 }
 
@@ -57,7 +50,6 @@ impl TypeSuffix {
         }
     }
 
-    /// The character this suffix is written as.
     pub fn as_char(self) -> char {
         match self {
             Self::String => '$',
@@ -70,56 +62,41 @@ impl TypeSuffix {
     }
 }
 
-/// What a token is.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    /// An identifier or a keyword, in its original spelling. Keywords are not
-    /// distinguished here -- see this module's docs.
     Ident(String),
-    /// A numeric literal.
+
     Number {
-        /// The value. Hex/octal literals are already converted.
         value: f64,
-        /// How it was written.
+
         base: NumBase,
-        /// A trailing type-declaration character, if any.
+
         suffix: Option<TypeSuffix>,
-        /// Whether it was written with a decimal point or an exponent, which
-        /// forces `Double` regardless of the value: `1E3` is a `Double` even
-        /// though the same value written `1000` is a `Long`.
+
         is_float: bool,
     },
-    /// A string literal, with `""` escapes already resolved to `"`.
+
     Str(String),
-    /// A `#...#` date literal, holding the raw text between the hashes. Not
-    /// parsed into a serial here: that is `date.rs`'s job and it needs the
-    /// workbook's date system, which the lexer has no business knowing.
+
     Date(String),
-    /// Punctuation or an operator, as its canonical spelling (`"<="`, `"&"`).
-    /// Word operators (`And`, `Mod`, `Is`) arrive as `Ident` instead.
+
     Punct(&'static str),
-    /// An end of line, which in VBA ends a statement.
+
     Newline,
-    /// End of input.
+
     Eof,
 }
 
-/// A token and where it came from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-    /// What the token is.
     pub kind: TokenKind,
-    /// Where it starts.
+
     pub pos: Pos,
-    /// Whether whitespace (or a line continuation) preceded it on this line.
-    /// The parser needs this to tell `Foo (a)` -- a call whose one argument
-    /// is parenthesised -- from `Foo(a)`, and the lexer needs it to tell a
-    /// type suffix from an operator.
+
     pub preceded_by_space: bool,
 }
 
 impl Token {
-    /// The identifier text, if this is an `Ident`.
     pub fn ident(&self) -> Option<&str> {
         match &self.kind {
             TokenKind::Ident(s) => Some(s),
@@ -127,24 +104,19 @@ impl Token {
         }
     }
 
-    /// Whether this is the given keyword, compared case-insensitively as VBA
-    /// does.
     pub fn is_kw(&self, kw: &str) -> bool {
         self.ident().is_some_and(|s| s.eq_ignore_ascii_case(kw))
     }
 
-    /// Whether this is the given punctuation.
     pub fn is_punct(&self, p: &str) -> bool {
         matches!(&self.kind, TokenKind::Punct(x) if *x == p)
     }
 }
 
-/// A lexing failure, with the position of the offending character.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexError {
-    /// What went wrong, phrased for a user reading CLI output.
     pub message: String,
-    /// Where it went wrong.
+
     pub pos: Pos,
 }
 
@@ -164,11 +136,6 @@ const SINGLE_PUNCT: &[char] = &[
     '%', '@', '?', '{', '}', '[', ']', '~', '|',
 ];
 
-/// Splits VBA source into tokens.
-///
-/// Returns every token including a final [`TokenKind::Eof`]. Comments are
-/// discarded (VBA has no doc-comment convention that the parser needs), but
-/// the newline that ends a comment is kept, since it still ends a statement.
 pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).run()
 }

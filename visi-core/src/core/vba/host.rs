@@ -10,146 +10,62 @@ use crate::core::workbook::WorkbookManager;
 
 use super::value::{VResult, VarArray, Variant, VbaError};
 
-/// Rows in an Excel worksheet. `ws.Cells` is the whole grid, not the part
-/// `visi` happens to have allocated, which is why `ws.Cells.Count` overflows
-/// a `Long` in Excel -- and, now, here.
 pub const MAX_ROWS: u32 = 1_048_576;
-/// Columns in an Excel worksheet (`A` through `XFD`).
+
 pub const MAX_COLS: u32 = 16_384;
 
 const MAX_ALLOCATED_CELLS: u64 = 4_000_000;
 
-/// A reference to a host object, or `Nothing`.
-///
-/// Deliberately a plain value: no lifetimes, no borrow of the workbook, so a
-/// [`Variant`] holding one stays `Clone` and can outlive any single statement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ObjRef {
-    /// An unset object reference. `TypeName` says `"Nothing"`.
     Nothing,
-    /// `Application`.
     Application,
-    /// `Application.WorksheetFunction`.
-    ///
-    /// A separate object from [`ObjRef::Application`] because the *same*
-    /// function reached through the two behaves differently on failure:
-    /// `WorksheetFunction.VLookup` raises error 1004, while
-    /// `Application.VLookup` returns an error `Variant` that `IsError`
-    /// detects. Both measured. One implementation, two call paths.
     WorksheetFunction,
-    /// `ThisWorkbook` / `ActiveWorkbook`. There is only ever one.
     Workbook,
-    /// The `Worksheets` / `Sheets` collection. `TypeName` says `"Sheets"`.
     Worksheets,
-    /// One worksheet, by its stable id. Identity *is* the id: Excel hands out
-    /// a cached object per sheet, so `ws Is wb.Worksheets(1)` is True.
     Worksheet(u64),
-    /// The `ListObjects` collection of one worksheet, by sheet id.
     ListObjects(u64),
-    /// One Excel Table, by its workbook-unique id.
-    ///
-    /// By id rather than by name because the id is what survives a rename --
-    /// and `ListObject.Name = "X"` is a supported write, so a macro can hold
-    /// a table across one.
     ListObject(u64),
-    /// A table's `ListColumns` collection, by table id.
     ListColumns(u64),
-    /// One table column, by table id and 0-based position within the table.
     ListColumn(u64, u32),
-    /// A table's `ListRows` collection, by table id.
     ListRows(u64),
-    /// One table data row, by table id and 0-based position within the data
-    /// body.
     ListRow(u64, u32),
-    /// The `PivotTables` collection of one worksheet, by sheet id.
     PivotTables(u64),
-    /// One pivot table, by its workbook-unique id.
     PivotTable(u64),
-    /// A pivot table's `PivotFields` collection, by pivot id.
     PivotFields(u64),
-    /// One pivot field, by pivot id and source-column position -- Excel's
-    /// `PivotFields` has one entry per *source column*, whatever area (if
-    /// any) it currently occupies.
     PivotField(u64, u32),
-    /// `Range.Interior`, by the handle of the range it belongs to.
-    ///
-    /// Excel hands out a distinct object (`TypeName` is `"Interior"`,
-    /// measured) but it has no identity of its own worth modelling: it is a
-    /// view onto the same cells, so it rides on the range's handle and
-    /// tracks structural edits for free.
     Interior(u64),
-    /// `Range.Font`, by the handle of the range it belongs to. `TypeName` is
-    /// `"Font"`, measured.
     Font(u64),
-    /// A rectangular range of cells, by handle into [`Host::ranges`].
-    ///
-    /// A handle rather than the coordinates because a `Range` **tracks
-    /// structural edits**: inserting a row above one moves it, and every copy
-    /// of it moves too, so the location has to live in one place that the
-    /// edit can rewrite. The handle doubles as the identity token for `Is`.
     Range(u64),
-    /// A user-defined class instance, by handle into the interpreter's class instance table.
     UserClass(u64),
 }
 
-/// Where a `Range` currently points, or that it no longer points anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeState {
-    /// The range covers these cells.
     Live(RangeRef),
-    /// Every cell the range covered was deleted.
-    ///
-    /// Measured, and none of it is guessable: the object is **not**
-    /// `Nothing` (`r Is Nothing` is False) and still reports
-    /// `TypeName(r)` as `"Range"`, but *every* member access raises
-    /// `Method '<name>' of object 'Range' failed`.
-    ///
-    /// Excel's `Err.Number` for this is not reproducible -- the same case
-    /// came back as `-1667945984` on one run and `-1667949824` on the next,
-    /// and two different members gave the same number on one run and
-    /// different numbers on another. Pinning it would be pinning noise, so
-    /// visi raises 1004, the number Excel on Windows documents for this
-    /// message and the one this module already uses for the rest of the
-    /// "object-defined error" family. Recorded in `docs/excel-discrepancies.md`.
     Dead,
 }
 
-/// A `Range`'s rectangle: which sheet, and which cells.
-///
-/// Identity is *not* in here -- that is the [`ObjRef::Range`] handle, so that
-/// two ranges over the same cells stay different objects and a range that
-/// moves stays the same one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeRef {
-    /// The sheet the range lives on, by stable id rather than index or name.
     pub sheet_id: u64,
-    /// 0-based top row.
     pub row: u32,
-    /// 0-based left column.
     pub col: u32,
-    /// Rows spanned; never zero.
     pub height: u32,
-    /// Columns spanned; never zero.
     pub width: u32,
 }
 
 impl RangeRef {
-    /// Whether this range is exactly one cell, which decides whether `.Value`
-    /// reads a scalar or an array.
     pub fn is_single(&self) -> bool {
         self.height == 1 && self.width == 1
     }
 
-    /// Cells covered. `u64` because a whole sheet has more than a `u32` holds
-    /// -- and more than `Range.Count`'s `Long` holds, which is why
-    /// `ws.Cells.Count` is error 6 in Excel.
     pub fn count(&self) -> u64 {
         self.height as u64 * self.width as u64
     }
 }
 
 impl ObjRef {
-    /// What `TypeName()` reports. All measured.
     pub fn type_name(&self) -> &'static str {
         match self {
             ObjRef::Nothing => "Nothing",
@@ -175,7 +91,6 @@ impl ObjRef {
         }
     }
 
-    /// `Is`: reference identity, not value equality.
     pub fn same_object(&self, other: &ObjRef) -> bool {
         match (self, other) {
             (ObjRef::Nothing, ObjRef::Nothing)
@@ -203,12 +118,6 @@ impl ObjRef {
     }
 }
 
-/// Whether a bare name belongs to the host object model.
-///
-/// Consulted when there is *no* workbook attached, so that
-/// `Range("A1")` in a host-free run reports "this needs a workbook" rather
-/// than "Sub or Function not defined" -- which would be true but useless, and
-/// would let a typo and a missing workbook look identical.
 pub fn is_host_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -239,49 +148,27 @@ fn dead_range(member: &str) -> VbaError {
     VbaError::new(1004, format!("Method '{member}' of object 'Range' failed"))
 }
 
-/// The workbook a macro is running against.
-///
-/// Holds the workbook mutably for the whole run, which is why every object is
-/// a plain value: nothing else may hold a `&Sheet` across a statement.
 pub struct Host<'w> {
     wb: &'w mut WorkbookManager,
-    /// A write happened and no recalculation has run since. The next read
-    /// that could observe it pays for one.
+
     stale: bool,
-    /// Whether this run changed the workbook at all, which is what decides
-    /// whether the caller has something worth saving.
+
     mutated: bool,
-    /// Every `Range` handed out this run, by handle.
-    ///
-    /// The location lives here rather than in the [`ObjRef`] so a structural
-    /// edit can move it, which is what makes `Set r = ws.Range("A5")` read
-    /// `$A$6` after a row is inserted above it -- and makes a copy of `r`
-    /// taken before the edit read `$A$6` too. Measured; see the module doc.
-    ///
-    /// Grows for the lifetime of one macro run and is dropped with the
-    /// [`Host`]. A loop constructing a range per iteration therefore
-    /// accumulates entries, which is bounded by the run rather than by the
-    /// workbook.
+
     ranges: HashMap<u64, RangeState>,
-    /// Next [`ObjRef::Range`] handle. A counter, not a hash of the
-    /// coordinates -- two ranges over the same cells must not be the same
-    /// object.
+
     next_token: u64,
-    /// The sheet an unqualified `Range(...)` / `Cells(...)` resolves against.
+
     active_sheet: u64,
-    /// Whether application events are enabled. Defaults to true.
+
     pub enable_events: bool,
-    /// Pending cell range mutations for event dispatch.
+
     pub pending_cell_changes: Vec<RangeRef>,
-    /// Pending sheet recalculations for calculate event dispatch.
+
     pub pending_calculate_sheets: Vec<u64>,
 }
 
 impl<'w> Host<'w> {
-    /// Binds a workbook for the duration of a run.
-    ///
-    /// The first sheet is the active one, since nothing in the supported
-    /// surface can change the selection.
     pub fn new(wb: &'w mut WorkbookManager) -> VResult<Self> {
         let active_sheet = wb
             .sheets
@@ -301,13 +188,10 @@ impl<'w> Host<'w> {
         })
     }
 
-    /// Whether the run changed anything in the workbook.
     pub fn mutated(&self) -> bool {
         self.mutated
     }
 
-    /// Settles any outstanding recalculation, so a workbook about to be saved
-    /// holds the values a reader would have seen.
     pub fn finish(&mut self) {
         self.recalculate();
     }
@@ -336,7 +220,6 @@ impl<'w> Host<'w> {
         Ok(&self.wb.sheets[self.sheet_index(id)?])
     }
 
-    /// Creates a new range handle.
     pub fn new_range(
         &mut self,
         sheet_id: u64,
@@ -367,7 +250,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// A bare identifier that names a host object, or `None` if it does not.
     pub fn global(&mut self, name: &str) -> Option<ObjRef> {
         Some(match name.to_ascii_lowercase().as_str() {
             "thisworkbook" | "activeworkbook" => ObjRef::Workbook,
@@ -377,11 +259,6 @@ impl<'w> Host<'w> {
         })
     }
 
-    /// A call to a bare name that belongs to the host -- `Range("A1")`,
-    /// `Cells(2, 3)`, `Worksheets(1)` -- resolved against the active sheet.
-    ///
-    /// Returns `None` for a name the host does not own, so the interpreter
-    /// can go on to report "Sub or Function not defined" itself.
     pub fn global_call(&mut self, name: &str, args: &[Variant]) -> Option<VResult<Variant>> {
         let lower = name.to_ascii_lowercase();
         let obj = match lower.as_str() {
@@ -396,7 +273,6 @@ impl<'w> Host<'w> {
         Some(self.get_member(&obj, member, args))
     }
 
-    /// Reads a property, or calls a method, on an object.
     pub fn get_member(&mut self, obj: &ObjRef, name: &str, args: &[Variant]) -> VResult<Variant> {
         match obj {
             ObjRef::Nothing => Err(VbaError::new(
@@ -425,7 +301,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// Writes a property on an object.
     pub fn set_member(
         &mut self,
         obj: &ObjRef,
@@ -584,8 +459,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// Calls an object as if it were its own default member: `Worksheets(1)`,
-    /// `ws.Cells(2, 3)`.
     pub fn call_object(&mut self, obj: &ObjRef, args: &[Variant]) -> VResult<Variant> {
         match obj {
             ObjRef::Worksheets => {
@@ -624,10 +497,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// The value an object stands for when it is used without `Set`.
-    ///
-    /// `x = ws.Range("A1")` reads the cell, and `MsgBox ws.Range("A1")` would
-    /// too. Only `Range` has a default member in this scope.
     pub fn default_value(&mut self, obj: &ObjRef) -> VResult<Variant> {
         match obj {
             ObjRef::Range(token) => {
@@ -645,7 +514,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// Assigning to an object without `Set`, which writes its default member.
     pub fn assign_default(&mut self, obj: &ObjRef, value: &Variant) -> VResult<()> {
         match obj {
             ObjRef::Range(token) => {
@@ -659,11 +527,6 @@ impl<'w> Host<'w> {
         }
     }
 
-    /// The elements `For Each` walks.
-    ///
-    /// Measured: a `Range` iterates one cell at a time in **row-major** order
-    /// (`A1 B1 A2 B2` over `A1:B2`), and `Worksheets` iterates in workbook
-    /// order.
     pub fn iterate(&mut self, obj: &ObjRef) -> VResult<Vec<Variant>> {
         match obj {
             ObjRef::Range(token) => {
