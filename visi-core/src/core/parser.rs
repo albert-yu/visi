@@ -20,9 +20,6 @@ pub enum Expr {
     Number(f64),
     String(String),
     Boolean(bool),
-    /// An Excel error value written literally in the formula, as in `=#REF!`.
-    /// Evaluates to itself, so it propagates through enclosing operators and
-    /// functions exactly as an error read out of a cell does.
     Error(&'static str),
     CellRef {
         sheet: Option<String>,
@@ -76,8 +73,6 @@ pub enum EvalToken {
     String(String),
     Boolean(bool),
     Identifier(String),
-    /// An Excel error value written literally, as in `=#REF!`. One of
-    /// `result_data::EXCEL_ERROR_CODES`, canonically cased.
     Error(&'static str),
     Op(Op),
     OpenParen,
@@ -96,11 +91,8 @@ pub enum EvalToken {
     },
 }
 
-/// Renders a 0-based column index as its A1 column letters: 0 is `A`, 25 is
+/// Renders a 0-based column index in its letter form: 0 is `A`, 25 is
 /// `Z`, 26 is `AA`.
-///
-/// One half of the boundary between the engine's 0-based `(row, col)` and the
-/// A1 notation users type; [`parse_a1_coordinates`] is the other.
 pub fn col_idx_to_letters(mut col: usize) -> String {
     let mut letters = String::new();
     loop {
@@ -1249,14 +1241,7 @@ fn render_structured_ref_text(
     }
 }
 
-/// Rewrites every structured reference to `table_name` within a single
-/// cell's formula source (e.g. `"=SUM(Sales[Amount])"`), so that renaming
-/// an ExcelTable (and/or one of its columns) can update dependent formulas
-/// the same way Excel does. `new_table_name` renames the table itself (in
-/// every matching reference's leading name); `col_rename` renames one
-/// column, `(old_name, new_name)`, wherever it's referenced on this table.
-/// Either or both may be supplied. Non-formula cells and formulas that
-/// don't reference `table_name` at all are left alone (returns `None`).
+/// Structural rewrite, provides plumbing for table renames
 pub fn rewrite_structured_table_reference(
     formula_src: &str,
     table_name: &str,

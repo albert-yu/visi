@@ -86,12 +86,6 @@ fn bit_count_for(decompressed_current: usize) -> u32 {
     bit_count.clamp(4, 12)
 }
 
-/// Compresses `data` into an MS-OVBA Compressed Container using real LZ77
-/// back-references, chunked to exactly 4096 decompressed bytes per
-/// non-final chunk (matching genuine Excel-authored data). Errors (rather
-/// than falling back to a "stored" chunk -- see the module doc comment for
-/// why) if some 4096-byte chunk has so few repeated 3-byte sequences that
-/// this encoding's per-byte overhead can't fit it in the format's budget.
 pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = vec![0x01u8];
     let mut remaining = data;

@@ -231,7 +231,8 @@ impl Locale {
     }
 
     /// Attempts to match a month name/word token against this locale's month
-    /// dictionaries (or English as fallback). Returns `(month_1_based, is_full_name)`.
+    /// dictionaries (or English as fallback).
+    /// Returns `(month_1_based, is_full_name)`.
     pub fn match_month_word(&self, word: &str) -> Option<(u32, bool)> {
         let cleaned = word.trim().trim_end_matches('.');
         if cleaned.is_empty() {

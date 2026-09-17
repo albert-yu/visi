@@ -3,10 +3,7 @@ use std::collections::HashMap;
 
 use crate::core::engine::{CellRef, ResultData, Sheet};
 
-/// Where a `PivotTable` reads its source records from: either an existing
-/// `ExcelTable` (looked up by name at compute time, so renames/resizes of
-/// the table are picked up automatically on refresh) or a plain cell range
-/// whose first row is treated as column headers.
+/// Where a `PivotTable` reads its source records from
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PivotSource {
     /// An `ExcelTable`, resolved by name on every refresh.
@@ -49,11 +46,7 @@ pub enum PivotAggregation {
 
 impl PivotAggregation {
     /// The caption Excel uses for this aggregation in a value field's default
-    /// label ("Sum of Amount").
-    ///
-    /// [`PivotAggregation::CountNumbers`] shares `Count`'s caption, which is
-    /// why two such fields on one column collide and get disambiguated by
-    /// [`value_field_labels`].
+    /// label ("Sum of Amount")
     pub fn label(&self) -> &'static str {
         match self {
             PivotAggregation::Sum => "Sum",
