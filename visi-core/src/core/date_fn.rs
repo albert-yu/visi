@@ -299,7 +299,6 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
     Ok(((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64)
 }
 
-/// NASD 30/360
 pub fn days_30_360_coupon_end(start_date: f64, end_date: f64) -> f64 {
     let (y1, m1, mut d1) = serial_to_ymd(start_date);
     let (y2, m2, mut d2) = serial_to_ymd(end_date);
@@ -345,26 +344,6 @@ pub fn days_30_360_bond_ex(
     ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
 }
 
-/// The NASD 30/360 day count that Excel's YEARFRAC (basis 0) uses, and
-/// that `finance.rs`'s `basis_days_between` also uses for every basis-0
-/// bond-pricing call except `PRICEMAT`/`YIELDMAT`'s issue/settlement/
-/// maturity legs -- see `days_30_360_bond_ex` for that one exception and
-/// the measurement that separated the two. This is *not* what the
-/// DAYS360 function computes, which is why it lives here separately
-/// rather than sharing `days360`'s US branch. Two rules differ from
-/// DAYS360, and each shows up on its own:
-///
-/// - When both ends are February month-ends, this pulls the end date to
-///   the 30th as well. DAYS360 does not:
-///   `YEARFRAC(2003-02-28, 2005-02-28, 0) * 360` is 720 while
-///   `DAYS360(2003-02-28, 2005-02-28, FALSE)` is 718.
-/// - The "end date on the 31st comes back to the 30th" rule tests the
-///   start day *before* it was adjusted, so a February month-end start
-///   does not trigger it: `YEARFRAC(2003-02-28, 2005-03-31, 0) * 360` is
-///   751 where `DAYS360` gives 750.
-///
-/// Verified against real Excel over twelve date pairs chosen to separate
-/// the two rule sets.
 pub fn days_30_360_nasd(start_date: f64, end_date: f64) -> f64 {
     let (y1, m1, mut d1) = serial_to_ymd(start_date);
     let (y2, m2, mut d2) = serial_to_ymd(end_date);
@@ -552,17 +531,6 @@ pub fn workday(start_date: f64, days: f64, holidays: &[f64]) -> Result<f64, Stri
     Ok(curr as f64)
 }
 
-/// Actual/actual year length for basis-1 day-count conventions. Confirmed
-/// against real Excel via the differential fuzzer to have two regimes:
-/// for a span of at most 366 days (including one that crosses a calendar
-/// year boundary, e.g. Dec into Jan), it's simply whether the *later*
-/// date's own calendar year is a leap year -- not a days-weighted blend
-/// of the two years. Only once the span genuinely covers multiple full
-/// calendar years does it become the average of 365/366 across every
-/// year from `start`'s year through `end`'s year inclusive (e.g. a span
-/// covering 4 calendar years with a single leap year among them averages
-/// to (365*3+366)/4 = 365.25). Shared by `YEARFRAC` and the bond/discount
-/// functions in `finance.rs` that use this same basis-1 convention.
 pub fn actual_actual_year_days(start: f64, end: f64) -> f64 {
     let d1 = start.min(end);
     let d2 = start.max(end);
