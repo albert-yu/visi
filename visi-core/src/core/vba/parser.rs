@@ -2,12 +2,9 @@ use super::ast::*;
 use super::lexer::{LexError, NumBase, Pos, Token, TokenKind, lex};
 use std::fmt;
 
-/// A syntax error, with the position to point a user at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
-    /// What went wrong, phrased for someone reading CLI output.
     pub message: String,
-    /// Where it went wrong.
     pub pos: Pos,
 }
 
@@ -75,9 +72,6 @@ const RESERVED_TYPE_NAMES: &[&str] = &[
 struct Parser {
     toks: Vec<Token>,
     i: usize,
-    /// How many further `Next`s a `Next i, j` still has to close. VBA lets one
-    /// `Next` close several nested `For`s; the innermost loop consumes the
-    /// token and leaves this counter for its enclosing loops to drain.
     pending_next: usize,
     with_depth: usize,
 }
