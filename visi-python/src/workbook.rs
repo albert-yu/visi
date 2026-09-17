@@ -14,14 +14,6 @@ use crate::enums::{
 use crate::errors::{Wrapped, invalid_argument};
 use crate::value::result_to_py;
 
-/// A workbook: sheets, charts, pivot tables and any VBA project.
-///
-/// ```python
-/// import visi_core
-/// wb = visi_core.Workbook.load("book.xlsx")
-/// wb.evaluate()
-/// wb.save("out.xlsx")
-/// ```
 #[pyclass(module = "visi_core")]
 pub struct Workbook {
     inner: WorkbookManager,
@@ -35,7 +27,6 @@ impl Workbook {
 
 #[pymethods]
 impl Workbook {
-    /// An empty workbook with one sheet.
     #[new]
     #[pyo3(signature = (locale=None))]
     fn new(locale: Option<&str>) -> PyResult<Self> {
@@ -48,7 +39,6 @@ impl Workbook {
         Ok(Self { inner })
     }
 
-    /// Regional locale tag (e.g. "en-US", "de-DE", "en-GB").
     #[getter]
     fn locale(&self) -> String {
         self.inner.locale.code.clone()
@@ -62,7 +52,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// Reads an `.xlsx` from disk.
     #[staticmethod]
     fn load(path: PathBuf) -> PyResult<Self> {
         let bytes = std::fs::read(&path)?;
@@ -71,7 +60,6 @@ impl Workbook {
         })
     }
 
-    /// Reads an `.xlsx` from an in-memory buffer.
     #[staticmethod]
     fn load_bytes(data: &[u8]) -> PyResult<Self> {
         Ok(Self {
@@ -79,13 +67,11 @@ impl Workbook {
         })
     }
 
-    /// Serializes to `.xlsx` bytes.
     fn save_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let data = self.inner.save_bytes().map_err(Wrapped)?;
         Ok(PyBytes::new(py, &data))
     }
 
-    /// Writes an `.xlsx` to disk, creating parent directories as needed.
     fn save(&self, path: PathBuf) -> PyResult<()> {
         let data = self.inner.save_bytes().map_err(Wrapped)?;
         if let Some(parent) = path.parent()
@@ -97,16 +83,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// A fresh `Workbook` round-tripped through the `.xlsx` format.
-    ///
-    /// Equivalent to `Workbook.load_bytes(wb.save_bytes())`, and to what one
-    /// in-place (`-i`) CLI invocation did between two edits. The fuzz harness
-    /// uses it to keep exercising `export_xlsx_data` / `import_xlsx_data`
-    /// between mutations now that it no longer spawns a process per step.
-    ///
-    /// Not everything survives: chart ids are re-derived from sheet name and
-    /// position, and a pivot filter's selected values reset to "all". See
-    /// `add_chart` and `set_pivot_filter`.
     fn roundtrip(&self) -> PyResult<Self> {
         let data = self.inner.save_bytes().map_err(Wrapped)?;
         Ok(Self {
@@ -114,30 +90,21 @@ impl Workbook {
         })
     }
 
-    /// Recalculates every formula in every sheet.
-    ///
-    /// Almost never raises: visi-core discards per-sheet commit errors, so a
-    /// formula that fails shows up as a `CellError` *value* in the cell rather
-    /// than as an exception here. Check cells, not exceptions.
     fn evaluate(&mut self) -> PyResult<()> {
         self.inner.evaluate().map_err(Wrapped)?;
         Ok(())
     }
 
-    /// The worksheet names, in workbook order.
     #[getter]
     fn sheet_names(&self) -> Vec<String> {
         self.inner.sheets.iter().map(|s| s.name.clone()).collect()
     }
 
-    /// The index of a sheet by name, or of the first sheet when `name` is
-    /// `None`.
     #[pyo3(signature = (name=None))]
     fn sheet_index(&self, name: Option<&str>) -> PyResult<usize> {
         self.sheet_idx(name)
     }
 
-    /// `(rows, cols)` for a sheet.
     #[pyo3(signature = (sheet=None))]
     fn dimensions(&self, sheet: Option<&str>) -> PyResult<(usize, usize)> {
         let idx = self.sheet_idx(sheet)?;
@@ -145,8 +112,6 @@ impl Workbook {
         Ok((s.row_count(), s.col_count()))
     }
 
-    /// Writes a cell's source text -- a literal (`"10"`) or a formula
-    /// (`"=SUM(A1:A2)"`). Call `evaluate()` afterwards to recompute.
     #[pyo3(signature = (row, col, value, sheet=None, cell_type=None))]
     fn set_cell(
         &mut self,
@@ -167,7 +132,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// Sets the intrinsic data type of a cell at (row, col).
     #[pyo3(signature = (row, col, cell_type, sheet=None))]
     fn set_cell_type(
         &mut self,
@@ -182,12 +146,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// A cell's computed value.
-    ///
-    /// Excel error values come back as `CellError`, not as `str`, so a cell
-    /// holding the *text* `#DIV/0!` stays distinguishable from one that
-    /// evaluated to that error. A date is a plain number here -- use
-    /// `get_display` for the rendered form.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_cell<'py>(
         &self,
@@ -201,15 +159,12 @@ impl Workbook {
         result_to_py(py, &v)
     }
 
-    /// A cell's value rendered the way it would be shown, honoring the cell's
-    /// number format. This is the only correct way to render a date.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_display(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
         let idx = self.sheet_idx(sheet)?;
         Ok(self.inner.sheets[idx].get_display_string(&CellRef::new(row, col)))
     }
 
-    /// [AI-Agent] The cell's intrinsic type, using the `CellType::as_str` spelling.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_cell_type(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
         let idx = self.sheet_idx(sheet)?;
@@ -217,19 +172,12 @@ impl Workbook {
         Ok(t.as_str().to_string())
     }
 
-    /// A cell's source text, as typed.
     #[pyo3(signature = (row, col, sheet=None))]
     fn get_src(&self, row: usize, col: usize, sheet: Option<&str>) -> PyResult<String> {
         let idx = self.sheet_idx(sheet)?;
         Ok(self.inner.sheets[idx].get_src_str(&CellRef::new(row, col)))
     }
 
-    /// Adds a chart over `range` (A1 with a sheet prefix, e.g. `"Sheet1!A1:B10"`).
-    ///
-    /// Returns the new chart's id. **That id is valid only for this in-memory
-    /// workbook.** `import_xlsx_data` re-derives chart ids from the sheet name
-    /// and the chart's position within that sheet, so after `save`/`load` or
-    /// `roundtrip()` the id will differ -- re-read it from `charts()`.
     #[pyo3(signature = (sheet, chart_type, range, title=None, anchor=None))]
     fn add_chart(
         &mut self,
@@ -246,13 +194,6 @@ impl Workbook {
             .map_err(Wrapped)?)
     }
 
-    /// Edits a chart.
-    ///
-    /// Each of title/xlabel/ylabel is three-state -- leave alone, set, or
-    /// clear -- which a single argument cannot express, since pyo3 maps Python
-    /// `None` onto "not supplied". So each has a paired `clear_*` flag,
-    /// mirroring the CLI's `--title` / `--clear-title`. Passing both a value
-    /// and its `clear_*` flag is an error, as it is on the CLI.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         chart_id, *, name=None, chart_type=None, range=None,
@@ -308,18 +249,11 @@ impl Workbook {
         Ok(())
     }
 
-    /// Deletes a chart by id.
     fn delete_chart(&mut self, chart_id: u64) -> PyResult<()> {
         self.inner.delete_chart(chart_id).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// The charts, as dicts.
-    ///
-    /// Carries every key `visi chart list --json` emits (`id`, `name`, `type`,
-    /// `data_range`, `title`, `anchor`) so the two are directly comparable,
-    /// plus `xlabel`, `ylabel` and `show_legend`, which that command does not
-    /// report.
     fn charts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let mut out = Vec::with_capacity(self.inner.charts.len());
         for c in &self.inner.charts {
@@ -341,7 +275,6 @@ impl Workbook {
         PyList::new(py, out)
     }
 
-    /// Creates a pivot table sourced from a named Excel Table.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         name, source_table, *, dest_sheet=None, dest_row=0, dest_col=0,
@@ -371,8 +304,6 @@ impl Workbook {
             .map_err(Wrapped)?)
     }
 
-    /// Creates a pivot table sourced from a raw sheet range, given as 0-based
-    /// inclusive bounds.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         name, *, source_sheet=None, start_row, start_col, end_row, end_col,
@@ -411,14 +342,6 @@ impl Workbook {
             .map_err(Wrapped)?)
     }
 
-    /// Adds a field to a pivot area (`"row"`, `"column"`, `"value"`,
-    /// `"filter"`), then refreshes if anything changed.
-    ///
-    /// `subtotal=False` and `label` are applied by mutating the field after
-    /// the add, because `WorkbookManager` has no "add a field with subtotals
-    /// off" entry point. This mirrors `handle_pivot`'s AddField arm exactly;
-    /// the two must stay in step, which is what `fuzz/test_backend_parity.py`
-    /// checks.
     #[pyo3(signature = (pivot, area, column, *, agg=None, subtotal=true, label=None))]
     fn add_pivot_field(
         &mut self,
@@ -478,7 +401,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// Removes a field from a pivot area.
     fn remove_pivot_field(&mut self, pivot: &str, area: &str, column: &str) -> PyResult<()> {
         let area = parse_pivot_area(area)?;
         self.inner
@@ -487,19 +409,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// Sets which values of a filter field take part.
-    ///
-    /// `None` clears the filter (every value allowed); a list restricts to
-    /// those values, and an **empty list selects nothing** -- a state the
-    /// `visi pivot filter` command cannot express, since it requires either a
-    /// value list or `--clear`.
-    ///
-    /// A selection survives `roundtrip()` -- it is written as indices into
-    /// the pivot cache's shared items and resolved back to values on import.
-    /// Two cases still cannot: selecting *every* value marks nothing hidden
-    /// and so reads back as no filter (the grid is identical either way), and
-    /// a filter on a column that is also a row or column field has nowhere to
-    /// be recorded, since a pivot field carries one orientation.
     #[pyo3(signature = (pivot, column, values))]
     fn set_pivot_filter(
         &mut self,
@@ -513,26 +422,16 @@ impl Workbook {
         Ok(())
     }
 
-    /// Recomputes a pivot table's grid and writes it into its destination
-    /// cells. Nothing does this implicitly.
     fn refresh_pivot(&mut self, pivot: &str) -> PyResult<()> {
         self.inner.refresh_pivot_table(pivot).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// Deletes a pivot table by name.
     fn delete_pivot(&mut self, pivot: &str) -> PyResult<()> {
         self.inner.delete_pivot_table(pivot).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// The pivot tables, as dicts.
-    ///
-    /// Carries every key `visi pivot list --json` emits (`id`, `name`,
-    /// `row_fields`, `col_fields`, `value_fields`, `filter_fields`), plus
-    /// `subtotals` (per row/column field) and `filter_selections`, which that
-    /// command does not report but which are exactly the state a round trip
-    /// can lose.
     fn pivots<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let mut out = Vec::with_capacity(self.inner.pivot_tables.len());
         for p in self.inner.list_pivot_tables() {
@@ -573,24 +472,10 @@ impl Workbook {
         PyList::new(py, out)
     }
 
-    /// Whether the workbook carries a VBA project at all.
     fn has_macros(&self) -> bool {
         self.inner.has_vba_project()
     }
 
-    /// Adds a VBA module, mirroring `visi macro add`.
-    ///
-    /// `kind` is `"standard"`, `"class"` or `"document"`. `sheet` names the
-    /// sheet a document module binds to and is required for `"document"` --
-    /// except for `ThisWorkbook`, which isn't tied to a specific sheet. This
-    /// resolve-sheet-name-to-id-then-special-case-ThisWorkbook step is the
-    /// CLI behaviour (`visi/src/main.rs`'s Add arm) duplicated here, in the
-    /// same way `edit_chart` and `add_pivot_field` are; `visi-core` takes the
-    /// id, not the name.
-    ///
-    /// `source` is written verbatim -- callers include their own
-    /// `Attribute VB_Name = "..."` line, matching how real Excel-authored
-    /// module streams are shaped, and nothing reconciles it against `name`.
     #[pyo3(signature = (name, source, *, kind="standard", sheet=None))]
     fn add_macro(
         &mut self,
@@ -619,19 +504,16 @@ impl Workbook {
         Ok(())
     }
 
-    /// Removes a VBA module by name. Mirrors `visi macro remove`.
     fn remove_macro(&mut self, name: &str) -> PyResult<()> {
         self.inner.remove_vba_module(name).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// Renames a VBA module. Mirrors `visi macro rename`.
     fn rename_macro(&mut self, old: &str, new: &str) -> PyResult<()> {
         self.inner.rename_vba_module(old, new).map_err(Wrapped)?;
         Ok(())
     }
 
-    /// Runs one of this workbook's macros
     #[pyo3(signature = (procedure, *, module=None, args=None))]
     fn run_macro(
         &mut self,
@@ -648,13 +530,11 @@ impl Workbook {
         Ok((out.type_name, out.value, out.mutated))
     }
 
-    /// Runs startup macro events (`Workbook_Open` in `ThisWorkbook` then `Auto_Open` in standard modules).
     fn run_open_events(&mut self) -> PyResult<(String, Option<String>, bool)> {
         let out = self.inner.run_open_events().map_err(Wrapped)?;
         Ok((out.type_name, out.value, out.mutated))
     }
 
-    /// Replaces a module's source text. Mirrors `visi macro set-source`.
     fn set_macro_source(&mut self, name: &str, source: &str) -> PyResult<()> {
         self.inner
             .set_vba_module_source(name, source.to_string())
@@ -662,7 +542,6 @@ impl Workbook {
         Ok(())
     }
 
-    /// The VBA modules, as dicts.
     fn macros<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let modules = self.inner.list_vba_modules();
         let mut out = Vec::with_capacity(modules.len());

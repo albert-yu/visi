@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use crate::core::{CellStyle, CellType, DataColumn, Sheet};
 use calamine::Reader;
 use web_time::Instant;
@@ -31,15 +32,11 @@ fn cell_type_and_src_for_calamine(cell_value: &calamine::Data) -> (CellType, Str
     }
 }
 
-/// A worksheet read out of an `.xlsx` file.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportedSheet {
-    /// The sheet, with its cells, styles and any Excel Tables on it. Its
-    /// values are already committed, so it can be read without evaluating.
     pub sheet: Sheet,
 }
 
-/// `(imported sheets, charts, pivot tables, VBA project)`.
 pub type ImportedXlsxData = (
     Vec<ImportedSheet>,
     Vec<crate::core::chart::Chart>,
@@ -47,17 +44,6 @@ pub type ImportedXlsxData = (
     Option<crate::core::vba::VbaProject>,
 );
 
-/// Read a `.xlsx` file from memory into sheets, charts, pivot tables and an
-/// optional VBA project.
-///
-/// `existing_sheets` lets the importer keep column ids stable when reloading
-/// a workbook it already has in hand; pass `&[]` for a cold load.
-/// `progress_callback` is invoked as `(index, total, sheet_name)`.
-///
-/// # Errors
-///
-/// Returns [`crate::Error::Xlsx`] if the buffer is not a readable `.xlsx` container
-/// or a part of it fails to parse.
 pub fn import_xlsx_data(
     buffer: &[u8],
     existing_sheets: &[Sheet],
@@ -601,15 +587,6 @@ pub(crate) fn build_xlsx_format(style: &crate::core::CellStyle) -> rust_xlsxwrit
     format
 }
 
-/// Serialize sheets, charts, pivot tables and an optional VBA project into a
-/// `.xlsx` file in memory.
-///
-/// Formulas are written with their cached results, so readers that do not
-/// recalculate (Excel on open, `openpyxl`) still see values.
-///
-/// # Errors
-///
-/// Returns [`crate::Error::Xlsx`] if the workbook cannot be serialized.
 pub fn export_xlsx_data(
     sheets: &[Sheet],
     charts: &[crate::core::chart::Chart],
@@ -2074,10 +2051,7 @@ struct ParsedTablePart {
     columns: Vec<String>,
     has_header_row: bool,
     has_totals_row: bool,
-    /// The whole table's bounds from its declared `ref`, header and totals
-    /// rows included, 0-based `(start_row, start_col, end_row, end_col)`.
-    /// `None` when the `ref` attribute is absent or unparseable, in which
-    /// case the table can't be placed and is skipped.
+
     bounds: Option<(usize, usize, usize, usize)>,
     style_name: Option<String>,
     has_insert_row: bool,

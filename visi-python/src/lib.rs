@@ -8,10 +8,6 @@ mod workbook;
 
 use errors::Wrapped;
 
-/// Reads a workbook, recalculates every formula, and writes the result.
-///
-/// The whole of what the formula fuzzer needs, and the exact equivalent of
-/// `visi eval <input> --output <output>`.
 #[pyfunction]
 fn eval_file(input: std::path::PathBuf, output: std::path::PathBuf) -> PyResult<()> {
     let bytes = std::fs::read(&input)?;
@@ -21,12 +17,6 @@ fn eval_file(input: std::path::PathBuf, output: std::path::PathBuf) -> PyResult<
     Ok(())
 }
 
-/// Checks VBA source for syntax errors, returning the procedure names it
-/// declares.
-///
-/// Raises `VbaSyntaxError` (carrying `line` and `column`) if it does not
-/// parse. The exact equivalent of `visi macro check` over a `.bas` file, and
-/// what `fuzz/fuzz_vba_parse.py` compares against real Excel's verdict.
 #[pyfunction]
 fn check_syntax(source: &str) -> PyResult<Vec<String>> {
     Ok(visi_engine::core::check_syntax(source)
@@ -34,19 +24,6 @@ fn check_syntax(source: &str) -> PyResult<Vec<String>> {
         .procedures)
 }
 
-/// Runs a VBA procedure from loose source text and returns
-/// `(type_name, value)`.
-///
-/// Expressions, control flow, `Sub`/`Function` and `On Error`, with **no
-/// workbook**: this takes source text, not a file, so `Range`, `Worksheets`
-/// and `ThisWorkbook` have nothing to resolve against and report so. Use
-/// `Workbook.run_macro` for a run that can touch cells.
-///
-/// Raises `VbaRuntimeError` (carrying `number`) for a run-time error and
-/// `VbaSyntaxError` if the source does not parse.
-///
-/// `value` is `None` where VBA itself cannot stringify the result, which in
-/// practice means `Null`. What `fuzz/fuzz_vba.py` compares against Excel.
 #[pyfunction]
 #[pyo3(signature = (source, procedure, args=None))]
 fn run_macro(
@@ -60,7 +37,6 @@ fn run_macro(
     Ok((out.type_name, out.value))
 }
 
-/// The Python module, `visi_core`.
 #[pymodule]
 fn visi_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<workbook::Workbook>()?;

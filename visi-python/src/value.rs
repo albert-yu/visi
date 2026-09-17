@@ -2,25 +2,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use visi_engine::core::ResultData;
 
-/// An Excel error *value* (`#DIV/0!`, `#VALUE!`, `#N/A`) sitting in a cell.
-///
-/// A distinct type rather than a plain `str`, because a cell can legitimately
-/// hold the *text* `#DIV/0!` -- `=CONCATENATE("#DIV/0!")` produces exactly
-/// that -- and returning both as `str` would erase the difference. **The type
-/// is what carries the distinction: use `isinstance(v, CellError)`, not `==`.**
-///
-/// `__eq__` compares equal to the bare code string, so
-/// `wb.get_cell(0, 0) == "#DIV/0!"` reads true for a real error. That
-/// convenience necessarily also makes it true for a text cell holding those
-/// characters -- the two are equal *as values*, and only their types differ.
-/// This matches the harness's existing convention: `XLSXEvaluatedReader`
-/// normalizes a `t="e"` cell to the upper-cased code string, i.e. the oracle
-/// has always compared errors and text by value. `CellError` adds information
-/// on top of that; it does not change the comparison.
 #[pyclass(module = "visi_core", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct CellError {
-    /// The Excel error code, e.g. `"#DIV/0!"`.
     #[pyo3(get)]
     pub code: String,
 }
@@ -55,10 +39,6 @@ impl CellError {
     }
 }
 
-/// Converts one [`ResultData`] into a Python object.
-///
-/// The match is deliberately total -- no `_` arm -- so that a new `ResultData`
-/// variant fails to compile here rather than silently converting to `None`.
 pub fn result_to_py<'py>(py: Python<'py>, v: &ResultData) -> PyResult<Bound<'py, PyAny>> {
     Ok(match v {
         ResultData::None => py.None().into_bound(py),
@@ -84,10 +64,6 @@ pub fn result_to_py<'py>(py: Python<'py>, v: &ResultData) -> PyResult<Bound<'py,
     })
 }
 
-/// Converts a value being used as a dict *key*.
-///
-/// Same as [`result_to_py`] except that a `List` becomes a tuple, since a
-/// Python list is unhashable and would make the whole dict unbuildable.
 fn hashable_key<'py>(py: Python<'py>, v: &ResultData) -> PyResult<Bound<'py, PyAny>> {
     match v {
         ResultData::List(items) => {
