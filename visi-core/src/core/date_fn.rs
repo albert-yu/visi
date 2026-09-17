@@ -104,15 +104,8 @@ pub fn date_fn(year: f64, month: f64, day: f64) -> Result<f64, String> {
     }
 }
 
-/// Parses a date-only text into an (year, month, day) triple, without
-/// Parses a date-only text into an (year, month, day) triple, without
-/// resolving it to a serial number yet. Uses default US locale.
-#[allow(dead_code)]
-pub fn parse_date_parts(text: &str) -> Option<(i32, i32, i32)> {
-    parse_date_parts_with_locale(text, &crate::core::locale::Locale::en_us())
-}
-
-/// Parses a date-only text into an (year, month, day) triple using the specified locale.
+/// Parses a date-only text into an (year, month, day)
+/// triple using the specified locale.
 pub fn parse_date_parts_with_locale(
     text: &str,
     locale: &crate::core::locale::Locale,
@@ -121,7 +114,8 @@ pub fn parse_date_parts_with_locale(
         .map(|(d, _)| (d.year, d.month as i32, d.day as i32))
 }
 
-/// Days in a given month, honouring leap years.
+/// Days in a given month (year is required
+/// to account for leap years)
 pub fn days_in_month(year: i32, month: i32) -> i32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -305,25 +299,7 @@ pub fn days360(start_date: f64, end_date: f64, method: Option<bool>) -> Result<f
     Ok(((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64)
 }
 
-/// NASD 30/360, but with a *month-end end date* first pulled back to the
-/// 30th -- including February's month end, which is what separates it from
-/// the plain European rule.
-///
-/// Excel uses this for the two ODDLPRICE/ODDLYIELD quantities whose end
-/// date is a **coupon date** (the quasi-coupon period length, and the
-/// last-interest-to-maturity span), while the spans that end at the
-/// *settlement* date use plain `days_30_360_nasd`. So the same pair of
-/// dates can count differently depending on which role it plays:
-///
-/// ```text
-/// last_interest 2017-12-27, maturity 2018-02-28, settlement 2018-01-04
-///   last_interest -> maturity    63   (28 Feb is a month end -> 30)
-///   settlement    -> maturity    54   (plain NASD, 28 Feb stays 28)
-/// ```
-///
-/// Fitted against 20 real-Excel ODDLPRICE values covering month-end and
-/// non-month-end maturities, leap and non-leap Februaries, and month-end
-/// last-interest dates.
+/// NASD 30/360
 pub fn days_30_360_coupon_end(start_date: f64, end_date: f64) -> f64 {
     let (y1, m1, mut d1) = serial_to_ymd(start_date);
     let (y2, m2, mut d2) = serial_to_ymd(end_date);
@@ -341,33 +317,6 @@ pub fn days_30_360_coupon_end(start_date: f64, end_date: f64) -> f64 {
     ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) as f64
 }
 
-/// The 30/360 day count `basis_days_between_pricemat_leg` (`finance.rs`)
-/// uses for `PRICEMAT`/`YIELDMAT`'s basis-0 issue/settlement/maturity
-/// legs -- despite both nominally being "US (NASD) 30/360", this is a
-/// *different* rule from `days_30_360_nasd` (YEARFRAC's basis 0, and
-/// every other basis-0 caller in this bond-pricing family): each end's
-/// February-month-end bump to 30 applies independently, not only when
-/// *both* ends are February month-ends -- except that a settlement date
-/// is *never* bumped this way, only issue and maturity are
-/// (`bump_start`/`bump_end` let a caller suppress it on whichever end is
-/// playing the settlement role).
-///
-/// Measured directly against real `PRICEMAT` output (win32com, real
-/// Windows Excel):
-///  - fuzz/fuzz_excel.py seed 740495 (issue 2015-02-28, settlement
-///    2015-04-28, maturity 2017-02-28): settlement-to-maturity is 662
-///    days, not the 660 `days_30_360_nasd` (and
-///    `YEARFRAC(2015-04-28, 2017-02-28, 0) * 360`, confirmed separately)
-///    gives -- settlement isn't a February month-end here, so
-///    `days_30_360_nasd`'s both-ends rule leaves maturity's day at 28,
-///    while bumping each end independently gives maturity 30.
-///  - fuzz/fuzz_excel.py seed 147209 (issue 2033-09-28, settlement
-///    2034-02-28 -- itself a February month-end, unlike the case above --
-///    maturity 2036-09-28): issue-to-settlement is 150 days and
-///    settlement-to-maturity is 930, both consistent only with
-///    settlement's day staying 28, *not* bumped to 30 -- bumping it (as
-///    the plain independent-both-ends rule above would) gives 152 and
-///    928 instead, wrong by 2 days each way.
 pub fn days_30_360_bond_ex(
     start_date: f64,
     end_date: f64,

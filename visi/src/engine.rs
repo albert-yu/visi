@@ -4,20 +4,12 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-/// Path- and stdio-based loading and saving, layered over `visi-core`'s
-/// byte-oriented [`WorkbookManager::load_bytes`]/[`WorkbookManager::save_bytes`].
-///
-/// A `path_str` of `-` means stdin (loading) or stdout (saving).
+/// Path- and stdio-based loading and saving
 pub trait WorkbookFile: Sized {
-    /// Load an Excel workbook from a file path, or stdin for `-`.
     fn load_file(path_str: &str) -> Result<Self, String>;
 
-    /// Load an Excel workbook from a file path, creating a new empty
-    /// workbook if the file does not exist.
     fn load_file_or_create(path_str: &str) -> Result<Self, String>;
 
-    /// Save an Excel workbook to a file path, or stdout for `-`. Missing
-    /// parent directories are created.
     fn save_file(&self, path_str: &str) -> Result<(), String>;
 }
 

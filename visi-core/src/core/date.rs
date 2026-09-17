@@ -19,10 +19,6 @@ const MONTHS_SHORT: [&str; 12] = [
 ];
 
 /// How a month name was capitalized in the text a date was typed as.
-///
-/// A format code cannot carry casing, so this rides alongside
-/// [`DateFormat::to_format_code`] and is lost on a round trip through a
-/// worksheet -- as it is in Excel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StringCase {
     /// All lowercase, as in `22-jun-2026`.
@@ -53,10 +49,6 @@ pub fn detect_case(s: &str) -> StringCase {
 }
 
 /// A calendar date, with no time-of-day and no timezone.
-///
-/// Only an intermediate: cells hold an Excel serial, not a `SimpleDate`. This
-/// is what [`parse_date`] produces and what [`date_to_excel_serial`] consumes,
-/// so the calendar arithmetic happens in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleDate {
     /// Full year, four digits -- a two-digit year is widened by [`parse_date`].
@@ -86,23 +78,12 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
-/// The notation a date was written in: field order, separator, year width and
-/// month-name spelling.
-///
-/// This is *detection* output, not the storage form. A cell stores an Excel
-/// serial plus the format code this lowers to (`CellStyle::num_format`), which
-/// is why a `DateFormat` can express a little more than survives a save --
-/// month-name casing has no format-code equivalent, and zero-padding of a
-/// numeric month or day is not recorded at all, so `06/22/2026` and
-/// `6/22/2026` are the same variant and both render unpadded.
-///
-/// The two-part variants fill in the missing field: a month/day pair takes
-/// `parse_date`'s default year, a month/year pair takes day 1.
+/// The notation a date was written in
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DateFormat {
-    /// Year-month-day, all numeric: `2026-06-22`.
+    /// Year-month-day, all numeric: `2026-06-22`
     Ymd {
-        /// Character separating the fields, `-` or `/`.
+        /// Character separating the fields, `-` or `/`
         sep: char,
     },
     /// Month-day-year, all numeric: `06/22/2026`, `6/22/26`.
@@ -213,12 +194,7 @@ pub enum DateFormat {
 }
 
 impl DateFormat {
-    /// Lowers to an Excel number-format code (`m/d/yy`, `d-mmm-yyyy`, ...).
-    ///
-    /// This is the interchange form: it is what gets written to the worksheet
-    /// as a `numFmt` and what [`render_date_code`] consumes. Month-name casing
-    /// has no representation in a format code, so it rides alongside as
-    /// [`DateFormat::month_case`].
+    /// Lowers to an Excel number-format code (`m/d/yy`, `d-mmm-yyyy`, ...)
     pub fn to_format_code(&self) -> String {
         fn month_word(full: bool) -> &'static str {
             if full { "mmmm" } else { "mmm" }
@@ -273,7 +249,7 @@ impl DateFormat {
         }
     }
 
-    /// The casing the month name was typed in, for the formats that have one.
+    /// The casing the month name was typed in
     pub fn month_case(&self) -> StringCase {
         match *self {
             DateFormat::DMmmY { month_case, .. }
@@ -296,16 +272,7 @@ fn apply_case(s: &str, case: StringCase) -> String {
     }
 }
 
-/// Renders a date through an Excel number-format code.
-///
-/// Handles the date tokens visi recognizes: runs of `y` (1-2 -> 2-digit year,
-/// 3+ -> 4-digit), `m` (1 -> bare month, 2 -> zero-padded, 3 -> `Jun`, 4+ ->
-/// `June`) and `d` (1 -> bare day, 2+ -> zero-padded). Anything else is copied
-/// through verbatim, so separators and literal text survive.
-///
-/// Tokens are matched as runs in a single pass rather than by successive
-/// string replacement, which is what keeps a substituted month name from being
-/// re-scanned -- `December` contains an `m` and `May` a `y`.
+/// Renders a date through an Excel number-format code
 pub fn render_date_code(date: SimpleDate, code: &str, month_case: StringCase) -> String {
     let chars: Vec<char> = code.chars().collect();
     let mut out = String::with_capacity(code.len() + 8);
@@ -375,7 +342,7 @@ pub fn format_date(date: SimpleDate, format: &DateFormat) -> String {
     render_date_code(date, &format.to_format_code(), format.month_case())
 }
 
-/// [AI-Agent] Whether a number-format code renders a date rather than a numeric or time value.
+/// Whether a number-format code renders a date rather than a numeric or time value.
 pub fn is_date_code(code: &str) -> bool {
     let mut has_year_or_day = false;
     let mut has_month = false;
@@ -434,11 +401,6 @@ pub fn parse_date(src: &str) -> Option<(SimpleDate, DateFormat)> {
 }
 
 /// Recognizes a date written as text according to a specific [`Locale`].
-///
-/// Returns `None` for anything that is not a date, which is how
-/// `Sheet::commit` decides whether a literal becomes a plain number or a
-/// number carrying a date format. Text that merely *looks* like a date is
-/// therefore quoted on import (`xlsx::text_cell_src`) to keep it text.
 pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate, DateFormat)> {
     let default_year = locale.default_year();
     let src_trim = src.trim();
