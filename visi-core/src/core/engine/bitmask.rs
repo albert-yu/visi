@@ -1,24 +1,12 @@
 use crate::core::SharedVec;
 use serde::{Deserialize, Serialize};
 
-/// One bit per row, recording which entries of a numeric [`ColumnData`] hold a
-/// value rather than a blank.
-///
-/// A set bit means the value at that index is real; a clear bit means the cell
-/// is empty and the underlying slot holds a placeholder. Keeping this separate
-/// is what lets a numeric column stay unboxed and still tell a blank cell
-/// apart from a zero.
-///
-/// Read-only from outside the crate -- the mutators are crate-private, since
-/// changing a mask's length independently of the column it belongs to would
-/// desync the two.
-///
-/// [`ColumnData`]: crate::core::ColumnData
+/// One bit per row, bookkeeping which cells of a [`ColumnData`]
+/// are populated (1) vs blank (0).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bitmask {
     data: SharedVec<u8>,
-    /// How many bits are in use, which is the row count of the column this
-    /// mask belongs to. Not the capacity of the backing bytes.
+    /// Column length (row count)
     pub len: usize,
 }
 
@@ -42,9 +30,6 @@ impl Bitmask {
         }
         self.len += 1;
     }
-    /// Whether the entry at `index` holds a value. `false` for an index at or
-    /// past [`Bitmask::len`], so an out-of-range read is indistinguishable
-    /// from a blank.
     pub fn get(&self, index: usize) -> bool {
         if index >= self.len {
             return false;
