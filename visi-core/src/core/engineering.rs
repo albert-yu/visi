@@ -608,14 +608,7 @@ fn harmonic(m: usize) -> f64 {
 }
 
 /// `K_n(x)`, the modified Bessel function of the second kind, for
-/// non-negative integer order (Abramowitz & Stegun 9.6.11/9.6.13):
-///
-/// K_n(x) = (1/2) sum_{k=0}^{n-1} (-1)^k (n-k-1)!/k! (x/2)^(2k-n)
-///        + (-1)^(n+1) ln(x/2) I_n(x)
-///        + (-1)^n (1/2) sum_{k=0}^inf [psi(k+1)+psi(n+k+1)]/(k!(n+k)!) (x/2)^(2k+n)
-///
-/// Confirmed by hand against known reference values (K_0(1) ~ 0.4210244,
-/// K_1(1) ~ 0.6019072). Diverges as x -> 0, unlike I_n.
+/// non-negative integer order
 pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
     if x <= 0.0 || n < 0.0 {
         return Err("#NUM!".to_string());
@@ -659,14 +652,7 @@ pub fn besselk(x: f64, n: f64) -> Result<f64, String> {
 }
 
 /// `Y_n(x)`, the Bessel function of the second kind, for non-negative
-/// integer order (Abramowitz & Stegun 9.1.11):
-///
-/// Y_n(x) = (2/pi) J_n(x) ln(x/2)
-///        - (1/pi) sum_{k=0}^{n-1} (n-k-1)!/k! (x/2)^(2k-n)
-///        - (1/pi) sum_{k=0}^inf (-1)^k [psi(k+1)+psi(n+k+1)]/(k!(n+k)!) (x/2)^(2k+n)
-///
-/// Confirmed by hand against known reference values (Y_0(1) ~ 0.0882570,
-/// Y_1(1) ~ -0.7812128). Unlike `besselj` it diverges as x -> 0.
+/// integer order
 pub fn bessely(x: f64, n: f64) -> Result<f64, String> {
     if x <= 0.0 || n < 0.0 {
         return Err("#NUM!".to_string());

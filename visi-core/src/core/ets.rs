@@ -32,12 +32,6 @@ fn quantize(x: f64) -> f64 {
     (x / PARAM_QUANTUM).round() * PARAM_QUANTUM
 }
 
-/// Collapses (timeline, values) pairs onto the regular grid ETS needs:
-/// sorts by time, averages duplicate timestamps, infers the constant step,
-/// and fills interior gaps.
-///
-/// `data_completion` 1 (Excel's default) interpolates a missing point as the
-/// average of its neighbours; 0 treats it as a zero.
 pub fn build_series(
     values: &[f64],
     timeline: &[f64],
@@ -135,14 +129,6 @@ pub fn build_series(
     })
 }
 
-/// Excel's automatic season-length detection. Returns 0 when the series
-/// shows no repeating pattern.
-///
-/// Scores each candidate period by the autocorrelation of the
-/// first-differenced series (differencing removes the trend, which would
-/// otherwise swamp the seasonal signal and make every lag look correlated).
-/// A candidate has to clear a correlation floor *and* beat every other
-/// candidate to be reported.
 pub fn detect_period(values: &[f64]) -> usize {
     let n = values.len();
     if n < 4 {
@@ -298,12 +284,6 @@ fn sse(values: &[f64], period: usize, alpha: f64, beta: f64, gamma: f64) -> f64 
         .sum()
 }
 
-/// Fits alpha/beta/gamma by minimizing the in-sample one-step-ahead SSE.
-///
-/// Coordinate descent over progressively finer grids (0.1, then 0.01, then
-/// 0.001) rather than one dense 3-D sweep -- the full three-decimal cube
-/// inside the bounds would be ~7e8 evaluations, while this reaches the same
-/// resolution in a few thousand.
 pub fn fit(values: &[f64], period: usize) -> Model {
     let mut alpha = 0.5;
     let mut beta = 0.1;
@@ -389,11 +369,6 @@ impl Model {
         var.sqrt()
     }
 
-    /// Half-width of the prediction interval `h` steps ahead.
-    ///
-    /// The interval widens with the horizon: for an additive-error model the
-    /// h-step variance accumulates as `sigma^2 * (1 + (h-1)*(alpha^2 + ...))`,
-    /// approximated here by the standard `1 + (h-1)*alpha^2` term.
     pub fn confint(&self, h: usize, confidence: f64) -> Result<f64, String> {
         if confidence <= 0.0 || confidence >= 1.0 {
             return Err("#NUM!".to_string());
@@ -404,7 +379,6 @@ impl Model {
         Ok(z * sd * growth.sqrt())
     }
 
-    /// FORECAST.ETS.STAT's `statistic_type` values 1-8.
     pub fn stat(&self, which: usize) -> Result<f64, String> {
         let tail = &self.residuals[..];
         let actual = &self.values[self.values.len() - tail.len()..];
@@ -452,12 +426,6 @@ impl Model {
     }
 }
 
-/// Shared front end for the whole FORECAST.ETS family: validates and
-/// regularizes the timeline, resolves the season length, and fits.
-///
-/// `seasonality` follows Excel's convention -- 1 means "detect
-/// automatically", 0 means "no seasonality", and anything else is an
-/// explicit season length.
 pub fn prepare(
     values: &[f64],
     timeline: &[f64],
@@ -481,8 +449,6 @@ pub fn prepare(
     Ok(model)
 }
 
-/// Steps from the end of the fitted series to `target`, or an error when the
-/// target is not strictly in the future.
 pub fn horizon(series_start: f64, step: f64, n: usize, target: f64) -> Result<usize, String> {
     let last = series_start + step * (n as f64 - 1.0);
     if target <= last {

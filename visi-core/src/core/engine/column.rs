@@ -6,18 +6,7 @@ use super::bitmask::Bitmask;
 use super::cell::{CellType, generate_unique_id};
 use super::result_data::ResultData;
 
-/// A column of computed values, stored in whichever representation fits what
-/// it currently holds.
-///
-/// A column starts out as `Integer` and widens as needed: writing a float
-/// promotes it to `Float`, and writing anything that is neither demotes it to
-/// `Any`. It never narrows back. The two numeric representations keep a
-/// separate validity [`Bitmask`] so a blank cell is distinct from a zero.
-///
-/// This is a storage detail of [`DataColumn`], exposed for reading. The
-/// operations that change a column's length are crate-private, since they
-/// would desync it from the sibling vectors it must stay aligned with -- go
-/// through `Sheet` to edit cells.
+/// A column of computed values
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColumnData {
     /// All-integer, or integer-and-blank.
@@ -270,20 +259,10 @@ impl Default for ColumnData {
     }
 }
 
-/// One column of a sheet: the raw text, the computed values, the cell types,
-/// the compiled formulas and the styles, as parallel per-row vectors.
+/// One column of a sheet, including raw source, values, styles, etc.
 ///
-/// # Invariant
-///
-/// `src`, `data`, `cell_types`, `compiled_src` and `styles` must all stay the
-/// same length -- row `r` of the column is entry `r` of each. Nothing
-/// enforces this; the row and column insert/delete paths in `Sheet` maintain it
-/// by hand, and `Sheet::setup_after_deserialization` restores it after a load,
-/// since only `src` and `styles` are persisted. Mutating one of these vectors
-/// directly will break it.
-///
-/// `dirty_indices` is not part of that invariant -- it is a queue of rows
-/// awaiting recomputation, and is emptied by `Sheet::commit`.
+/// IMPORTANT: `src`, `data`, `cell_types`, `compiled_src` and `styles`
+/// must all stay the same length.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataColumn {
     /// Identifier, stable across renames and repositioning. Compiled formulas
@@ -293,14 +272,13 @@ pub struct DataColumn {
     /// Display name, empty unless one was set.
     #[serde(default)]
     pub name: String,
-    /// [AI-Agent] Excel/OpenXML column width in character units, when one was explicitly stored.
+    /// Excel/OpenXML column width in character units, when one was explicitly stored.
     #[serde(default)]
     pub width: Option<f64>,
-    /// The computed values. Rebuilt on load, so not persisted.
+    /// The computed values
     #[serde(skip, default)]
     pub(crate) data: ColumnData,
-    /// The raw text of each cell, exactly as typed. The only representation
-    /// that is persisted, and the one everything else is rebuilt from.
+    /// The raw text of each cell, exactly as typed
     pub(crate) src: SharedVec<String>,
     /// Intrinsic cell data types, matching Excel / OpenXML representations.
     #[serde(default)]
@@ -323,8 +301,7 @@ pub(crate) struct ColumnPosition {
 }
 
 impl DataColumn {
-    /// A column of `size` empty rows, with every parallel vector sized to
-    /// match and a freshly generated id.
+    /// A column of `size` empty rows
     pub fn new(size: usize) -> Self {
         Self {
             id: generate_unique_id(),
@@ -339,7 +316,7 @@ impl DataColumn {
         }
     }
 
-    /// Rows in the column. Every parallel vector has this length.
+    /// Rows in the column
     pub fn len(&self) -> usize {
         self.src.len()
     }
@@ -354,10 +331,7 @@ impl DataColumn {
         self.src.get(row).map(String::as_str)
     }
 
-    /// The computed value of a cell, or `None` past the end.
-    ///
-    /// Reflects the last `Sheet::commit`; a cell edited since then still
-    /// reads as its old value.
+    /// The computed value of a cell, or `None` past the end
     pub fn value(&self, row: usize) -> Option<ResultData> {
         self.data.get(row)
     }

@@ -18,16 +18,10 @@ pub struct Context<'a> {
     /// Map of sheet names to sheet references for cross-sheet lookups
     pub sheets: HashMap<String, &'a Sheet>,
     /// Every pivot table in the workbook, so `GETPIVOTDATA` can resolve a
-    /// rendered pivot's destination cell back to its definition. Pivot
-    /// tables are workbook-level (like `Context.sheets`' cross-sheet
-    /// lookups), not sheet-scoped, so this lives here rather than on
-    /// `Sheet` itself.
+    /// rendered pivot's destination cell back to its definition
     pub pivot_tables: &'a [crate::core::pivot::PivotTable],
-    /// Sheet names in true workbook order, so `SHEET()` can report a real
-    /// ordinal. `sheets` is an unordered `HashMap`, which is why this is
-    /// tracked separately rather than derived from it -- true order only
-    /// exists one layer up, in `visi`'s `WorkbookManager::sheets` (a
-    /// `Vec`), which populates this when building the context.
+    /// Store sheet order, so `SHEET()` works.
+    /// `sheets` is a HashMap, so this is needed
     pub sheet_order: Vec<String>,
 }
 
@@ -90,44 +84,10 @@ pub enum Direction {
     Right,
 }
 
-/// One worksheet: a grid of cells, the formulas over them, and the dependency
-/// graph that keeps them up to date.
-///
-/// # Coordinates
-///
-/// Everything here is **0-based `(row, col)`**. A1 notation exists only at the
-/// parser and CLI boundaries -- see [`parse_a1_coordinates`] and
-/// [`col_idx_to_letters`] to convert.
-///
-/// # Naming trap
-///
-/// A `Sheet` is informally called a "table" in places (a new one is named
-/// `table_1`, and `Context::add_table` registers one). That is *not* an
-/// [`ExcelTable`], which is a ListObject -- a named rectangular range *on* a
-/// sheet -- and lives in [`Sheet::tables`].
-///
-/// # Storage
-///
-/// Storage is column-oriented: each [`DataColumn`] keeps the raw user text,
-/// the computed values and the compiled formulas in three parallel vectors
-/// that must stay the same length. The row and column insert/delete paths
-/// maintain that invariant by hand, so a new one has to do the same.
-///
-/// # Recalculation
-///
-/// [`Sheet::commit`] recomputes the dirty cells and propagates through
-/// [`Dependency::Local`] and [`Dependency::LocalColumn`] edges only.
-/// Cross-sheet edges are `WorkbookManager::evaluate`'s job, and evaluating a
-/// formula with a remote reference requires a [`Context`] -- without one it
-/// errors.
-///
-/// [`parse_a1_coordinates`]: crate::core::parse_a1_coordinates
-/// [`col_idx_to_letters`]: crate::core::col_idx_to_letters
-/// [`ExcelTable`]: crate::core::table::ExcelTable
+/// A worksheet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sheet {
-    /// Workbook-unique identifier. Formulas compile references against this
-    /// rather than the name, which is what makes a rename non-destructive.
+    /// Workbook-unique identifier
     #[serde(default = "generate_unique_id")]
     pub id: u64,
     /// Display name, as it appears in a cross-sheet reference.
@@ -135,22 +95,20 @@ pub struct Sheet {
     /// The cells, one entry per column. Row `r` of column `c` is
     /// `columns[c]`'s entry `r`.
     ///
-    /// Every column has the same number of rows -- [`Sheet::row_count`] reads
-    /// only the first and assumes the rest match -- so the `Vec` itself is
-    /// crate-private. Read them through [`Sheet::columns`].
+    /// Every column has the same number of rows
     pub(crate) columns: Vec<DataColumn>,
-    /// [AI-Agent] Excel/OpenXML row heights in point units, aligned with sheet rows.
+    /// Excel/OpenXML row heights in point units, aligned with sheet rows.
     #[serde(default)]
     pub(crate) row_heights: Vec<Option<f64>>,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
     /// Forward edges: which cells must be recomputed when a dependency
-    /// changes. Rebuilt from the formulas, so not serialized.
+    /// changes
     #[serde(skip, default)]
     pub dependencies: HashMap<Dependency, HashSet<CellRef>>,
     /// Reverse edges: what each cell currently reads, so its old edges can be
-    /// dropped when its formula changes. Rebuilt, so not serialized.
+    /// dropped when its formula changes
     #[serde(skip, default)]
     pub dependencies_rev: HashMap<CellRef, HashSet<Dependency>>,
     /// Edits made since the last commit, for callers that want to observe or
@@ -162,8 +120,7 @@ pub struct Sheet {
     pub locale: crate::core::locale::Locale,
 }
 
-/// Arguments for [`Sheet::new`]. [`Default`] gives a 10x5 sheet with a
-/// generated id and the name `table_1`.
+/// Arguments for [`Sheet::new`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SheetInit {
     /// Identifier to use; `None` generates a fresh one.
@@ -242,11 +199,6 @@ impl Sheet {
     }
 
     /// Rebuilds what serialization drops.
-    ///
-    /// Only the raw source text is persisted, so this resizes the value and
-    /// compiled-formula vectors back to match it -- restoring the
-    /// same-length invariant -- and marks everything dirty. Call it after
-    /// deserializing, before [`Sheet::commit`].
     pub fn setup_after_deserialization(&mut self) {
         for col in &mut self.columns {
             col.rebuild_after_load();
@@ -272,9 +224,6 @@ impl Sheet {
     }
 
     /// Queues every cell for recomputation on the next [`Sheet::commit`].
-    ///
-    /// This is how cross-sheet staleness is handled: `WorkbookManager` cannot
-    /// tell which cells a remote edit reached, so it marks whole sheets.
     pub fn mark_all_dirty(&mut self) {
         for col in &mut self.columns {
             col.dirty_indices.clear();
@@ -578,16 +527,6 @@ impl Sheet {
 
     /// Evaluates cell source text without storing it, as
     /// [`Sheet::eval`] does, but from the point of view of `(row, col)`.
-    ///
-    /// The position is what makes relative constructs work -- a structured
-    /// reference like `[@Amount]` means "this row", so it needs to know which
-    /// row is asking. Pass `None` for both when there is no anchor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`EngineError`] if the formula cannot be parsed. An *Excel*
-    /// error is not a Rust error: `=1/0` succeeds, returning
-    /// `ResultData::Error("#DIV/0!")`.
     pub fn eval_with_row(
         &self,
         input: &str,
@@ -615,16 +554,6 @@ impl Sheet {
 
     /// Evaluates cell source text against this sheet without storing it,
     /// returning the value and the references it read.
-    ///
-    /// Text with a leading `=` is a formula; anything else is parsed as a
-    /// literal. `context` supplies the other sheets, and is required for a
-    /// cross-sheet reference to resolve.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`EngineError`] if the formula cannot be parsed. An *Excel*
-    /// error is not a Rust error: `=1/0` succeeds, returning
-    /// `ResultData::Error("#DIV/0!")`.
     pub fn eval(
         &self,
         input: &str,
@@ -3718,12 +3647,7 @@ impl Sheet {
         }
     }
 
-    /// The raw text typed into a cell -- `"10"`, `"=SUM(A1:A2)"` -- or `None`
-    /// if the cell is outside the sheet's allocated grid.
-    ///
-    /// This is the input, not the result; see [`Sheet::get_result_data`] for
-    /// the computed value and `Sheet::get_display_string` for what a user
-    /// should see.
+    /// The raw text typed into a cell. Returns `None` if ref is OOB
     pub fn get_src(&self, cell: &CellRef) -> Option<&String> {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -3733,8 +3657,7 @@ impl Sheet {
         }
     }
 
-    /// [`Sheet::get_src`] with an out-of-range cell flattened to an owned
-    /// empty string.
+    /// [`Sheet::get_src`] but returns empty string on OOB.
     pub fn get_src_str(&self, cell: &CellRef) -> String {
         let col = self.columns.get(cell.col);
         if let Some(col) = col {
@@ -3744,15 +3667,13 @@ impl Sheet {
         }
     }
 
-    /// [`Sheet::get_src`] as a borrowed `&str`, for callers that only read.
+    /// [`Sheet::get_src`] as a borrowed `&str` for read-only.
     pub fn get_src_str_ref(&self, cell: &CellRef) -> Option<&str> {
         let col = self.columns.get(cell.col)?;
         col.src.get(cell.row).map(|s| s.as_str())
     }
 
-    /// The word surrounding `char_offset` in a cell's source text, as a
-    /// half-open range of character (not byte) indices -- what an editor needs
-    /// for word-wise selection. See [`get_word_boundaries_from_str`].
+    /// See [`get_word_boundaries_from_str`].
     pub fn get_word_boundaries(&self, cell: &CellRef, char_offset: usize) -> (usize, usize) {
         let text = self.get_src_str(cell);
         get_word_boundaries_from_str(&text, char_offset)
