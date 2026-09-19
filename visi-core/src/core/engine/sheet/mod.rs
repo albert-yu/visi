@@ -50,6 +50,14 @@ enum LetScope<'a> {
     },
 }
 
+struct EvalReference {
+    sheet: String,
+    start_row: usize,
+    start_col: usize,
+    end_row: usize,
+    end_col: usize,
+}
+
 impl<'a> LetScope<'a> {
     fn get(&self, name: &str) -> Option<&ResultData> {
         match self {
@@ -585,6 +593,221 @@ impl Sheet {
         Ok((result, deps))
     }
 
+    fn reference_sheet_dims(
+        &self,
+        sheet_name: &str,
+        context: Option<&Context>,
+    ) -> Result<(usize, usize), EngineError> {
+        if sheet_name == self.name {
+            Ok((self.row_count(), self.col_count()))
+        } else if let Some(ctx) = context {
+            ctx.sheets
+                .get(sheet_name)
+                .map(|sheet| (sheet.row_count(), sheet.col_count()))
+                .ok_or_else(|| {
+                    EngineError::EvalError(EvalError::UnknownFunction(format!(
+                        "Sheet not found: {}",
+                        sheet_name
+                    )))
+                })
+        } else {
+            Err(EngineError::EvalError(EvalError::UnknownFunction(
+                "No context to resolve sheet reference".to_string(),
+            )))
+        }
+    }
+
+    fn areas_from_expr(
+        &self,
+        expr: &crate::core::parser::Expr,
+        context: Option<&Context>,
+    ) -> Result<Option<Vec<EvalReference>>, EngineError> {
+        use crate::core::parser::Expr;
+        use crate::core::parser::Op;
+
+        match expr {
+            Expr::CellRef {
+                sheet, row, col, ..
+            } => Ok(Some(vec![EvalReference {
+                sheet: sheet.clone().unwrap_or_else(|| self.name.clone()),
+                start_row: *row,
+                start_col: *col,
+                end_row: *row,
+                end_col: *col,
+            }])),
+            Expr::RangeRef {
+                sheet,
+                start_row,
+                start_col,
+                end_row,
+                end_col,
+                ..
+            } => {
+                let sheet_name = sheet.clone().unwrap_or_else(|| self.name.clone());
+                let (row_count, col_count) = self.reference_sheet_dims(&sheet_name, context)?;
+                let actual_end_row = if *end_row == usize::MAX {
+                    row_count.saturating_sub(1)
+                } else {
+                    *end_row
+                };
+                let actual_end_col = if *end_col == usize::MAX {
+                    col_count.saturating_sub(1)
+                } else {
+                    *end_col
+                };
+                Ok(Some(vec![EvalReference {
+                    sheet: sheet_name,
+                    start_row: *start_row,
+                    start_col: *start_col,
+                    end_row: actual_end_row,
+                    end_col: actual_end_col,
+                }]))
+            }
+            Expr::BinaryOp {
+                op: Op::Union,
+                left,
+                right,
+            } => {
+                let Some(mut left_areas) = self.areas_from_expr(left, context)? else {
+                    return Ok(None);
+                };
+                let Some(right_areas) = self.areas_from_expr(right, context)? else {
+                    return Ok(None);
+                };
+                left_areas.extend(right_areas);
+                Ok(Some(left_areas))
+            }
+            Expr::BinaryOp {
+                op: Op::Intersect,
+                left,
+                right,
+            } => {
+                let Some(left_areas) = self.areas_from_expr(left, context)? else {
+                    return Ok(None);
+                };
+                let Some(right_areas) = self.areas_from_expr(right, context)? else {
+                    return Ok(None);
+                };
+                Ok(Some(Self::intersect_areas(&left_areas, &right_areas)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn intersect_areas(left: &[EvalReference], right: &[EvalReference]) -> Vec<EvalReference> {
+        let mut out = Vec::new();
+        for l in left {
+            for r in right {
+                if l.sheet != r.sheet {
+                    continue;
+                }
+                let start_row = l.start_row.max(r.start_row);
+                let start_col = l.start_col.max(r.start_col);
+                let end_row = l.end_row.min(r.end_row);
+                let end_col = l.end_col.min(r.end_col);
+                if start_row <= end_row && start_col <= end_col {
+                    out.push(EvalReference {
+                        sheet: l.sheet.clone(),
+                        start_row,
+                        start_col,
+                        end_row,
+                        end_col,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn eval_area(
+        &self,
+        area: &EvalReference,
+        context: Option<&Context>,
+        row: Option<usize>,
+        col: Option<usize>,
+        deps: &mut Vec<Dependency>,
+    ) -> Result<ResultData, EngineError> {
+        let sheet = if area.sheet == self.name {
+            None
+        } else {
+            Some(area.sheet.clone())
+        };
+        let expr = if area.start_row == area.end_row && area.start_col == area.end_col {
+            crate::core::parser::Expr::CellRef {
+                sheet,
+                row: area.start_row,
+                col: area.start_col,
+                row_abs: false,
+                col_abs: false,
+            }
+        } else {
+            crate::core::parser::Expr::RangeRef {
+                sheet,
+                start_row: area.start_row,
+                start_col: area.start_col,
+                end_row: area.end_row,
+                end_col: area.end_col,
+                start_row_abs: false,
+                start_col_abs: false,
+                end_row_abs: false,
+                end_col_abs: false,
+            }
+        };
+        self.evaluate_ast(&expr, context, row, col, deps, &LetScope::Empty)
+    }
+
+    fn combine_union_values(left: ResultData, right: ResultData) -> ResultData {
+        match (left, right) {
+            (ResultData::List(mut l), ResultData::List(r)) => {
+                l.extend(r);
+                ResultData::List(l)
+            }
+            (ResultData::List(mut l), r) => {
+                l.push(r);
+                ResultData::List(l)
+            }
+            (l, ResultData::List(mut r)) => {
+                r.insert(0, l);
+                ResultData::List(r)
+            }
+            (l, r) => ResultData::List(vec![l, r]),
+        }
+    }
+
+    fn evaluate_reference_intersection(
+        &self,
+        left: &crate::core::parser::Expr,
+        right: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        col: Option<usize>,
+        deps: &mut Vec<Dependency>,
+    ) -> Result<ResultData, EngineError> {
+        let Some(left_areas) = self.areas_from_expr(left, context)? else {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        };
+        let Some(right_areas) = self.areas_from_expr(right, context)? else {
+            return Ok(ResultData::Error("#VALUE!".to_string()));
+        };
+        let intersections = Self::intersect_areas(&left_areas, &right_areas);
+        if intersections.is_empty() {
+            return Ok(ResultData::Error("#NULL!".to_string()));
+        }
+        let mut out = Vec::new();
+        for area in intersections {
+            match self.eval_area(&area, context, row, col, deps)? {
+                ResultData::Error(e) => return Ok(ResultData::Error(e)),
+                ResultData::List(items) => out.extend(items),
+                value => out.push(value),
+            }
+        }
+        if out.len() == 1 {
+            Ok(out.pop().unwrap())
+        } else {
+            Ok(ResultData::List(out))
+        }
+    }
+
     fn evaluate_ast(
         &self,
         ast: &crate::core::parser::Expr,
@@ -1045,13 +1268,37 @@ impl Sheet {
                             "Unary minus expects number".to_string(),
                         ))),
                     },
+                    Op::Percent => {
+                        if let ResultData::Error(_) = &val {
+                            return Ok(val);
+                        }
+                        match self.to_f64(&val) {
+                            Some(f) => Ok(ResultData::Float(f / 100.0)),
+                            None => Ok(ResultData::Error("#VALUE!".to_string())),
+                        }
+                    }
                     _ => Ok(val),
                 }
             }
             Expr::BinaryOp { op, left, right } => {
+                if matches!(op, Op::Intersect) {
+                    return self
+                        .evaluate_reference_intersection(left, right, context, row, col, deps);
+                }
+
                 let l_val = self.evaluate_ast(left, context, row, col, deps, scope)?;
 
                 match op {
+                    Op::Union => {
+                        if let ResultData::Error(_) = &l_val {
+                            return Ok(l_val);
+                        }
+                        let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
+                        Ok(Self::combine_union_values(l_val, r_val))
+                    }
                     Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => {
                         if let ResultData::Error(_) = &l_val {
                             return Ok(l_val);
@@ -1071,6 +1318,25 @@ impl Sheet {
                             _ => unreachable!(),
                         };
                         Ok(ResultData::Boolean(b))
+                    }
+                    Op::Concat => {
+                        if let ResultData::Error(_) = &l_val {
+                            return Ok(l_val);
+                        }
+                        let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
+                        let mut out = match Self::concat_text(&l_val) {
+                            Ok(s) => s,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                        let rhs = match Self::concat_text(&r_val) {
+                            Ok(s) => s,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                        out.push_str(&rhs);
+                        Ok(ResultData::String(out))
                     }
                     _ => {
                         if let ResultData::Error(_) = &l_val {
@@ -1916,6 +2182,20 @@ impl Sheet {
             other => {
                 out.push_str(&other.to_string());
             }
+        }
+    }
+
+    fn concat_text(arg: &ResultData) -> Result<String, String> {
+        match arg {
+            ResultData::Error(e) => Err(e.clone()),
+            ResultData::List(list) => {
+                let mut out = String::new();
+                for item in list {
+                    out.push_str(&Self::concat_text(item)?);
+                }
+                Ok(out)
+            }
+            other => Ok(other.to_string()),
         }
     }
 
