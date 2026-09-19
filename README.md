@@ -44,7 +44,7 @@ brew install albert-yu/tap/visi
 
 ### Examples
 
-#### 1. Inspect Workbook Structure
+#### Inspect Workbook Structure
 
 ```bash
 # Display summary of sheets, dimensions, and formula counts
@@ -54,7 +54,7 @@ visi info data.xlsx
 visi info data.xlsx --json
 ```
 
-#### 2. Read Sheet Contents, Ranges, or Cells
+#### Read Sheet Contents, Ranges, or Cells
 
 ```bash
 # View first sheet as a formatted ASCII table in the terminal
@@ -67,74 +67,63 @@ visi read data.xlsx --sheet Sheet1 --range A1:C10
 visi read data.xlsx --cell A1
 visi read data.xlsx --cell A3 --raw
 
-# Output as CSV, TSV, or JSON
 visi read data.xlsx --format csv
 visi read data.xlsx --format json
 ```
 
-#### 3. Update Cells & Set Formulas
+#### Recalculate Formulas
+
+You can take a spreadsheet authored with `openpyxl` and
+perform the computation with `eval`.
 
 ```bash
-# Set cell values and save to output file
+# --in-place or -i will write back to the input file
+visi eval data.xlsx --in-place
+
+# Recalculate and print to stdout,
+# leaving the original workbook unmodified
+visi eval data.xlsx --print --format table
+```
+
+#### Update Cells & Set Formulas
+
+```bash
 visi set data.xlsx --sheet Sheet1 --cell A1 --value 100 --output updated.xlsx
 
 # Set multiple cell values and formulas at once
-visi set data.xlsx -s Sheet1 -S A1=100 -S A2=200 -S A3="=A1+A2" -S A4="=AVERAGE(A1:A2)" --in-place
+visi set data.xlsx -s Sheet1 -S A1=100 -S A2=200 -S A3="=A1+A2" -S A4="=AVERAGE(A1:A2)" -i
 
 # Cross-sheet reference
 visi set data.xlsx -s Sheet2 -S B1="=Sheet1!A3 + 50" -i
 ```
 
-#### 4. Recalculate Formulas
+#### Manage Worksheets
 
 ```bash
-# Force recalculation of all formulas across all sheets and save in-place
-visi eval data.xlsx --in-place
-
-# Recalculate and print evaluated grid to stdout
-visi eval data.xlsx --print --format table
-```
-
-#### 5. Manage Worksheets
-
-```bash
-# List sheets
 visi sheet list data.xlsx
-
-# Add a new worksheet
 visi sheet add data.xlsx --name "Summary" -i
-
-# Rename a worksheet
 visi sheet rename data.xlsx --old "Sheet1" --new "Data" -i
-
-# Delete a worksheet
 visi sheet delete data.xlsx --name "OldSheet" -i
 ```
 
-#### 6. Manipulate Rows and Columns
+#### Manipulate Rows and Columns
 
-_The following content is LLM-generated._
-
-Use exactly one of `--index` for a 0-based offset, or `--label` for the spreadsheet-facing row number or column letter.
+Use `--index` for a 0-based offset or `--label`
+if you want to follow the UI labels.
 
 ```bash
-# Insert a new row at 0-based offset 1
-visi row insert data.xlsx --sheet Sheet1 --index 1 -i
+# Insert a new row at start
+visi row delete data.xlsx --sheet Sheet1 --label 1 -i
+visi row insert data.xlsx --sheet Sheet1 --index 0 -i
 
-# Delete row label 5 (spreadsheet 1-based row number)
-visi row delete data.xlsx --sheet Sheet1 --label 5 -i
-
-# Insert a column at 0-based offset 1
-visi col insert data.xlsx --sheet Sheet1 --index 1 -i
-
-# Delete column label 'C' (spreadsheet column letter)
+# Delete column label 'C'
 visi col delete data.xlsx --sheet Sheet1 --label C -i
+visi col delete data.xlsx --sheet Sheet1 --index 2 -i
 ```
 
-#### 7. Export Sheet Data
+#### Export Sheet Data
 
 ```bash
-# Export sheet to CSV or JSON file
 visi export data.xlsx --sheet Sheet1 --format csv --output sheet1.csv
 visi export data.xlsx --sheet Sheet1 --format json --output sheet1.json
 ```
