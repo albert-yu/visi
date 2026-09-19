@@ -7,6 +7,7 @@ pub enum Op {
     Mul,
     Div,
     Exp,
+    Concat,
     Eq,
     Ne,
     Lt,
@@ -1534,6 +1535,11 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
                 i += 1;
                 continue;
             }
+            '&' => {
+                tokens.push(EvalToken::Op(Op::Concat));
+                i += 1;
+                continue;
+            }
             _ => {}
         }
 
@@ -2092,6 +2098,7 @@ fn op_precedence(op: Op) -> u8 {
         Op::Add | Op::Sub => 10,
         Op::Mul | Op::Div => 20,
         Op::Exp => 30,
+        Op::Concat => 8,
         Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => 5,
     }
 }
@@ -2749,6 +2756,39 @@ mod tests {
     fn a_hash_that_starts_nothing_recognisable_is_left_alone() {
         assert!(match_error_code(&"#NOPE".chars().collect::<Vec<_>>(), 0).is_none());
         assert!(match_error_code(&"#RE".chars().collect::<Vec<_>>(), 0).is_none());
+    }
+
+    #[test]
+    fn ampersand_lexes_and_parses_as_concatenation() {
+        assert_eq!(
+            lex_eval("\"A\"&\"B\"").unwrap(),
+            vec![
+                EvalToken::String("A".to_string()),
+                EvalToken::Op(Op::Concat),
+                EvalToken::String("B".to_string()),
+            ]
+        );
+
+        assert_eq!(
+            parse_excel_formula("\"x\" & 1 + 2").unwrap(),
+            Expr::BinaryOp {
+                op: Op::Concat,
+                left: Box::new(Expr::String("x".to_string())),
+                right: Box::new(Expr::BinaryOp {
+                    op: Op::Add,
+                    left: Box::new(Expr::Number(1.0)),
+                    right: Box::new(Expr::Number(2.0)),
+                }),
+            }
+        );
+
+        match parse_excel_formula("\"a\" & \"b\" = \"ab\"").unwrap() {
+            Expr::BinaryOp { op, left, .. } => {
+                assert_eq!(op, Op::Eq);
+                assert!(matches!(*left, Expr::BinaryOp { op: Op::Concat, .. }));
+            }
+            other => panic!("Expected equality, got {other:?}"),
+        }
     }
 
     #[test]

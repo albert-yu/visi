@@ -445,6 +445,20 @@ fn test_concatenation() {
     test_strings("=CONCATENATE(\"Value: \", 42)", "Value: 42").unwrap();
     test_strings("=CONCATENATE(3.14, \" is pi\")", "3.14 is pi").unwrap();
     test_strings("=CONCATENATE(\"Result: \", TRUE)", "Result: TRUE").unwrap();
+
+    test_strings("=\"A\" & \"B\"", "AB").unwrap();
+    test_strings("=1 & 2", "12").unwrap();
+    test_strings("=\"Result: \" & TRUE", "Result: TRUE").unwrap();
+    test_strings("=\"A\" & J10 & \"B\"", "AB").unwrap();
+    test_strings("=\"x\" & 1 + 2", "x3").unwrap();
+    test_booleans("=\"a\" & \"b\" = \"ab\"", true).unwrap();
+
+    let sheet = Sheet::new(SheetInit::default());
+    let (result, _) = sheet.eval("=1 / 0 & \"x\"", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        _ => panic!("Expected error result"),
+    }
 }
 
 #[test]

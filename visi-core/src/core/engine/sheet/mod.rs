@@ -1072,6 +1072,25 @@ impl Sheet {
                         };
                         Ok(ResultData::Boolean(b))
                     }
+                    Op::Concat => {
+                        if let ResultData::Error(_) = &l_val {
+                            return Ok(l_val);
+                        }
+                        let r_val = self.evaluate_ast(right, context, row, col, deps, scope)?;
+                        if let ResultData::Error(_) = &r_val {
+                            return Ok(r_val);
+                        }
+                        let mut out = match Self::concat_text(&l_val) {
+                            Ok(s) => s,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                        let rhs = match Self::concat_text(&r_val) {
+                            Ok(s) => s,
+                            Err(e) => return Ok(ResultData::Error(e)),
+                        };
+                        out.push_str(&rhs);
+                        Ok(ResultData::String(out))
+                    }
                     _ => {
                         if let ResultData::Error(_) = &l_val {
                             return Ok(l_val);
@@ -1916,6 +1935,20 @@ impl Sheet {
             other => {
                 out.push_str(&other.to_string());
             }
+        }
+    }
+
+    fn concat_text(arg: &ResultData) -> Result<String, String> {
+        match arg {
+            ResultData::Error(e) => Err(e.clone()),
+            ResultData::List(list) => {
+                let mut out = String::new();
+                for item in list {
+                    out.push_str(&Self::concat_text(item)?);
+                }
+                Ok(out)
+            }
+            other => Ok(other.to_string()),
         }
     }
 
