@@ -145,6 +145,36 @@ fn test_excel_formula_evaluations() {
     assert_eq!(get_float_val(&res_cross), Some(42.0));
 }
 
+#[test]
+fn test_formula_reference_operators() {
+    test_floats("=50% + 2", 2.5).unwrap();
+
+    let mut sheet = Sheet::new(SheetInit {
+        rows: 3,
+        cols: 3,
+        ..Default::default()
+    });
+    sheet.set_cell_src(0, 0, "1".to_string());
+    sheet.set_cell_src(1, 0, "2".to_string());
+    sheet.set_cell_src(0, 1, "10".to_string());
+    sheet.set_cell_src(1, 1, "20".to_string());
+    sheet.set_cell_src(0, 2, "100".to_string());
+    sheet.set_cell_src(1, 2, "200".to_string());
+    sheet.commit(None).unwrap();
+
+    let (union, _) = sheet.eval("=SUM((A1:A2,C1:C2))", None).unwrap();
+    assert_eq!(get_float_val(&union), Some(303.0));
+
+    let (intersection_range, _) = sheet.eval("=SUM(A1:C2 B1:B2)", None).unwrap();
+    assert_eq!(get_float_val(&intersection_range), Some(30.0));
+
+    let (intersection_cell, _) = sheet.eval("=A1:C2 B2", None).unwrap();
+    assert_eq!(get_float_val(&intersection_cell), Some(20.0));
+
+    let (null_intersection, _) = sheet.eval("=SUM(A1:A2 C1:C2)", None).unwrap();
+    assert!(matches!(null_intersection, ResultData::Error(ref e) if e == "#NULL!"));
+}
+
 fn get_bool_val(r: &ResultData) -> Option<bool> {
     match r {
         ResultData::Boolean(b) => Some(*b),

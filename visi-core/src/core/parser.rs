@@ -7,6 +7,7 @@ pub enum Op {
     Mul,
     Div,
     Exp,
+    Percent,
     Concat,
     Eq,
     Ne,
@@ -14,6 +15,8 @@ pub enum Op {
     Gt,
     Le,
     Ge,
+    Intersect,
+    Union,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1363,6 +1366,23 @@ fn match_error_code(chars: &[char], start: usize) -> Option<&'static str> {
         .copied()
 }
 
+fn token_can_end_reference(tok: Option<&EvalToken>) -> bool {
+    matches!(
+        tok,
+        Some(
+            EvalToken::Identifier(_)
+                | EvalToken::Number(_)
+                | EvalToken::String(_)
+                | EvalToken::CloseParen
+                | EvalToken::StructuredRef { .. }
+        )
+    )
+}
+
+fn char_can_start_reference(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '\''
+}
+
 pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
     let chars: Vec<char> = input.chars().collect();
     let mut tokens = Vec::new();
@@ -1371,7 +1391,17 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
     while i < chars.len() {
         let c = chars[i];
         if c.is_whitespace() {
-            i += 1;
+            let can_end = token_can_end_reference(tokens.last());
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if can_end
+                && i < chars.len()
+                && char_can_start_reference(chars[i])
+                && !matches!(tokens.last(), Some(EvalToken::String(_)))
+            {
+                tokens.push(EvalToken::Op(Op::Intersect));
+            }
             continue;
         }
 
@@ -1532,6 +1562,11 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
             }
             '^' => {
                 tokens.push(EvalToken::Op(Op::Exp));
+                i += 1;
+                continue;
+            }
+            '%' => {
+                tokens.push(EvalToken::Op(Op::Percent));
                 i += 1;
                 continue;
             }
@@ -1707,7 +1742,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse(&mut self) -> Result<Expr, String> {
-        let mut lhs = self.parse_binary(0)?;
+        self.parse_expr(true)
+    }
+
+    fn parse_expr(&mut self, allow_union: bool) -> Result<Expr, String> {
+        let mut lhs = self.parse_binary(0, allow_union)?;
 
         while let Some(tok) = self.peek() {
             match tok {
@@ -1740,14 +1779,14 @@ impl<'a> Parser<'a> {
                             None
                         } else {
                             let mut p = Parser::new(start_toks);
-                            Some(p.parse()?)
+                            Some(p.parse_expr(false)?)
                         };
 
                         let end_val = if end_toks.is_empty() {
                             None
                         } else {
                             let mut p = Parser::new(end_toks);
-                            Some(p.parse()?)
+                            Some(p.parse_expr(false)?)
                         };
 
                         lhs = Expr::Slice {
@@ -1757,7 +1796,7 @@ impl<'a> Parser<'a> {
                         };
                     } else {
                         let mut p = Parser::new(&inner_tokens);
-                        let index_expr = p.parse()?;
+                        let index_expr = p.parse_expr(false)?;
 
                         if let Expr::Identifier(ref sheet_name) = lhs {
                             let col_name_opt = match &index_expr {
@@ -1792,12 +1831,22 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, String> {
-        let mut lhs = self.parse_prefix()?;
+    fn parse_binary(&mut self, min_prec: u8, allow_union: bool) -> Result<Expr, String> {
+        let mut lhs = self.parse_prefix(allow_union)?;
+
+        while self.peek() == Some(&EvalToken::Op(Op::Percent)) {
+            self.next();
+            lhs = Expr::UnaryOp {
+                op: Op::Percent,
+                expr: Box::new(lhs),
+            };
+        }
 
         while let Some(tok) = self.peek() {
             let op = match tok {
+                EvalToken::Op(Op::Percent) => break,
                 EvalToken::Op(o) => *o,
+                EvalToken::Comma if allow_union => Op::Union,
                 _ => break,
             };
 
@@ -1808,7 +1857,7 @@ impl<'a> Parser<'a> {
 
             self.next();
 
-            let rhs = self.parse_binary(prec + 1)?;
+            let rhs = self.parse_binary(prec + 1, allow_union)?;
             lhs = Expr::BinaryOp {
                 op,
                 left: Box::new(lhs),
@@ -1819,7 +1868,7 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    fn parse_prefix(&mut self) -> Result<Expr, String> {
+    fn parse_prefix(&mut self, allow_union: bool) -> Result<Expr, String> {
         let tok = self
             .next()
             .ok_or_else(|| "Unexpected EOF".to_string())?
@@ -1890,7 +1939,7 @@ impl<'a> Parser<'a> {
             EvalToken::Boolean(val) => Ok(Expr::Boolean(val)),
             EvalToken::Error(code) => Ok(Expr::Error(code)),
             EvalToken::OpenParen => {
-                let expr = self.parse()?;
+                let expr = self.parse_expr(true)?;
                 self.consume(EvalToken::CloseParen)?;
                 Ok(expr)
             }
@@ -1898,7 +1947,7 @@ impl<'a> Parser<'a> {
                 let mut list = Vec::new();
                 if self.peek() != Some(&EvalToken::CloseBracket) {
                     loop {
-                        list.push(self.parse()?);
+                        list.push(self.parse_expr(false)?);
                         if self.peek() == Some(&EvalToken::Comma) {
                             self.next();
                         } else {
@@ -1910,14 +1959,14 @@ impl<'a> Parser<'a> {
                 Ok(Expr::List(list))
             }
             EvalToken::Op(Op::Sub) => {
-                let expr = self.parse_binary(100)?;
+                let expr = self.parse_binary(100, allow_union)?;
                 Ok(Expr::UnaryOp {
                     op: Op::Sub,
                     expr: Box::new(expr),
                 })
             }
             EvalToken::Op(Op::Add) => {
-                let expr = self.parse_binary(100)?;
+                let expr = self.parse_binary(100, allow_union)?;
                 Ok(expr)
             }
             EvalToken::Identifier(id_name) => {
@@ -1926,7 +1975,7 @@ impl<'a> Parser<'a> {
                     let mut args = Vec::new();
                     if self.peek() != Some(&EvalToken::CloseParen) {
                         loop {
-                            args.push(self.parse()?);
+                            args.push(self.parse_expr(false)?);
                             if self.peek() == Some(&EvalToken::Comma) {
                                 self.next();
                             } else {
@@ -2095,11 +2144,14 @@ impl<'a> Parser<'a> {
 
 fn op_precedence(op: Op) -> u8 {
     match op {
+        Op::Union => 40,
+        Op::Intersect => 50,
         Op::Add | Op::Sub => 10,
         Op::Mul | Op::Div => 20,
         Op::Exp => 30,
         Op::Concat => 8,
         Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => 5,
+        Op::Percent => 60,
     }
 }
 
