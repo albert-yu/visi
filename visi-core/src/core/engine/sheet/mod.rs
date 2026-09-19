@@ -726,7 +726,6 @@ impl Sheet {
         row: Option<usize>,
         col: Option<usize>,
         deps: &mut Vec<Dependency>,
-        scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         let sheet = if area.sheet == self.name {
             None
@@ -754,7 +753,7 @@ impl Sheet {
                 end_col_abs: false,
             }
         };
-        self.evaluate_ast(&expr, context, row, col, deps, scope)
+        self.evaluate_ast(&expr, context, row, col, deps, &LetScope::Empty)
     }
 
     fn combine_union_values(left: ResultData, right: ResultData) -> ResultData {
@@ -783,7 +782,6 @@ impl Sheet {
         row: Option<usize>,
         col: Option<usize>,
         deps: &mut Vec<Dependency>,
-        scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         let Some(left_areas) = self.areas_from_expr(left, context)? else {
             return Ok(ResultData::Error("#VALUE!".to_string()));
@@ -797,7 +795,7 @@ impl Sheet {
         }
         let mut out = Vec::new();
         for area in intersections {
-            match self.eval_area(&area, context, row, col, deps, scope)? {
+            match self.eval_area(&area, context, row, col, deps)? {
                 ResultData::Error(e) => return Ok(ResultData::Error(e)),
                 ResultData::List(items) => out.extend(items),
                 value => out.push(value),
@@ -1284,9 +1282,8 @@ impl Sheet {
             }
             Expr::BinaryOp { op, left, right } => {
                 if matches!(op, Op::Intersect) {
-                    return self.evaluate_reference_intersection(
-                        left, right, context, row, col, deps, scope,
-                    );
+                    return self
+                        .evaluate_reference_intersection(left, right, context, row, col, deps);
                 }
 
                 let l_val = self.evaluate_ast(left, context, row, col, deps, scope)?;
