@@ -687,7 +687,9 @@ pub(crate) fn export_xlsx_data_raw(
                     let format_opt = style_opt.map(build_xlsx_format);
 
                     if let Some(formula_src) = cell_src.strip_prefix('=') {
-                        let mut formula = rust_xlsxwriter::Formula::new(formula_src);
+                        let mut formula = rust_xlsxwriter::Formula::new(
+                            crate::core::parser::encode_xlsx_spill_references(formula_src),
+                        );
                         if let Some(res_data) = col.data.get(row_idx) {
                             match res_data {
                                 crate::core::engine::ResultData::None => {}
@@ -3611,6 +3613,40 @@ mod tests {
                 chart_type
             );
         }
+    }
+
+    #[test]
+    fn test_fuzz_xlsx_spill_reference_round_trip() {
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 3,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "=SEQUENCE(3)".to_string());
+        sheet.set_cell_src(0, 1, "=SUM($A$1#)".to_string());
+        sheet.commit(None).unwrap();
+        let data = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&data)).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(
+            &mut zip.by_name("xl/worksheets/sheet1.xml").unwrap(),
+            &mut xml,
+        )
+        .unwrap();
+        assert!(xml.contains("SUM(_xlfn.ANCHORARRAY($A$1))"), "{xml}");
+        assert!(!xml.contains("$A$1#"), "{xml}");
+        let (sheets, _, _, _) = import_xlsx_data(&data, &[], |_, _, _| {}).unwrap();
+        let mut sheet = sheets.into_iter().next().unwrap().sheet;
+        for column in &mut sheet.columns {
+            column.mark_dirty(0);
+        }
+        sheet.commit(None).unwrap();
+        let result = sheet.get_result_data(&crate::core::CellRef::new(0, 1));
+        assert!(
+            matches!(result, crate::core::engine::ResultData::Float(6.0)),
+            "Expected imported spill reference to sum to 6, got {result:?}"
+        );
     }
 
     #[test]

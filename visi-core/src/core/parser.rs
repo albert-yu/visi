@@ -8,6 +8,8 @@ pub enum Op {
     Div,
     Exp,
     Percent,
+    ImplicitIntersection,
+    Spill,
     Concat,
     Eq,
     Ne,
@@ -769,6 +771,50 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
     }
 
     None
+}
+
+pub(crate) fn encode_xlsx_spill_references(code: &str) -> String {
+    if !code.contains('#') {
+        return code.to_string();
+    }
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((_, end)) = try_parse_ref(&chars, i) {
+            let reference: String = chars[i..end].iter().collect();
+            if chars.get(end) == Some(&'#') {
+                out.push_str("_xlfn.ANCHORARRAY(");
+                out.push_str(&reference);
+                out.push(')');
+                i = end + 1;
+            } else {
+                out.push_str(&reference);
+                i = end;
+            }
+        } else if matches!(chars[i], '"' | '\'') {
+            let quote = chars[i];
+            out.push(quote);
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                out.push(c);
+                i += 1;
+                if c == quote {
+                    if chars.get(i) == Some(&quote) {
+                        out.push(quote);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
@@ -1570,6 +1616,16 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
                 i += 1;
                 continue;
             }
+            '@' => {
+                tokens.push(EvalToken::Op(Op::ImplicitIntersection));
+                i += 1;
+                continue;
+            }
+            '#' => {
+                tokens.push(EvalToken::Op(Op::Spill));
+                i += 1;
+                continue;
+            }
             '&' => {
                 tokens.push(EvalToken::Op(Op::Concat));
                 i += 1;
@@ -1834,17 +1890,19 @@ impl<'a> Parser<'a> {
     fn parse_binary(&mut self, min_prec: u8, allow_union: bool) -> Result<Expr, String> {
         let mut lhs = self.parse_prefix(allow_union)?;
 
-        while self.peek() == Some(&EvalToken::Op(Op::Percent)) {
-            self.next();
+        while matches!(self.peek(), Some(EvalToken::Op(Op::Percent | Op::Spill))) {
+            let EvalToken::Op(op) = self.next().unwrap() else {
+                unreachable!()
+            };
             lhs = Expr::UnaryOp {
-                op: Op::Percent,
+                op: *op,
                 expr: Box::new(lhs),
             };
         }
 
         while let Some(tok) = self.peek() {
             let op = match tok {
-                EvalToken::Op(Op::Percent) => break,
+                EvalToken::Op(Op::Percent | Op::Spill | Op::ImplicitIntersection) => break,
                 EvalToken::Op(o) => *o,
                 EvalToken::Comma if allow_union => Op::Union,
                 _ => break,
@@ -1968,6 +2026,13 @@ impl<'a> Parser<'a> {
             EvalToken::Op(Op::Add) => {
                 let expr = self.parse_binary(100, allow_union)?;
                 Ok(expr)
+            }
+            EvalToken::Op(Op::ImplicitIntersection) => {
+                let expr = self.parse_binary(100, allow_union)?;
+                Ok(Expr::UnaryOp {
+                    op: Op::ImplicitIntersection,
+                    expr: Box::new(expr),
+                })
             }
             EvalToken::Identifier(id_name) => {
                 if self.peek() == Some(&EvalToken::OpenParen) {
@@ -2151,7 +2216,7 @@ fn op_precedence(op: Op) -> u8 {
         Op::Exp => 30,
         Op::Concat => 8,
         Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => 5,
-        Op::Percent => 60,
+        Op::Percent | Op::ImplicitIntersection | Op::Spill => 60,
     }
 }
 
@@ -2886,6 +2951,85 @@ mod tests {
                 column: Some("Sales".to_string()),
                 is_this_row: false,
                 section: SheetSection::Data,
+            }
+        );
+    }
+
+    #[test]
+    fn at_lexes_and_parses_as_implicit_intersection() {
+        assert_eq!(
+            lex_eval("@A1:A3").unwrap(),
+            vec![
+                EvalToken::Op(Op::ImplicitIntersection),
+                EvalToken::Identifier("A1".to_string()),
+                EvalToken::Colon,
+                EvalToken::Identifier("A3".to_string()),
+            ]
+        );
+
+        assert_eq!(
+            parse_excel_formula("@A1:A3").unwrap(),
+            Expr::UnaryOp {
+                op: Op::ImplicitIntersection,
+                expr: Box::new(Expr::RangeRef {
+                    sheet: None,
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 2,
+                    end_col: 0,
+                    start_row_abs: false,
+                    start_col_abs: false,
+                    end_row_abs: false,
+                    end_col_abs: false,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn xlsx_spill_encoding_preserves_strings_errors_and_table_headers() {
+        for (source, expected) in [
+            ("SUM($A$1#)", "SUM(_xlfn.ANCHORARRAY($A$1))"),
+            (
+                "SUM('Data Sheet'!A1#,Sheet2!B2#)",
+                "SUM(_xlfn.ANCHORARRAY('Data Sheet'!A1),_xlfn.ANCHORARRAY(Sheet2!B2))",
+            ),
+            (
+                "IFERROR(A1#,\"A1#\"\"B2#\")",
+                "IFERROR(_xlfn.ANCHORARRAY(A1),\"A1#\"\"B2#\")",
+            ),
+            (
+                "SUM(Table1[[#Headers],[A1#]])",
+                "SUM(Table1[[#Headers],[A1#]])",
+            ),
+            ("IFERROR(#REF!,\"#VALUE!\")", "IFERROR(#REF!,\"#VALUE!\")"),
+            ("SUM(_xlfn.ANCHORARRAY(A1))", "SUM(_xlfn.ANCHORARRAY(A1))"),
+        ] {
+            assert_eq!(encode_xlsx_spill_references(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn hash_lexes_and_parses_as_spill_operator_after_references() {
+        assert_eq!(
+            lex_eval("A1#").unwrap(),
+            vec![
+                EvalToken::Identifier("A1".to_string()),
+                EvalToken::Op(Op::Spill),
+            ]
+        );
+
+        assert_eq!(
+            parse_excel_formula("A1#").unwrap(),
+            Expr::UnaryOp {
+                op: Op::Spill,
+                expr: Box::new(Expr::CellRef {
+                    sheet: None,
+                    row: 0,
+                    col: 0,
+                    row_abs: false,
+                    col_abs: false,
+                }),
             }
         );
     }

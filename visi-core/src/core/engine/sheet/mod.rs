@@ -688,7 +688,13 @@ impl Sheet {
                 let Some(right_areas) = self.areas_from_expr(right, context)? else {
                     return Ok(None);
                 };
-                Ok(Some(Self::intersect_areas(&left_areas, &right_areas)))
+                let intersections = Self::intersect_areas(&left_areas, &right_areas);
+                if intersections.is_empty() {
+                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                        "#NULL!".to_string(),
+                    )));
+                }
+                Ok(Some(intersections))
             }
             _ => Ok(None),
         }
@@ -805,6 +811,95 @@ impl Sheet {
             Ok(out.pop().unwrap())
         } else {
             Ok(ResultData::List(out))
+        }
+    }
+
+    fn evaluate_implicit_intersection(
+        &self,
+        expr: &crate::core::parser::Expr,
+        context: Option<&Context>,
+        row: Option<usize>,
+        col: Option<usize>,
+        deps: &mut Vec<Dependency>,
+        scope: &LetScope<'_>,
+    ) -> Result<ResultData, EngineError> {
+        if let crate::core::parser::Expr::StructuredRef {
+            sheet,
+            column,
+            is_this_row: false,
+            section,
+        } = expr
+            && matches!(
+                section,
+                crate::core::SheetSection::Data | crate::core::SheetSection::All
+            )
+        {
+            let intersected = crate::core::parser::Expr::StructuredRef {
+                sheet: sheet.clone(),
+                column: column.clone(),
+                is_this_row: true,
+                section: *section,
+            };
+            return self.evaluate_ast(&intersected, context, row, col, deps, scope);
+        }
+
+        if let Some(areas) = self.areas_from_expr(expr, context)? {
+            if areas.len() != 1 {
+                return Ok(ResultData::Error("#VALUE!".to_string()));
+            }
+            let area = &areas[0];
+            let target = if area.start_row == area.end_row && area.start_col == area.end_col {
+                Some((area.start_row, area.start_col))
+            } else if area.start_col == area.end_col {
+                let Some(r) = row else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if r >= area.start_row && r <= area.end_row {
+                    Some((r, area.start_col))
+                } else {
+                    None
+                }
+            } else if area.start_row == area.end_row {
+                let Some(c) = col else {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                };
+                if c >= area.start_col && c <= area.end_col {
+                    Some((area.start_row, c))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let Some((target_row, target_col)) = target else {
+                return Ok(ResultData::Error("#VALUE!".to_string()));
+            };
+            return self.eval_area(
+                &EvalReference {
+                    sheet: area.sheet.clone(),
+                    start_row: target_row,
+                    start_col: target_col,
+                    end_row: target_row,
+                    end_col: target_col,
+                },
+                context,
+                row,
+                col,
+                deps,
+            );
+        }
+
+        let value = self.evaluate_ast(expr, context, row, col, deps, scope)?;
+        match value {
+            ResultData::List(items) => {
+                let (mut flat, _) = Self::flatten_row_major(items);
+                if flat.is_empty() {
+                    Ok(ResultData::Error("#VALUE!".to_string()))
+                } else {
+                    Ok(flat.remove(0))
+                }
+            }
+            other => Ok(other),
         }
     }
 
@@ -1259,14 +1354,19 @@ impl Sheet {
                 }
             }
             Expr::UnaryOp { op, expr } => {
+                if matches!(op, Op::ImplicitIntersection) {
+                    return self
+                        .evaluate_implicit_intersection(expr, context, row, col, deps, scope);
+                }
                 let val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
                 match op {
                     Op::Sub => match val {
-                        ResultData::Float(f) => Ok(ResultData::Float(-f)),
-                        ResultData::Integer(i) => Ok(ResultData::Integer(-i)),
-                        _ => Err(EngineError::EvalError(EvalError::UnknownFunction(
-                            "Unary minus expects number".to_string(),
-                        ))),
+                        ResultData::Error(_) => Ok(val),
+                        ResultData::Integer(i) if i != i64::MIN => Ok(ResultData::Integer(-i)),
+                        _ => match self.to_f64(&val) {
+                            Some(f) => Ok(ResultData::Float(-f)),
+                            None => Ok(ResultData::Error("#VALUE!".to_string())),
+                        },
                     },
                     Op::Percent => {
                         if let ResultData::Error(_) = &val {
@@ -1277,6 +1377,44 @@ impl Sheet {
                             None => Ok(ResultData::Error("#VALUE!".to_string())),
                         }
                     }
+                    Op::Spill => match val {
+                        ResultData::Error(_) => Ok(val),
+                        ResultData::List(_) => Ok(val),
+                        _ => {
+                            if let Expr::CellRef {
+                                sheet,
+                                row: r_val,
+                                col: c_val,
+                                ..
+                            } = &**expr
+                            {
+                                let is_self = match sheet {
+                                    Some(name) => name == &self.name,
+                                    None => true,
+                                };
+                                let has_formula = if is_self {
+                                    self.get_src_str_ref(&CellRef::new(*r_val, *c_val))
+                                        .is_some_and(|s| s.starts_with('='))
+                                } else if let Some(ctx) = context {
+                                    ctx.sheets
+                                        .get(sheet.as_ref().unwrap())
+                                        .and_then(|s| {
+                                            s.get_src_str_ref(&CellRef::new(*r_val, *c_val))
+                                        })
+                                        .is_some_and(|s| s.starts_with('='))
+                                } else {
+                                    false
+                                };
+                                if has_formula {
+                                    Ok(val)
+                                } else {
+                                    Ok(ResultData::Error("#REF!".to_string()))
+                                }
+                            } else {
+                                Ok(val)
+                            }
+                        }
+                    },
                     _ => Ok(val),
                 }
             }

@@ -63,7 +63,6 @@ class ExcelFuzzGenerator:
         "SIGN",
         "SINH",
         "SQRTPI",
-        "TANH",
         "ACOS",
         "ASIN",
         "ATAN",
@@ -533,6 +532,30 @@ class ExcelFuzzGenerator:
         "ODDLYIELD",
     ]
 
+    BINARY_OPERATORS: ClassVar = {
+        "Add": "+",
+        "Sub": "-",
+        "Mul": "*",
+        "Div": "/",
+        "Exp": "^",
+        "Concat": "&",
+        "Eq": "=",
+        "Ne": "<>",
+        "Lt": "<",
+        "Gt": ">",
+        "Le": "<=",
+        "Ge": ">=",
+    }
+    SYMBOLIC_OPERATORS: ClassVar = (
+        *BINARY_OPERATORS,
+        "Percent",
+        "ImplicitIntersection",
+        "Spill",
+        "Intersect",
+        "Union",
+    )
+    PREFIX_OPERATORS: ClassVar = ("UnaryPlus", "UnaryMinus")
+
     NEEDS_XLFN_PREFIX = frozenset(
         [
             "ACOT",
@@ -873,6 +896,110 @@ class ExcelFuzzGenerator:
         finally:
             random.setstate(state)
 
+    @classmethod
+    def _parser_op_variants(cls):
+        parser_path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__), "..", "visi-core", "src", "core", "parser.rs"
+            )
+        )
+        with open(parser_path, encoding="utf-8") as f:
+            parser_src = f.read()
+        match = re.search(r"pub enum Op\s*\{(?P<body>.*?)\n\}", parser_src, re.DOTALL)
+        if not match:
+            raise AssertionError("could not find parser Op enum")
+        variants = set()
+        for line in match.group("body").splitlines():
+            name = line.strip().rstrip(",")
+            if name and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                variants.add(name)
+        return variants
+
+    @classmethod
+    def _check_symbolic_operator_generators(cls):
+        parser_ops = cls._parser_op_variants()
+        generated_ops = set(cls.SYMBOLIC_OPERATORS)
+        missing = sorted(parser_ops - generated_ops)
+        unknown = sorted(generated_ops - parser_ops)
+        if missing or unknown:
+            raise AssertionError(
+                f"symbolic operator fuzz coverage mismatch: missing={missing}, unknown={unknown}"
+            )
+
+    def _generate_reference_operator_expr(self, op_name, range_ref, depth):
+        left = range_ref()
+        if depth > 1:
+            left = self._generate_reference_operator_expr(
+                random.choice(("Intersect", "Union")), range_ref, depth - 1
+            )
+        right = range_ref()
+        if op_name == "Union":
+            if depth > 1 and random.random() < 0.5:
+                right = self._generate_reference_operator_expr(
+                    random.choice(("Intersect", "Union")), range_ref, depth - 1
+                )
+            return f"({left},{right})"
+        if op_name == "Intersect":
+            return f"({left} {right})"
+        raise AssertionError(f"unknown reference operator {op_name}")
+
+    def _generate_operator_expr(self, op_name, expr, cell_ref, range_ref):
+        if op_name in self.BINARY_OPERATORS:
+            left = expr()
+            right = expr()
+            if op_name == "Exp":
+                if any(
+                    fn in left
+                    for fn in ("FACT(", "GAMMA(", "EXP(", "PERMUT(", "COMBIN(")
+                ):
+                    left = f"({random.randint(1, 9)} + {random.randint(1, 9)})"
+                right = f"({random.randint(1, 3)} - {random.randint(0, 2)})"
+            return f"({left} {self.BINARY_OPERATORS[op_name]} {right})"
+        if op_name in self.PREFIX_OPERATORS:
+            sign = "+" if op_name == "UnaryPlus" else "-"
+            return f"({sign}({expr()}))"
+        if op_name == "Percent":
+            return f"(({expr()})%)"
+        if op_name == "ImplicitIntersection":
+            operand = random.choice((expr, cell_ref, range_ref))()
+            return f"(@({operand}))"
+        if op_name == "Spill":
+            return f"SUM((_xlfn.ANCHORARRAY({cell_ref()})))"
+        if op_name in ("Intersect", "Union"):
+            reference = self._generate_reference_operator_expr(
+                op_name, range_ref, random.randint(2, 3)
+            )
+            return f"SUM({reference})"
+        raise AssertionError(f"no generator wired up for symbolic operator {op_name}")
+
+    def generate_symbolic_operator_formula(self, op_name, data_col):
+        max_depth = random.randint(3, 4)
+
+        def cell_ref():
+            return self._random_cell_ref(4, data_col, data_col + 2)
+
+        def range_ref():
+            return self._random_range_ref(4, data_col, data_col + 2)
+
+        def gen_expr(depth=0, forced_op=None):
+            if forced_op is None and (
+                depth >= max_depth or (depth >= 2 and random.random() < 0.4)
+            ):
+                return random.choice((cell_ref, lambda: str(random.randint(-20, 20))))()
+            op = forced_op or random.choice(
+                (
+                    *self.BINARY_OPERATORS,
+                    *self.PREFIX_OPERATORS,
+                    "Percent",
+                    "ImplicitIntersection",
+                )
+            )
+            return self._generate_operator_expr(
+                op, lambda: gen_expr(depth + 1), cell_ref, range_ref
+            )
+
+        return "=" + gen_expr(forced_op=op_name)
+
     def generate_formula(self, current_row, current_col, max_row, max_col, min_col=1):
         """Generates a random formula string referencing existing cells or constants."""
 
@@ -882,8 +1009,10 @@ class ExcelFuzzGenerator:
         def random_range_ref():
             return self._random_range_ref(current_row, min_col, max_col)
 
+        max_depth = random.randint(2, 4)
+
         def gen_expr(depth=0):
-            if depth >= 2 or random.random() < 0.4:
+            if depth >= max_depth or random.random() < 0.4:
                 roll = random.random()
                 if self._has_table() and roll < 0.15:
                     return self._random_structured_header_ref()
@@ -897,7 +1026,7 @@ class ExcelFuzzGenerator:
 
             fn_type = random.choice(
                 [
-                    "binary",
+                    "operator",
                     "multi_num",
                     "single_num",
                     "logic",
@@ -907,33 +1036,18 @@ class ExcelFuzzGenerator:
                 ]
             )
 
-            if fn_type == "binary":
-                op = random.choice(["+", "-", "*", "/", "^"])
-                left = gen_expr(depth + 1)
-                right = gen_expr(depth + 1)
-
-                if op == "^" and left.startswith(
-                    ("FACT(", "GAMMA(", "EXP(", "PERMUT(", "COMBIN(")
-                ):
-                    op = random.choice(["+", "-", "*", "/"])
-
-                if op == "^" and ("^" in right or right.startswith("POWER(")):
-                    op = random.choice(["+", "-", "*", "/"])
-                return f"({left} {op} {right})"
+            if fn_type == "operator":
+                op = random.choice((*self.SYMBOLIC_OPERATORS, *self.PREFIX_OPERATORS))
+                return self._generate_operator_expr(
+                    op, lambda: gen_expr(depth + 1), random_cell_ref, random_range_ref
+                )
 
             elif fn_type == "two_num":
                 fn = random.choice(self.FUNCTIONS_TWO_NUM)
                 a = gen_expr(depth + 1)
                 b = gen_expr(depth + 1)
 
-                if fn == "MOD" and (
-                    "POWER(" in a
-                    or "^" in a
-                    or "POWER(" in b
-                    or "^" in b
-                    or "PERCENTOF(" in a
-                    or "PERCENTOF(" in b
-                ):
+                if fn == "MOD":
                     a = str(random.randint(-50, 50))
                     b = str(random.randint(-50, 50) or 1)
                 return f"{fn}({a}, {b})"
@@ -2488,6 +2602,22 @@ class ExcelFuzzGenerator:
             value=f'=COUNTIF({crit_col}1:{crit_col}5,"A~?pha")',
         )
 
+        operator_data_col = criteria_formula_col + 1
+        for c in range(operator_data_col, operator_data_col + 3):
+            for r in range(1, 4):
+                ws.cell(row=r, column=c, value=random.randint(-20, 20))
+        operator_formula_col = operator_data_col + 3
+        for r, op_name in enumerate(
+            (*self.SYMBOLIC_OPERATORS, *self.PREFIX_OPERATORS), start=1
+        ):
+            ws.cell(
+                row=r,
+                column=operator_formula_col,
+                value=self.generate_symbolic_operator_formula(
+                    op_name, operator_data_col
+                ),
+            )
+
         for sheet in wb.worksheets:
             for row in sheet.iter_rows():
                 for cell in row:
@@ -3152,6 +3282,7 @@ def main():
     args = parser.parse_args()
 
     ExcelFuzzGenerator._check_text_function_generators()
+    ExcelFuzzGenerator._check_symbolic_operator_generators()
 
     os.makedirs(args.output_dir, exist_ok=True)
     failures_dir = os.path.join(args.output_dir, "failures")

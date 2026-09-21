@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn test_fuzz_unary_minus_coerces_boolean_text_and_blank() {
+    for (formula, expected) in [
+        ("=-TRUE", -1.0),
+        ("=-FALSE", 0.0),
+        ("=-\"3\"", -3.0),
+        ("=-A2", 0.0),
+        ("=-(1<>2)", -1.0),
+    ] {
+        let grid = [[formula], [""]];
+        let mut sheet = create_sheet(&grid);
+        sheet.commit(None).unwrap();
+        let result = sheet.get_result_data(&CellRef::new(0, 0));
+        assert!(
+            matches!(result, ResultData::Float(f) if f == expected),
+            "Expected {expected} for {formula}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_fuzz_unary_minus_preserves_errors() {
+    for (formula, expected) in [("=-NA()", "#N/A"), ("=-\"abc\"", "#VALUE!")] {
+        let grid = [[formula]];
+        let mut sheet = create_sheet(&grid);
+        sheet.commit(None).unwrap();
+        let result = sheet.get_result_data(&CellRef::new(0, 0));
+        assert!(
+            matches!(&result, ResultData::Error(error) if error == expected),
+            "Expected {expected} for {formula}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_fuzz_nested_intersection_preserves_null_error() {
+    for formula in ["=SUM(((A1 A2),A1) A1)", "=SUM((A1,(A1 A2)) A1)"] {
+        let grid = [["1", formula], ["2", ""]];
+        let mut sheet = create_sheet(&grid);
+        sheet.commit(None).unwrap();
+        let result = sheet.get_result_data(&CellRef::new(0, 1));
+        assert!(
+            matches!(&result, ResultData::Error(error) if error == "#NULL!"),
+            "Expected #NULL! for {formula}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_fuzz_nested_intersection_null_error_is_catchable() {
+    let grid = [["1", "=IFERROR(SUM(((A1 A2),A1) A1),99)"], ["2", ""]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 1));
+    assert!(
+        matches!(result, ResultData::Float(99.0)),
+        "Expected 99 for a caught #NULL! error, got {result:?}"
+    );
+}
+
+#[test]
 fn test_fuzz_cell_reference_zero_coercion() {
     let sheet_src = [
         ["74", "-287.148", "", "\"HrCRG\"", "167.3"],

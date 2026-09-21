@@ -1260,6 +1260,9 @@ pub fn oddlyield(
     let dcnl = coupon_end_days(last_interest, maturity, basis);
     let dcsl = basis_days_between(last_interest, settlement, basis);
     let dsc = basis_days_between(settlement, maturity, basis);
+    if dsc <= 0.0 {
+        return 0.0;
+    }
     let coupon = 100.0 * rate / frequency;
 
     let numerator = redemption + coupon * (dcnl / e);

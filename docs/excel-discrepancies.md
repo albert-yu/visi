@@ -645,7 +645,7 @@ integer result. The random formula fuzzer no longer generates `MULTINOMIAL`,
 while direct coercion/domain behavior remains covered by Rust tests.
 
 
-## 25. COTH near negative saturation changes integer wrappers — *Excel is wrong*
+## 25. COTH near negative saturation changes integer wrappers -- *Excel is wrong*
 
 Excel rounds `COTH` to exactly `-1` for some moderately large negative
 arguments where the true value is still just below `-1`. That changes wrappers
@@ -660,3 +660,28 @@ A high-precision decimal evaluation of `coth(x) = (exp(2x)+1)/(exp(2x)-1)` gives
 `ISODD(-2)` is `FALSE`. Excel's `TRUE` requires first rounding the hyperbolic
 cotangent to exactly `-1`, which is farther from the mathematical value and
 mirrors its known tendency to saturate extreme hyperbolic results too early.
+
+## 26. TANH rounding changes numeric-to-text length -- *Excel is wrong*
+
+Formula fuzz seed `858539` reduced to `LENB(TANH(3))`. Excel for Mac 16.113
+returns 17; visi returns 16. The underlying values and text conversions are:
+
+| Engine | `TANH(3)` | `TANH(3)&""` |
+| --- | --- | --- |
+| visi | 0.9950547536867305 | `0.99505475368673` |
+| Excel | 0.9950547536867306 | `0.995054753686731` |
+
+An independent 70-digit Python `decimal` calculation of
+`(exp(6)-1)/(exp(6)+1)` gives
+`0.9950547536867304513318801852554884750978138547002824918238788151306647`.
+visi returns the nearest binary64 value, and the correct 15-significant-digit
+text is `0.99505475368673`. Excel's one-ULP error crosses that text-rounding
+boundary; trimming the trailing zero then changes the string length.
+
+The engine is unchanged. `TANH` is excluded from the generic nested-function
+list in `fuzz/fuzz_excel.py`, where text-length wrappers turn this tiny numeric
+difference into an integer mismatch. The Excel-free Rust tests
+`test_fuzz_tanh_three_matches_high_precision_reference` and
+`test_fuzz_tanh_three_keeps_correctly_rounded_text_length` pin visi's result
+to the independent reference. Windows Excel was not measured for this case;
+the expected values come from the mathematical reference, not macOS behavior.
