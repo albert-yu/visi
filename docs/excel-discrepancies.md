@@ -661,8 +661,6 @@ A high-precision decimal evaluation of `coth(x) = (exp(2x)+1)/(exp(2x)-1)` gives
 cotangent to exactly `-1`, which is farther from the mathematical value and
 mirrors its known tendency to saturate extreme hyperbolic results too early.
 
-_The following content is LLM-generated._
-
 ## 26. TANH rounding changes numeric-to-text length -- *Excel is wrong*
 
 Formula fuzz seed `858539` reduced to `LENB(TANH(3))`. Excel for Mac 16.113
