@@ -426,6 +426,17 @@ fn test_oddlprice_oddlyield_match_real_excel() {
     );
 }
 
+#[test]
+fn test_fuzz_oddlyield_zero_dsc() {
+    assert_float_close(
+        &eval1(
+            "=ODDLYIELD((DATE(2004, 8, 19) + 11), (DATE(2004, 8, 19) + 12), DATE(2004, 8, 19), 0.0395, 96.66, 105, 4, 0)",
+        ),
+        0.0,
+        1e-6,
+    );
+}
+
 // EUROCONVERT is the one function in this batch NOT verified against real
 // Excel: it requires the "Euro Currency Tools" add-in, which returns
 // #NAME? in this environment's Excel regardless of arguments (confirmed
