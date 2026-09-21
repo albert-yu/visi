@@ -8,6 +8,8 @@ pub enum Op {
     Div,
     Exp,
     Percent,
+    ImplicitIntersection,
+    Spill,
     Concat,
     Eq,
     Ne,
@@ -1570,6 +1572,16 @@ pub fn lex_eval(input: &str) -> Result<Vec<EvalToken>, String> {
                 i += 1;
                 continue;
             }
+            '@' => {
+                tokens.push(EvalToken::Op(Op::ImplicitIntersection));
+                i += 1;
+                continue;
+            }
+            '#' => {
+                tokens.push(EvalToken::Op(Op::Spill));
+                i += 1;
+                continue;
+            }
             '&' => {
                 tokens.push(EvalToken::Op(Op::Concat));
                 i += 1;
@@ -1834,17 +1846,19 @@ impl<'a> Parser<'a> {
     fn parse_binary(&mut self, min_prec: u8, allow_union: bool) -> Result<Expr, String> {
         let mut lhs = self.parse_prefix(allow_union)?;
 
-        while self.peek() == Some(&EvalToken::Op(Op::Percent)) {
-            self.next();
+        while matches!(self.peek(), Some(EvalToken::Op(Op::Percent | Op::Spill))) {
+            let EvalToken::Op(op) = self.next().unwrap() else {
+                unreachable!()
+            };
             lhs = Expr::UnaryOp {
-                op: Op::Percent,
+                op: *op,
                 expr: Box::new(lhs),
             };
         }
 
         while let Some(tok) = self.peek() {
             let op = match tok {
-                EvalToken::Op(Op::Percent) => break,
+                EvalToken::Op(Op::Percent | Op::Spill | Op::ImplicitIntersection) => break,
                 EvalToken::Op(o) => *o,
                 EvalToken::Comma if allow_union => Op::Union,
                 _ => break,
@@ -1968,6 +1982,13 @@ impl<'a> Parser<'a> {
             EvalToken::Op(Op::Add) => {
                 let expr = self.parse_binary(100, allow_union)?;
                 Ok(expr)
+            }
+            EvalToken::Op(Op::ImplicitIntersection) => {
+                let expr = self.parse_binary(100, allow_union)?;
+                Ok(Expr::UnaryOp {
+                    op: Op::ImplicitIntersection,
+                    expr: Box::new(expr),
+                })
             }
             EvalToken::Identifier(id_name) => {
                 if self.peek() == Some(&EvalToken::OpenParen) {
@@ -2151,7 +2172,7 @@ fn op_precedence(op: Op) -> u8 {
         Op::Exp => 30,
         Op::Concat => 8,
         Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => 5,
-        Op::Percent => 60,
+        Op::Percent | Op::ImplicitIntersection | Op::Spill => 60,
     }
 }
 
@@ -2886,6 +2907,62 @@ mod tests {
                 column: Some("Sales".to_string()),
                 is_this_row: false,
                 section: SheetSection::Data,
+            }
+        );
+    }
+
+    #[test]
+    fn at_lexes_and_parses_as_implicit_intersection() {
+        assert_eq!(
+            lex_eval("@A1:A3").unwrap(),
+            vec![
+                EvalToken::Op(Op::ImplicitIntersection),
+                EvalToken::Identifier("A1".to_string()),
+                EvalToken::Colon,
+                EvalToken::Identifier("A3".to_string()),
+            ]
+        );
+
+        assert_eq!(
+            parse_excel_formula("@A1:A3").unwrap(),
+            Expr::UnaryOp {
+                op: Op::ImplicitIntersection,
+                expr: Box::new(Expr::RangeRef {
+                    sheet: None,
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 2,
+                    end_col: 0,
+                    start_row_abs: false,
+                    start_col_abs: false,
+                    end_row_abs: false,
+                    end_col_abs: false,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn hash_lexes_and_parses_as_spill_operator_after_references() {
+        assert_eq!(
+            lex_eval("A1#").unwrap(),
+            vec![
+                EvalToken::Identifier("A1".to_string()),
+                EvalToken::Op(Op::Spill),
+            ]
+        );
+
+        assert_eq!(
+            parse_excel_formula("A1#").unwrap(),
+            Expr::UnaryOp {
+                op: Op::Spill,
+                expr: Box::new(Expr::CellRef {
+                    sheet: None,
+                    row: 0,
+                    col: 0,
+                    row_abs: false,
+                    col_abs: false,
+                }),
             }
         );
     }

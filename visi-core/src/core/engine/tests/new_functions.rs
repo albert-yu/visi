@@ -1564,3 +1564,39 @@ fn test_amordegrc_keeps_full_precision_in_the_running_balance() {
         assert_float_close(&eval1(&call(period)), want, 1e-9);
     }
 }
+
+#[test]
+fn test_implicit_intersection_operator_on_ranges() {
+    let grid: [[&str; 4]; 3] = [
+        ["10", "20", "=@A:A", ""],
+        ["30", "40", "=@A:A", ""],
+        ["50", "=@A1:B1", "=@A1:B2", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 10.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 2)), 30.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(2, 1)), 20.0, 1e-9);
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(2, 2)),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+}
+
+#[test]
+fn test_spill_operator_reads_dynamic_array_anchor() {
+    let grid: [[&str; 3]; 2] = [
+        ["=SEQUENCE(3)", "=SUM(A1#)", "=INDEX(A1#,2)"],
+        ["5", "=A2#", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 6.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 2.0, 1e-9);
+    assert!(matches!(
+        sheet.get_result_data(&CellRef::new(1, 1)),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+}
