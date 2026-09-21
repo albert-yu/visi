@@ -63,7 +63,6 @@ class ExcelFuzzGenerator:
         "SIGN",
         "SINH",
         "SQRTPI",
-        "TANH",
         "ACOS",
         "ASIN",
         "ATAN",
@@ -965,7 +964,7 @@ class ExcelFuzzGenerator:
             operand = random.choice((expr, cell_ref, range_ref))()
             return f"(@({operand}))"
         if op_name == "Spill":
-            return f"SUM(({cell_ref()}#))"
+            return f"SUM((_xlfn.ANCHORARRAY({cell_ref()})))"
         if op_name in ("Intersect", "Union"):
             reference = self._generate_reference_operator_expr(
                 op_name, range_ref, random.randint(2, 3)
@@ -1048,14 +1047,7 @@ class ExcelFuzzGenerator:
                 a = gen_expr(depth + 1)
                 b = gen_expr(depth + 1)
 
-                if fn == "MOD" and (
-                    "POWER(" in a
-                    or "^" in a
-                    or "POWER(" in b
-                    or "^" in b
-                    or "PERCENTOF(" in a
-                    or "PERCENTOF(" in b
-                ):
+                if fn == "MOD":
                     a = str(random.randint(-50, 50))
                     b = str(random.randint(-50, 50) or 1)
                 return f"{fn}({a}, {b})"

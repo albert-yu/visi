@@ -688,7 +688,13 @@ impl Sheet {
                 let Some(right_areas) = self.areas_from_expr(right, context)? else {
                     return Ok(None);
                 };
-                Ok(Some(Self::intersect_areas(&left_areas, &right_areas)))
+                let intersections = Self::intersect_areas(&left_areas, &right_areas);
+                if intersections.is_empty() {
+                    return Err(EngineError::EvalError(EvalError::UnknownFunction(
+                        "#NULL!".to_string(),
+                    )));
+                }
+                Ok(Some(intersections))
             }
             _ => Ok(None),
         }
@@ -1355,11 +1361,12 @@ impl Sheet {
                 let val = self.evaluate_ast(expr, context, row, col, deps, scope)?;
                 match op {
                     Op::Sub => match val {
-                        ResultData::Float(f) => Ok(ResultData::Float(-f)),
-                        ResultData::Integer(i) => Ok(ResultData::Integer(-i)),
-                        _ => Err(EngineError::EvalError(EvalError::UnknownFunction(
-                            "Unary minus expects number".to_string(),
-                        ))),
+                        ResultData::Error(_) => Ok(val),
+                        ResultData::Integer(i) if i != i64::MIN => Ok(ResultData::Integer(-i)),
+                        _ => match self.to_f64(&val) {
+                            Some(f) => Ok(ResultData::Float(-f)),
+                            None => Ok(ResultData::Error("#VALUE!".to_string())),
+                        },
                     },
                     Op::Percent => {
                         if let ResultData::Error(_) = &val {
@@ -1373,7 +1380,40 @@ impl Sheet {
                     Op::Spill => match val {
                         ResultData::Error(_) => Ok(val),
                         ResultData::List(_) => Ok(val),
-                        _ => Ok(ResultData::Error("#VALUE!".to_string())),
+                        _ => {
+                            if let Expr::CellRef {
+                                sheet,
+                                row: r_val,
+                                col: c_val,
+                                ..
+                            } = &**expr
+                            {
+                                let is_self = match sheet {
+                                    Some(name) => name == &self.name,
+                                    None => true,
+                                };
+                                let has_formula = if is_self {
+                                    self.get_src_str_ref(&CellRef::new(*r_val, *c_val))
+                                        .is_some_and(|s| s.starts_with('='))
+                                } else if let Some(ctx) = context {
+                                    ctx.sheets
+                                        .get(sheet.as_ref().unwrap())
+                                        .and_then(|s| {
+                                            s.get_src_str_ref(&CellRef::new(*r_val, *c_val))
+                                        })
+                                        .is_some_and(|s| s.starts_with('='))
+                                } else {
+                                    false
+                                };
+                                if has_formula {
+                                    Ok(val)
+                                } else {
+                                    Ok(ResultData::Error("#REF!".to_string()))
+                                }
+                            } else {
+                                Ok(val)
+                            }
+                        }
                     },
                     _ => Ok(val),
                 }

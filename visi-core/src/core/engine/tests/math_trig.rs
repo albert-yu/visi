@@ -35,6 +35,30 @@ fn test_trig_and_hyperbolic_functions() {
 }
 
 #[test]
+fn test_fuzz_tanh_three_keeps_correctly_rounded_text_length() {
+    let grid = [["=LENB(TANH(3))"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 0));
+    assert!(
+        matches!(result, ResultData::Float(16.0)),
+        "Expected 16 for correctly rounded 0.99505475368673, got {result:?}"
+    );
+}
+
+#[test]
+fn test_fuzz_tanh_three_matches_high_precision_reference() {
+    let grid = [["=TANH(3)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 0));
+    assert!(
+        matches!(result, ResultData::Float(f) if f == 0.9950547536867305),
+        "Expected nearest f64 to 0.995054753686730451331880185255488475, got {result:?}"
+    );
+}
+
+#[test]
 fn test_fuzz_coth_stays_below_negative_one_until_true_limit() {
     match eval_one("=ISODD(INT(COTH(-19)))") {
         ResultData::Boolean(v) => assert!(!v, "expected FALSE"),
@@ -765,6 +789,12 @@ fn test_mod_reports_num_once_the_quotient_stops_being_meaningful() {
 #[test]
 fn test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary() {
     assert_eq!(num("=MOD(-47, (47 / -13))"), 0.0);
+}
+
+#[test]
+fn test_fuzz_mod_fractional_percent_exact_zero() {
+    assert_eq!(num("=MOD(52, 1%)"), 0.0);
+    assert_eq!(num("=MOD(52, 0.01)"), 0.0);
 }
 
 #[test]

@@ -103,6 +103,28 @@ impl Sheet {
             upper_name = upper_name["_XLWS.".len()..].to_string();
         }
 
+        if matches!(upper_name.as_str(), "ANCHORARRAY" | "SINGLE") {
+            let [arg] = args else {
+                return Ok(ResultData::Error("#VALUE!".to_string()));
+            };
+            let op = if upper_name == "ANCHORARRAY" {
+                crate::core::parser::Op::Spill
+            } else {
+                crate::core::parser::Op::ImplicitIntersection
+            };
+            return self.evaluate_ast(
+                &Expr::UnaryOp {
+                    op,
+                    expr: Box::new(arg.clone()),
+                },
+                context,
+                row,
+                col,
+                deps,
+                scope,
+            );
+        }
+
         if upper_name == "LET" {
             return self.evaluate_let(args, context, row, col, deps, scope);
         }
@@ -391,9 +413,31 @@ impl Sheet {
         for arg in args {
             let is_direct_arg = match arg {
                 Expr::CellRef { .. } | Expr::RangeRef { .. } | Expr::StructuredRef { .. } => false,
+                Expr::UnaryOp {
+                    op:
+                        crate::core::parser::Op::Spill | crate::core::parser::Op::ImplicitIntersection,
+                    ..
+                } => false,
+                Expr::BinaryOp {
+                    op: crate::core::parser::Op::Intersect | crate::core::parser::Op::Union,
+                    ..
+                } => false,
                 Expr::FunctionCall { name, .. } => {
-                    let n = name.to_uppercase();
-                    n != "IF" && n != "IFERROR" && n != "CHOOSE"
+                    let mut n = name.to_uppercase();
+                    if n.starts_with("_XLFN.") {
+                        n = n["_XLFN.".len()..].to_string();
+                    }
+                    if n.starts_with("_XLWS.") {
+                        n = n["_XLWS.".len()..].to_string();
+                    }
+                    n != "IF"
+                        && n != "IFERROR"
+                        && n != "CHOOSE"
+                        && n != "ANCHORARRAY"
+                        && n != "SINGLE"
+                        && n != "OFFSET"
+                        && n != "INDEX"
+                        && n != "INDIRECT"
                 }
                 _ => true,
             };

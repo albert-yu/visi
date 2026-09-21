@@ -1585,6 +1585,22 @@ fn test_implicit_intersection_operator_on_ranges() {
 }
 
 #[test]
+fn test_fuzz_xlsx_anchorarray_reads_dynamic_array_anchor() {
+    let grid = [["=SEQUENCE(3)", "=SUM(_xlfn.ANCHORARRAY(A1))"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(0, 1)), 6.0, 1e-9);
+}
+
+#[test]
+fn test_fuzz_xlsx_single_uses_formula_row() {
+    let grid = [["10", ""], ["20", "=_xlfn.SINGLE(A1:A2)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 1)), 20.0, 1e-9);
+}
+
+#[test]
 fn test_spill_operator_reads_dynamic_array_anchor() {
     let grid: [[&str; 3]; 2] = [
         ["=SEQUENCE(3)", "=SUM(A1#)", "=INDEX(A1#,2)"],
@@ -1597,6 +1613,29 @@ fn test_spill_operator_reads_dynamic_array_anchor() {
     assert_float_close(&sheet.get_result_data(&CellRef::new(0, 2)), 2.0, 1e-9);
     assert!(matches!(
         sheet.get_result_data(&CellRef::new(1, 1)),
-        ResultData::Error(ref e) if e == "#VALUE!"
+        ResultData::Error(ref e) if e == "#REF!"
     ));
+}
+
+#[test]
+fn test_fuzz_anchorarray_scalar_string_formula_sum_ignores_text() {
+    let grid = [
+        ["=(IF(1 > 0, \"hello\", \"world\"))", ""],
+        ["=SUM((_xlfn.ANCHORARRAY($A$1)))", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 0)), 0.0, 1e-9);
+}
+
+#[test]
+fn test_fuzz_anchorarray_scalar_number_formula() {
+    let grid = [
+        ["=42", ""],
+        ["=_xlfn.ANCHORARRAY(A1)", "=SUM(_xlfn.ANCHORARRAY(A1))"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 0)), 42.0, 1e-9);
+    assert_float_close(&sheet.get_result_data(&CellRef::new(1, 1)), 42.0, 1e-9);
 }

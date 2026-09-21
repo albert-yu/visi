@@ -773,6 +773,50 @@ fn try_parse_ref(chars: &[char], start_idx: usize) -> Option<(FoundRef, usize)> 
     None
 }
 
+pub(crate) fn encode_xlsx_spill_references(code: &str) -> String {
+    if !code.contains('#') {
+        return code.to_string();
+    }
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((_, end)) = try_parse_ref(&chars, i) {
+            let reference: String = chars[i..end].iter().collect();
+            if chars.get(end) == Some(&'#') {
+                out.push_str("_xlfn.ANCHORARRAY(");
+                out.push_str(&reference);
+                out.push(')');
+                i = end + 1;
+            } else {
+                out.push_str(&reference);
+                i = end;
+            }
+        } else if matches!(chars[i], '"' | '\'') {
+            let quote = chars[i];
+            out.push(quote);
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                out.push(c);
+                i += 1;
+                if c == quote {
+                    if chars.get(i) == Some(&quote) {
+                        out.push(quote);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
     let chars: Vec<char> = code.chars().collect();
     let mut parts = Vec::new();
@@ -2940,6 +2984,29 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn xlsx_spill_encoding_preserves_strings_errors_and_table_headers() {
+        for (source, expected) in [
+            ("SUM($A$1#)", "SUM(_xlfn.ANCHORARRAY($A$1))"),
+            (
+                "SUM('Data Sheet'!A1#,Sheet2!B2#)",
+                "SUM(_xlfn.ANCHORARRAY('Data Sheet'!A1),_xlfn.ANCHORARRAY(Sheet2!B2))",
+            ),
+            (
+                "IFERROR(A1#,\"A1#\"\"B2#\")",
+                "IFERROR(_xlfn.ANCHORARRAY(A1),\"A1#\"\"B2#\")",
+            ),
+            (
+                "SUM(Table1[[#Headers],[A1#]])",
+                "SUM(Table1[[#Headers],[A1#]])",
+            ),
+            ("IFERROR(#REF!,\"#VALUE!\")", "IFERROR(#REF!,\"#VALUE!\")"),
+            ("SUM(_xlfn.ANCHORARRAY(A1))", "SUM(_xlfn.ANCHORARRAY(A1))"),
+        ] {
+            assert_eq!(encode_xlsx_spill_references(source), expected, "{source}");
+        }
     }
 
     #[test]

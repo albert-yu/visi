@@ -68,7 +68,7 @@ def test_binary_emitter_keeps_requested_operator(op, symbol):
         ("UnaryMinus", r"^\(-\("),
         ("Percent", r"%\)$"),
         ("ImplicitIntersection", r"^\(@\("),
-        ("Spill", r"A1#"),
+        ("Spill", r"_xlfn\.ANCHORARRAY\(A1\)"),
         ("Intersect", r" A1:A2\)\)$"),
         ("Union", r","),
     ],
