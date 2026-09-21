@@ -645,7 +645,7 @@ integer result. The random formula fuzzer no longer generates `MULTINOMIAL`,
 while direct coercion/domain behavior remains covered by Rust tests.
 
 
-## 25. COTH near negative saturation changes integer wrappers � *Excel is wrong*
+## 25. COTH near negative saturation changes integer wrappers -- *Excel is wrong*
 
 Excel rounds `COTH` to exactly `-1` for some moderately large negative
 arguments where the true value is still just below `-1`. That changes wrappers
