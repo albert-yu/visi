@@ -63,7 +63,6 @@ def build_module(cases):
 
 
 def build_workbook(path):
-    """A grid wide enough that a formula can sit outside the A:C band."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet1"

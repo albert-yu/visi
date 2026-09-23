@@ -134,9 +134,13 @@ def build_source_workbook(path, rng):
         row_cases = [
             make_case("number", numeric_a, rng.choice(NUMBER_FORMATS)),
             make_case("number", numeric_b, rng.choice(SECTION_FORMATS)),
-            make_case("formula", f"=A{excel_row}*{formula_factor}", rng.choice(NUMBER_FORMATS)),
+            make_case(
+                "formula", f"=A{excel_row}*{formula_factor}", rng.choice(NUMBER_FORMATS)
+            ),
             make_case("date", date_value, rng.choice(DATE_FORMATS)),
-            make_case("formula", f"=D{excel_row}+{date_delta}", rng.choice(DATE_FORMATS)),
+            make_case(
+                "formula", f"=D{excel_row}+{date_delta}", rng.choice(DATE_FORMATS)
+            ),
             make_case("text", text, rng.choice(TEXT_FORMATS)),
         ]
         for col, case in enumerate(row_cases):
@@ -190,7 +194,9 @@ class ExcelDisplayDriver:
         shutil.copyfile(input_file, output_file)
         abs_output = os.path.abspath(output_file)
         if self.driver_type == "mock":
-            print("[ExcelDisplayDriver Warning] Running in mock mode (Excel not invoked).")
+            print(
+                "[ExcelDisplayDriver Warning] Running in mock mode (Excel not invoked)."
+            )
             return {}
         if self.driver_type == "applescript":
             return self.run_applescript(abs_output, cases)
@@ -366,7 +372,9 @@ def main():
     print(f" Iterations : {args.iterations}")
     print(f" Excel Driver: {excel_driver.driver_type} ({args.excel_path or 'Default'})")
     if smoke_mode:
-        print(" Mock mode: Excel displayed-text oracle is skipped; only visi rendering is checked.")
+        print(
+            " Mock mode: Excel displayed-text oracle is skipped; only visi rendering is checked."
+        )
     print("=====================================================================\n")
 
     passed = 0
@@ -395,7 +403,9 @@ def main():
             if failures:
                 failed += 1
                 fail_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
-                copy_failure_artifacts(fail_dir, source_xlsx, visi_out_xlsx, excel_out_xlsx)
+                copy_failure_artifacts(
+                    fail_dir, source_xlsx, visi_out_xlsx, excel_out_xlsx
+                )
                 write_json(os.path.join(fail_dir, "cases.json"), cases)
                 write_json(os.path.join(fail_dir, "failures.json"), failures)
                 print(
@@ -418,7 +428,9 @@ def main():
             failed += 1
             fail_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
             copy_failure_artifacts(fail_dir, source_xlsx, visi_out_xlsx, excel_out_xlsx)
-            with open(os.path.join(fail_dir, "exception.txt"), "w", encoding="utf-8") as f:
+            with open(
+                os.path.join(fail_dir, "exception.txt"), "w", encoding="utf-8"
+            ) as f:
                 f.write(repr(exc))
                 f.write("\n")
             print(f" Iteration {i:3d}/{args.iterations} [ERROR] (Seed: {iter_seed})")

@@ -11,13 +11,6 @@ _CLASS_TO_TYPE = {
 
 
 def _title_text(title_obj):
-    """Walks openpyxl's nested Title -> Text -> RichText -> Paragraph ->
-    RegularTextRun structure down to a flat string, or None if there's no
-    title (or it's a strRef-based title, which visi never writes). openpyxl
-    exposes no flat-string accessor for *reading* a title, only for writing
-    one via `Title.tx.rich` construction helpers -- so this must walk the
-    object graph by hand. Concatenates every run's text within the first
-    paragraph; visi only ever writes a single run."""
     if title_obj is None:
         return None
     tx = getattr(title_obj, "tx", None)
@@ -41,9 +34,6 @@ def _chart_type(chart):
 
 
 def _series_range(ref):
-    """`ref` is a Series' `.val` (NumDataSource) or `.cat` (AxDataSource).
-    Returns the referenced range formula (`numRef.f` or `strRef.f`), or None
-    if there's no series or no reference (e.g. literal/inline data)."""
     if ref is None:
         return None
     num_ref = getattr(ref, "numRef", None)
@@ -56,14 +46,6 @@ def _series_range(ref):
 
 
 def read_charts(xlsx_path):
-    """Returns one dict per chart found across all worksheets:
-    {sheet, chart_type, cat_range, val_range, title, xlabel, ylabel,
-    show_legend}.
-
-    Deliberately single-series only (reads `chart.series[0]`), matching the
-    single-range model of visi-core's `Chart` struct -- multi-series charts
-    are out of scope for both the engine and this fuzzing harness.
-    """
     import openpyxl
 
     wb = openpyxl.load_workbook(xlsx_path)

@@ -22,7 +22,6 @@ DEFAULT_PRESAVED_DIR = os.path.join(
 
 
 def find_presaved_files(path: str) -> list[str]:
-    """Resolves a file or directory path to a list of .xlsx files."""
     if os.path.isfile(path):
         return [path]
     if os.path.isdir(path):
@@ -48,10 +47,6 @@ def compare_presaved_file(
     cell_filter: str | None = None,
     verbose: bool = False,
 ) -> tuple[bool, list[dict], dict]:
-    """
-    Opens `file_path` in both visi and Microsoft Excel, recalculates,
-    and returns (is_match, mismatches, stats).
-    """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Input file not found: {file_path}")
 
@@ -197,7 +192,7 @@ def main():
                 cell_filter=args.cell,
                 verbose=args.verbose,
             )
-        except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as e:
             print(f"[ERROR] {e}")
             overall_passed = False
             continue

@@ -107,9 +107,6 @@ def build_module(cases):
 
 
 def build_workbook(path):
-    """`Sales` over A1:C4 (header + 3 data rows), plus a second table so the
-    duplicate-name case has something to collide with, plus a formula that
-    references the table by name so a rename's cascade is observable."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet1"
@@ -133,10 +130,6 @@ def build_workbook(path):
 
 
 def build_empty_workbook(path):
-    """One header row and one data row, which each case then deletes.
-
-    Authoring the zero-row state directly makes Excel offer to repair the
-    file; see `EMPTY_CASES`."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet1"

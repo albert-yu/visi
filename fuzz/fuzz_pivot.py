@@ -19,17 +19,6 @@ from fuzz_excel import (
 
 
 class PivotFuzzGenerator:
-    """Generates a random source workbook plus a matching pivot table
-    configuration (as a plain dict, not XML) that both `VisiPivotDriver` and
-    `ExcelPivotDriver` build a real pivot table from.
-
-    Columns are fixed and deliberately low-cardinality where it matters for
-    grouping, unlike `fuzz_excel.py`'s fully-random grid -- a pivot fuzzer
-    that used high-cardinality random text for row/col fields would turn
-    every group into a singleton and never exercise subtotal/grand-total
-    logic at all.
-    """
-
     BASIC_COL_NAMES: ClassVar = ["Cat", "Mixed", "NumStr", "Amount", "Rate", "Flag"]
     RICH_COL_NAMES: ClassVar = [
         "Cat",
@@ -69,9 +58,6 @@ class PivotFuzzGenerator:
             self.FILTERABLE_COLS = [0, 1, 2, 5]
 
     def _random_numstr(self):
-        """A quoted (forced-text), possibly numeric-looking string, or a
-        blank -- probes the sort/group-key numeric-vs-text ambiguity in
-        visi's `sort_group_entries` (pivot.rs)."""
         roll = random.random()
         if roll < 0.25:
             return None
@@ -82,11 +68,6 @@ class PivotFuzzGenerator:
         return str(random.randint(-50, 50))
 
     def generate(self, source_path, num_rows, use_table):
-        """Builds `source_path` and returns a pivot configuration dict:
-        {source_range, table_name, row_fields, col_fields, value_fields,
-         filter_field, grand_totals_row, grand_totals_col}.
-        `table_name` is None when `use_table` is False (raw-range source).
-        """
         try:
             import openpyxl
             from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -239,37 +220,6 @@ from visi_driver import (
 
 
 class ExcelPivotDriver:
-    """Drives Microsoft Excel's own PivotTable object model to build a
-    matching pivot table, then saves. Unlike `fuzz_excel.py`'s `ExcelDriver`
-    (which only needs `calculate` over cells visi already computed), Excel
-    must *construct* a live PivotTable here -- there's no XML shortcut.
-
-    The win32com path (Windows) uses the standard, well-documented VBA
-    object model directly and is straightforward.
-
-    The AppleScript path (macOS) cannot do the same directly: `make new
-    pivot cache at wb` is declared in Excel.sdef (extracted straight from
-    `Microsoft Excel.app/Contents/Resources/Excel.sdef`, since the `sdef`
-    CLI tool needs a full Xcode install this environment doesn't have) but
-    fails with a generic "Parameter error (-50)" for every variant tried
-    against real Excel -- bare, with properties, range object vs. text
-    source data, different containers. That's a real functional gap in Mac
-    Excel's AppleScript support (the dictionary documents a capability the
-    implementation doesn't back), not a syntax mistake -- other pivot
-    field/property names below (`pivot field orientation`, `orient as row
-    field`, `layout form`, `layout subtotal location`, `set subtotals`,
-    `range object` of a list object) were all verified against the same
-    .sdef and do work once a PivotTable already exists.
-
-    So instead, the AppleScript path builds the pivot through a macro
-    (`fuzz/BuildFuzzPivot.bas`, injected into `fuzz/pivot_macro_template.xlsm`
-    by `visi macro add` on first use) invoked via `run VB macro`, which *is* a
-    working AppleScript command. The macro itself uses the same
-    PivotCaches.Create / CreatePivotTable / PivotFields object model as the
-    win32com path below, just reached through VBA instead of AppleScript's
-    broken pivot-cache creation.
-    """
-
     def __init__(self, excel_path=None, driver_type="auto", visi_path=None):
         self.excel_path = excel_path
 
@@ -306,19 +256,6 @@ class ExcelPivotDriver:
         return f'"{escaped}"'
 
     def _ensure_macro_template(self):
-        """Builds `pivot_macro_template.xlsm` from `BuildFuzzPivot.bas` if it
-        isn't already there, by way of `visi macro add`.
-
-        Rebuilds whenever the .bas is newer than the .xlsm, so editing the
-        macro can't silently leave a stale template in play -- that failure
-        mode (macro edited, template not regenerated, mismatches blamed on the
-        engine) is exactly what the old manual setup step invited.
-
-        The template deliberately contains no data: `_prepare_macro_workbook`
-        copies each iteration's rows in via openpyxl, so nothing on the Excel
-        oracle's side of the comparison is round-tripped through visi's own
-        xlsx writer.
-        """
         if not os.path.exists(MACRO_SOURCE_PATH):
             raise RuntimeError(
                 f"Missing {MACRO_SOURCE_PATH} -- it should be checked in."
@@ -340,7 +277,6 @@ class ExcelPivotDriver:
         )
 
     def _build_macro_template_via_bindings(self, source):
-        """Returns a description of what it used, or None if unavailable."""
         try:
             import visi_core
         except ImportError:
@@ -485,21 +421,6 @@ class ExcelPivotDriver:
         return "\n".join(lines)
 
     def _restart_excel(self):
-        """Force-quits and relaunches Excel entirely (not just `killall` +
-        hope) -- see GitHub issue #15. `run VB macro` calls degrade into a
-        session-wide, config-independent "Parameter error (-50)" after
-        enough consecutive AppleScript invocations against one long-lived
-        Excel process (confirmed via ~20-30 back-to-back repro calls: the
-        exact same pivot config that fails deterministically for the
-        remainder of that session succeeds immediately, every time, right
-        after Excel is fully restarted) -- it is Excel's automation bridge
-        wearing out, unrelated to any particular pivot shape (same-column
-        col/filter field, zero-selection filter, single-row source, or
-        otherwise). `killall` alone was observed to sometimes leave the
-        process listed as still running (the app may intercept SIGTERM to
-        run its own quit handshake), so this escalates to SIGKILL by PID
-        before relaunching.
-        """
         subprocess.run(
             ["killall", "Microsoft Excel"],
             stdout=subprocess.DEVNULL,
@@ -576,7 +497,7 @@ class ExcelPivotDriver:
                 self._run_win32com_once(abs_output, config, dest_cell)
                 last_err = None
                 break
-            except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+            except Exception as e:
                 last_err = e
         if last_err is not None:
             raise last_err
@@ -806,7 +727,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as err:
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(
