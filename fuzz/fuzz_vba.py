@@ -128,13 +128,6 @@ GRID_FUNCTIONS = ["Sum", "Count", "CountA", "Min", "Max", "Average"]
 
 
 class VbaGenerator:
-    """Generates VBA expressions and statements from a small typed grammar.
-
-    `depth` bounds expression nesting, which is what keeps generated source
-    from growing without limit and keeps the two engines comparing the same
-    thing rather than one of them giving up.
-    """
-
     def __init__(self, seed=None, host_surface="basic"):
         self.rng = random.Random(seed)
         self.host_surface = host_surface
@@ -253,11 +246,6 @@ class VbaGenerator:
         return self.host_statement(target, vars_in_scope, depth)
 
     def cell(self, scratch=False):
-        """A literal `(row, col)` inside the grid, or in the scratch columns.
-
-        Literal on purpose -- see the module docstring on why a computed
-        coordinate makes for a boring case.
-        """
         row = self.rng.randint(1, GRID_ROWS)
         col = (
             self.rng.choice(SCRATCH_COLS) if scratch else self.rng.randint(1, GRID_COLS)
@@ -268,12 +256,6 @@ class VbaGenerator:
         return f"{chr(ord('A') + col - 1)}{row}"
 
     def host_statement(self, target, vars_in_scope, depth):
-        """One statement that reads or writes the workbook.
-
-        Every construct here is in the Phase 2 allow-list. Anything outside it
-        would be an agreed-on error in both engines at best, and a compile
-        error that hangs the AppleScript bridge at worst.
-        """
         if self.host_surface == "extended" and self.rng.random() < 0.45:
             return self.extended_host_statement(target, vars_in_scope, depth)
 
@@ -354,13 +336,6 @@ class VbaGenerator:
         ]
 
     def extended_host_statement(self, target, vars_in_scope, depth):
-        """Host-object cases that mutate workbook structure, tables or styles.
-
-        These are kept behind the extended host surface because they are
-        intentionally broader and more stateful than the original fast mix.
-        Run them with small batches so a row insert, table resize or style
-        write cannot set up the next random case.
-        """
         kind = self.rng.random()
         row, col = self.cell()
         srow, scol = self.cell(scratch=True)
@@ -512,21 +487,6 @@ def grid_helpers():
 
 
 def check_no_duplicate_dims(source):
-    """Raise if any procedure declares the same name twice.
-
-    A compile error, not a run-time one, so Excel answers it with a modal
-    dialog: `osascript` never returns, the whole batch is lost, and the only
-    symptom is a hang. `visi macro check` cannot warn about it either -- Phase
-    0 resolves no names, by design -- so nothing between the generator and the
-    modal dialog would catch it.
-
-    This is the general form of a bug that actually happened: a host local
-    named `vc` collided with the generated variable `vc`. The name constants
-    are disjoint now, but "the generator emits compilable source **by
-    construction**" is the property worth enforcing rather than that one
-    instance of breaking it. Cheap, and it fails in Python where a failure is
-    readable.
-    """
     proc, declared = None, set()
     for line in source.splitlines():
         stripped = line.strip()
@@ -550,12 +510,6 @@ def check_no_duplicate_dims(source):
 
 
 def build_module(cases):
-    """One module holding every case in a batch, plus its harnesses.
-
-    Batching matters: the AppleScript round trip dominates the cost by three
-    orders of magnitude, so 25 cases in one workbook run in roughly the time
-    one case would.
-    """
     parts = ['Attribute VB_Name = "M"', grid_helpers()]
     for i, src in cases:
         parts.append(src)
@@ -564,12 +518,6 @@ def build_module(cases):
 
 
 def build_workbook(path):
-    """The workbook both engines run against: one sheet named `Data`.
-
-    `ResetGrid` fills the A:F value grid. A small Excel Table lives to the
-    right of it so extended host cases can fuzz ListObjects/ListRows without
-    disturbing the grid cells that every harness serialises.
-    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Data"
@@ -593,23 +541,6 @@ def build_workbook(path):
 
 
 def visi_result(source, proc, workbook=None, harness=False):
-    """`OK|TypeName|CStr|grid` or `ERR|number|grid`, the harness's own shape.
-
-    `harness` says the procedure *is* one of the `Harness{i}` wrappers, whose
-    return value is already that string -- so it is handed back rather than
-    described. Without this the result comes back wrapped one level too deep
-    (`OK|String|OK|Double|0.1|...`) and every case reports as a mismatch, for
-    a reason that looks nothing like the formatting bug it is.
-
-    `workbook` is a path to run *against*, which is what gives the macro a
-    host object model at all. Without one this is the Phase 1 form: source
-    text and nothing to touch, which is still the right call for
-    `vba_expr_probe.py` and for a case that never reaches a workbook.
-
-    A fresh `Workbook` is loaded per case rather than reused. That is not
-    caution -- `ResetGrid` would handle carry-over -- it is what makes a case
-    reproducible in isolation from its saved `source.bas`.
-    """
     try:
         if workbook is None:
             type_name, value = visi_core.run_macro(source, proc)
@@ -642,14 +573,6 @@ def _numeric(text):
 
 
 def fields_match(mine, theirs):
-    """Whether two harness results agree, field by field.
-
-    Split on the harness's own separators rather than compared as one string,
-    so that a Double differing in its last bit does not report as a mismatch
-    while a genuinely different *cell* still does. Everything non-numeric is
-    compared exactly -- a TypeName, an error number and an address are all
-    small closed sets where "close" means nothing.
-    """
     if mine == theirs:
         return True
     a, b = mine.split("|"), theirs.split("|")
@@ -729,17 +652,6 @@ class ExcelDriver:
         return name
 
     def restart(self):
-        """Force-quit and relaunch, not just `killall` and hope.
-
-        The same escalation `fuzz_pivot.py::_restart_excel` documents, and for
-        the same reason: `run VB macro` degrades into a session-wide
-        "Parameter error (-50)" after enough consecutive AppleScript calls
-        against one long-lived Excel, and `killall` alone was observed to
-        leave the process running (the app intercepts SIGTERM for its own quit
-        handshake). One batch here is many `run VB macro` calls, so this fires
-        both on failure and periodically before the bridge has a chance to
-        wear out.
-        """
         self.restarts += 1
         subprocess.run(
             ["killall", EXCEL_APP],
@@ -771,11 +683,6 @@ class ExcelDriver:
         time.sleep(4.0)
 
     def restart_windows(self):
-        """`taskkill` every EXCEL.EXE. Nothing to relaunch -- the next batch's
-        `gencache.EnsureDispatch("Excel.Application")` starts a fresh one, the
-        same as fuzz_excel.py's/fuzz_chart.py's/fuzz_pivot.py's win32com
-        drivers already do on their own retries.
-        """
         self.restarts += 1
         subprocess.run(
             ["taskkill", "/F", "/IM", "EXCEL.EXE", "/T"],
@@ -786,22 +693,6 @@ class ExcelDriver:
         time.sleep(1.0)
 
     def _run_win32com_batch(self, xlsm, indices):
-        """Runs one batch through win32com, in a *child process*.
-
-        A generated case with a compile error (an undefined name, a
-        duplicate `Dim`) pops a modal dialog that `DisplayAlerts = False`
-        does not suppress -- `excel.Run(...)` for that call never returns,
-        exactly the failure mode `fuzz_vba.py`'s own module docstring
-        describes for the AppleScript path. AppleScript survives this
-        because `osascript` is a separate process `subprocess.run(...,
-        timeout=...)` can kill out from under a hung Excel; a bare
-        in-process win32com call has no equivalent timeout (COM calls
-        block the calling thread with no clean way to interrupt one from
-        another Python thread in the same apartment). So the actual COM
-        work happens in a child `python -u -c` process here too, and a
-        timeout kills *that*, then `restart_windows` cleans up the Excel
-        process it leaves behind orphaned and hung.
-        """
         indices_args = [str(i) for i in indices]
         res = subprocess.run(
             [sys.executable, "-u", "-c", _WIN32COM_VBA_RUNNER, xlsm, *indices_args],
@@ -819,7 +710,6 @@ class ExcelDriver:
         return res.returncode, out
 
     def run_batch(self, xlsm, indices):
-        """Returns {index: result-string}, or {} if Excel could not be asked."""
         if self.driver_type == "win32com":
             for attempt in range(2):
                 try:

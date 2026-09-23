@@ -37,7 +37,6 @@ MONTH_ABBR = [
 
 
 def col_name(idx):
-    """1-based column index to A1 column letters."""
     out = ""
     while idx:
         idx, rem = divmod(idx - 1, 26)
@@ -46,7 +45,6 @@ def col_name(idx):
 
 
 def is_date_format(fmt):
-    """Approximate visi's date-format predicate for the formats this fuzzer emits."""
     if not fmt or fmt == "General":
         return False
     in_quote = False
@@ -104,7 +102,6 @@ def random_date(rng):
 
 
 def build_workbook(path, rng, locale="en-US"):
-    """Create one fuzz workbook through visi and return expected cell metadata."""
     wb = visi_core.Workbook(locale=locale)
     formatters = LOCALE_FORMATTERS.get(locale, LOCALE_FORMATTERS["en-US"])
     rows = rng.randint(3, 7)
@@ -136,7 +133,6 @@ def build_workbook(path, rng, locale="en-US"):
 
 
 def inspect_workbook(path, rows):
-    """Read cell formats, data types and visi-rendered display strings."""
     py_wb = openpyxl.load_workbook(path, data_only=False)
     ws = py_wb[py_wb.sheetnames[0]]
     visi_wb = visi_core.Workbook.load(path)
@@ -155,7 +151,6 @@ def inspect_workbook(path, rows):
 
 
 def baseline_expected_formats(source_cells, expected):
-    """Use the visi-authored source workbook as the exact round-trip baseline."""
     out = {rc: dict(want) for rc, want in expected.items()}
     for rc, want in out.items():
         if want["kind"] == "date":

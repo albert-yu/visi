@@ -24,8 +24,6 @@ NS = {
 
 
 class ExcelFuzzGenerator:
-    """Generates random data grids and formula trees for Excel compatibility testing."""
-
     FUNCTIONS_SINGLE_NUM: ClassVar = [
         "ABS",
         "INT",
@@ -685,13 +683,6 @@ class ExcelFuzzGenerator:
 
     @classmethod
     def _apply_xlfn_prefixes(cls, formula):
-        """Rewrites every recognized-but-unprefixed post-2007 function call
-        in a formula string to carry its required `_xlfn.` prefix (see
-        NEEDS_XLFN_PREFIX). The negative lookbehind skips any occurrence
-        already preceded by a `.` -- i.e. already namespaced, whether as
-        plain `_xlfn.NAME(` or double-namespaced `_xlfn._xlws.NAME(` --
-        so this is safe to run over formulas a bespoke generator already
-        prefixed by hand."""
         if formula is None or not formula.startswith("="):
             return formula
         for name in cls.NEEDS_XLFN_PREFIX:
@@ -718,7 +709,6 @@ class ExcelFuzzGenerator:
         self._ets_period = 0
 
     def _col_name(self, col_idx):
-        """Converts 1-based column index to A1 column letter (1 -> A, 2 -> B, 27 -> AA)."""
         result = ""
         while col_idx > 0:
             col_idx, remainder = divmod(col_idx - 1, 26)
@@ -729,40 +719,14 @@ class ExcelFuzzGenerator:
         return bool(self._table_name and self._table_cols)
 
     def _random_structured_col_ref(self):
-        """A structured reference to one table column's whole data body,
-        e.g. `Sheet1[A]`. Evaluates to an array, exactly like a range
-        reference (A1:A10), so it's only ever used where a range reference
-        would also be valid (as a whole argument to an aggregate function).
-
-        visi treats a structured column reference as spanning the *entire*
-        column of the sheet, not just a table's declared row range -- so if
-        table columns could also hold formulas, this could create a
-        dependency cycle (directly, or transitively through another
-        formula). create_fuzz_workbook keeps the table's columns disjoint
-        from the columns formulas are written into and never puts a
-        formula in a table column, which rules that out entirely rather
-        than just making it unlikely.
-        """
         col_name = random.choice(self._table_cols)
         return f"{self._table_name}[{col_name}]"
 
     def _random_structured_header_ref(self):
-        """A structured reference to a single column's header text, e.g.
-        `Sheet1[[#Headers],[A]]`. Evaluates to a plain scalar string, so
-        (unlike a bare column reference) it's safe to use anywhere a cell
-        reference or constant would be used."""
         col_name = random.choice(self._table_cols)
         return f"{self._table_name}[[#Headers],[{col_name}]]"
 
     def _maybe_abs_col(self, col_text):
-        """Randomly apply an absolute-column marker to an A1 reference.
-
-        Absolute markers do not change formula evaluation, but they do
-        exercise the parser/import/export path for the reference forms real
-        workbooks contain (`$A$1`, `A$1`, `$A1`). Structural-edit fuzzing is
-        where their movement semantics matter; here the goal is cheap input
-        entropy without changing dependency acyclicity.
-        """
         return f"${col_text}" if random.random() < 0.25 else col_text
 
     def _maybe_abs_row(self, row_idx):
@@ -775,17 +739,11 @@ class ExcelFuzzGenerator:
         return self._maybe_abs_col(self._col_name(col_idx))
 
     def _random_cell_ref(self, current_row, min_col, max_col):
-        """A reference to a single cell in an earlier row (or row 1 if
-        current_row <= 1), used by generate_formula and the bespoke
-        generators below to avoid creating dependency cycles."""
         r = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
         c = random.randint(min_col, max_col)
         return self._format_cell_ref(r, c)
 
     def _random_range_ref(self, current_row, min_col, max_col):
-        """A reference to a rectangular range confined to earlier rows (or
-        row 1 if current_row <= 1), for the same reason as
-        _random_cell_ref."""
         r1 = random.randint(1, max(1, current_row - 1)) if current_row > 1 else 1
         r2 = random.randint(r1, max(1, current_row - 1)) if current_row > 1 else 1
         c1 = random.randint(min_col, max_col)
@@ -793,13 +751,6 @@ class ExcelFuzzGenerator:
         return f"{self._format_cell_ref(r1, c1)}:{self._format_cell_ref(r2, c2)}"
 
     def _random_table_whole_col_ref(self):
-        """A whole-column reference into the formula-free table block.
-
-        Whole-column refs over the formula block could include the formula's
-        own cell and create cycles. The table block is pure input values, so
-        `A:A`/`$A:$A`-style references add address entropy while staying
-        acyclic and comparable.
-        """
         if not self._has_table():
             return None
         col_idx = random.randint(1, len(self._table_cols))
@@ -807,7 +758,6 @@ class ExcelFuzzGenerator:
         return f"{col}:{col}"
 
     def generate_random_value(self):
-        """Generates a random cell input value (number, string, boolean, edge case)."""
         choice = random.random()
         if choice < 0.35:
             return random.randint(-100, 100)
@@ -830,7 +780,6 @@ class ExcelFuzzGenerator:
             return random.randint(1, 10)
 
     def _generate_text_expr(self, fn, gen_expr, depth):
-        """Generate one FUNCTIONS_TEXT call for generate_formula's recursive text arm."""
         text = lambda: gen_expr(depth + 1)
         literal = lambda s: '"' + s.replace('"', '""') + '"'
         count = lambda: str(random.randint(1, 5))
@@ -880,7 +829,6 @@ class ExcelFuzzGenerator:
 
     @classmethod
     def _check_text_function_generators(cls):
-        """Small coverage self-check: every listed text function has a real emitter."""
         state = random.getstate()
         try:
             gen = cls()
@@ -1001,7 +949,6 @@ class ExcelFuzzGenerator:
         return "=" + gen_expr(forced_op=op_name)
 
     def generate_formula(self, current_row, current_col, max_row, max_col, min_col=1):
-        """Generates a random formula string referencing existing cells or constants."""
 
         def random_cell_ref():
             return self._random_cell_ref(current_row, min_col, max_col)
@@ -1106,18 +1053,6 @@ class ExcelFuzzGenerator:
         return "=" + gen_expr(0)
 
     def _fin_rate(self, lo=0.001, hi=0.03):
-        """Per-period rate. Deliberately realistic (0.1%-3%), not the
-        0.5%-20% range an earlier version used: at high per-period rates
-        compounded over hundreds of periods (nper goes up to 360 below),
-        (1+rate)^nper explodes into territory where computing the
-        amortizing payment itself loses essentially all f64 precision --
-        confirmed against arbitrary-precision decimal arithmetic while
-        chasing real mismatches this generator surfaced against actual
-        Excel (see finance.rs's ppmt test for the worked example). That's
-        a real f64 floor no closed-form or iterative rewrite escapes, not
-        a bug -- so the fix here is to stop generating inputs no real
-        financial instrument would ever have anyway.
-        """
         return f"{round(random.uniform(lo, hi), 4)}"
 
     def _fin_money(self, lo=100, hi=50000, allow_negative=True):
@@ -1139,14 +1074,6 @@ class ExcelFuzzGenerator:
         return v
 
     def _fin_date(self, y_lo=1995, y_hi=2035, avoid_february_month_end=False):
-        """A DATE(...) literal. Bond/day-count functions below always
-        derive related dates (maturity, first coupon, ...) from one of
-        these via EDATE(...)/serial-day arithmetic *inside* the generated
-        formula, rather than precomputing calendar math in Python -- that
-        way both visi and Excel compute the derived date with their own
-        (already-validated) date logic instead of risking a Python/Excel
-        calendar mismatch that has nothing to do with the function under
-        test."""
         y = random.randint(y_lo, y_hi)
         m = random.randint(1, 12)
         d = random.randint(1, 28)
@@ -1155,17 +1082,6 @@ class ExcelFuzzGenerator:
         return f"DATE({y}, {m}, {d})"
 
     def generate_financial_formula(self, fn=None):
-        """Generates a single self-contained financial-function formula
-        with semantically valid inputs (small positive rates, periods
-        within range, etc.) rather than composing arbitrary sub-expressions
-        the way generate_formula() does -- most financial arguments have a
-        specific meaning (a rate, a period count) that a random
-        sub-expression would violate far too often to be a useful test.
-
-        fn can be passed explicitly to deterministically cycle through
-        FINANCIAL_FUNCTIONS (see create_fuzz_workbook) so a single fuzz
-        iteration is guaranteed to exercise every function at least once,
-        rather than relying on random.choice's luck across many iterations."""
         if fn is None:
             fn = random.choice(self.FINANCIAL_FUNCTIONS)
 
@@ -1473,13 +1389,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for financial function {fn}")
 
     def generate_distribution_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one DISTRIBUTION_FUNCTIONS entry, with
-        domain-valid scalar parameters (probabilities in (0,1), positive
-        shape/scale parameters, integer trial counts, ...) plus a real
-        backward-looking range for the array-argument ones (LARGE, SMALL,
-        PERCENTILE*, RANK*, FREQUENCY, ...) drawn from the plain-value rows
-        of the formula block (rows 1..value_rows in [min_col, max_col],
-        which create_fuzz_workbook guarantees never contain formulas)."""
         span = max(1, max_col - min_col + 1)
 
         def col(offset):
@@ -1636,11 +1545,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for distribution function {fn}")
 
     def generate_lookup_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained INDEX/MATCH/VLOOKUP/HLOOKUP/XLOOKUP formula against
-        a real backward-looking range in the plain-value rows of the formula
-        block. Exact-match modes (FALSE / match_type 0) are used throughout
-        so results stay well-defined regardless of whether the source data
-        happens to be sorted."""
         row_hi = max(2, value_rows)
 
         if fn == "MATCH":
@@ -1682,12 +1586,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for lookup function {fn}")
 
     def generate_engineering_formula(self, fn):
-        """Self-contained formula for one ENGINEERING_FUNCTIONS entry.
-        Base-conversion functions need digit strings valid in their source
-        radix (not arbitrary numeric expressions); complex-number functions
-        need "a+bi"/"a+bj" formatted strings, matching the same suffix
-        within a single binary call since Excel (and visi's parse_complex)
-        errors out on mixed i/j suffixes."""
 
         def bin_str(n=None):
             n = n or random.randint(1, 8)
@@ -1820,10 +1718,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for engineering function {fn}")
 
     def generate_date_formula(self, fn):
-        """Self-contained formula for one DATE_FUNCTIONS entry, using plain
-        Excel serial-date integers (visi has no DATE-literal parsing outside
-        the DATE() function itself, mirrored by the financial data block's
-        own comment about serial dates)."""
 
         def serial(lo=40000, hi=46000):
             return random.randint(lo, hi)
@@ -1889,9 +1783,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for date function {fn}")
 
     def generate_text2_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one TEXT_EXTRA_FUNCTIONS entry. Only
-        ARRAYTOTEXT needs a real range (everything else takes literal
-        scalars), so value_rows/min_col/max_col are only used there."""
         words = [
             "hello world",
             "Excel Formula",
@@ -1972,12 +1863,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for text function {fn}")
 
     def generate_logic_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one LOGIC_EXTRA_FUNCTIONS entry. Where
-        an operand is just "some numeric expression", reuses
-        generate_formula() itself (stripping its leading '=') rather than
-        re-implementing sub-expression generation -- passing
-        current_row=value_rows+1 keeps any cell/range refs it emits confined
-        to the plain-value rows, same as the other bespoke generators."""
 
         def expr():
             return self.generate_formula(
@@ -2020,15 +1905,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for logic function {fn}")
 
     def generate_ets_formula(self, fn):
-        """One FORECAST.ETS-family call against the workbook's ETS block.
-
-        The season length is always passed explicitly (`_ets_period`, 0 for
-        a pure-trend series) rather than left to Excel's auto-detection --
-        see the ETS_FUNCTIONS comment for why. `_ets_next_target` is the
-        first timeline point past the end of the series, so the forecast is
-        a genuine extrapolation; Excel returns #NUM! for a target inside the
-        timeline.
-        """
         v = self._ets_values_range
         t = self._ets_timeline_range
         target = self._ets_next_target
@@ -2044,11 +1920,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for ETS function {fn}")
 
     def generate_array_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one ARRAY_FUNCTIONS entry. Matrix
-        functions (MDETERM/MINVERSE/MMULT) use small square subranges of the
-        plain-value area so shapes are always compatible; MMULT's second
-        operand is placed in a disjoint column block when there's room, else
-        reuses the first so the call is still valid."""
         span = max(1, max_col - min_col + 1)
 
         def col(offset):
@@ -2086,7 +1957,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for array function {fn}")
 
     def generate_conditional_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one CONDITIONAL_AGG_FUNCTIONS entry."""
         span = max(1, max_col - min_col + 1)
 
         def col(offset):
@@ -2123,10 +1993,6 @@ class ExcelFuzzGenerator:
         )
 
     def generate_volatile_formula(self, fn):
-        """RANDBETWEEN/RANDARRAY force min==max for a deterministic result;
-        RAND/NOW/TODAY have no such knob so they're wrapped in a
-        plausibility/range check both engines must satisfy regardless of the
-        actual random or wall-clock value (see VOLATILE_FUNCTIONS)."""
         if fn == "RAND":
             return "=IF(AND(RAND()>=0,RAND()<1),1,0)"
         if fn == "RANDBETWEEN":
@@ -2143,14 +2009,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for volatile function {fn}")
 
     def generate_database_formula(self, fn, ws, crit_col, index):
-        """Writes a 2-row criteria block (header + one comparison
-        criterion) at rows `2*index+1`/`2*index+2` of `crit_col`, then
-        returns a D* formula. Reuses the table block's own column-letter
-        headers and random data rows (self._table_cols / self._db_range)
-        as the "database" argument, since it already has exactly the
-        header-row-plus-data-rows shape DSUM/DGET/etc. expect. Each of the
-        12 DATABASE_FUNCTIONS entries gets its own criteria row pair so
-        they don't clobber each other's criteria in the final workbook."""
         field = random.choice(self._table_cols)
         header_row = 2 * index + 1
         crit_row = 2 * index + 2
@@ -2168,12 +2026,6 @@ class ExcelFuzzGenerator:
         return f"={fn}({self._db_range}, {field_arg}, {crit_range})"
 
     def generate_lambda_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained MAP/REDUCE formula against a real range from the
-        plain-value rows of the formula block (see generate_logic_formula
-        for why this reuses that area instead of gen_expr's arbitrary
-        substitution). MAP's result is wrapped in INDEX to pin down a
-        single scalar the same way other array-returning functions are
-        tested (see ARRAY_FUNCTIONS); REDUCE already returns a scalar."""
 
         def col(offset):
             return self._col_name(min_col + offset)
@@ -2187,14 +2039,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for lambda function {fn}")
 
     def generate_range_info_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one RANGE_INFO_FUNCTIONS entry,
-        against a real cell/range from the plain-value rows of the formula
-        block. FORMULATEXT/ISFORMULA/SHEETS/SHEET are post-2007 functions real
-        Excel's own OOXML writer always stores with an `_xlfn.` prefix
-        (see AGENTS.md/RRI's comment above in generate_financial_formula);
-        openpyxl doesn't add that prefix automatically, so it's supplied
-        here -- confirmed as the actual cause of a real #NAME? mismatch
-        this generator produced without it."""
 
         def col(offset):
             return self._col_name(min_col + offset)
@@ -2240,18 +2084,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for range-info function {fn}")
 
     def generate_array_reshape_formula(self, fn, value_rows, min_col, max_col):
-        """Self-contained formula for one ARRAY_RESHAPE_FUNCTIONS entry.
-        All of these are dynamic-array worksheet functions that real
-        Excel's own OOXML writer nests under a double `_xlfn._xlws.`
-        prefix (confirmed directly against real Excel's export XML for
-        UNIQUE/SORT/FILTER; see sheet.rs's `evaluate_function` prefix
-        stripping) -- openpyxl doesn't add either prefix automatically, so
-        it's supplied here. Every formula is wrapped in SUM or INDEX
-        rather than left bare, since a bare dynamic-array-spilling formula
-        makes this environment's Excel AppleScript automation bridge
-        intermittently fail (confirmed with a plain `=SEQUENCE(3)`, see
-        LAMBDA_FUNCTIONS above) -- wrapping pins the result to a single
-        cell the same way MAP/REDUCE already do."""
 
         def col(offset):
             return self._col_name(min_col + offset)
@@ -2299,21 +2131,6 @@ class ExcelFuzzGenerator:
         raise AssertionError(f"no generator wired up for array-reshape function {fn}")
 
     def create_fuzz_workbook(self, file_path, num_rows=10, num_cols=5):
-        """Creates a workbook with a mixture of raw values and formulas, plus
-        a real Excel Table for structured references to resolve against.
-
-        The sheet is laid out as two disjoint blocks of `num_cols` columns
-        side by side: a "table" block (pure random values, every row) and a
-        "formula" block (values on top, generated formulas below, exactly
-        like the original single-block layout). They're kept disjoint
-        because visi treats a structured reference to a table column as
-        spanning that column's *entire* height, not just the table's
-        declared row range -- if a table column could also hold a formula,
-        a structured reference into it could create a dependency cycle
-        (directly, or transitively through another formula). Since the
-        table block never contains a formula, that's impossible by
-        construction rather than merely unlikely.
-        """
         try:
             import openpyxl
             from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -2635,8 +2452,6 @@ from visi_driver import (
 
 
 class ExcelDriver:
-    """Invokes Microsoft Excel to recalculate and save a workbook."""
-
     def __init__(self, excel_path=None, driver_type="auto"):
         self.excel_path = excel_path
         self.driver_type = driver_type
@@ -2753,19 +2568,8 @@ class ExcelDriver:
 
 
 class XLSXEvaluatedReader:
-    """Parses raw OpenXML structure directly from .xlsx zip files to read cached evaluated cell values."""
-
     @staticmethod
     def read_evaluated_cells(file_path):
-        """
-        Returns a dict mapping (sheet_name, cell_ref) -> dict of:
-        {
-            'raw_value': str,
-            'formula': str or None,
-            'type': str ('n', 's', 'b', 'e', 'str'),
-            'normalized_val': parsed python object
-        }
-        """
         if not os.path.exists(file_path):
             return {}
         with open(file_path, "rb") as f:
@@ -2775,16 +2579,6 @@ class XLSXEvaluatedReader:
 
     @staticmethod
     def read_evaluated_cells_bytes(data, source="<bytes>"):
-        """The same parse, from an in-memory .xlsx.
-
-        Deliberately the identical code path -- only where the zip comes from
-        differs -- so this stays an *independent* reader of what visi actually
-        wrote. It is not a shortcut around visi's exporter: reading values out
-        of the engine's memory instead would stop exercising
-        `export_xlsx_data`, the cached `<v>` tags, shared strings, and (for
-        pivots) the hand-rolled OOXML injection, which is a large share of what
-        the differential harness exists to check.
-        """
         results = {}
 
         try:
@@ -2850,9 +2644,6 @@ class XLSXEvaluatedReader:
 
     @staticmethod
     def _worksheet_names_by_part(z):
-        """Map worksheet part paths (``xl/worksheets/sheetN.xml``) to the
-        user-visible sheet names recorded in ``xl/workbook.xml``.
-        """
         if (
             "xl/workbook.xml" not in z.namelist()
             or "xl/_rels/workbook.xml.rels" not in z.namelist()
@@ -2935,22 +2726,12 @@ SMOKE_BANNER = (
 
 
 def smoke_check(items, what="cells"):
-    """The most that can be asserted with no oracle: visi wrote an .xlsx that
-    parses and has content. Catches a corrupt or empty export, which is a real
-    failure mode and one the comparison path would never reach.
-
-    `items` is whatever that fuzzer reads back -- a cell dict, or a chart list.
-
-    Returns (ok, reason).
-    """
     if not items:
         return False, f"visi produced no readable {what}"
     return True, ""
 
 
 class DifferentialComparator:
-    """Compares evaluated cell contents between visi output and Excel output."""
-
     EXCEL_ERRORS: ClassVar = {
         "#DIV/0!",
         "#VALUE!",
@@ -2976,9 +2757,6 @@ class DifferentialComparator:
 
     @classmethod
     def canonical_type(cls, raw_type, val):
-        """Map OpenXML cell type attribute and Python value to a canonical cell type:
-        'number', 'string', 'boolean', 'error', or 'empty'.
-        """
         if val is None:
             return "empty"
         if isinstance(val, bool) or raw_type == "b":
@@ -2994,7 +2772,6 @@ class DifferentialComparator:
         return raw_type or "empty"
 
     def types_equal(self, t1, t2, v1, v2):
-        """Checks equality between two canonical cell types, honoring blank equivalence."""
         if t1 == t2:
             return True
 
@@ -3010,10 +2787,6 @@ class DifferentialComparator:
         )
 
     def compare(self, visi_cells, excel_cells):
-        """
-        Compares two cell dictionaries, checking both cell types and evaluated values.
-        Returns (is_match, mismatches)
-        """
         all_keys = set(visi_cells.keys()).union(set(excel_cells.keys()))
         mismatches = []
 
@@ -3094,7 +2867,6 @@ class DifferentialComparator:
         return len(mismatches) == 0, mismatches
 
     def _both_errors(self, v1, v2):
-        """True when both sides are Excel errors that merely differ in class."""
         return (
             isinstance(v1, str)
             and isinstance(v2, str)
@@ -3104,8 +2876,6 @@ class DifferentialComparator:
 
     @staticmethod
     def _parse_complex(text):
-        """(real, imag, suffix) for an Excel complex literal like "3+4i",
-        "-2.5e-3-1.5j", "7i" or "-j"; None if `text` isn't one."""
         if not text or text != text.strip() or text[-1] not in "ij":
             return None
         suffix = text[-1]
@@ -3134,15 +2904,6 @@ class DifferentialComparator:
         return real, imag, suffix
 
     def _numeric_text_equal(self, v1, v2):
-        """True if v1 and v2 are identical text apart from embedded
-        floating-point numbers that differ only in the last of Excel's 15
-        significant digits. CONCATENATE (and `&`) can stitch two numeric
-        sub-results straight into text with no separator -- e.g. two ATAN2
-        calls glued together as "2.21429743558818-1.61511318944808" -- so a
-        sub-ULP double-rounding disagreement that numeric cells already
-        tolerate (see the numeric branch above and the IM* case below)
-        would otherwise surface as a plain string mismatch here.
-        """
         parts1 = self._NUM_TOKEN_RE.split(v1)
         parts2 = self._NUM_TOKEN_RE.split(v2)
         if parts1 != parts2:
@@ -3165,7 +2926,6 @@ class DifferentialComparator:
             return False
 
     def values_equal(self, v1, v2):
-        """Checks equality between two evaluated values with floating-point tolerance."""
         if v1 is None and v2 is None:
             return True
         if v1 is None or v2 is None:

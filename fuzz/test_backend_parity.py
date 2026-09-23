@@ -152,7 +152,6 @@ def _assert_eval_parity(src, tmp_path):
 
 
 def test_run_returns_the_bytes_it_wrote(tmp_path):
-    """The main loop parses the return value instead of re-reading the file."""
     src = str(tmp_path / "source.xlsx")
     out = str(tmp_path / "out.xlsx")
     ExcelFuzzGenerator(seed=4242).create_fuzz_workbook(src, num_rows=5, num_cols=3)
@@ -211,17 +210,6 @@ def test_pivot_parity(seed, use_table, tmp_path):
 
 
 def test_empty_filter_selection_is_bindings_only(tmp_path):
-    """`set_pivot_filter(name, col, [])` -- select nothing -- asserted here
-    because no driver exercises it.
-
-    `visi pivot filter` takes a non-empty comma list or --clear, with no verb
-    for "select nothing"; only the bindings API can express the state at all.
-    Neither backend of `VisiPivotDriver` applies it, though, and that is
-    deliberate: real Excel refuses to hide a page field's last visible item, so
-    an empty selection is a config the differential oracle cannot represent
-    (see VisiPivotDriver.run). This test is therefore the only coverage of the
-    engine behavior -- keep it even if the CLI grows the verb.
-    """
     import visi_core
 
     wb = visi_core.Workbook()
@@ -249,7 +237,6 @@ def test_empty_filter_selection_is_bindings_only(tmp_path):
 
 @requires_cli
 def test_binding_error_text_matches_the_cli(tmp_path):
-    """str(exc) must equal the CLI's stderr minus its "Error: " prefix."""
     import subprocess
 
     import visi_core
@@ -278,12 +265,6 @@ MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    Range("A1").Val
 @requires_cli
 @pytest.mark.parametrize("kind,sheet", [("standard", None), ("document", "Sheet1")])
 def test_macro_add_parity(kind, sheet, tmp_path):
-    """`visi macro add` and `Workbook.add_macro` must produce the same module.
-
-    The bindings duplicate the CLI's resolve-sheet-name-to-id step and its
-    ThisWorkbook special case (visi-core takes a sheet id, not a name), so
-    this is the same kind of mirrored logic as `edit_chart`'s flags.
-    """
     import subprocess
 
     import visi_core
@@ -335,7 +316,6 @@ def test_macro_add_parity(kind, sheet, tmp_path):
 
 @requires_cli
 def test_macro_list_parity(tmp_path):
-    """The dicts `macros()` returns must carry `macro list --json`'s keys."""
     import json
     import subprocess
 
@@ -381,13 +361,6 @@ RUN_MACRO_SRC = (
 
 @requires_cli
 def test_macro_run_parity(tmp_path):
-    """`visi macro run --output` and `Workbook.run_macro` + `save` must agree.
-
-    Both the returned value and the *cells the macro wrote*: a run that
-    reports the right number while saving the wrong workbook is the failure
-    this whole phase is built to avoid, and it is invisible to a test that
-    only compares return values.
-    """
     import json
     import subprocess
 
@@ -437,12 +410,6 @@ def test_macro_run_parity(tmp_path):
 
 @requires_cli
 def test_macro_run_without_a_write_target_is_an_error_only_when_it_mutated(tmp_path):
-    """The CLI refuses to discard a macro's writes; a read-only run is fine.
-
-    The bindings have no equivalent refusal -- nothing there writes a file
-    implicitly, so there is nothing to discard -- which is why this asserts
-    the CLI's rule and only that the bindings agree about `mutated`.
-    """
     import subprocess
 
     import visi_core

@@ -19,12 +19,10 @@ CLI_TIMEOUT_SECONDS = 120
 
 
 def bindings_available():
-    """Whether `import visi_core` succeeded."""
     return _vc is not None
 
 
 def bindings_hint():
-    """Why the bindings aren't in use, and how to fix it."""
     return (
         f"visi_core bindings unavailable ({_IMPORT_ERROR}); falling back to the visi CLI.\n"
         f"  Build them with:  source fuzz/venv/bin/activate && "
@@ -34,13 +32,6 @@ def bindings_hint():
 
 
 def resolve_visi_binary(binary_path=None):
-    """The explicit binary path if it exists, else the newer of
-    target/release/visi and target/debug/visi.
-
-    Preferring the newer of the two is deliberate: it means a `cargo build`
-    (debug) during development is picked up without having to remember to pass
-    a path, at the cost of a much slower binary.
-    """
     if binary_path and os.path.exists(binary_path):
         return binary_path
     candidates = [
@@ -54,7 +45,6 @@ def resolve_visi_binary(binary_path=None):
 
 
 def pick_backend(requested):
-    """Resolves 'auto' | 'bindings' | 'subprocess' to a concrete backend."""
     if requested == "bindings":
         if not bindings_available():
             raise RuntimeError(bindings_hint())
@@ -65,7 +55,6 @@ def pick_backend(requested):
 
 
 def add_backend_arg(parser):
-    """Adds the shared backend selector to a fuzzer's ArgumentParser."""
     parser.add_argument(
         "--backend",
         choices=["auto", "bindings", "subprocess"],
@@ -83,7 +72,6 @@ class _BaseDriver:
         self.backend = pick_backend(backend)
 
     def describe(self):
-        """What to print in a run banner."""
         if self.backend == "bindings":
             return f"bindings ({_vc.__file__})"
         return f"subprocess ({self.binary_path})"
@@ -106,19 +94,7 @@ class _BaseDriver:
 
 
 class VisiDriver(_BaseDriver):
-    """Recalculates a workbook's formulas and writes the result.
-
-    The constructor signature is preserved for reverse_engineer_financial.py,
-    which builds it as VisiDriver(binary_path) and calls run(src, dst).
-    """
-
     def run(self, input_file, output_file):
-        """Evaluates `input_file` into `output_file`.
-
-        Returns the .xlsx bytes written, so a caller can parse them without a
-        second read. The file is written either way: a failure artifact is
-        worth far more than the millisecond saved by skipping it.
-        """
         if self.backend == "bindings":
             wb = _vc.Workbook.load(input_file)
             wb.evaluate()
@@ -133,8 +109,6 @@ class VisiDriver(_BaseDriver):
 
 
 class VisiChartDriver(_BaseDriver):
-    """Adds a chart, then edits it, mirroring `visi chart add` + `chart edit`."""
-
     def run(self, source_file, range_str, add_config, edit_config, output_file):
         if self.backend == "subprocess":
             return self._run_cli(
@@ -214,12 +188,7 @@ class VisiChartDriver(_BaseDriver):
 
 
 class VisiPivotDriver(_BaseDriver):
-    """Builds a pivot table field by field, mirroring the `visi pivot` verbs."""
-
     def run(self, source_file, config, output_file, pivot_name, dest_cell, dest_rc):
-        """`dest_cell` is A1 for the CLI path; `dest_rc` is the 0-based (row,
-        col) equivalent for the bindings path. Both come from the caller so
-        that neither this module nor the bindings needs an A1 parser."""
         if self.backend == "subprocess":
             return self._run_cli(
                 source_file, config, output_file, pivot_name, dest_cell

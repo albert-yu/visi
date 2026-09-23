@@ -145,7 +145,6 @@ def build_workbook(path):
 
 
 def run_and_save(driver, xlsm, out_path):
-    """Runs `Paint`, then has Excel save the workbook so openpyxl can read it."""
     script = "\n".join(
         [
             f'tell application "{driver.app_name()}"',
@@ -253,7 +252,6 @@ def ask_channel(driver, workdir, batch):
 
 
 def palette_channel(driver, workdir, batch):
-    """What colour each of Excel's 56 `ColorIndex` slots actually is."""
     cases = [parse_case(c) for c in PALETTE_CASES]
     base = os.path.join(workdir, "pal_base.xlsx")
     xlsm = os.path.join(workdir, "pal.xlsm")

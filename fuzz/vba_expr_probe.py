@@ -27,12 +27,6 @@ PREAMBLE = ["Dim va, vb, vc, vd, ve, vi, vn, a, b, c, n", "n = Null"]
 
 
 def parse_case(text):
-    """`"setup :: expr"` -> (list of setup statements, expression).
-
-    A literal `\\n` in the setup starts a new line, which is the only way to
-    probe a block statement: VBA's `:` separator carries several statements on
-    one line but will not open a `Select Case` or a multi-line `If`.
-    """
     setup, sep, expr = text.rpartition("::")
     if not sep:
         return [], text.strip()

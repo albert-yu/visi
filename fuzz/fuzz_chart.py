@@ -15,24 +15,6 @@ from fuzz_excel import SMOKE_BANNER, smoke_check
 
 
 class ChartFuzzGenerator:
-    """Generates a random source data grid plus a matching chart
-    configuration (as plain dicts, not XML) that both `VisiChartDriver` and
-    `ExcelChartDriver` build a real chart from.
-
-    Each iteration produces two configs: `add_config` (what `visi chart add`
-    -- and, on the Excel side, the initial `chart wizard` call -- creates
-    the chart with) and `edit_config` (the *final* target state after a
-    follow-up `visi chart edit` call). `edit_config` always specifies every
-    field explicitly (never "leave unchanged") since the fuzzer's job is to
-    check the resulting xlsx structure is correct, not to re-test
-    `edit_chart`'s tri-state leave/set/clear semantics -- that's already
-    covered by the Rust-level unit test in `visi/tests/cli_tests.rs`. On the
-    Excel side this final state is reached with a single `chart wizard`
-    call rather than mimicking a two-step history, since Excel has no
-    separate "edit" concept to exercise -- only the resulting xlsx structure
-    is compared.
-    """
-
     CHART_TYPES: ClassVar = ["column", "bar", "line", "pie", "scatter", "area"]
 
     AXIS_LABEL_TYPES: ClassVar = ["column", "bar", "line", "scatter"]
@@ -57,10 +39,6 @@ class ChartFuzzGenerator:
         }
 
     def generate(self, source_path, num_rows):
-        """Writes a small source workbook (one category column, one numeric
-        column) to `source_path` via openpyxl, and returns
-        `(range_str, add_config, edit_config)`.
-        """
         import datetime
 
         import openpyxl
@@ -128,26 +106,6 @@ from visi_driver import (
 
 
 class ExcelChartDriver:
-    """Drives Microsoft Excel's own chart object model to build a chart
-    matching `edit_config` (the final target state -- see
-    `ChartFuzzGenerator`'s docstring for why Excel doesn't need to mimic the
-    add-then-edit history).
-
-    The win32com path (Windows) uses the standard VBA object model
-    (`ChartObjects.Add` + `Chart.SetSourceData`/`.ChartType`/etc.) directly.
-
-    The AppleScript path (macOS) creates the chart with `make new chart
-    object at <sheet>` -- NOT `make new chart object at end of chart
-    objects of <sheet>`, which fails with the same generic "Parameter error
-    (-50)" `fuzz_pivot.py`'s `make new pivot cache` hit; this alternate form
-    was found to work via manual trial (undocumented in Excel.sdef) -- then
-    configures it with the `chart wizard` command, which reliably sets
-    source data/type/title/axis titles/legend in one call for every chart
-    type except Pie: passing `category title`/`value title` to `chart
-    wizard` for a Pie gallery type also raises -50 (pie charts have no
-    axes), so those parameters are omitted whenever the target type is Pie.
-    """
-
     def __init__(self, excel_path=None, driver_type="auto"):
         self.excel_path = excel_path
         self.driver_type = driver_type
@@ -343,20 +301,7 @@ class ExcelChartDriver:
 
 
 class ChartComparator:
-    """Extracts chart structure from `visi_out.xlsx` and `excel_out.xlsx`
-    via `chart_xlsx_reader.read_charts` and diffs type/ranges/title/
-    xlabel/ylabel/legend. Assumes exactly one chart per file -- a
-    deliberate fuzz-scope limitation that avoids chart-matching/ordering
-    ambiguity, matching visi's own single-series-per-chart model.
-    """
-
     def _normalize_range(self, ref):
-        """Strips `$` and surrounding single-quotes around a sheet name,
-        and lowercases the sheet-name portion, so e.g. an
-        openpyxl/Excel-authored `'Sheet1'!$B$2:$B$4` compares equal to
-        visi's `Sheet1!$B$1:$B$4`. New logic -- `fuzz_excel.py`'s
-        comparator never needed range normalization for plain cell-value
-        comparison."""
         if ref is None:
             return None
         if "!" not in ref:
@@ -366,9 +311,6 @@ class ChartComparator:
         return f"{sheet}!{cell_range.replace('$', '')}"
 
     def compare(self, visi_xlsx_path, excel_xlsx_path):
-        """Returns (is_match, mismatches), the same shape as
-        `DifferentialComparator.compare` in `fuzz_excel.py`, for a similar
-        reporting loop in `main()`."""
         visi_charts = read_charts(visi_xlsx_path)
         excel_charts = read_charts(excel_xlsx_path)
         mismatches = []
