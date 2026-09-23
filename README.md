@@ -1,8 +1,8 @@
 # visi monorepo
 
 > [!NOTE]
-> While ~99.9999% of the code is LLM-authored, the _prose_
-> should not be. See the [LLM policy](#llm-policy).
+> While use of LLMs for generating _code_ is encouraged, LLM-generated _prose_
+> is strictly forbidden. See the [LLM policy](#llm-policy) for more details.
 
 [![CI](https://github.com/albert-yu/visi/actions/workflows/ci.yml/badge.svg)](https://github.com/albert-yu/visi/actions/workflows/ci.yml)
 
