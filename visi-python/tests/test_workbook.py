@@ -20,9 +20,6 @@ visi_core = pytest.importorskip(
 )
 
 
-# ---------------------------------------------------------------- lifecycle
-
-
 def test_new_empty_has_one_sheet():
     wb = visi_core.Workbook()
     assert len(wb.sheet_names) == 1
@@ -76,15 +73,10 @@ def test_eval_file(tmp_path):
     assert visi_core.Workbook.load(dst).get_cell(0, 1) == 7
 
 
-# ------------------------------------------------------------ value mapping
-
-
 @pytest.mark.parametrize(
     "src,expected,expected_type",
     [
-        # A numeric *literal* stays an integer ...
         ("10", 10, int),
-        # ... while arithmetic goes through floats, as Excel's model does.
         ("=1+1", 2.0, float),
         ("=1.5+1", 2.5, float),
         ('=CONCATENATE("a","b")', "ab", str),
@@ -159,8 +151,8 @@ def test_error_and_text_are_distinguished_by_type_not_equality():
     err, text = wb.get_cell(0, 0), wb.get_cell(0, 1)
     assert isinstance(err, visi_core.CellError)
     assert isinstance(text, str) and not isinstance(text, visi_core.CellError)
-    assert err == text  # equal as values ...
-    assert type(err) is not type(text)  # ... but never the same thing
+    assert err == text
+    assert type(err) is not type(text)
 
 
 def test_cell_error_hash_agrees_with_eq():
@@ -184,9 +176,6 @@ def test_get_src_returns_the_formula_text():
     wb.evaluate()
     assert wb.get_src(0, 0).startswith("=")
     assert wb.get_cell(0, 0) == 2
-
-
-# --------------------------------------------------------------- exceptions
 
 
 def test_not_found_carries_structured_payload():
@@ -215,7 +204,7 @@ def test_unknown_enum_spelling_raises_invalid_argument():
     with pytest.raises(visi_core.InvalidArgumentError) as exc:
         wb.add_chart("Sheet1", "doughnut", "Sheet1!A1:B2")
     assert "doughnut" in str(exc.value)
-    assert "column" in str(exc.value)  # lists what is accepted
+    assert "column" in str(exc.value)
 
 
 def test_value_field_without_aggregation_is_rejected():
@@ -227,9 +216,6 @@ def test_value_field_without_aggregation_is_rejected():
 def test_missing_file_raises_oserror(tmp_path):
     with pytest.raises(OSError):
         visi_core.Workbook.load(tmp_path / "does-not-exist.xlsx")
-
-
-# ------------------------------------------------------------------- charts
 
 
 def _sheet_with_data():
@@ -258,8 +244,7 @@ def test_chart_id_changes_across_a_roundtrip():
     wb.add_chart(name, "column", f"{name}!A1:B3")
     again = wb.roundtrip()
     assert len(again.charts()) == 1
-    # The point is not the specific value, it is that charts() is the only
-    # trustworthy source after a round trip.
+
     assert again.charts()[0]["id"] == again.charts()[0]["id"]
 
 
@@ -290,9 +275,6 @@ def test_edit_chart_leaves_unmentioned_fields_alone():
     wb.edit_chart(cid, chart_type="line")
     assert wb.charts()[0]["type"] == "Line"
     assert wb.charts()[0]["title"] == "keep"
-
-
-# ------------------------------------------------------------------- pivots
 
 
 def _pivot_source():
@@ -413,9 +395,6 @@ def test_a_filter_selecting_everything_reads_back_as_no_filter():
     wb.set_pivot_filter("P", "Region", ["East", "West"])
 
     assert wb.roundtrip().pivots()[0]["filter_selections"]["Region"] is None
-
-
-# ------------------------------------------------------------------- macros
 
 
 MACRO_SRC = 'Attribute VB_Name = "Mod1"\nPublic Sub Hello()\n    MsgBox "hi"\nEnd Sub\n'

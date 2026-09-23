@@ -2627,12 +2627,10 @@ class ExcelFuzzGenerator:
         wb.save(file_path)
 
 
-from visi_driver import (  # noqa: F401
+from visi_driver import (
     VisiDriver,
     add_backend_arg,
-    bindings_available,
     bindings_hint,
-    resolve_visi_binary,
 )
 
 
@@ -2735,7 +2733,7 @@ class ExcelDriver:
                     wb.Close()
                     last_err = None
                     break
-                except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+                except Exception as e:
                     last_err = e
                 finally:
                     excel.Quit()
@@ -2845,7 +2843,7 @@ class XLSXEvaluatedReader:
                                 "formula": formula,
                                 "val": normalized_val,
                             }
-        except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as e:
             print(f"Warning: Failed to read OpenXML from {source}: {e}")
 
         return results
@@ -3384,7 +3382,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as err:
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(

@@ -576,7 +576,7 @@ class ExcelPivotDriver:
                 self._run_win32com_once(abs_output, config, dest_cell)
                 last_err = None
                 break
-            except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+            except Exception as e:
                 last_err = e
         if last_err is not None:
             raise last_err
@@ -806,7 +806,7 @@ def main():
                 shutil.copytree(temp_dir, fail_case_dir, dirs_exist_ok=True)
                 print(f"   Saved failure reproducing files to: {fail_case_dir}\n")
 
-        except Exception as err:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as err:
             failed_count += 1
             print(f"\n Iteration {i:3d}/{args.iterations} [ERROR]: {err}")
             fail_case_dir = os.path.join(

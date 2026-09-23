@@ -197,7 +197,7 @@ def main():
                 cell_filter=args.cell,
                 verbose=args.verbose,
             )
-        except Exception as e:  # noqa: BLE001 - Added by an LLM agent: fuzzers keep iterating after per-case failures.
+        except Exception as e:
             print(f"[ERROR] {e}")
             overall_passed = False
             continue

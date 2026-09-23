@@ -12,7 +12,7 @@ import openpyxl
 
 try:
     import visi_core
-except ImportError as exc:  # pragma: no cover - exercised by humans without bindings
+except ImportError as exc:
     raise SystemExit(
         "visi_core bindings are required for date-format fuzzing. Build them with:\n"
         "  source fuzz/venv/bin/activate && maturin develop -m visi-python/Cargo.toml --release"
@@ -335,7 +335,7 @@ def main():
                 print(
                     f" Iteration {i:3d}/{args.iterations} [PASSED] (Seed: {iter_seed})"
                 )
-        except Exception as exc:  # noqa: BLE001 - fuzz harness should preserve artifacts
+        except Exception as exc:
             failed += 1
             fail_dir = os.path.join(failures_dir, f"fail_iter_{i}_seed_{iter_seed}")
             copy_failure_artifacts(
