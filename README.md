@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > While use of LLMs for generating _code_ is encouraged, LLM-generated _prose_
-> is strictly forbidden. See the [LLM policy](#llm-policy) for more details.
+> is severely restricted. See the [LLM policy](#llm-policy) for more details.
 
 [![CI](https://github.com/albert-yu/visi/actions/workflows/ci.yml/badge.svg)](https://github.com/albert-yu/visi/actions/workflows/ci.yml)
 
@@ -134,7 +134,7 @@ visi export data.xlsx --sheet Sheet1 --format json --output sheet1.json
 
 This monorepo is structured follows:
 
-- **[`visi-core`](visi-core/)**: embeddedable spreadsheet engine that parses and executes the formulas in the workbook 
+- **[`visi-core`](visi-core/)**: embeddable spreadsheet engine that parses and executes the formulas in the workbook
 - **[`visi`](visi/)**: Command-line application using `visi-core` which can edit and execute Excel files headlessly
 
 `visi` aims for feature parity with Excel by using
@@ -145,10 +145,10 @@ should match exactly. See [`fuzz`](./fuzz/README.md) for more details.
 ## LLM Policy
 
 - LLMs may be used for source code generation
+- No LLM-generated comments in source code
 - No LLM use for writing prose, unless clearly attributed at the _beginning_ of
   the content
-  - Source code comments count as prose
-  - AGENTS.md should automatically enforce this
+- AGENTS.md should automatically enforce this
 
 ## License
 
