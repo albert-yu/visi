@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import openpyxl
 from fuzz_excel import DifferentialComparator, ExcelDriver, XLSXEvaluatedReader
+from openpyxl.formula import Tokenizer
+from openpyxl.utils.cell import range_boundaries
 from visi_driver import CLI_TIMEOUT_SECONDS
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -396,6 +398,39 @@ def formula_mismatches(visi_path, excel_path):
     return mismatches
 
 
+def formula_self_references_cell(formula, key):
+    if not formula:
+        return False
+    current_sheet, coord = key
+    current_col, current_row, _, _ = range_boundaries(coord)
+    formula_text = str(formula)
+    if not formula_text.startswith("="):
+        formula_text = "=" + formula_text
+    try:
+        tokens = Tokenizer(formula_text).items
+    except Exception:
+        return False
+    for token in tokens:
+        if token.subtype != "RANGE":
+            continue
+        ref = token.value.replace("$", "")
+        sheet = None
+        if "!" in ref:
+            sheet, ref = ref.rsplit("!", 1)
+            sheet = sheet.strip("'").replace("''", "'")
+        if sheet is not None and sheet.lower() != current_sheet.lower():
+            continue
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(ref)
+        except ValueError:
+            continue
+        col_matches = min_col is None or min_col <= current_col <= max_col
+        row_matches = min_row is None or min_row <= current_row <= max_row
+        if col_matches and row_matches:
+            return True
+    return False
+
+
 def compare_values(visi_path, excel_path, strict_error_class=False):
     visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_path)
     excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_path)
@@ -412,6 +447,7 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
                 or m.get("excel") == "None (type=empty)"
                 or m.get("visi") is None
                 or m.get("visi") == "None (type=empty)"
+                or formula_self_references_cell(m.get("formula"), m["key"])
             )
         )
     ]
