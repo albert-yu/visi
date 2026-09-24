@@ -35,6 +35,20 @@ fn test_fuzz_unary_minus_preserves_errors() {
 }
 
 #[test]
+fn test_fuzz_pre_1900_date_text_does_not_coerce_to_zero() {
+    for formula in ["=(\"5-1717\"/-16)", "=VALUE(\"5-1717\")"] {
+        let grid = [[formula]];
+        let mut sheet = create_sheet(&grid);
+        sheet.commit(None).unwrap();
+        let result = sheet.get_result_data(&CellRef::new(0, 0));
+        assert!(
+            matches!(&result, ResultData::Error(error) if error == "#VALUE!"),
+            "Expected #VALUE! for {formula}, got {result:?}"
+        );
+    }
+}
+
+#[test]
 fn test_fuzz_nested_intersection_preserves_null_error() {
     for formula in ["=SUM(((A1 A2),A1) A1)", "=SUM((A1,(A1 A2)) A1)"] {
         let grid = [["1", formula], ["2", ""]];

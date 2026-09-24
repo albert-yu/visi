@@ -794,7 +794,11 @@ pub fn value_with_locale(text: &str, locale: &crate::core::locale::Locale) -> Re
     if let Ok(v) = s.parse::<f64>() {
         Ok(v)
     } else if let Some((date, _)) = crate::core::date::parse_date_with_locale(s, locale) {
-        Ok(crate::core::date::date_to_excel_serial(date))
+        if date.year >= 1900 {
+            Ok(crate::core::date::date_to_excel_serial(date))
+        } else {
+            Err("#VALUE!".to_string())
+        }
     } else if let Some(f) = crate::core::date_fn::parse_time_fraction(s) {
         Ok(f)
     } else {
