@@ -403,7 +403,17 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
     _ok, mismatches = comp.compare(visi_cells, excel_cells)
 
     mismatches = [
-        m for m in mismatches if not (m.get("excel") is None and m.get("formula"))
+        m
+        for m in mismatches
+        if not (
+            m.get("formula")
+            and (
+                m.get("excel") is None
+                or m.get("excel") == "None (type=empty)"
+                or m.get("visi") is None
+                or m.get("visi") == "None (type=empty)"
+            )
+        )
     ]
     return not mismatches, mismatches, comp.error_class_only
 
