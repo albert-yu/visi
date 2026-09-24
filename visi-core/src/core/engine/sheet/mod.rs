@@ -1725,13 +1725,14 @@ impl Sheet {
                     if let Some((date, _)) =
                         crate::core::date::parse_date_with_locale(s_trim, &self.locale)
                     {
-                        return Some(crate::core::date::date_to_excel_serial(date));
+                        return (date.year >= 1900)
+                            .then(|| crate::core::date::date_to_excel_serial(date));
                     }
                     None
                 } else if let Some((date, _)) =
                     crate::core::date::parse_date_with_locale(s_trim, &self.locale)
                 {
-                    Some(crate::core::date::date_to_excel_serial(date))
+                    (date.year >= 1900).then(|| crate::core::date::date_to_excel_serial(date))
                 } else {
                     None
                 }
