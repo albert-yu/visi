@@ -398,35 +398,58 @@ def formula_mismatches(visi_path, excel_path):
     return mismatches
 
 
-def formula_self_references_cell(formula, key):
+def formula_ranges(formula, current_sheet):
     if not formula:
-        return False
-    current_sheet, coord = key
-    current_col, current_row, _, _ = range_boundaries(coord)
+        return []
     formula_text = str(formula)
     if not formula_text.startswith("="):
         formula_text = "=" + formula_text
     try:
         tokens = Tokenizer(formula_text).items
     except Exception:
-        return False
+        return []
+    ranges = []
     for token in tokens:
         if token.subtype != "RANGE":
             continue
         ref = token.value.replace("$", "")
-        sheet = None
+        sheet = current_sheet
         if "!" in ref:
             sheet, ref = ref.rsplit("!", 1)
             sheet = sheet.strip("'").replace("''", "'")
-        if sheet is not None and sheet.lower() != current_sheet.lower():
-            continue
         try:
             min_col, min_row, max_col, max_row = range_boundaries(ref)
         except ValueError:
             continue
-        col_matches = min_col is None or min_col <= current_col <= max_col
-        row_matches = min_row is None or min_row <= current_row <= max_row
-        if col_matches and row_matches:
+        ranges.append((sheet, min_col, min_row, max_col, max_row))
+    return ranges
+
+
+def range_contains_cell(bounds, key):
+    sheet, coord = key
+    ref_sheet, min_col, min_row, max_col, max_row = bounds
+    if ref_sheet.lower() != sheet.lower():
+        return False
+    current_col, current_row, _, _ = range_boundaries(coord)
+    col_matches = min_col is None or min_col <= current_col <= max_col
+    row_matches = min_row is None or min_row <= current_row <= max_row
+    return col_matches and row_matches
+
+
+def formula_self_references_cell(formula, key):
+    return any(
+        range_contains_cell(bounds, key) for bounds in formula_ranges(formula, key[0])
+    )
+
+
+def formula_references_uncached_blank_formula(formula, key, cells):
+    ranges = formula_ranges(formula, key[0])
+    if not ranges:
+        return False
+    for cell_key, cell in cells.items():
+        if not cell.get("formula") or cell.get("val") is not None:
+            continue
+        if any(range_contains_cell(bounds, cell_key) for bounds in ranges):
             return True
     return False
 
@@ -448,6 +471,9 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
                 or m.get("visi") is None
                 or m.get("visi") == "None (type=empty)"
                 or formula_self_references_cell(m.get("formula"), m["key"])
+                or formula_references_uncached_blank_formula(
+                    m.get("formula"), m["key"], excel_cells
+                )
             )
         )
     ]
