@@ -2917,6 +2917,8 @@ mod tests {
         assert_eq!(expr("\"abc\" + 1"), "ERR|13");
         assert_eq!(expr("1 & 2"), "String|12");
         assert_eq!(expr("\"  3  \" + 1"), "Double|4");
+        assert_eq!(expr("\"1a\" > 0"), "ERR|13");
+        assert_eq!(expr("(&HFF & \"Z\") > (1% Or 32768)"), "ERR|13");
     }
 
     #[test]
@@ -3280,7 +3282,7 @@ mod tests {
         assert_eq!(expr("(Not 2!) <= (\"1.5\" & False)"), "Boolean|True");
         assert_eq!(expr("(-True) <> (True & &HFF)"), "ERR|13");
         assert_eq!(expr("\"False\" = -0.04"), "ERR|13");
-        assert_eq!(expr("\"1.5abc\" > 1"), "Boolean|True");
+        assert_eq!(expr("\"1.5abc\" > 1"), "ERR|13");
         assert_eq!(expr("(False & Null) = (0.1 / -2.5)"), "Boolean|False");
 
         assert_eq!(

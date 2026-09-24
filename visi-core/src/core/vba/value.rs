@@ -874,9 +874,26 @@ pub fn compare_ctx(
                     Err(_) => Ordering::Greater,
                 }
             } else if num_kind.is_const() && str_typed {
-                match numeric_prefix(text) {
-                    Some(a) => cmp_f64(a, numeric(other)?),
-                    None => return Err(VbaError::type_mismatch()),
+                match parse_vba_number(text) {
+                    Ok(a) => cmp_f64(a, numeric(other)?),
+                    Err(e) if e.number != 13 => return Err(e),
+                    Err(_) => {
+                        if str_kind == Operand::ConstExpr {
+                            for suffix in ["true", "false"] {
+                                if text.to_ascii_lowercase().ends_with(suffix)
+                                    && let Some(a) =
+                                        numeric_prefix(&text[..text.len() - suffix.len()])
+                                {
+                                    return Ok(Some(if str_on_left {
+                                        cmp_f64(a, numeric(other)?)
+                                    } else {
+                                        cmp_f64(a, numeric(other)?).reverse()
+                                    }));
+                                }
+                            }
+                        }
+                        return Err(VbaError::type_mismatch());
+                    }
                 }
             } else if num_kind.is_const() {
                 match parse_vba_number(text) {
