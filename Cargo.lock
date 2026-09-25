@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "visi"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "cfb",
  "csv",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "visi-core"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "calamine",
  "cfb",
