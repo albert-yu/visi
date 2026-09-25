@@ -2,7 +2,12 @@ import io
 import zipfile
 
 from fuzz_excel import DifferentialComparator, XLSXEvaluatedReader
-from fuzz_structural_edit import normalize_formula_text
+from fuzz_structural_edit import (
+    compare_values,
+    formula_references_uncached_blank_formula,
+    formula_self_references_cell,
+    normalize_formula_text,
+)
 
 
 def test_text_whitespace_is_significant():
@@ -113,6 +118,168 @@ def test_structural_formula_normalization_handles_escaped_quotes_and_ref_errors(
     assert normalize_formula_text("=Data!#REF! + 1") == "=#REF!+1"
     assert normalize_formula_text("='Data'!#REF! + 1") == "=#REF!+1"
     assert normalize_formula_text('="Data!#REF!"') == '="Data!#REF!"'
+
+
+def test_structural_self_reference_detection_handles_whole_ranges_and_sheets():
+    assert formula_self_references_cell("SUM(C:D)", ("Sheet1", "C4"))
+    assert formula_self_references_cell("SUM(4:6)", ("Sheet1", "C4"))
+    assert formula_self_references_cell("C4", ("Sheet1", "C4"))
+    assert formula_self_references_cell("'Sheet1'!C:D", ("Sheet1", "C4"))
+    assert not formula_self_references_cell("Data!C:D", ("Sheet1", "C4"))
+    assert not formula_self_references_cell("SUM(A:B)", ("Sheet1", "C4"))
+    assert not formula_self_references_cell("SUM(1:3)", ("Sheet1", "C4"))
+
+
+def test_structural_reference_detection_finds_uncached_formula_blanks():
+    cells = {
+        ("Sheet1", "G5"): {"formula": "C5", "val": None},
+        ("Sheet1", "A1"): {"formula": "B1", "val": 1},
+        ("Data", "G5"): {"formula": "C5", "val": None},
+    }
+
+    assert formula_references_uncached_blank_formula(
+        "SUM(G3:G7)", ("Sheet1", "B2"), cells
+    )
+    assert not formula_references_uncached_blank_formula(
+        "SUM(A:A)", ("Sheet1", "B2"), cells
+    )
+    assert formula_references_uncached_blank_formula(
+        "SUM(Data!G3:G7)", ("Sheet1", "B2"), cells
+    )
+    assert not formula_references_uncached_blank_formula(
+        "SUM(Sheet2!G3:G7)", ("Sheet1", "B2"), cells
+    )
+
+
+def test_structural_value_compare_ignores_uncached_formula_blanks(tmp_path):
+    def write_book(path, cached):
+        value = "<v>1</v>" if cached else "<v/>"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>
+""",
+            )
+            z.writestr(
+                "xl/_rels/workbook.xml.rels",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+""",
+            )
+            z.writestr(
+                "xl/worksheets/sheet1.xml",
+                f"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="1"><c r="A1"><f>SUM(1:1)</f>{value}</c></row></sheetData>
+</worksheet>
+""",
+            )
+
+    visi = tmp_path / "visi.xlsx"
+    excel = tmp_path / "excel.xlsx"
+    write_book(visi, True)
+    write_book(excel, False)
+
+    ok, mismatches, error_class_only = compare_values(visi, excel)
+
+    assert ok
+    assert mismatches == []
+    assert error_class_only == 0
+
+
+def test_structural_value_compare_ignores_self_referential_formula_mismatches(
+    tmp_path,
+):
+    def write_book(path, value, cell_type):
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>
+""",
+            )
+            z.writestr(
+                "xl/_rels/workbook.xml.rels",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+""",
+            )
+            z.writestr(
+                "xl/worksheets/sheet1.xml",
+                f"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="4"><c r="C4" t="{cell_type}"><f>SUM(C:D)</f><v>{value}</v></c></row></sheetData>
+</worksheet>
+""",
+            )
+
+    visi = tmp_path / "visi.xlsx"
+    excel = tmp_path / "excel.xlsx"
+    write_book(visi, "2.033", "n")
+    write_book(excel, "#VALUE!", "e")
+
+    ok, mismatches, error_class_only = compare_values(visi, excel)
+
+    assert ok
+    assert mismatches == []
+    assert error_class_only == 0
+
+
+def test_structural_value_compare_ignores_formulas_depending_on_uncached_blanks(
+    tmp_path,
+):
+    def write_book(path, formula_value, formula_type, dep_value, dep_type):
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+</workbook>
+""",
+            )
+            z.writestr(
+                "xl/_rels/workbook.xml.rels",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>
+""",
+            )
+            z.writestr(
+                "xl/worksheets/sheet1.xml",
+                f"""<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="2"><c r="B2" t="{formula_type}"><f>SUM(G3:G7)</f><v>{formula_value}</v></c></row>
+    <row r="5"><c r="G5" t="{dep_type}"><f>C5</f>{dep_value}</c></row>
+  </sheetData>
+</worksheet>
+""",
+            )
+
+    visi = tmp_path / "visi.xlsx"
+    excel = tmp_path / "excel.xlsx"
+    write_book(visi, "-15", "n", "<v>-15</v>", "n")
+    write_book(excel, "#VALUE!", "e", "<v/>", "str")
+
+    ok, mismatches, error_class_only = compare_values(visi, excel)
+
+    assert ok
+    assert mismatches == []
+    assert error_class_only == 0
 
 
 def test_cell_types_equal_for_string_variants():

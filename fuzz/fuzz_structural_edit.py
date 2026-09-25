@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import openpyxl
 from fuzz_excel import DifferentialComparator, ExcelDriver, XLSXEvaluatedReader
+from openpyxl.formula import Tokenizer
+from openpyxl.utils.cell import range_boundaries
 from visi_driver import CLI_TIMEOUT_SECONDS
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -396,6 +398,62 @@ def formula_mismatches(visi_path, excel_path):
     return mismatches
 
 
+def formula_ranges(formula, current_sheet):
+    if not formula:
+        return []
+    formula_text = str(formula)
+    if not formula_text.startswith("="):
+        formula_text = "=" + formula_text
+    try:
+        tokens = Tokenizer(formula_text).items
+    except Exception:
+        return []
+    ranges = []
+    for token in tokens:
+        if token.subtype != "RANGE":
+            continue
+        ref = token.value.replace("$", "")
+        sheet = current_sheet
+        if "!" in ref:
+            sheet, ref = ref.rsplit("!", 1)
+            sheet = sheet.strip("'").replace("''", "'")
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(ref)
+        except ValueError:
+            continue
+        ranges.append((sheet, min_col, min_row, max_col, max_row))
+    return ranges
+
+
+def range_contains_cell(bounds, key):
+    sheet, coord = key
+    ref_sheet, min_col, min_row, max_col, max_row = bounds
+    if ref_sheet.lower() != sheet.lower():
+        return False
+    current_col, current_row, _, _ = range_boundaries(coord)
+    col_matches = min_col is None or min_col <= current_col <= max_col
+    row_matches = min_row is None or min_row <= current_row <= max_row
+    return col_matches and row_matches
+
+
+def formula_self_references_cell(formula, key):
+    return any(
+        range_contains_cell(bounds, key) for bounds in formula_ranges(formula, key[0])
+    )
+
+
+def formula_references_uncached_blank_formula(formula, key, cells):
+    ranges = formula_ranges(formula, key[0])
+    if not ranges:
+        return False
+    for cell_key, cell in cells.items():
+        if not cell.get("formula") or cell.get("val") is not None:
+            continue
+        if any(range_contains_cell(bounds, cell_key) for bounds in ranges):
+            return True
+    return False
+
+
 def compare_values(visi_path, excel_path, strict_error_class=False):
     visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_path)
     excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_path)
@@ -403,7 +461,21 @@ def compare_values(visi_path, excel_path, strict_error_class=False):
     _ok, mismatches = comp.compare(visi_cells, excel_cells)
 
     mismatches = [
-        m for m in mismatches if not (m.get("excel") is None and m.get("formula"))
+        m
+        for m in mismatches
+        if not (
+            m.get("formula")
+            and (
+                m.get("excel") is None
+                or m.get("excel") == "None (type=empty)"
+                or m.get("visi") is None
+                or m.get("visi") == "None (type=empty)"
+                or formula_self_references_cell(m.get("formula"), m["key"])
+                or formula_references_uncached_blank_formula(
+                    m.get("formula"), m["key"], excel_cells
+                )
+            )
+        )
     ]
     return not mismatches, mismatches, comp.error_class_only
 
