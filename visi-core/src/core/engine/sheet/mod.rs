@@ -1874,6 +1874,26 @@ impl Sheet {
         }
     }
 
+    fn flatten_frequency_bins(&self, arg: &ResultData, is_direct: bool) -> Vec<f64> {
+        match arg {
+            ResultData::Float(f) => vec![*f],
+            ResultData::Integer(i) => vec![*i as f64],
+            ResultData::None => vec![0.0],
+            ResultData::String(_) => {
+                if is_direct {
+                    self.to_f64(arg).into_iter().collect()
+                } else {
+                    vec![]
+                }
+            }
+            ResultData::List(list) => list
+                .iter()
+                .flat_map(|v| self.flatten_frequency_bins(v, false))
+                .collect(),
+            _ => vec![],
+        }
+    }
+
     fn flatten_positional(
         &self,
         arg: &ResultData,

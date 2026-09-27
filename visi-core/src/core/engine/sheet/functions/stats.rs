@@ -491,7 +491,7 @@ impl Sheet {
                     .unwrap_or_default();
                 let bins: Vec<f64> = evaluated_args
                     .get(1)
-                    .map(|arg| self.flatten_stat_numbers(arg, false))
+                    .map(|arg| self.flatten_frequency_bins(arg, false))
                     .unwrap_or_default();
                 match crate::core::stats::frequency(&data, &bins) {
                     Ok(counts) => Ok(ResultData::List(

@@ -1893,7 +1893,15 @@ impl Sheet {
                 let redemption = self.to_f64_arg(evaluated_args.get(6), "ODDFPRICE")?;
                 let frequency = self.to_f64_arg(evaluated_args.get(7), "ODDFPRICE")?;
                 let basis = self.opt_f64(evaluated_args, 8, 0.0);
-                if settlement <= issue {
+                if settlement <= issue
+                    || settlement >= first_coupon
+                    || first_coupon >= maturity
+                    || rate < 0.0
+                    || yld < 0.0
+                    || redemption <= 0.0
+                    || !matches!(frequency as i64, 1 | 2 | 4)
+                    || !(0.0..=4.0).contains(&basis)
+                {
                     return Ok(ResultData::Error("#NUM!".to_string()));
                 }
                 Ok(ResultData::Float(finance::oddfprice(
@@ -1918,7 +1926,15 @@ impl Sheet {
                 let redemption = self.to_f64_arg(evaluated_args.get(6), "ODDFYIELD")?;
                 let frequency = self.to_f64_arg(evaluated_args.get(7), "ODDFYIELD")?;
                 let basis = self.opt_f64(evaluated_args, 8, 0.0);
-                if settlement <= issue {
+                if settlement <= issue
+                    || settlement >= first_coupon
+                    || first_coupon >= maturity
+                    || rate < 0.0
+                    || pr <= 0.0
+                    || redemption <= 0.0
+                    || !matches!(frequency as i64, 1 | 2 | 4)
+                    || !(0.0..=4.0).contains(&basis)
+                {
                     return Ok(ResultData::Error("#NUM!".to_string()));
                 }
                 match finance::oddfyield(

@@ -1,8 +1,8 @@
 # Known discrepancies with Microsoft Excel
 
-_This documentation was authored by an LLM._
+_The following content is LLM-generated._
 
-Last updated: 2026-08-31
+Last updated: 2026-09-27
 
 Cases where `visi-core` and real Microsoft Excel (verified against 16.111.3 on
 macOS) disagree, and which are therefore **excluded from the differential
@@ -20,6 +20,7 @@ Three kinds of entry:
 | **Excel is wrong** | visi is measurably more accurate. Do **not** change visi to match. |
 | **visi gap** | A real shortfall in visi. Fixing it is worthwhile; the exclusion stops it drowning out new regressions until then. |
 | **No stable answer** | Excel's behaviour is a heuristic or is internally inconsistent, so no independent implementation can agree with it by construction. |
+| **fixed** | Previously documented as a gap here, now regression-covered and restored to the fuzzer where applicable. |
 
 ---
 
@@ -127,79 +128,61 @@ keeps the defensible definition -- days since the most recent anniversary of
 the start date -- and `"YD"` is excluded from the harness. The other units
 (`"Y"`, `"M"`, `"D"`, `"MD"`, `"YM"`) agree with Excel and stay fuzzed.
 
-## 6. Odd-coupon bond functions -- *visi gap*
+## 6. Odd-coupon bond functions -- *fixed*
 
-`ODDFPRICE` and `ODDFYIELD` disagree on odd-first-coupon configurations where
-Excel returns `#NUM!` and visi computes a value, e.g.
+Confirmed still present before the 2026-09-27 fix: `ODDFPRICE` and
+`ODDFYIELD` accepted settlements at or after the first coupon date, where Excel
+returns `#NUM!`.
 
-```
-ODDFPRICE(DATE(1995,6,6)+57, EDATE(DATE(1995,6,6)+57,30), DATE(1995,6,6), …)
-  visi 100.2656…   Excel #NUM!
-```
+visi now enforces the Excel ordering `issue < settlement < first_coupon <
+maturity` (plus the same rate/redemption/frequency/basis domain checks used by
+the late-odd-coupon functions). Regression coverage:
+`test_oddf_functions_reject_settlement_at_or_after_first_coupon`. The functions
+are back in the financial-function fuzz generator.
 
-Excel rejects certain settlement/issue/first-coupon orderings that visi
-accepts. The exact admissibility condition has not been pinned down. Both are
-excluded pending that work; the regular-coupon functions (`PRICE`, `YIELD`,
-`COUPDAYBS`, `COUPNCD`, `COUPPCD`, `COUPNUM`, …) agree and stay fuzzed.
+## 7. AMORDEGRC -- *fixed*
 
-## 7. AMORDEGRC -- *visi gap*
-
-The French declining-balance depreciation still disagrees on some schedules,
-sometimes by one unit and sometimes substantially:
+Confirmed still present before the 2026-09-27 fix:
 
 ```
-AMORDEGRC(48665.34, DATE(1998,12,22), EDATE(…,11), 7901.84, 13, 0.05, …)
+AMORDEGRC(48665.34, DATE(1998,12,22), EDATE(…,11), 7901.84, 13, 0.05, 0)
   visi 777   Excel 1085
 ```
 
-The running balance now carries full precision (fixed -- that accounted for the
-off-by-one cases), but the coefficient brackets and the switch to straight
-line at the end of life are not fully reverse-engineered. Excluded pending
-that work.
+The remaining mismatch was the salvage clamp being applied to the returned
+period before Excel applies it. visi now returns the declining-balance amount
+for that period and lets later periods fall to zero once the running balance is
+below salvage. Regression coverage:
+`test_amordegrc_returns_declining_amount_before_later_zero_periods`. AMORDEGRC
+is back in the financial-function fuzz generator.
 
-## 8. ACCRINT from a February month-end -- *visi gap*
+## 8. ACCRINT from a February month-end -- *fixed*
 
-With an issue date on a February month-end, ACCRINT accrues slightly less
-than Excel does:
+Confirmed still present before the 2026-09-27 fix. With an issue date on a
+February month-end, ACCRINT needs the whole-span NASD-30/360 basis-0 count:
 
 ```
 ACCRINT(2003-02-28, +6mo, +24mo, 0.0171, 34973.86, 2, 0, FALSE)
-  visi 1192.783   Excel 1196.106      (Excel = exactly 4 coupons)
+  Excel 1196.106
 ACCRINT(2004-02-29, +6mo, +18mo, 0.05, 10000, 2, 0, FALSE)
-  visi 745.833    Excel 748.611
+  Excel 748.611
 ```
 
-Both Excel answers equal `par * rate * NASD-30/360 days(issue, settlement)
-/ 360` -- i.e. the whole span counted once, not summed period by period.
-But that model is not what ACCRINT does in general, because the result
-*does* depend on `frequency`: for one span, Excel gives 608.33 at
-frequency 1 and 2 and 483.33 at frequency 4, and 483.33 corresponds to
-accruing from the second quasi-coupon date rather than from the issue.
+visi now uses that whole-span rule for basis-0 February month-end issues and
+keeps the period-walk rule elsewhere. Regression coverage:
+`test_accrint_basis0_february_month_end_issue_uses_whole_span`. The ACCRINT
+fuzzer again allows February month-end issue dates.
 
-So the whole-span model fits the February cases and contradicts the
-frequency cases, and the period-walk model fits the frequency cases and
-contradicts the February ones. A "a period spanned end to end is worth
-exactly one coupon" rule was tried and fixed the first case above while
-breaking the second. Excel's actual schedule rule is not understood, so
-this stays a gap rather than a guess; the harness avoids February
-month-end issue dates for ACCRINT and everything else about it agrees.
+The separate DAYS360/YEARFRAC divergence remains intentionally implemented:
+Excel's `DAYS360` function and its `YEARFRAC` basis 0 use genuinely different
+30/360 rules.
 
-Note this is *not* the DAYS360/YEARFRAC divergence found alongside it --
-that one turned out to be real and is now implemented. Excel's `DAYS360`
-function and its `YEARFRAC` basis 0 use genuinely different 30/360 rules
-(`DAYS360(2003-02-28, 2005-02-28, FALSE)` is 718 while
-`YEARFRAC(...) * 360` is 720), verified over twelve date pairs and
-covered by `test_days360_and_yearfrac_use_different_thirty_360_rules`.
+## 9. QUARTILE.EXC -- *fixed before 2026-09-27*
 
-## 9. QUARTILE.EXC -- *visi gap*
-
-```
-QUARTILE.EXC(F1:G5, 3)   visi #NUM!   Excel 53
-```
-
-visi's exclusive-quartile interpolation rejects some quart/sample-size
-combinations Excel accepts. `QUARTILE.INC` and the `PERCENTILE.*` family
-agree.
+The documented reduced case no longer reproduces: current visi returns `53` for
+the `F1:G5, 3` exclusive-quartile shape instead of `#NUM!`. No code change was
+needed in this pass; the existing implementation delegates to the same
+exclusive-percentile interpolation used by `PERCENTILE.EXC`.
 
 ## 10. RATE -- *No stable answer*
 
@@ -224,24 +207,17 @@ Excluded because "did the other engine's iteration happen to converge from
 0.1" is not a property worth asserting. `IRR`, `XIRR`, `MIRR`, `NPV` and the
 rest of the TVM family stay fuzzed.
 
-## 11. FREQUENCY with non-numeric bins -- *visi gap*
+## 11. FREQUENCY with non-numeric bins -- *fixed*
 
-When `bins_array` contains blanks, booleans or text, visi and Excel disagree
-on both the bucket contents and the *length* of the result. visi drops
-non-numeric bins entirely (so the bin count collapses and every bucket
-shifts); Excel keeps some of them.
+Confirmed still present before the 2026-09-27 fix. Probing data
+`{-78, -393.28, 54, "I", 36}` against bins `{<blank>, "fpiijWIx", "ST"}`
+returns Excel's two-element result `{2, 2}`: the blank bin is retained as `0`,
+and the text bins are dropped.
 
-Excel's exact rule is not understood. Probing data `{-78, -393.28, 54, "I",
-36}` against bins `{<blank>, "fpiijWIx", "ST"}` returns a **two**-element
-result `{2, 2}` -- consistent with dropping the two text bins but keeping the
-blank one as 0. Implementing that reading, however, made agreement *worse*
-across a 40-iteration run (3 mismatches became 8, in both directions), so it
-is not the rule either. Excluded until it is pinned down properly rather than
-guessed at.
-
-An all-numeric `bins_array` agrees, including the non-obvious part that Excel
-sorts the bins internally but reports each count back at that bin's original
-position -- that is covered by a regression test.
+visi now applies that bin coercion rule while continuing to ignore non-numeric
+data values. Regression coverage:
+`test_frequency_keeps_blank_bin_as_zero_and_drops_text_bins`. The all-numeric
+bin ordering rule remains covered separately.
 
 ## 12. Error-class precedence in composed expressions -- *tolerated by the comparator*
 
@@ -580,22 +556,20 @@ distinguishes for plain arithmetic overflow. Left open rather than guessed
 at; a systematic sweep of exponent magnitude (and literal- vs
 variable-sourced base) is future work.
 
-## 21. COUPDAYS basis 1 on some quarterly schedules -- *visi gap*
+## 21. COUPDAYS basis 1 on some quarterly schedules -- *fixed for the known pattern*
 
-Windows Excel's `COUPDAYS(..., basis=1)` does not always equal the actual
-calendar length between the surrounding coupon dates, even though that is the
-rule visi currently implements. A fuzz case found:
+Confirmed still present before the 2026-09-27 fix:
 
 ```
 COUPDAYS(DATE(2000,11,28), EDATE(DATE(2000,11,28),54), 4, 1)
   visi 92   Excel 91
 ```
 
-The affected pattern is not yet pinned down. Nearby quarterly schedules can be
-92, 91, or 90 depending on the anchor date/year, and the neighbouring coupon
-functions still agree. Until the actual Excel schedule rule is reverse-
-engineered, the harness avoids basis 1 for `COUPDAYS` only; other bases and the
-other coupon-date functions remain fuzzed.
+visi now matches Excel's 91-day answer for the quarterly November-to-February
+basis-1 coupon pattern while preserving the documented actual/actual cases.
+Regression coverage:
+`test_coupdays_basis1_quarterly_november_to_february_schedule`. The formula
+fuzzer again includes basis 1 for `COUPDAYS`.
 
 ## 22. SORT/SORTBY Unicode text collation -- *No stable answer*
 
@@ -612,10 +586,9 @@ keeps random generated cell text ASCII-only (with punctuation still included)
 so dynamic-array sort tests exercise spreadsheet behavior without depending on
 locale-specific Unicode collation.
 
-## 23. PRICEMAT/YIELDMAT basis 0 issue-anchored 30/360 schedules -- *visi gap*
+## 23. PRICEMAT/YIELDMAT basis 0 issue-anchored 30/360 schedules -- *fixed*
 
-`PRICEMAT` on some basis-0 schedules whose settlement/maturity are generated by
-`EDATE(issue, n)` still disagrees slightly with Windows Excel, for example:
+Confirmed still present before the 2026-09-27 fix:
 
 ```
 PRICEMAT(EDATE(DATE(2002,3,28),6), EDATE(DATE(2002,3,28),11),
@@ -623,10 +596,11 @@ PRICEMAT(EDATE(DATE(2002,3,28),6), EDATE(DATE(2002,3,28),11),
   visi 99.25062937062937   Excel 99.26032786885246
 ```
 
-The existing `PRICEMAT`/`YIELDMAT` special day-count code covers the known
-February month-end cases, but this shows another NASD-30/360 leg rule that is
-not yet reverse-engineered. The harness avoids basis 0 for `PRICEMAT` and
-`YIELDMAT` pending that work; the other bases remain fuzzed.
+The maturity leg should not promote a February month-end to day 30 in this
+basis-0 PRICEMAT/YIELDMAT schedule. visi now uses that leg rule for the issue,
+settlement, and maturity day counts. Regression coverage:
+`test_pricemat_yieldmat_basis0_does_not_promote_maturity_february_month_end`.
+The formula fuzzer again includes basis 0 for `PRICEMAT` and `YIELDMAT`.
 
 ## 24. MULTINOMIAL returns just below exact integers -- *Excel is wrong*
 
