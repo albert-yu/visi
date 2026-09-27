@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn test_ifs_and_switch_error_order() {
+    let grid = [[
+        "=IFS(TRUE,1,1/0,VALUE(\"x\"))",
+        "=ERROR.TYPE(IFS(FALSE,VALUE(\"x\"),1/0,2))",
+        "=SWITCH(1,1,11,1/0,VALUE(\"x\"),99)",
+        "=ERROR.TYPE(SWITCH(3,1,11,1/0,22,99))",
+        "=SWITCH(2,1,1/0,2,22,99)",
+    ]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 0));
+    assert!(
+        matches!(r1, ResultData::Float(v) if (v - 1.0).abs() < 1e-9),
+        "{r1:?}"
+    );
+
+    let r2 = sheet.get_result_data(&CellRef::new(0, 1));
+    assert!(
+        matches!(r2, ResultData::Float(v) if (v - 2.0).abs() < 1e-9),
+        "{r2:?}"
+    );
+
+    let r3 = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(r3, ResultData::Float(v) if (v - 11.0).abs() < 1e-9),
+        "{r3:?}"
+    );
+
+    let r4 = sheet.get_result_data(&CellRef::new(0, 3));
+    assert!(
+        matches!(r4, ResultData::Float(v) if (v - 2.0).abs() < 1e-9),
+        "{r4:?}"
+    );
+
+    let r5 = sheet.get_result_data(&CellRef::new(0, 4));
+    assert!(
+        matches!(r5, ResultData::Float(v) if (v - 22.0).abs() < 1e-9),
+        "{r5:?}"
+    );
+}
+
+#[test]
 fn test_fuzz_sqrt_negative_operand_error() {
     let sheet_src = [
         ["TRUE", "-278.17", "-55", "29", "240"],

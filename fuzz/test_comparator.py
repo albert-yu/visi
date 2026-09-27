@@ -282,6 +282,27 @@ def test_structural_value_compare_ignores_formulas_depending_on_uncached_blanks(
     assert error_class_only == 0
 
 
+def test_error_class_mismatches_are_strict_by_default():
+    v_cells = {
+        ("Sheet1", "A1"): {"cell_ref": "A1", "sheet": "Sheet1", "type": "e", "val": "#DIV/0!"}
+    }
+    e_cells = {
+        ("Sheet1", "A1"): {"cell_ref": "A1", "sheet": "Sheet1", "type": "e", "val": "#VALUE!"}
+    }
+
+    comparator = DifferentialComparator()
+    ok, mismatches = comparator.compare(v_cells, e_cells)
+    assert not ok
+    assert len(mismatches) == 1
+    assert comparator.error_class_only == 0
+
+    tolerant = DifferentialComparator(strict_error_class=False)
+    ok, mismatches = tolerant.compare(v_cells, e_cells)
+    assert ok
+    assert mismatches == []
+    assert tolerant.error_class_only == 1
+
+
 def test_cell_types_equal_for_string_variants():
     comparator = DifferentialComparator()
 

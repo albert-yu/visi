@@ -2752,7 +2752,7 @@ class DifferentialComparator:
     _NUM_TOKEN_RE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?")
 
     def __init__(
-        self, float_rel_tol=1e-7, float_abs_tol=1e-7, strict_error_class=False
+        self, float_rel_tol=1e-7, float_abs_tol=1e-7, strict_error_class=True
     ):
         self.float_rel_tol = float_rel_tol
         self.float_abs_tol = float_abs_tol
@@ -3034,13 +3034,20 @@ def main():
         help="Directory to store test outputs and failure artifacts.",
     )
     parser.add_argument(
-        "--strict-error-class",
-        action="store_true",
+        "--allow-error-class-drift",
+        dest="strict_error_class",
+        action="store_false",
+        default=True,
         help=(
-            "Count a disagreement where both engines errored but with different "
-            "error classes as a failure. Off by default -- see "
-            "docs/excel-discrepancies.md section 12."
+            "Tolerate a disagreement where both engines errored but with different "
+            "error classes. Strict by default -- see docs/excel-discrepancies.md section 7."
         ),
+    )
+    parser.add_argument(
+        "--strict-error-class",
+        dest="strict_error_class",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
 
@@ -3174,7 +3181,7 @@ def main():
             " errored with different error classes"
         )
         print(
-            "            (documented divergence; re-run with --strict-error-class"
+            "            (documented divergence; omit --allow-error-class-drift"
             " to treat as failures)"
         )
     print("=====================================================================")

@@ -195,19 +195,27 @@ impl Sheet {
         }
 
         if upper_name == "IFS" {
-            // Lazily evaluated: only the arms up to and including the
-            // first TRUE condition are ever computed, so an error
-            // sitting in a later (unselected) value never propagates.
-            // Confirmed against real Excel: `IFS(TRUE, 42, TRUE, 1/0)`
-            // is 42, while `IFS(FALSE, 42, TRUE, 1/0)` is #DIV/0!.
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                let val = match self.evaluate_ast(arg, context, row, col, deps, scope) {
+                    Ok(v) => v,
+                    Err(EngineError::EvalError(EvalError::UnknownFunction(e)))
+                        if e.starts_with('#') =>
+                    {
+                        ResultData::Error(e)
+                    }
+                    Err(e) => return Err(e),
+                };
+                values.push(val);
+            }
             let mut i = 0;
-            while i + 1 < args.len() {
-                let cond = self.evaluate_ast(&args[i], context, row, col, deps, scope)?;
+            while i + 1 < values.len() {
+                let cond = &values[i];
                 if let ResultData::Error(_) = cond {
-                    return Ok(cond);
+                    return Ok(cond.clone());
                 }
-                if self.to_bool(&cond) {
-                    return self.evaluate_ast(&args[i + 1], context, row, col, deps, scope);
+                if self.to_bool(cond) {
+                    return Ok(values[i + 1].clone());
                 }
                 i += 2;
             }
@@ -215,30 +223,39 @@ impl Sheet {
         }
 
         if upper_name == "SWITCH" {
-            // Lazily evaluated for the same reason as IFS: an error in
-            // a value arm that isn't selected must not propagate
-            // (`SWITCH(2, 1, 1/0, 2, 99, -1)` is 99 in real Excel).
             if args.len() < 3 {
                 return Ok(ResultData::Error("#VALUE!".to_string()));
             }
-            let target = self.evaluate_ast(&args[0], context, row, col, deps, scope)?;
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                let val = match self.evaluate_ast(arg, context, row, col, deps, scope) {
+                    Ok(v) => v,
+                    Err(EngineError::EvalError(EvalError::UnknownFunction(e)))
+                        if e.starts_with('#') =>
+                    {
+                        ResultData::Error(e)
+                    }
+                    Err(e) => return Err(e),
+                };
+                values.push(val);
+            }
+            let target = &values[0];
             if let ResultData::Error(_) = target {
-                return Ok(target);
+                return Ok(target.clone());
             }
             let mut i = 1;
-            while i + 1 < args.len() {
-                let case = self.evaluate_ast(&args[i], context, row, col, deps, scope)?;
+            while i + 1 < values.len() {
+                let case = &values[i];
                 if let ResultData::Error(_) = case {
-                    return Ok(case);
+                    return Ok(case.clone());
                 }
                 if target.to_string() == case.to_string() {
-                    return self.evaluate_ast(&args[i + 1], context, row, col, deps, scope);
+                    return Ok(values[i + 1].clone());
                 }
                 i += 2;
             }
-            // A trailing odd argument is the default.
-            if i < args.len() {
-                return self.evaluate_ast(&args[i], context, row, col, deps, scope);
+            if i < values.len() {
+                return Ok(values[i].clone());
             }
             return Ok(ResultData::Error("#N/A".to_string()));
         }

@@ -17,6 +17,41 @@ fn assert_float_close(result: &ResultData, expected: f64, tol: f64) {
 }
 
 #[test]
+fn test_paired_stat_error_order() {
+    let grid = [
+        [
+            "1",
+            "2",
+            "=VALUE(\"x\")",
+            "2",
+            "=ERROR.TYPE(RSQ(A1:B2,C1:D2))",
+        ],
+        ["3", "=1/0", "3", "4", "=ERROR.TYPE(CORREL(A1:B2,C1:D2))"],
+        ["", "", "", "", "=ERROR.TYPE(SUMX2PY2(A1:B2,C1:D2))"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 4));
+    assert!(
+        matches!(r1, ResultData::Float(v) if (v - 3.0).abs() < 1e-9),
+        "{r1:?}"
+    );
+
+    let r2 = sheet.get_result_data(&CellRef::new(1, 4));
+    assert!(
+        matches!(r2, ResultData::Float(v) if (v - 3.0).abs() < 1e-9),
+        "{r2:?}"
+    );
+
+    let r3 = sheet.get_result_data(&CellRef::new(2, 4));
+    assert!(
+        matches!(r3, ResultData::Float(v) if (v - 2.0).abs() < 1e-9),
+        "{r3:?}"
+    );
+}
+
+#[test]
 fn test_statistical_summary_functions() {
     let grid = [
         ["10", "20", "30", "40", "50"],

@@ -150,7 +150,7 @@ Excluded because "did the other engine's iteration happen to converge from
 0.1" is not a property worth asserting. `IRR`, `XIRR`, `MIRR`, `NPV` and the
 rest of the TVM family stay fuzzed.
 
-## 7. Error-class precedence in composed expressions -- *tolerated by the comparator*
+## 7. Error-class precedence in composed expressions -- *strict by default; optionally tolerated*
 
 When several sub-expressions of one formula each produce a *different* error,
 visi and Excel sometimes surface different ones:
@@ -161,26 +161,49 @@ FISHER(AND(H5 > 0, I7 < 100))                     visi #DIV/0!   Excel #VALUE!
 IFERROR(FACT(RSQ(…)), (FTEST(…) - MOD(…)))        visi #VALUE!   Excel #DIV/0!
 ```
 
-Which error wins depends on Excel's internal evaluation order, and it differs
-per operator and per function. It cannot be excluded by dropping a function
-from the generator, because it is emergent from the random expression trees
-rather than attached to any one function -- and those trees are where a lot of
-the harness's value lies.
+Real-Excel probes using VBA worksheet UDFs show that the top-level
+expression evaluator is mostly left-to-right, but function bodies add their
+own scan rules:
 
-It is therefore handled in the **comparator** instead: a disagreement where
-*both* engines produced an error, differing only in class, is counted
-separately rather than as a failure. Crucially it is still counted and
-printed in the run summary:
+- Binary operators (`+`, `-`, `*`, `/`, `^`, `&`, and comparisons) evaluate
+  both operands left-to-right and then surface the left operand's error if
+  both operands errored. `A + B*C` logs `A,B,C`; precedence shapes the tree,
+  but the tree is still walked left-to-right.
+- Ordinary scalar functions evaluate arguments left-to-right. `SUM`,
+  `PRODUCT`, `AVERAGE`, `MIN`, `MAX`, `AVEDEV`, `AND`, `OR`, `XOR`, and
+  `CONCATENATE` all return the first error in that argument order.
+- `IF`, `IFERROR`, `IFNA`, and `CHOOSE` are genuinely lazy: they evaluate the
+  selector/test first, then only the selected result expression. `IFS` and
+  `SWITCH` are not lazy in that sense -- Excel evaluates every argument --
+  but their result selection still ignores errors in unselected result arms.
+- Range-valued functions generally scan a single rectangular range in
+  row-major order. Multi-range functions are function-specific: `SUMX2PY2`,
+  `SUMX2MY2`, `SUMXMY2`, `FTEST`, and `TTEST` surface an error in the first
+  range before an error in the second, while `RSQ` and `CORREL` scan paired
+  positions row-major, so an early error in the second range can beat a later
+  error in the first.
+
+So there is no single global Excel error-class precedence table. The winner is
+an emergent property of parse-tree order plus each called function's own
+argument/range traversal. It cannot be excluded by dropping a function from the
+generator, because it is emergent from the random expression trees rather than
+attached to any one function -- and those trees are where a lot of the
+harness's value lies.
+
+The engine now mirrors the broad rules above where they are stable enough to
+model, and the comparator is strict by default. For exploratory fuzzing, pass
+`--allow-error-class-drift` to downgrade a disagreement where *both* engines
+produced an error, differing only in class, into a separate tolerated count.
+Crucially it is still counted and printed in the run summary:
 
 ```
  Tolerated: 28 cell(s) where both engines errored with different error classes
 ```
 
-so it can never quietly hide a regression. Pass `--strict-error-class` to
-treat these as failures again -- worth doing periodically, since strict
-comparison is exactly what surfaced genuine bugs like `TYPE(error)` and
-`ERROR.TYPE` returning the wrong value, `LOG(n, 1)` being `#NUM!` rather than
-`#DIV/0!`, and CHITEST's `#N/A` cases.
+so it can never quietly hide a regression. Strict comparison is exactly what
+surfaced genuine bugs like `TYPE(error)` and `ERROR.TYPE` returning the wrong
+value, `LOG(n, 1)` being `#NUM!` rather than `#DIV/0!`, and CHITEST's `#N/A`
+cases.
 
 Each individual case is cheap to investigate -- the failure artifacts under
 `fuzz_results/failures/` carry the source workbook alongside both engines'

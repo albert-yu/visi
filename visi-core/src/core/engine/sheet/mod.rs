@@ -1930,6 +1930,35 @@ impl Sheet {
         out
     }
 
+    fn flatten_positional_with_errors(
+        &self,
+        arg: &ResultData,
+        out: &mut Vec<(Option<f64>, Option<String>)>,
+    ) {
+        match arg {
+            ResultData::List(items) => {
+                for item in items {
+                    self.flatten_positional_with_errors(item, out);
+                }
+            }
+            ResultData::Float(f) => out.push((Some(*f), None)),
+            ResultData::Integer(i) => out.push((Some(*i as f64), None)),
+            ResultData::Error(e) => out.push((None, Some(e.clone()))),
+            _ => out.push((None, None)),
+        }
+    }
+
+    fn positional_numbers_with_errors(
+        &self,
+        arg: Option<&ResultData>,
+    ) -> Vec<(Option<f64>, Option<String>)> {
+        let mut out = Vec::new();
+        if let Some(a) = arg {
+            self.flatten_positional_with_errors(a, &mut out);
+        }
+        out
+    }
+
     fn pair_and_filter(
         xs_raw: Vec<Option<f64>>,
         ys_raw: Vec<Option<f64>>,
@@ -1975,6 +2004,45 @@ impl Sheet {
             return Err(e);
         }
         Self::pair_and_filter(xs_raw, ys_raw)
+    }
+
+    fn paired_args_pairwise_errors(
+        &self,
+        x_arg: Option<&ResultData>,
+        y_arg: Option<&ResultData>,
+    ) -> Result<(Vec<f64>, Vec<f64>), String> {
+        for arg in [x_arg, y_arg].into_iter().flatten() {
+            let scalar = match arg {
+                ResultData::List(items) if items.len() == 1 => &items[0],
+                other => other,
+            };
+            if let ResultData::Error(e) = scalar {
+                return Err(e.clone());
+            }
+            if Self::is_empty_scalar_operand(arg) {
+                return Err("#VALUE!".to_string());
+            }
+        }
+        let xs_raw = self.positional_numbers_with_errors(x_arg);
+        let ys_raw = self.positional_numbers_with_errors(y_arg);
+        if xs_raw.len() != ys_raw.len() {
+            return Err("#N/A".to_string());
+        }
+        let mut xs = Vec::with_capacity(xs_raw.len());
+        let mut ys = Vec::with_capacity(ys_raw.len());
+        for ((x, x_err), (y, y_err)) in xs_raw.into_iter().zip(ys_raw) {
+            if let Some(e) = x_err {
+                return Err(e);
+            }
+            if let Some(e) = y_err {
+                return Err(e);
+            }
+            if let (Some(x), Some(y)) = (x, y) {
+                xs.push(x);
+                ys.push(y);
+            }
+        }
+        Ok((xs, ys))
     }
 
     fn flatten_strict_inner(

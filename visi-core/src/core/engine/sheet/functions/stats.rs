@@ -296,7 +296,8 @@ impl Sheet {
                 res_to_rd(crate::core::stats::confidence_t(alpha, std_dev, size))
             }
             "CORREL" | "PEARSON" => {
-                let (xs, ys) = match self.paired_args(evaluated_args.first(), evaluated_args.get(1))
+                let (xs, ys) = match self
+                    .paired_args_pairwise_errors(evaluated_args.first(), evaluated_args.get(1))
                 {
                     Ok(v) => v,
                     Err(e) => return Ok(ResultData::Error(e)),
@@ -1025,7 +1026,8 @@ impl Sheet {
                 res_to_rd(crate::core::stats::rank_eq(number, &ref_data, order))
             }
             "RSQ" => {
-                let (ys, xs) = match self.paired_args(evaluated_args.first(), evaluated_args.get(1))
+                let (ys, xs) = match self
+                    .paired_args_pairwise_errors(evaluated_args.first(), evaluated_args.get(1))
                 {
                     Ok(v) => v,
                     Err(e) => return Ok(ResultData::Error(e)),
