@@ -142,6 +142,36 @@ fn test_coupdaysnc_uses_real_calendar_days_not_coupdays_minus_coupdaybs() {
 }
 
 #[test]
+fn test_coupdays_basis1_quarterly_november_to_february_schedule() {
+    assert_float_close(
+        &eval1("=COUPDAYS(DATE(2000,11,28), EDATE(DATE(2000,11,28),54), 4, 1)"),
+        91.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn test_frequency_keeps_blank_bin_as_zero_and_drops_text_bins() {
+    let grid: [[&str; 2]; 5] = [
+        ["-78", ""],
+        ["-393.28", "fpiijWIx"],
+        ["54", "ST"],
+        ["I", ""],
+        ["36", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.eval("=FREQUENCY(A1:A5, B1:B3)", None).unwrap().0 {
+        ResultData::List(values) => {
+            assert_eq!(values.len(), 2);
+            assert_float_close(&values[0], 2.0, 1e-9);
+            assert_float_close(&values[1], 2.0, 1e-9);
+        }
+        other => panic!("expected list, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_price_and_yield_are_inverses_and_match_real_excel() {
     assert_float_close(
         &eval1("=PRICE(DATE(1997,5,13), EDATE(DATE(1997,5,13),42), 0.0606, 0.0885, 100, 2, 3)"),
@@ -225,6 +255,24 @@ fn test_disc_basis1_year_length_has_two_regimes() {
 }
 
 #[test]
+fn test_pricemat_yieldmat_basis0_does_not_promote_maturity_february_month_end() {
+    assert_float_close(
+        &eval1(
+            "=PRICEMAT(EDATE(DATE(2002,3,28),6), EDATE(DATE(2002,3,28),11), DATE(2002,3,28), 0.0224, 0.04, 0)",
+        ),
+        99.26032786885246,
+        1e-9,
+    );
+    assert_float_close(
+        &eval1(
+            "=YIELDMAT(EDATE(DATE(2002,3,28),6), EDATE(DATE(2002,3,28),11), DATE(2002,3,28), 0.0224, 99.26032786885246, 0)",
+        ),
+        0.04,
+        1e-9,
+    );
+}
+
+#[test]
 fn test_pricemat_yieldmat_basis1_uses_issue_to_settlement_span() {
     // Unlike DISC's settlement-to-maturity span, PRICEMAT/YIELDMAT's
     // basis-1 year length is based on the (issue, settlement) span, not
@@ -303,6 +351,24 @@ fn test_accrint_totals_from_issue_regardless_of_calc_method() {
 }
 
 #[test]
+fn test_accrint_basis0_february_month_end_issue_uses_whole_span() {
+    assert_float_close(
+        &eval1(
+            "=ACCRINT(DATE(2003,2,28), EDATE(DATE(2003,2,28),6), EDATE(DATE(2003,2,28),24), 0.0171, 34973.86, 2, 0, FALSE)",
+        ),
+        1196.106012,
+        1e-6,
+    );
+    assert_float_close(
+        &eval1(
+            "=ACCRINT(DATE(2004,2,29), EDATE(DATE(2004,2,29),6), EDATE(DATE(2004,2,29),18), 0.05, 10000, 2, 0, FALSE)",
+        ),
+        748.6111111111111,
+        1e-9,
+    );
+}
+
+#[test]
 fn test_accrintm_matches_real_excel() {
     assert_float_close(
         &eval1("=ACCRINTM(DATE(1998,8,8), EDATE(DATE(1998,8,8),1), 0.096, 37328.54, 1)"),
@@ -338,6 +404,17 @@ fn test_amordegrc_rejects_life_at_or_below_two_years() {
         &eval1("=AMORDEGRC(9832.03, DATE(2024,9,7), EDATE(DATE(2024,9,7),5), 2414.1, 0, 0.499, 3)"),
         3085.0,
         1e-6,
+    );
+}
+
+#[test]
+fn test_amordegrc_returns_declining_amount_before_later_zero_periods() {
+    assert_float_close(
+        &eval1(
+            "=AMORDEGRC(48665.34, DATE(1998,12,22), EDATE(DATE(1998,12,22),11), 7901.84, 13, 0.05, 0)",
+        ),
+        1085.0,
+        1e-9,
     );
 }
 
@@ -486,6 +563,18 @@ fn test_euroconvert_rejects_unknown_currency_code() {
 fn test_euroconvert_rejects_triangulation_precision_below_3() {
     assert!(matches!(
         eval1("=EUROCONVERT(1, \"DEM\", \"FRF\", FALSE, 2)"),
+        ResultData::Error(ref e) if e.contains("#NUM!")
+    ));
+}
+
+#[test]
+fn test_oddf_functions_reject_settlement_at_or_after_first_coupon() {
+    assert!(matches!(
+        eval1("=ODDFPRICE(DATE(1995,6,6)+57, EDATE(DATE(1995,6,6)+57,30), DATE(1995,6,6), DATE(1995,6,6)+57, 0.05, 0.05, 100, 2, 0)"),
+        ResultData::Error(ref e) if e.contains("#NUM!")
+    ));
+    assert!(matches!(
+        eval1("=ODDFYIELD(DATE(1995,6,6)+58, EDATE(DATE(1995,6,6)+57,30), DATE(1995,6,6), DATE(1995,6,6)+57, 0.05, 100, 100, 2, 0)"),
         ResultData::Error(ref e) if e.contains("#NUM!")
     ));
 }

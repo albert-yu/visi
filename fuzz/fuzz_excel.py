@@ -343,6 +343,7 @@ class ExcelFuzzGenerator:
         "PERCENTILE.EXC",
         "QUARTILE",
         "QUARTILE.INC",
+        "QUARTILE.EXC",
         "PERCENTRANK",
         "PERCENTRANK.INC",
         "PERCENTRANK.EXC",
@@ -351,6 +352,7 @@ class ExcelFuzzGenerator:
         "RANK.AVG",
         "TRIMMEAN",
         "MODE.MULT",
+        "FREQUENCY",
     ]
     LOOKUP_FUNCTIONS: ClassVar = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
 
@@ -526,6 +528,9 @@ class ExcelFuzzGenerator:
         "ACCRINT",
         "ACCRINTM",
         "AMORLINC",
+        "AMORDEGRC",
+        "ODDFPRICE",
+        "ODDFYIELD",
         "ODDLPRICE",
         "ODDLYIELD",
     ]
@@ -1227,7 +1232,7 @@ class ExcelFuzzGenerator:
         bond_rate = lambda: round(random.uniform(0.01, 0.10), 4)
         bond_basis = lambda: random.choice([0, 1, 2, 3, 4])
 
-        coupdays_basis = lambda: random.choice([0, 2, 3, 4])
+        coupdays_basis = lambda: random.choice([0, 1, 2, 3, 4])
         bond_freq = lambda: random.choice([1, 2, 4])
 
         if fn in (
@@ -1283,7 +1288,7 @@ class ExcelFuzzGenerator:
             maturity = f"EDATE({issue}, {random.randint(7, 36)})"
             rate = bond_rate()
 
-            basis = random.choice([1, 2, 3, 4])
+            basis = bond_basis()
             if fn == "PRICEMAT":
                 return f"=PRICEMAT({settlement}, {maturity}, {issue}, {rate}, {bond_rate()}, {basis})"
             pr = round(random.uniform(85, 120), 2)
@@ -1318,7 +1323,7 @@ class ExcelFuzzGenerator:
             return f"=ACCRINTM({issue}, {settlement}, {bond_rate()}, {par}, {bond_basis()})"
 
         if fn == "ACCRINT":
-            issue = self._fin_date(avoid_february_month_end=True)
+            issue = self._fin_date()
             freq = bond_freq()
             months = 12 // freq
             first_interest = f"EDATE({issue}, {months})"

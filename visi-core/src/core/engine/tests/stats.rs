@@ -189,6 +189,21 @@ fn test_chisq_test_matches_independent_numeric_reference() {
 }
 
 #[test]
+fn test_quartile_exc_accepts_documented_fuzz_shape() {
+    let grid = [
+        ["", "", "", "", "", "1", "53"],
+        ["", "", "", "", "", "2", "53"],
+        ["", "", "", "", "", "3", "53"],
+        ["", "", "", "", "", "4", "53"],
+        ["", "", "", "", "", "53", "53"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (quart_exc, _) = sheet.eval("=QUARTILE.EXC(F1:G5,3)", None).unwrap();
+    assert_float_close(&quart_exc, 53.0, 1e-9);
+}
+
+#[test]
 fn test_rank_percentile_and_bivariate_functions_match_hand_computed_values() {
     let grid = [["10", "20", "20", "30", "40"]];
     let mut sheet = create_sheet(&grid);
