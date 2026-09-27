@@ -148,6 +148,7 @@ should match exactly. See [`fuzz`](./fuzz/README.md) for more details.
 - No LLM-generated comments in source code
 - No LLM use for writing prose, unless clearly attributed at the _beginning_ of
   the content
+- EXCEPTION: commit messages may be 100% LLM-authored
 - AGENTS.md should automatically enforce this
 
 ## License
