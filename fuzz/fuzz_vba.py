@@ -362,7 +362,7 @@ class VbaGenerator:
         range_addr, r0, c0, r1, c1 = self.range_addr()
         range_obj = f'{HOST_SHEET_VAR}.Range("{range_addr}")'
 
-        if kind < 0.18:
+        if kind < 0.20:
             style_kind = self.rng.random()
             if style_kind < 0.32:
                 target_obj = self.rng.choice(["Interior", "Font"])
