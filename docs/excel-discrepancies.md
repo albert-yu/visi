@@ -20,7 +20,6 @@ Three kinds of entry:
 | **Excel is wrong** | visi is measurably more accurate. Do **not** change visi to match. |
 | **visi gap** | A real shortfall in visi. Fixing it is worthwhile; the exclusion stops it drowning out new regressions until then. |
 | **No stable answer** | Excel's behaviour is a heuristic or is internally inconsistent, so no independent implementation can agree with it by construction. |
-| **fixed** | Previously documented as a gap here, now regression-covered and restored to the fuzzer where applicable. |
 
 ---
 
@@ -128,63 +127,7 @@ keeps the defensible definition -- days since the most recent anniversary of
 the start date -- and `"YD"` is excluded from the harness. The other units
 (`"Y"`, `"M"`, `"D"`, `"MD"`, `"YM"`) agree with Excel and stay fuzzed.
 
-## 6. Odd-coupon bond functions -- *fixed*
-
-Confirmed still present before the 2026-09-27 fix: `ODDFPRICE` and
-`ODDFYIELD` accepted settlements at or after the first coupon date, where Excel
-returns `#NUM!`.
-
-visi now enforces the Excel ordering `issue < settlement < first_coupon <
-maturity` (plus the same rate/redemption/frequency/basis domain checks used by
-the late-odd-coupon functions). Regression coverage:
-`test_oddf_functions_reject_settlement_at_or_after_first_coupon`. The functions
-are back in the financial-function fuzz generator.
-
-## 7. AMORDEGRC -- *fixed*
-
-Confirmed still present before the 2026-09-27 fix:
-
-```
-AMORDEGRC(48665.34, DATE(1998,12,22), EDATE(…,11), 7901.84, 13, 0.05, 0)
-  visi 777   Excel 1085
-```
-
-The remaining mismatch was the salvage clamp being applied to the returned
-period before Excel applies it. visi now returns the declining-balance amount
-for that period and lets later periods fall to zero once the running balance is
-below salvage. Regression coverage:
-`test_amordegrc_returns_declining_amount_before_later_zero_periods`. AMORDEGRC
-is back in the financial-function fuzz generator.
-
-## 8. ACCRINT from a February month-end -- *fixed*
-
-Confirmed still present before the 2026-09-27 fix. With an issue date on a
-February month-end, ACCRINT needs the whole-span NASD-30/360 basis-0 count:
-
-```
-ACCRINT(2003-02-28, +6mo, +24mo, 0.0171, 34973.86, 2, 0, FALSE)
-  Excel 1196.106
-ACCRINT(2004-02-29, +6mo, +18mo, 0.05, 10000, 2, 0, FALSE)
-  Excel 748.611
-```
-
-visi now uses that whole-span rule for basis-0 February month-end issues and
-keeps the period-walk rule elsewhere. Regression coverage:
-`test_accrint_basis0_february_month_end_issue_uses_whole_span`. The ACCRINT
-fuzzer again allows February month-end issue dates.
-
-The separate DAYS360/YEARFRAC divergence remains intentionally implemented:
-Excel's `DAYS360` function and its `YEARFRAC` basis 0 use genuinely different
-30/360 rules.
-
-## 9. QUARTILE.EXC -- *fixed before 2026-09-27*
-
-The documented reduced case no longer reproduces: current visi returns `53` for
-the `F1:G5, 3` exclusive-quartile shape instead of `#NUM!`. No code change was
-needed in this pass; the existing implementation delegates to the same
-exclusive-percentile interpolation used by `PERCENTILE.EXC`.
-
-## 10. RATE -- *No stable answer*
+## 6. RATE -- *No stable answer*
 
 Excel's `RATE` iterates from its `guess` (default 0.1) and gives up with
 `#NUM!` on series where a root demonstrably exists -- handed a guess near that
@@ -207,19 +150,7 @@ Excluded because "did the other engine's iteration happen to converge from
 0.1" is not a property worth asserting. `IRR`, `XIRR`, `MIRR`, `NPV` and the
 rest of the TVM family stay fuzzed.
 
-## 11. FREQUENCY with non-numeric bins -- *fixed*
-
-Confirmed still present before the 2026-09-27 fix. Probing data
-`{-78, -393.28, 54, "I", 36}` against bins `{<blank>, "fpiijWIx", "ST"}`
-returns Excel's two-element result `{2, 2}`: the blank bin is retained as `0`,
-and the text bins are dropped.
-
-visi now applies that bin coercion rule while continuing to ignore non-numeric
-data values. Regression coverage:
-`test_frequency_keeps_blank_bin_as_zero_and_drops_text_bins`. The all-numeric
-bin ordering rule remains covered separately.
-
-## 12. Error-class precedence in composed expressions -- *tolerated by the comparator*
+## 7. Error-class precedence in composed expressions -- *tolerated by the comparator*
 
 When several sub-expressions of one formula each produce a *different* error,
 visi and Excel sometimes surface different ones:
@@ -257,47 +188,7 @@ output.
 
 ---
 
-## 13. Empty-string cell vs. blank cell -- *fixed in the comparator*
-
-Excel distinguishes a cell holding the empty string from a cell holding
-nothing; visi does not, deliberately and consistently -- `ISBLANK("")` is
-TRUE, `COUNTA` skips it, and `rust_xlsxwriter` collapses an empty string to
-a blank cell on write (`store_string` turns `""` into `write_blank`).
-
-The harness generates short strings from an alphabet that includes a space,
-so it sometimes produces a cell containing only whitespace. OOXML strips
-whitespace-only `<t>` content unless the element carries
-`xml:space="preserve"`, which `openpyxl` does not emit, so *neither* engine
-recovers the space: Excel keeps an empty-string cell (a `<t/>` entry in the
-shared strings) and visi writes no cell at all. Both mean "nothing here".
-
-This surfaced as a spurious failure:
-
-```
-Cell C8 on sheet1: visi=None | Excel= (Formula: None)
-```
-
-The comparator already had the right rule -- `values_equal` treats `None` and
-a whitespace-only string as equal -- but `compare` never reached it when the
-cell was *absent* from visi's output rather than present-and-empty. That path
-guarded on `val is not None`, so a blank-equivalent value was reported as
-"Missing in visi output" while the identical disagreement between two
-*present* cells was tolerated. The two paths now apply the same rule.
-
-Note this is narrow: it only excuses a value that is blank-equivalent. A cell
-genuinely missing from either side still fails, so real data loss on import
-or export is still caught.
-
-A later fuzz pass found one more place where the same OOXML whitespace stripping
-is observable: `ARRAYTOTEXT` over a one-cell whitespace string. Excel still has
-an empty-string cell and returns an empty string; visi imports it as blank and
-applies the real blank-cell rule (`#VALUE!`). The random generator now avoids
-whitespace-only source strings rather than treating an xlsx encoding artifact as
-a formula semantics failure.
-
----
-
-## 14. MOD with a divisor far larger than the dividend -- *Excel is wrong*
+## 8. MOD with a divisor far larger than the dividend -- *Excel is wrong*
 
 When `|d|` is enormous relative to `|n|` and the signs differ, Excel returns
 `0` where the remainder is not zero:
@@ -340,7 +231,7 @@ of `PERCENTOF`, for the same reason it already avoids `POWER`/`^` there; visi's
 correct behavior remains pinned by
 `test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary`.
 
-## 15. VBA: an infinity poisons the next string-to-number conversion -- *Excel is wrong*
+## 9. VBA: an infinity poisons the next string-to-number conversion -- *Excel is wrong*
 
 VBA's `^` is the one operator that returns an infinity rather than raising
 overflow (`a = 3.75 : a ^ 32767` is the `Double` `INF`, measured). Once a
@@ -380,7 +271,7 @@ Measured with `fuzz/vba_expr_probe.py`; it is why `fuzz_vba.py` case
 
 ---
 
-## 16. VBA: `Err.Number` on a `Range` whose cells were deleted -- *No stable answer*
+## 10. VBA: `Err.Number` on a `Range` whose cells were deleted -- *No stable answer*
 
 Excel's `Range` objects track a structural edit: `Set r = ws.Range("A5")`
 followed by `ws.Rows(1).Insert` leaves `r` reading `$A$6`, and still holding
@@ -421,7 +312,7 @@ the *geometry* of the tracking -- move vs. grow vs. shrink -- is identical to
 
 ---
 
-## 17. A tiny power underflows to exactly 0 in Excel -- *Excel is wrong*
+## 11. A tiny power underflows to exactly 0 in Excel -- *Excel is wrong*
 
 `FACT(15) ^ -26` (`1307674368000 ^ -26`) is a legitimate positive subnormal,
 about `9.35e-316`. visi computes it via `f64::powf` and gets that value, so
@@ -442,7 +333,7 @@ Found via fuzz/fuzz_excel.py, seed 795107:
 The generator now avoids `^`/`POWER` calls whose result would underflow to a
 subnormal, rather than chasing Excel's underflow threshold.
 
-## 18. Negative base raised to a tiny fractional exponent -- *No stable answer*
+## 12. Negative base raised to a tiny fractional exponent -- *No stable answer*
 
 `-2 ^ POWER(-15, -6)` -- precedence-wise this is `(-2) ^ (POWER(-15, -6))`,
 not `-(2 ^ POWER(-15, -6))`: `-2^2` really is `4` in Excel's formula
@@ -473,7 +364,7 @@ disagreed (visi `16`, an error code; Excel `1`, a number) purely because
 of this. The generator now avoids `^`/`POWER` calls that could combine a
 possibly-negative base with a fractional exponent close to zero.
 
-## 19. VBA: a never-executed statement can change which error a procedure raises -- *Under investigation*
+## 13. VBA: a never-executed statement can change which error a procedure raises -- *Under investigation*
 
 `fuzz/fuzz_vba.py` first ran against real Windows Excel this session (a
 `win32com` driver alongside the existing macOS AppleScript one), and one
@@ -531,7 +422,7 @@ the meantime (94 is genuinely what `(Not Null) \ (...)` raises), so this is
 left as a known open question rather than either "Excel is wrong" or a
 "visi gap" verdict.
 
-## 20. VBA: an extreme `^` exponent may raise Overflow directly rather than giving infinity -- *Under investigation*
+## 14. VBA: an extreme `^` exponent may raise Overflow directly rather than giving infinity -- *Under investigation*
 
 Section 15 and `writing_an_infinity_stores_the_num_error_excel_stores`
 (`vba/host.rs`) establish, with real-Excel measurements, that `^` never
@@ -556,22 +447,7 @@ distinguishes for plain arithmetic overflow. Left open rather than guessed
 at; a systematic sweep of exponent magnitude (and literal- vs
 variable-sourced base) is future work.
 
-## 21. COUPDAYS basis 1 on some quarterly schedules -- *fixed for the known pattern*
-
-Confirmed still present before the 2026-09-27 fix:
-
-```
-COUPDAYS(DATE(2000,11,28), EDATE(DATE(2000,11,28),54), 4, 1)
-  visi 92   Excel 91
-```
-
-visi now matches Excel's 91-day answer for the quarterly November-to-February
-basis-1 coupon pattern while preserving the documented actual/actual cases.
-Regression coverage:
-`test_coupdays_basis1_quarterly_november_to_february_schedule`. The formula
-fuzzer again includes basis 1 for `COUPDAYS`.
-
-## 22. SORT/SORTBY Unicode text collation -- *No stable answer*
+## 15. SORT/SORTBY Unicode text collation -- *No stable answer*
 
 `SORT` and `SORTBY` use Windows' locale-sensitive text collation for strings.
 The differential generator used a small set of non-ASCII sample strings and hit
@@ -586,23 +462,7 @@ keeps random generated cell text ASCII-only (with punctuation still included)
 so dynamic-array sort tests exercise spreadsheet behavior without depending on
 locale-specific Unicode collation.
 
-## 23. PRICEMAT/YIELDMAT basis 0 issue-anchored 30/360 schedules -- *fixed*
-
-Confirmed still present before the 2026-09-27 fix:
-
-```
-PRICEMAT(EDATE(DATE(2002,3,28),6), EDATE(DATE(2002,3,28),11),
-         DATE(2002,3,28), 0.0224, 0.04, 0)
-  visi 99.25062937062937   Excel 99.26032786885246
-```
-
-The maturity leg should not promote a February month-end to day 30 in this
-basis-0 PRICEMAT/YIELDMAT schedule. visi now uses that leg rule for the issue,
-settlement, and maturity day counts. Regression coverage:
-`test_pricemat_yieldmat_basis0_does_not_promote_maturity_february_month_end`.
-The formula fuzzer again includes basis 0 for `PRICEMAT` and `YIELDMAT`.
-
-## 24. MULTINOMIAL returns just below exact integers -- *Excel is wrong*
+## 16. MULTINOMIAL returns just below exact integers -- *Excel is wrong*
 
 Excel's `MULTINOMIAL` can return a value just below an exact integer even when
 all inputs truncate to ordinary non-negative integers:
@@ -619,7 +479,7 @@ integer result. The random formula fuzzer no longer generates `MULTINOMIAL`,
 while direct coercion/domain behavior remains covered by Rust tests.
 
 
-## 25. COTH near negative saturation changes integer wrappers -- *Excel is wrong*
+## 17. COTH near negative saturation changes integer wrappers -- *Excel is wrong*
 
 Excel rounds `COTH` to exactly `-1` for some moderately large negative
 arguments where the true value is still just below `-1`. That changes wrappers
@@ -635,7 +495,7 @@ A high-precision decimal evaluation of `coth(x) = (exp(2x)+1)/(exp(2x)-1)` gives
 cotangent to exactly `-1`, which is farther from the mathematical value and
 mirrors its known tendency to saturate extreme hyperbolic results too early.
 
-## 26. TANH rounding changes numeric-to-text length -- *Excel is wrong*
+## 18. TANH rounding changes numeric-to-text length -- *Excel is wrong*
 
 Formula fuzz seed `858539` reduced to `LENB(TANH(3))`. Excel for Mac 16.113
 returns 17; visi returns 16. The underlying values and text conversions are:

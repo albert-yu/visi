@@ -343,6 +343,7 @@ class ExcelFuzzGenerator:
         "PERCENTILE.EXC",
         "QUARTILE",
         "QUARTILE.INC",
+        "QUARTILE.EXC",
         "PERCENTRANK",
         "PERCENTRANK.INC",
         "PERCENTRANK.EXC",
@@ -351,6 +352,7 @@ class ExcelFuzzGenerator:
         "RANK.AVG",
         "TRIMMEAN",
         "MODE.MULT",
+        "FREQUENCY",
     ]
     LOOKUP_FUNCTIONS: ClassVar = ["INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP"]
 
