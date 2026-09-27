@@ -127,6 +127,13 @@ WRITABLE_FORMULAS = ['"=A1+B1"', '"=SUM(A1:B2)"', '"=A1*3"', '"=COUNT(A1:B4)"']
 GRID_FUNCTIONS = ["Sum", "Count", "CountA", "Min", "Max", "Average"]
 
 
+FONT_NAMES = ['"Calibri"', '"Arial"', '"Courier New"', '"Times New Roman"']
+NUMBER_FORMATS = ['"General"', '"0"', '"0.00"', '"@"', '"m/d/yy"']
+TABLE_COLUMNS = ['"Region"', '"Amount"', '"Flag"']
+TABLE_COLUMN_NAMES = ['"Region2"', '"Amount2"', '"Flag2"', '"Total"']
+ADDRESS_ARGS = ["", "(False, False)", "(True, False)", "(False, True)", "(True, True)"]
+
+
 class VbaGenerator:
     def __init__(self, seed=None, host_surface="basic"):
         self.rng = random.Random(seed)
@@ -255,6 +262,19 @@ class VbaGenerator:
     def a1(self, row, col):
         return f"{chr(ord('A') + col - 1)}{row}"
 
+    def rgb(self):
+        return f"RGB({self.rng.randint(0, 255)}, {self.rng.randint(0, 255)}, {self.rng.randint(0, 255)})"
+
+    def address_of(self, obj):
+        return f"{obj}.Address{self.rng.choice(ADDRESS_ARGS)}"
+
+    def range_addr(self, scratch=False):
+        row, col = self.cell(scratch=scratch)
+        row2, col2 = self.cell(scratch=scratch)
+        r0, r1 = sorted((row, row2))
+        c0, c1 = sorted((col, col2))
+        return f"{self.a1(r0, c0)}:{self.a1(r1, c1)}", r0, c0, r1, c1
+
     def host_statement(self, target, vars_in_scope, depth):
         if self.host_surface == "extended" and self.rng.random() < 0.45:
             return self.extended_host_statement(target, vars_in_scope, depth)
@@ -339,59 +359,204 @@ class VbaGenerator:
         kind = self.rng.random()
         row, col = self.cell()
         srow, scol = self.cell(scratch=True)
-        r0, r1 = sorted((row, srow))
-        c0, c1 = sorted((col, scol))
-        if kind < 0.25:
-            color = self.rng.choice(
+        range_addr, r0, c0, r1, c1 = self.range_addr()
+        range_obj = f'{HOST_SHEET_VAR}.Range("{range_addr}")'
+
+        if kind < 0.18:
+            style_kind = self.rng.random()
+            if style_kind < 0.32:
+                target_obj = self.rng.choice(["Interior", "Font"])
+                prop = "Color"
+                value = self.rgb()
+                read_obj = self.rng.choice(
+                    [
+                        f"{HOST_SHEET_VAR}.Cells({row}, {col})",
+                        range_obj,
+                    ]
+                )
+                return [
+                    f"{range_obj}.{target_obj}.{prop} = {value}",
+                    f"{target} = CStr({read_obj}.{target_obj}.{prop}) & \"/\" & TypeName({read_obj}.{target_obj}.{prop})",
+                ]
+            if style_kind < 0.50:
+                target_obj = self.rng.choice(["Interior", "Font"])
+                prop = "ColorIndex"
+                value = self.rng.choice(["1", "2", "3", "4", "5", "6", "xlNone"])
+                read_obj = self.rng.choice(
+                    [
+                        f"{HOST_SHEET_VAR}.Cells({row}, {col})",
+                        range_obj,
+                    ]
+                )
+                return [
+                    f"{range_obj}.{target_obj}.{prop} = {value}",
+                    f"{target} = CStr({read_obj}.{target_obj}.{prop}) & \"/\" & TypeName({read_obj}.{target_obj}.{prop})",
+                ]
+            if style_kind < 0.70:
+                prop = self.rng.choice(["Bold", "Italic"])
+                value = self.rng.choice(BOOL_LITERALS)
+                read_obj = self.rng.choice(
+                    [
+                        f"{HOST_SHEET_VAR}.Cells({row}, {col})",
+                        range_obj,
+                    ]
+                )
+                return [
+                    f"{range_obj}.Font.{prop} = {value}",
+                    f"{target} = CStr({read_obj}.Font.{prop}) & \"/\" & TypeName({read_obj}.Font.{prop})",
+                ]
+            if style_kind < 0.84:
+                prop = self.rng.choice(["Size", "Name"])
+                value = (
+                    self.rng.choice(["8", "10.5", "11", "14", "20"])
+                    if prop == "Size"
+                    else self.rng.choice(FONT_NAMES)
+                )
+                read_obj = self.rng.choice(
+                    [
+                        f"{HOST_SHEET_VAR}.Cells({row}, {col})",
+                        range_obj,
+                    ]
+                )
+                return [
+                    f"{range_obj}.Font.{prop} = {value}",
+                    f"{target} = CStr({read_obj}.Font.{prop}) & \"/\" & TypeName({read_obj}.Font.{prop})",
+                ]
+            value = self.rng.choice(NUMBER_FORMATS)
+            read_obj = self.rng.choice(
                 [
-                    "RGB(255, 0, 0)",
-                    "RGB(0, 255, 0)",
-                    "RGB(0, 0, 255)",
-                    "RGB(250, 10, 10)",
+                    f"{HOST_SHEET_VAR}.Cells({row}, {col})",
+                    range_obj,
                 ]
             )
-            target_obj = self.rng.choice(["Interior", "Font"])
-            prop = self.rng.choice(["Color", "ColorIndex"])
-            if prop == "ColorIndex":
-                value = self.rng.choice(["3", "4", "5", "xlNone"])
-            else:
-                value = color
             return [
-                f'{HOST_SHEET_VAR}.Range("{self.a1(r0, c0)}:{self.a1(r1, c1)}").{target_obj}.{prop} = {value}',
-                f"{target} = {HOST_SHEET_VAR}.Cells({row}, {col}).{target_obj}.{prop}",
+                f"{range_obj}.NumberFormat = {value}",
+                f"{target} = {read_obj}.NumberFormat & \"/\" & {read_obj}.Text",
             ]
 
-        if kind < 0.50:
-            at = self.rng.randint(1, GRID_ROWS)
+        if kind < 0.33:
             axis = self.rng.choice(["Rows", "Columns"])
+            at = self.rng.randint(1, GRID_ROWS if axis == "Rows" else GRID_COLS)
+            op = self.rng.choice(["Insert", "Delete"])
             addr = self.a1(row, col)
+            access = self.rng.choice(
+                [
+                    f"{HOST_RANGE_VAR}.Address{self.rng.choice(ADDRESS_ARGS)}",
+                    f"TypeName({HOST_RANGE_VAR})",
+                    f"CStr({HOST_RANGE_VAR} Is Nothing)",
+                    f"CStr({HOST_RANGE_VAR}.Row) & \"/\" & CStr({HOST_RANGE_VAR}.Column)",
+                    f"CStr({HOST_RANGE_VAR}.Value)",
+                ]
+            )
+            if self.rng.random() < 0.55:
+                edit_line = f"{HOST_SHEET_VAR}.{axis}({at}).{op}"
+            else:
+                whole = "EntireRow" if axis == "Rows" else "EntireColumn"
+                edit_line = f'{HOST_SHEET_VAR}.Range("{self.a1(at if axis == "Rows" else row, col if axis == "Rows" else at)}").{whole}.{op}'
             return [
                 f'Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range("{addr}")',
-                f"{HOST_SHEET_VAR}.{axis}({at}).Insert",
-                f'{target} = {HOST_RANGE_VAR}.Address(False, False) & "/" & TypeName({HOST_RANGE_VAR})',
+                edit_line,
+                f'{target} = {access} & "/" & TypeName({HOST_RANGE_VAR})',
             ]
 
-        if kind < 0.76:
+        if kind < 0.46:
+            addr = self.a1(row, col)
+            dr = self.rng.randint(0, GRID_ROWS - row)
+            dc = self.rng.randint(0, GRID_COLS - col)
+            height = self.rng.randint(1, GRID_ROWS - row - dr + 1)
+            width = self.rng.randint(1, GRID_COLS - col - dc + 1)
+            obj = f'{HOST_RANGE_VAR}.Offset({dr}, {dc}).Resize({height}, {width})'
+            read = self.rng.choice(
+                [
+                    self.address_of(obj),
+                    f"CStr({obj}.Count)",
+                    f"CStr({obj}.Row) & \"/\" & CStr({obj}.Column)",
+                    f"TypeName({obj}.ListObject)",
+                ]
+            )
+            return [
+                f'Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.Range("{addr}")',
+                f'{target} = {read} & "/" & CStr({HOST_RANGE_VAR} Is {HOST_SHEET_VAR}.Range("{addr}"))',
+            ]
+
+        if kind < 0.58:
+            prop = self.rng.choice(["Value", "Value2", "Formula"])
+            value = (
+                self.rng.choice(WRITABLE_FORMULAS)
+                if prop == "Formula"
+                else self.expr(depth - 1, vars_in_scope)
+            )
+            read_prop = self.rng.choice(["Value", "Value2", "Formula", "Text"])
+            return [
+                f"{HOST_SHEET_VAR}.Cells({srow}, {scol}).{prop} = {value}",
+                f"{target} = CStr({HOST_SHEET_VAR}.Cells({srow}, {scol}).{read_prop}) & \"/\" & TypeName({HOST_SHEET_VAR}.Cells({srow}, {scol}).{read_prop})",
+            ]
+
+        if kind < 0.72:
             member = self.rng.choice(
                 [
                     "Name",
+                    "Range.Address",
+                    "Range.Address(False, False)",
+                    "HeaderRowRange.Address",
+                    "HeaderRowRange.Address(False, False)",
+                    "DataBodyRange.Address",
+                    "DataBodyRange.Address(False, False)",
                     "ListRows.Count",
                     "ListColumns.Count",
-                    "DataBodyRange.Address(False, False)",
+                    f"ListRows({self.rng.randint(1, 3)}).Range.Address(False, False)",
+                    f"ListRows({self.rng.randint(1, 3)}).Index",
+                    f"ListColumns({self.rng.randint(1, 3)}).Name",
+                    f"ListColumns({self.rng.randint(1, 3)}).Index",
+                    f"ListColumns({self.rng.randint(1, 3)}).Range.Address(False, False)",
+                    f"ListColumns({self.rng.randint(1, 3)}).DataBodyRange.Address(False, False)",
+                    f"ListColumns({self.rng.choice(TABLE_COLUMNS)}).Range.Address(False, False)",
+                    "ShowTotals",
+                    "ShowHeaders",
                 ]
             )
             return [f'{target} = {HOST_SHEET_VAR}.ListObjects("Sales").{member}']
 
-        if kind < 0.90:
+        if kind < 0.84:
+            op = self.rng.random()
+            if op < 0.38:
+                arg = self.rng.choice(["", f"({self.rng.randint(1, 4)})"])
+                return [
+                    f'Set {HOST_RANGE_VAR} = {HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Add{arg}.Range',
+                    f'{target} = {HOST_RANGE_VAR}.Address(False, False) & "/" & CStr({HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Count)',
+                ]
+            if op < 0.62:
+                idx = self.rng.randint(1, 3)
+                return [
+                    f'{HOST_SHEET_VAR}.ListObjects("Sales").ListRows({idx}).Delete',
+                    f'{target} = TypeName({HOST_SHEET_VAR}.ListObjects("Sales").DataBodyRange) & "/" & CStr({HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Count)',
+                ]
+            if op < 0.80:
+                value = self.rng.choice(BOOL_LITERALS)
+                return [
+                    f'{HOST_SHEET_VAR}.ListObjects("Sales").ShowTotals = {value}',
+                    f'{target} = CStr({HOST_SHEET_VAR}.ListObjects("Sales").ShowTotals) & "/" & {HOST_SHEET_VAR}.ListObjects("Sales").Range.Address(False, False)',
+                ]
+            body_row = self.rng.randint(1, 3)
+            body_col = self.rng.randint(1, 3)
+            value = self.expr(depth - 1, vars_in_scope)
             return [
-                f'{HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Add',
-                f'{target} = {HOST_SHEET_VAR}.ListObjects("Sales").ListRows.Count',
+                f'{HOST_SHEET_VAR}.ListObjects("Sales").DataBodyRange.Cells({body_row}, {body_col}).Value = {value}',
+                f'{target} = CStr({HOST_SHEET_VAR}.ListObjects("Sales").DataBodyRange.Cells({body_row}, {body_col}).Value) & "/" & TypeName({HOST_SHEET_VAR}.ListObjects("Sales").DataBodyRange.Cells({body_row}, {body_col}).Value)',
+            ]
+
+        if kind < 0.93:
+            col_idx = self.rng.randint(1, 3)
+            new_col = TABLE_COLUMN_NAMES[self.rng.randrange(len(TABLE_COLUMN_NAMES))]
+            return [
+                f'{HOST_SHEET_VAR}.ListObjects("Sales").ListColumns({col_idx}).Name = {new_col}',
+                f'{target} = {HOST_SHEET_VAR}.ListObjects("Sales").ListColumns({col_idx}).Name & "/" & {HOST_SHEET_VAR}.ListObjects("Sales").HeaderRowRange.Cells(1, {col_idx}).Value',
             ]
 
         new_name = f"Sales_{self.rng.randint(1, 999)}"
         return [
             f'{HOST_SHEET_VAR}.ListObjects("Sales").Name = "{new_name}"',
-            f'{target} = {HOST_SHEET_VAR}.ListObjects("{new_name}").Name',
+            f'{target} = {HOST_SHEET_VAR}.ListObjects("{new_name}").Name & "/" & TypeName({HOST_SHEET_VAR}.ListObjects("{new_name}"))',
         ]
 
     def module(self, index):
