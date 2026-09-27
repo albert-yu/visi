@@ -358,6 +358,18 @@ fn test_f_test_and_confidence_intervals_match_independent_reference() {
 }
 
 #[test]
+fn test_fuzz_f_test_blank_only_range_is_value_error() {
+    let grid = [["1", "2", ""]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:B1,C1:C1)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_inverse_distributions_round_trip_through_their_forward_dist() {
     assert_float_close(&eval1("=NORM.S.DIST(NORM.S.INV(0.9),TRUE)"), 0.9, 1e-6);
     assert_float_close(&eval1("=NORM.DIST(NORM.INV(0.3,5,2),5,2,TRUE)"), 0.3, 1e-6);

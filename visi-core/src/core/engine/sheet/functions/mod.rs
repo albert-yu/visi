@@ -549,6 +549,7 @@ impl Sheet {
                         // exponent error: `POWER("C", #N/A)` is #VALUE!, not
                         // #N/A (fuzz/fuzz_excel.py seeds 61472 and 148208).
                         | "POWER"
+                        | "QUOTIENT"
                         // GCD/LCM walk their arguments in order and reject
                         // the first non-numeric one (a boolean, or text
                         // that doesn't coerce) as #VALUE! -- same

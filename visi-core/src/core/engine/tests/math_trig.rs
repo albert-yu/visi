@@ -75,6 +75,22 @@ fn test_fuzz_quotient_zero_does_not_keep_negative_sign_in_atan2() {
 }
 
 #[test]
+fn test_fuzz_quotient_boolean_type_error_wins_over_later_arg_error() {
+    match eval_one("=QUOTIENT(FALSE, NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+    match eval_one("=QUOTIENT(1, NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+    match eval_one("=QUOTIENT(NA(), FALSE)") {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_atan2_negative_zero_y_returns_positive_pi() {
     match eval_one("=ATAN2(-84, PERCENTOF(0, -10))") {
         ResultData::Float(v) => assert!((v - std::f64::consts::PI).abs() < 1e-12, "got {v}"),

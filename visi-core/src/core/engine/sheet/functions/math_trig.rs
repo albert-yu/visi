@@ -438,18 +438,25 @@ impl Sheet {
                 // not a numbers-only rule -- rejecting numeric strings
                 // too made QUOTIENT over a CONCATENATE/RIGHT result
                 // #VALUE! where Excel computes.
-                let coerce = |v: Option<&ResultData>| -> Option<f64> {
+                let coerce = |v: Option<&ResultData>| -> Result<f64, ResultData> {
                     match v {
-                        Some(ResultData::Boolean(_)) => None,
-                        Some(other) => self.to_f64(other),
-                        None => None,
+                        Some(err @ ResultData::Error(_)) => Err(err.clone()),
+                        Some(ResultData::Boolean(_)) => {
+                            Err(ResultData::Error("#VALUE!".to_string()))
+                        }
+                        Some(other) => self
+                            .to_f64(other)
+                            .ok_or_else(|| ResultData::Error("#VALUE!".to_string())),
+                        None => Err(ResultData::Error("#VALUE!".to_string())),
                     }
                 };
-                let (Some(num), Some(den)) = (
-                    coerce(evaluated_args.first()),
-                    coerce(evaluated_args.get(1)),
-                ) else {
-                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                let num = match coerce(evaluated_args.first()) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(e),
+                };
+                let den = match coerce(evaluated_args.get(1)) {
+                    Ok(d) => d,
+                    Err(e) => return Ok(e),
                 };
                 res_to_rd(crate::core::math_trig::quotient(num, den))
             }

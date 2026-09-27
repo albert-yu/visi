@@ -381,6 +381,15 @@ impl Sheet {
                 res_to_rd(crate::core::stats::f_inv_rt(p, df1, df2))
             }
             "F.TEST" | "FTEST" => {
+                fn all_blank(arg: Option<&ResultData>) -> bool {
+                    match arg {
+                        Some(ResultData::None) => true,
+                        Some(ResultData::List(items)) => {
+                            !items.is_empty() && items.iter().all(|v| all_blank(Some(v)))
+                        }
+                        _ => false,
+                    }
+                }
                 let array1: Vec<f64> = evaluated_args
                     .first()
                     .map(|arg| self.flatten_stat_numbers(arg, false))
@@ -389,6 +398,11 @@ impl Sheet {
                     .get(1)
                     .map(|arg| self.flatten_stat_numbers(arg, false))
                     .unwrap_or_default();
+                if (array1.is_empty() && all_blank(evaluated_args.first()))
+                    || (array2.is_empty() && all_blank(evaluated_args.get(1)))
+                {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
                 res_to_rd(crate::core::stats::f_test(&array1, &array2))
             }
             "FISHER" => {
