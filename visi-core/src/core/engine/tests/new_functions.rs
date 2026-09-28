@@ -667,6 +667,18 @@ fn test_euroconvert_rejects_triangulation_precision_below_3() {
 }
 
 #[test]
+fn test_oddf_functions_match_excel_num_for_rejected_coupon_schedules() {
+    assert!(matches!(
+        eval1("=ODDFYIELD(DATE(2035,8,1)+150, EDATE(DATE(2035,8,1)+211,108), DATE(2035,8,1), DATE(2035,8,1)+211, 0.0422, 108.76, 105, 1, 2)"),
+        ResultData::Error(ref e) if e.contains("#NUM!")
+    ));
+    assert!(matches!(
+        eval1("=ODDFPRICE(DATE(2024,9,10)+25, EDATE(DATE(2024,9,10)+50,42), DATE(2024,9,10), DATE(2024,9,10)+50, 0.0548, 0.0988, 105, 2, 0)"),
+        ResultData::Error(ref e) if e.contains("#NUM!")
+    ));
+}
+
+#[test]
 fn test_oddf_functions_reject_settlement_at_or_after_first_coupon() {
     assert!(matches!(
         eval1("=ODDFPRICE(DATE(1995,6,6)+57, EDATE(DATE(1995,6,6)+57,30), DATE(1995,6,6), DATE(1995,6,6)+57, 0.05, 0.05, 100, 2, 0)"),

@@ -529,7 +529,8 @@ class ExcelFuzzGenerator:
         "ACCRINTM",
         "AMORLINC",
         "AMORDEGRC",
-        # Excluded: docs/excel-discrepancies.md section 19.
+        "ODDFPRICE",
+        "ODDFYIELD",
         "ODDLPRICE",
         "ODDLYIELD",
     ]
@@ -1346,12 +1347,15 @@ class ExcelFuzzGenerator:
             return f"={fn}({cost}, {date_purchased}, {first_period}, {salvage}, {period}, {rate}, {bond_basis()})"
 
         if fn in ("ODDFPRICE", "ODDFYIELD"):
-            issue = self._fin_date()
+            year = random.randint(1995, 2035)
+            month = random.choice([1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+            day = random.randint(2, 27)
             freq = bond_freq()
             period_days = 360 // freq
             stub_days = random.randint(10, max(11, period_days - 15))
-            first_coupon = f"({issue} + {stub_days})"
-            settlement = f"({issue} + {random.randint(0, stub_days)})"
+            first_coupon = f"DATE({year}, {month}, {day})"
+            issue = f"({first_coupon} - {stub_days})"
+            settlement = f"({issue} + {random.randint(1, stub_days - 1)})"
             maturity = f"EDATE({first_coupon}, {12 // freq * random.randint(2, 10)})"
             rate = bond_rate()
             redemption = random.choice([100, 100, 105])

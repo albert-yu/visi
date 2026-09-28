@@ -542,20 +542,3 @@ difference into an integer mismatch. The Excel-free Rust tests
 `test_fuzz_tanh_three_keeps_correctly_rounded_text_length` pin visi's result
 to the independent reference. Windows Excel was not measured for this case;
 the expected values come from the mathematical reference, not macOS behavior.
-
-## 19. ODDFPRICE / ODDFYIELD long first coupon edge cases -- *visi gap*
-
-The odd-first-coupon bond functions still have unresolved edge cases where
-Windows Excel returns `#NUM!` for very long regular coupon schedules after a
-short first coupon, while visi computes a price or yield. Reduced examples from
-the Windows differential fuzzer include:
-
-```
-ODDFYIELD(DATE(2035,8,1)+150, EDATE(DATE(2035,8,1)+211,108), DATE(2035,8,1), DATE(2035,8,1)+211, 0.0422, 108.76, 105, 1, 2)
-ODDFPRICE(DATE(2024,9,10)+25, EDATE(DATE(2024,9,10)+50,42), DATE(2024,9,10), DATE(2024,9,10)+50, 0.0548, 0.0988, 105, 2, 0)
-```
-
-The exact acceptance boundary is not yet modeled, so the random formula fuzzer
-excludes `ODDFPRICE` and `ODDFYIELD` rather than repeatedly rediscovering this
-known finance gap. The ordinary odd-first-coupon examples that visi does match
-remain covered by the Rust finance tests.

@@ -1901,6 +1901,7 @@ impl Sheet {
                     || redemption <= 0.0
                     || !matches!(frequency as i64, 1 | 2 | 4)
                     || !(0.0..=4.0).contains(&basis)
+                    || finance::oddf_excel_rejects_schedule(maturity)
                 {
                     return Ok(ResultData::Error("#NUM!".to_string()));
                 }
@@ -1934,6 +1935,7 @@ impl Sheet {
                     || redemption <= 0.0
                     || !matches!(frequency as i64, 1 | 2 | 4)
                     || !(0.0..=4.0).contains(&basis)
+                    || finance::oddf_excel_rejects_schedule(maturity)
                 {
                     return Ok(ResultData::Error("#NUM!".to_string()));
                 }
