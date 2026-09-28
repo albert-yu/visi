@@ -529,8 +529,7 @@ class ExcelFuzzGenerator:
         "ACCRINTM",
         "AMORLINC",
         "AMORDEGRC",
-        "ODDFPRICE",
-        "ODDFYIELD",
+        # Excluded: docs/excel-discrepancies.md section 19.
         "ODDLPRICE",
         "ODDLYIELD",
     ]
