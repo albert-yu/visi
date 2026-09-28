@@ -302,13 +302,10 @@ impl Sheet {
             "LOG" => {
                 let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
                 let base = self.opt_f64_arg(evaluated_args, 1, 10.0)?;
-                // Base 1 is #DIV/0!, not #NUM!: log(n)/log(1) divides
-                // by zero. Everything else out of domain stays #NUM!
-                // (both confirmed against real Excel).
-                if base == 1.0 {
-                    Ok(ResultData::Error("#DIV/0!".to_string()))
-                } else if num <= 0.0 || base <= 0.0 {
+                if num <= 0.0 || base <= 0.0 {
                     Ok(ResultData::Error("#NUM!".to_string()))
+                } else if base == 1.0 {
+                    Ok(ResultData::Error("#DIV/0!".to_string()))
                 } else {
                     Ok(ResultData::Float(num.log(base)))
                 }

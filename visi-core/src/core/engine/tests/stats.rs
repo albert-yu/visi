@@ -370,6 +370,125 @@ fn test_fuzz_f_test_blank_only_range_is_value_error() {
 }
 
 #[test]
+fn test_fuzz_avedev_range_with_no_numbers_is_num() {
+    let grid = [["a,b"], ["TRUE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=AVEDEV(A1:A2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_f_test_null_error_range_is_num() {
+    let grid = [["1", "4"], ["2", "=SUM((A1:A1 B1:B1))"], ["3", ""]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:A3,B1:B2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_f_test_value_error_range_propagates_value() {
+    let grid = [["=NA()", "4"], ["2", "5"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:A2,B1:B2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_logest_growth_nonpositive_y_is_num_before_later_text() {
+    let grid = [["-89", "53"], ["63", "-46"], ["pPa", "70"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    for formula in ["=INDEX(LOGEST(A1:A3,B1:B3),1)", "=GROWTH(A1:A3,B1:B3,2)"] {
+        let (result, _) = sheet.eval(formula, None).unwrap();
+        match result {
+            ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+            other => panic!("expected #NUM!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_logest_growth_leading_text_y_is_value_before_later_negative() {
+    let grid = [
+        ["bFjK", "192.0652"],
+        ["470", ""],
+        ["92", "22"],
+        ["-95", "214.15"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    for formula in ["=INDEX(LOGEST(A1:A4,B1:B4),1)", "=GROWTH(A1:A4,B1:B4,2)"] {
+        let (result, _) = sheet.eval(formula, None).unwrap();
+        match result {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+            other => panic!("expected #VALUE!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_logest_growth_known_x_value_error_wins_over_y_num_error() {
+    let grid = [["0", "55"], ["160.16", "TRUE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    for formula in ["=INDEX(LOGEST(A1:A2,B1:B2),1)", "=GROWTH(A1:A2,B1:B2,2)"] {
+        let (result, _) = sheet.eval(formula, None).unwrap();
+        match result {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+            other => panic!("expected #VALUE!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_prob_without_numeric_pairs_is_div_zero() {
+    let grid = [["x", "0.5"], ["y", "0.5"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=PROB(A1:A2,B1:B2,0,1)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_prob_numeric_x_without_numeric_probability_is_num() {
+    let grid = [["x", "-16"], ["-246.7", "TRUE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=PROB(A1:A2,B1:B2,-15,14)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_prob_no_numeric_probability_is_div_zero() {
+    let grid = [["-24", ""], ["FALSE", "FALSE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=PROB(A1:A2,B1:B2,-18,16)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_inverse_distributions_round_trip_through_their_forward_dist() {
     assert_float_close(&eval1("=NORM.S.DIST(NORM.S.INV(0.9),TRUE)"), 0.9, 1e-6);
     assert_float_close(&eval1("=NORM.DIST(NORM.INV(0.3,5,2),5,2,TRUE)"), 0.3, 1e-6);

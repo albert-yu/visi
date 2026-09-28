@@ -107,6 +107,18 @@ fn test_fuzz_power_type_checks_base_before_exponent_error() {
 }
 
 #[test]
+fn test_fuzz_log_base_one_error_depends_on_number_domain() {
+    match eval_one("=LOG(5, TRUE)") {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+    match eval_one("=LOG(-5, TRUE)") {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_power_negative_base_rejects_huge_exponent() {
     match eval_one("=POWER(-95, SINH(-424.13))") {
         ResultData::Error(e) => assert_eq!(e, "#NUM!"),

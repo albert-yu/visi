@@ -356,7 +356,7 @@ pub fn inv_incbeta(a: f64, b: f64, p: f64) -> Result<f64, String> {
 
 pub fn avedev(data: &[f64]) -> Result<f64, String> {
     if data.is_empty() {
-        return Err("#DIV/0!".to_string());
+        return Err("#NUM!".to_string());
     }
     let mean = data.iter().sum::<f64>() / data.len() as f64;
     let sum_abs_diff: f64 = data.iter().map(|&x| (x - mean).abs()).sum();
@@ -1521,6 +1521,9 @@ pub fn prob(
 ) -> Result<f64, String> {
     if x_range.len() != prob_range.len() {
         return Err("#N/A".to_string());
+    }
+    if x_range.is_empty() {
+        return Err("#DIV/0!".to_string());
     }
     let prob_sum: f64 = prob_range.iter().sum();
     if (prob_sum - 1.0).abs() > 1e-6 {

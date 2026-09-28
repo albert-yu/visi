@@ -390,6 +390,24 @@ impl Sheet {
                         _ => false,
                     }
                 }
+                fn first_range_error(arg: Option<&ResultData>) -> Option<String> {
+                    match arg {
+                        Some(ResultData::Error(e)) => Some(e.clone()),
+                        Some(ResultData::List(items)) => {
+                            items.iter().find_map(|v| first_range_error(Some(v)))
+                        }
+                        _ => None,
+                    }
+                }
+                if let Some(e) = first_range_error(evaluated_args.first())
+                    .or_else(|| first_range_error(evaluated_args.get(1)))
+                {
+                    return Ok(ResultData::Error(if e == "#NULL!" {
+                        "#NUM!".to_string()
+                    } else {
+                        e
+                    }));
+                }
                 let array1: Vec<f64> = evaluated_args
                     .first()
                     .map(|arg| self.flatten_stat_numbers(arg, false))
@@ -500,14 +518,36 @@ impl Sheet {
                 }
             }
             "FREQUENCY" => {
+                fn frequency_bins(arg: Option<&ResultData>) -> Vec<f64> {
+                    fn walk(arg: &ResultData, out: &mut Vec<f64>, saw_blank: &mut bool) {
+                        match arg {
+                            ResultData::Float(f) => out.push(*f),
+                            ResultData::Integer(i) => out.push(*i as f64),
+                            ResultData::None => *saw_blank = true,
+                            ResultData::String(_) => {}
+                            ResultData::List(items) => {
+                                for item in items {
+                                    walk(item, out, saw_blank);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut out = Vec::new();
+                    let mut saw_blank = false;
+                    if let Some(arg) = arg {
+                        walk(arg, &mut out, &mut saw_blank);
+                    }
+                    if out.is_empty() && (arg.is_some() || saw_blank) {
+                        out.push(0.0);
+                    }
+                    out
+                }
                 let data: Vec<f64> = evaluated_args
                     .first()
                     .map(|arg| self.flatten_stat_numbers(arg, false))
                     .unwrap_or_default();
-                let bins: Vec<f64> = evaluated_args
-                    .get(1)
-                    .map(|arg| self.flatten_frequency_bins(arg, false))
-                    .unwrap_or_default();
+                let bins = frequency_bins(evaluated_args.get(1));
                 match crate::core::stats::frequency(&data, &bins) {
                     Ok(counts) => Ok(ResultData::List(
                         counts.into_iter().map(ResultData::Float).collect(),
@@ -571,23 +611,33 @@ impl Sheet {
                 res_to_rd(crate::core::stats::geomean(&nums))
             }
             "GROWTH" | "LOGEST" => {
-                // LINEST/TREND/GROWTH/LOGEST are the *array* form of
-                // the regression family and, unlike scalar FORECAST
-                // (which drops a non-numeric pair and carries on),
-                // real Excel rejects any non-numeric cell outright
-                // with #VALUE! -- confirmed by probing all five
-                // against the same text-containing range.
+                fn first_log_y_error(arg: Option<&ResultData>) -> Option<&'static str> {
+                    match arg {
+                        Some(ResultData::Float(f)) if *f <= 0.0 => Some("#NUM!"),
+                        Some(ResultData::Integer(i)) if *i <= 0 => Some("#NUM!"),
+                        Some(ResultData::Float(_) | ResultData::Integer(_)) => None,
+                        Some(ResultData::List(items)) => {
+                            items.iter().find_map(|v| first_log_y_error(Some(v)))
+                        }
+                        Some(_) => Some("#VALUE!"),
+                        None => None,
+                    }
+                }
+                let xs = match evaluated_args.get(1) {
+                    Some(arg) => match self.flatten_numbers_only(arg) {
+                        Ok(v) => Some(v),
+                        Err(e) => return Ok(ResultData::Error(e)),
+                    },
+                    None => None,
+                };
+                if let Some(e) = first_log_y_error(evaluated_args.first()) {
+                    return Ok(ResultData::Error(e.to_string()));
+                }
                 let ys = match self.flatten_numbers_only_arg(evaluated_args.first()) {
                     Ok(v) => v,
                     Err(e) => return Ok(ResultData::Error(e)),
                 };
-                let xs = match evaluated_args.get(1) {
-                    Some(arg) => match self.flatten_numbers_only(arg) {
-                        Ok(v) => v,
-                        Err(e) => return Ok(ResultData::Error(e)),
-                    },
-                    None => (1..=ys.len()).map(|i| i as f64).collect(),
-                };
+                let xs = xs.unwrap_or_else(|| (1..=ys.len()).map(|i| i as f64).collect());
                 let ln_ys: Vec<f64> = ys.iter().map(|y| y.ln()).collect();
                 let m = match crate::core::stats::slope(&ln_ys, &xs) {
                     Ok(v) => v,
@@ -981,11 +1031,24 @@ impl Sheet {
                 res_to_rd(crate::core::stats::poisson_dist(x, mean, cumulative))
             }
             "PROB" => {
+                fn has_number(arg: Option<&ResultData>) -> bool {
+                    match arg {
+                        Some(ResultData::Float(_) | ResultData::Integer(_)) => true,
+                        Some(ResultData::List(items)) => items.iter().any(|v| has_number(Some(v))),
+                        _ => false,
+                    }
+                }
                 let (x_range, prob_range) =
                     match self.paired_args(evaluated_args.first(), evaluated_args.get(1)) {
                         Ok(v) => v,
                         Err(e) => return Ok(ResultData::Error(e)),
                     };
+                if x_range.is_empty()
+                    && has_number(evaluated_args.first())
+                    && has_number(evaluated_args.get(1))
+                {
+                    return Ok(ResultData::Error("#NUM!".to_string()));
+                }
                 let lower = self.to_f64_arg(evaluated_args.get(2), "PROB")?;
                 let upper = evaluated_args.get(3).and_then(|v| self.to_f64(v));
                 res_to_rd(crate::core::stats::prob(

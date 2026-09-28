@@ -530,6 +530,8 @@ impl Sheet {
                         | "SUMXMY2"
                         | "CHISQ.TEST"
                         | "CHITEST"
+                        | "F.TEST"
+                        | "FTEST"
                         // LOG and ATAN2 type-check their *first* argument
                         // before ever looking at whether a later one is
                         // itself an error -- when the first argument is
