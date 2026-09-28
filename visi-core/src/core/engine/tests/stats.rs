@@ -382,6 +382,17 @@ fn test_fuzz_f_test_blank_first_range_beats_second_range_error() {
 }
 
 #[test]
+fn test_fuzz_averagea_direct_text_beats_later_error() {
+    let mut sheet = create_sheet(&[["=AVERAGEA(CONCATENATE(-9,FALSE),SQRT(-1))"]]);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 0));
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_avedev_range_with_no_numbers_is_num() {
     let grid = [["a,b"], ["TRUE"]];
     let mut sheet = create_sheet(&grid);
@@ -1031,6 +1042,18 @@ fn test_fuzz_chitest_mismatched_range_with_no_numbers_is_value() {
             ResultData::Error(e) => assert_eq!(e, "#N/A", "row {row}"),
             other => panic!("expected #N/A in row {row}, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn test_fuzz_rsq_null_error_range_is_num() {
+    let grid = [["1", "2"], ["3", "=SUM((A1:A1 B1:B1))"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=RSQ(A1:B1,A2:B2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
     }
 }
 

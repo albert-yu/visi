@@ -473,7 +473,7 @@ impl Sheet {
 
         let uses_ordered_arg_error_check = matches!(
             upper_name.as_str(),
-            "SUM" | "AVERAGE" | "MIN" | "MAX" | "PRODUCT"
+            "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MAX" | "PRODUCT"
         );
         // The type-introspection functions must see an error value
         // rather than have it propagate past them: real Excel answers

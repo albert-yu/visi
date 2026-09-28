@@ -2715,7 +2715,7 @@ fn test_fuzz_text_comparison_case_insensitive_lexicographical() {
     let mut sheet = create_sheet(&sheet_src);
     sheet.commit(None).unwrap();
 
-    let want = [false, false, true, false, false, true, false, true, false];
+    let want = [true, false, true, false, true, false, true, false, true];
     for (col, expected) in want.into_iter().enumerate() {
         match sheet.get_result_data(&CellRef::new(0, col)) {
             ResultData::Boolean(b) => {

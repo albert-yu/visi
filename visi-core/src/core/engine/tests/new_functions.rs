@@ -507,6 +507,17 @@ fn test_amordegrc_returns_declining_amount_before_later_zero_periods() {
 }
 
 #[test]
+fn test_fuzz_amordegrc_uses_rounded_first_period_for_remaining_balance() {
+    assert_float_close(
+        &eval1(
+            "=AMORDEGRC(38511.1, DATE(2027,8,12), EDATE(DATE(2027,8,12),10), 4806.98, 2, 0.1111, 3)",
+        ),
+        5933.0,
+        1e-9,
+    );
+}
+
+#[test]
 fn test_amordegrc_period_sequence_matches_real_excel() {
     // A full period-by-period depreciation schedule confirmed against real
     // Excel, including the first-period prorate and final-period taper.

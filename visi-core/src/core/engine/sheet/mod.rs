@@ -1684,14 +1684,22 @@ impl Sheet {
             }
         };
 
-        for (ca, cb) in a.chars().zip(b.chars()) {
-            let wa = char_weight(ca);
-            let wb = char_weight(cb);
-            if wa != wb {
-                return wa.cmp(&wb);
+        let mut a_chars = a.chars().filter(|&c| c != '-');
+        let mut b_chars = b.chars().filter(|&c| c != '-');
+        loop {
+            match (a_chars.next(), b_chars.next()) {
+                (Some(ca), Some(cb)) => {
+                    let wa = char_weight(ca);
+                    let wb = char_weight(cb);
+                    if wa != wb {
+                        return wa.cmp(&wb);
+                    }
+                }
+                (Some(_), None) => return std::cmp::Ordering::Greater,
+                (None, Some(_)) => return std::cmp::Ordering::Less,
+                (None, None) => return a.len().cmp(&b.len()),
             }
         }
-        a.len().cmp(&b.len())
     }
 
     pub(crate) fn clean_float(val: f64) -> f64 {
@@ -2012,10 +2020,18 @@ impl Sheet {
         let mut ys = Vec::with_capacity(ys_raw.len());
         for ((x, x_err), (y, y_err)) in xs_raw.into_iter().zip(ys_raw) {
             if let Some(e) = x_err {
-                return Err(e);
+                return Err(if e == "#NULL!" {
+                    "#NUM!".to_string()
+                } else {
+                    e
+                });
             }
             if let Some(e) = y_err {
-                return Err(e);
+                return Err(if e == "#NULL!" {
+                    "#NUM!".to_string()
+                } else {
+                    e
+                });
             }
             if let (Some(x), Some(y)) = (x, y) {
                 xs.push(x);

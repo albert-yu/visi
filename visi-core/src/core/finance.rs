@@ -1105,7 +1105,7 @@ pub fn amordegrc(
         return Ok(round_half_away_from_zero(first_amort.min(cost - salvage)));
     }
 
-    let mut remaining = cost - first_amort;
+    let mut remaining = cost - round_half_away_from_zero(first_amort);
     let mut n = 1.0;
     loop {
         if remaining <= salvage {
