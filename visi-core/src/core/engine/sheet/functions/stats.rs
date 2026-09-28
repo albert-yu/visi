@@ -399,9 +399,20 @@ impl Sheet {
                         _ => None,
                     }
                 }
-                if let Some(e) = first_range_error(evaluated_args.first())
-                    .or_else(|| first_range_error(evaluated_args.get(1)))
-                {
+                if all_blank(evaluated_args.first()) {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                if let Some(e) = first_range_error(evaluated_args.first()) {
+                    return Ok(ResultData::Error(if e == "#NULL!" {
+                        "#NUM!".to_string()
+                    } else {
+                        e
+                    }));
+                }
+                if all_blank(evaluated_args.get(1)) {
+                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                }
+                if let Some(e) = first_range_error(evaluated_args.get(1)) {
                     return Ok(ResultData::Error(if e == "#NULL!" {
                         "#NUM!".to_string()
                     } else {

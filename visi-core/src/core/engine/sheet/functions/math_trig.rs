@@ -394,6 +394,36 @@ impl Sheet {
                 // the result of a nested call like LOWER(...) -- is
                 // #VALUE!. That's the same direct-vs-reference split
                 // the SUM/AVERAGE helpers already make.
+                fn has_error(v: &ResultData) -> bool {
+                    match v {
+                        ResultData::Error(_) => true,
+                        ResultData::List(items) => items.iter().any(has_error),
+                        _ => false,
+                    }
+                }
+
+                fn reference_like_error_arg(arg: Option<&crate::core::parser::Expr>) -> bool {
+                    match arg {
+                        Some(crate::core::parser::Expr::CellRef { .. })
+                        | Some(crate::core::parser::Expr::RangeRef { .. })
+                        | Some(crate::core::parser::Expr::StructuredRef { .. }) => true,
+                        Some(crate::core::parser::Expr::FunctionCall { name, .. }) => {
+                            let mut n = name.to_uppercase();
+                            if n.starts_with("_XLFN.") {
+                                n = n["_XLFN.".len()..].to_string();
+                            }
+                            if n.starts_with("_XLWS.") {
+                                n = n["_XLWS.".len()..].to_string();
+                            }
+                            matches!(
+                                n.as_str(),
+                                "INDEX" | "OFFSET" | "INDIRECT" | "ANCHORARRAY" | "SINGLE"
+                            )
+                        }
+                        _ => false,
+                    }
+                }
+
                 let mut sums = [0.0f64; 2];
                 for (i, slot) in sums.iter_mut().enumerate() {
                     let Some(v) = evaluated_args.get(i) else {
@@ -402,6 +432,7 @@ impl Sheet {
                     if arg_is_direct.get(i).copied().unwrap_or(false) {
                         match v {
                             ResultData::None => {}
+                            ResultData::Error(e) => return Ok(ResultData::Error(e.clone())),
                             other => match self.to_f64(other) {
                                 Some(f) => *slot = f,
                                 None => {
@@ -409,6 +440,13 @@ impl Sheet {
                                 }
                             },
                         }
+                    } else if has_error(v) {
+                        if let ResultData::Error(e) = v
+                            && !reference_like_error_arg(args.get(i))
+                        {
+                            return Ok(ResultData::Error(e.clone()));
+                        }
+                        return Ok(ResultData::Error("#NUM!".to_string()));
                     } else {
                         *slot = self.flatten_stat_numbers(v, false).iter().sum();
                     }

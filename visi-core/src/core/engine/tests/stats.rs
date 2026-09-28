@@ -370,6 +370,18 @@ fn test_fuzz_f_test_blank_only_range_is_value_error() {
 }
 
 #[test]
+fn test_fuzz_f_test_blank_first_range_beats_second_range_error() {
+    let grid = [["", "=NA()"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:A1,B1:B1)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_avedev_range_with_no_numbers_is_num() {
     let grid = [["a,b"], ["TRUE"]];
     let mut sheet = create_sheet(&grid);
