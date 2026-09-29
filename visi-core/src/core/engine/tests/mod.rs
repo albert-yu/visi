@@ -1,5 +1,21 @@
 use super::*;
 
+pub(crate) fn eval_formula(source: &str) -> ResultData {
+    let sheet = Sheet::new(SheetInit::default());
+    sheet.eval(source, None).unwrap().0
+}
+
+pub(crate) fn assert_float_close(result: &ResultData, expected: f64, tol: f64) {
+    match result {
+        ResultData::Float(f) => assert!((f - expected).abs() < tol, "expected {expected}, got {f}"),
+        ResultData::Integer(i) => assert!(
+            (*i as f64 - expected).abs() < tol,
+            "expected {expected}, got {i}"
+        ),
+        other => panic!("expected numeric result close to {expected}, got {other:?}"),
+    }
+}
+
 pub(crate) fn create_sheet<const ROWS: usize, const COLS: usize>(
     grid: &[[&str; COLS]; ROWS],
 ) -> Sheet {
@@ -28,12 +44,16 @@ pub(crate) fn create_sheet<const ROWS: usize, const COLS: usize>(
 }
 
 mod aggregate;
+mod database;
+mod dynamic_array;
 mod extended;
+mod financial;
+mod lambda;
 mod locale;
 mod logical;
+mod lookup_ref;
 mod math;
 mod math_trig;
-mod new_functions;
 mod rounding;
 mod stats;
 mod text;

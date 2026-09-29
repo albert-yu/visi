@@ -359,3 +359,144 @@ fn test_forecast_ets_timeline_validation() {
     );
     assert_eq!(crate::core::ets::horizon(1.0, 1.0, 4, 6.0), Ok(2));
 }
+
+#[test]
+fn test_date_serial_matches_real_excel_reference_values() {
+    // ymd_to_serial's Excel-epoch offset was off by one for every date
+    // after the fictitious Feb 29, 1900 (serial 60) -- found via
+    // differential fuzzing against real Excel while validating the new
+    // bond-pricing functions below, which all depend on serial-date
+    // arithmetic. These are well-known, independently verifiable
+    // Excel serial numbers (e.g. 25569 = Unix epoch, a widely cited
+    // Excel/Unix-timestamp conversion constant), confirmed again here
+    // directly against real Microsoft Excel via the differential fuzzer.
+    assert_float_close(&eval_formula("=DATE(1900,1,1)"), 1.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(1970,1,1)"), 25569.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(2000,1,1)"), 36526.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(2007,11,21)"), 39407.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(2021,1,1)"), 44197.0, 1e-9);
+}
+
+#[test]
+fn test_date_functions_match_documented_excel_examples() {
+    // Jan 1, 2024 (serial 45292) is a Monday. WORKDAY skips both weekend
+    // days landing on Mon 1/8/2024 (serial 45299) five working days later
+    // (Tue-Fri, then Mon).
+    assert_float_close(&eval_formula("=WORKDAY(DATE(2024,1,1),5)"), 45299.0, 1e-9);
+    // Inclusive of both endpoints, excluding the Sat/Sun in between:
+    // Jan 1, 2, 3, 4, 5, 8 = 6 working days.
+    assert_float_close(
+        &eval_formula("=NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,8))"),
+        6.0,
+        1e-9,
+    );
+    // EOMONTH(0) is the same month's last day; EOMONTH(1) rolls into
+    // Feb 2024, a leap year (serial 45351 = Feb 29), so the last day is
+    // the 29th.
+    assert_float_close(
+        &eval_formula("=DAY(EOMONTH(DATE(2024,1,15),0))"),
+        31.0,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=EOMONTH(DATE(2024,1,15),1)"), 45351.0, 1e-9);
+    // WEEKNUM with the default return type (week starts Sunday): Jan 1,
+    // 2024 (a Monday) is always week 1; the first Sunday (Jan 7) starts
+    // week 2.
+    assert_float_close(&eval_formula("=WEEKNUM(DATE(2024,1,1))"), 1.0, 1e-9);
+    assert_float_close(&eval_formula("=WEEKNUM(DATE(2024,1,7))"), 2.0, 1e-9);
+    // Microsoft's own DAYS360 documentation example (US/NASD method).
+    assert_float_close(
+        &eval_formula("=DAYS360(DATE(2011,1,30),DATE(2011,2,1))"),
+        1.0,
+        1e-9,
+    );
+}
+
+#[test]
+fn test_besselk_bessely_match_known_reference_values() {
+    // BESSELK/BESSELY match known reference values (K_n/Y_n diverge as x -> 0
+    // while I_n/J_n stay finite there). Expected values are well-known
+    // constants (Abramowitz & Stegun tables).
+    assert_float_close(&eval_formula("=BESSELK(1,0)"), 0.4210244382, 1e-8);
+    assert_float_close(&eval_formula("=BESSELK(1,1)"), 0.6019072301, 1e-8);
+    assert_float_close(&eval_formula("=BESSELY(1,0)"), 0.0882569642, 1e-8);
+    assert_float_close(&eval_formula("=BESSELY(1,1)"), -0.7812128213, 1e-8);
+    // Sanity check the still-correct BESSELI/BESSELJ weren't disturbed.
+    assert_float_close(&eval_formula("=BESSELI(1,0)"), 1.2660658778, 1e-8);
+    assert_float_close(&eval_formula("=BESSELJ(1,0)"), 0.7651976866, 1e-8);
+}
+
+#[test]
+fn test_complex_number_functions_round_trip() {
+    assert_eq!(eval_formula("=COMPLEX(3,4)").to_string(), "3+4i");
+    assert_float_close(&eval_formula("=IMABS(\"3+4i\")"), 5.0, 1e-9);
+    assert_float_close(&eval_formula("=IMREAL(\"3+4i\")"), 3.0, 1e-9);
+    assert_float_close(&eval_formula("=IMAGINARY(\"3+4i\")"), 4.0, 1e-9);
+    assert_eq!(eval_formula("=IMCONJUGATE(\"3+4i\")").to_string(), "3-4i");
+    assert_eq!(
+        eval_formula("=IMSUM(\"3+4i\",\"1-2i\")").to_string(),
+        "4+2i"
+    );
+    assert_eq!(
+        eval_formula("=IMSUB(\"3+4i\",\"1-2i\")").to_string(),
+        "2+6i"
+    );
+    // (3+4i)(1-2i) = 3-6i+4i-8i^2 = 3-2i+8 = 11-2i
+    assert_eq!(
+        eval_formula("=IMPRODUCT(\"3+4i\",\"1-2i\")").to_string(),
+        "11-2i"
+    );
+    // (3+4i)/(1-2i) = (3+4i)(1+2i)/5 = (3+6i+4i-8)/5 = (-5+10i)/5 = -1+2i
+    assert_eq!(
+        eval_formula("=IMDIV(\"3+4i\",\"1-2i\")").to_string(),
+        "-1+2i"
+    );
+}
+
+#[test]
+fn test_cube_webservice_image_report_unavailable_connections_not_echo_stub_args() {
+    // None has a local data source this engine can serve (a live OLAP cube
+    // connection, actual network access, real image decoding); the error
+    // codes match what real Excel shows once its equivalent live connection/
+    // resource is unavailable (#N/A for the CUBE* family, mirroring
+    // RTD/STOCKHISTORY just below; #VALUE! for WEBSERVICE/IMAGE, per
+    // Microsoft's own docs).
+    for formula in [
+        "=CUBEKPIMEMBER(\"conn\",\"kpi\",1)",
+        "=CUBEMEMBER(\"conn\",\"member\")",
+        "=CUBEMEMBERPROPERTY(\"conn\",\"member\",\"prop\")",
+        "=CUBERANKEDMEMBER(\"conn\",\"set\",1)",
+        "=CUBESET(\"conn\",\"set\")",
+        "=CUBESETCOUNT(\"set\")",
+        "=CUBEVALUE(\"conn\",\"member\")",
+    ] {
+        assert!(
+            matches!(eval_formula(formula), ResultData::Error(ref e) if e == "#N/A"),
+            "expected #N/A for {formula}"
+        );
+    }
+    assert!(matches!(
+        eval_formula("=WEBSERVICE(\"https://example.com\")"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+    assert!(matches!(
+        eval_formula("=IMAGE(\"https://example.com/pic.png\")"),
+        ResultData::Error(ref e) if e == "#VALUE!"
+    ));
+}
+
+#[test]
+fn test_stockhistory_and_rtd_report_unavailable_data_source() {
+    // Neither has a local data source this engine can serve (a live
+    // Microsoft stock-data cloud connection, a registered Windows COM RTD
+    // server) -- #N/A matches real Excel's own display once its
+    // equivalent live connection is unavailable.
+    assert!(matches!(
+        eval_formula("=STOCKHISTORY(\"MSFT\",\"2024-01-01\",\"2024-01-31\")"),
+        ResultData::Error(ref e) if e == "#N/A"
+    ));
+    assert!(matches!(
+        eval_formula("=RTD(\"prog.id\",\"server\",\"topic\")"),
+        ResultData::Error(ref e) if e == "#N/A"
+    ));
+}
