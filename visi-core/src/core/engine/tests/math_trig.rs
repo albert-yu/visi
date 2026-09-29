@@ -75,6 +75,22 @@ fn test_fuzz_quotient_zero_does_not_keep_negative_sign_in_atan2() {
 }
 
 #[test]
+fn test_fuzz_quotient_boolean_type_error_wins_over_later_arg_error() {
+    match eval_one("=QUOTIENT(FALSE, NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+    match eval_one("=QUOTIENT(1, NA())") {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+    match eval_one("=QUOTIENT(NA(), FALSE)") {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_atan2_negative_zero_y_returns_positive_pi() {
     match eval_one("=ATAN2(-84, PERCENTOF(0, -10))") {
         ResultData::Float(v) => assert!((v - std::f64::consts::PI).abs() < 1e-12, "got {v}"),
@@ -83,10 +99,54 @@ fn test_fuzz_atan2_negative_zero_y_returns_positive_pi() {
 }
 
 #[test]
+fn test_fuzz_percentof_referenced_error_returns_num_error() {
+    let grid = [["x", "=(A1%)", "=PERCENTOF(0,B1)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 2));
+    assert!(
+        matches!(result, ResultData::Error(ref e) if e == "#NUM!"),
+        "Expected #NUM! for PERCENTOF over a referenced error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_fuzz_percentof_implicit_intersection_error_propagates() {
+    let grid = [["=NA()", "=PERCENTOF(@(A1:A1), 1)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 1));
+    assert!(
+        matches!(result, ResultData::Error(ref e) if e == "#N/A"),
+        "Expected #N/A for PERCENTOF over an implicit intersection error, got {result:?}"
+    );
+}
+
+#[test]
+fn test_fuzz_percentof_direct_error_propagates() {
+    match eval_one("=PERCENTOF(1,SQRTPI(-40))") {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_fuzz_power_type_checks_base_before_exponent_error() {
     match eval_one("=POWER(\"C\", NA())") {
         ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
         other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_log_base_one_error_depends_on_number_domain() {
+    match eval_one("=LOG(5, TRUE)") {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+    match eval_one("=LOG(-5, TRUE)") {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
     }
 }
 

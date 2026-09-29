@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn test_fuzz_string_comparison_ignores_hyphen_for_ordering() {
+    let mut sheet = create_sheet(&[["=(\"-7-8\" < \"2-8\")"]]);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 0));
+    match result {
+        ResultData::Boolean(v) => assert!(!v, "expected FALSE"),
+        other => panic!("expected FALSE, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_upper_rounddown_combo() {
     let sheet_src = [
         ["-60", "", "-6", "", "1"],
@@ -867,6 +878,17 @@ fn test_fuzz_concatenate_scientific_string() {
     match target {
         ResultData::String(ref s) => assert_eq!(s, "45E3"),
         other => panic!("Expected String(\"45E3\"), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_fuzz_dash_separated_date_text_coerces_in_arithmetic() {
+    let mut sheet = create_sheet(&[["=(\"1-3-4\" / FALSE)"]]);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 0));
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
     }
 }
 

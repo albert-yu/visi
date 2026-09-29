@@ -302,13 +302,10 @@ impl Sheet {
             "LOG" => {
                 let num = self.to_f64_arg(evaluated_args.first(), "LOG")?;
                 let base = self.opt_f64_arg(evaluated_args, 1, 10.0)?;
-                // Base 1 is #DIV/0!, not #NUM!: log(n)/log(1) divides
-                // by zero. Everything else out of domain stays #NUM!
-                // (both confirmed against real Excel).
-                if base == 1.0 {
-                    Ok(ResultData::Error("#DIV/0!".to_string()))
-                } else if num <= 0.0 || base <= 0.0 {
+                if num <= 0.0 || base <= 0.0 {
                     Ok(ResultData::Error("#NUM!".to_string()))
+                } else if base == 1.0 {
+                    Ok(ResultData::Error("#DIV/0!".to_string()))
                 } else {
                     Ok(ResultData::Float(num.log(base)))
                 }
@@ -397,6 +394,36 @@ impl Sheet {
                 // the result of a nested call like LOWER(...) -- is
                 // #VALUE!. That's the same direct-vs-reference split
                 // the SUM/AVERAGE helpers already make.
+                fn has_error(v: &ResultData) -> bool {
+                    match v {
+                        ResultData::Error(_) => true,
+                        ResultData::List(items) => items.iter().any(has_error),
+                        _ => false,
+                    }
+                }
+
+                fn reference_like_error_arg(arg: Option<&crate::core::parser::Expr>) -> bool {
+                    match arg {
+                        Some(crate::core::parser::Expr::CellRef { .. })
+                        | Some(crate::core::parser::Expr::RangeRef { .. })
+                        | Some(crate::core::parser::Expr::StructuredRef { .. }) => true,
+                        Some(crate::core::parser::Expr::FunctionCall { name, .. }) => {
+                            let mut n = name.to_uppercase();
+                            if n.starts_with("_XLFN.") {
+                                n = n["_XLFN.".len()..].to_string();
+                            }
+                            if n.starts_with("_XLWS.") {
+                                n = n["_XLWS.".len()..].to_string();
+                            }
+                            matches!(
+                                n.as_str(),
+                                "INDEX" | "OFFSET" | "INDIRECT" | "ANCHORARRAY" | "SINGLE"
+                            )
+                        }
+                        _ => false,
+                    }
+                }
+
                 let mut sums = [0.0f64; 2];
                 for (i, slot) in sums.iter_mut().enumerate() {
                     let Some(v) = evaluated_args.get(i) else {
@@ -405,6 +432,7 @@ impl Sheet {
                     if arg_is_direct.get(i).copied().unwrap_or(false) {
                         match v {
                             ResultData::None => {}
+                            ResultData::Error(e) => return Ok(ResultData::Error(e.clone())),
                             other => match self.to_f64(other) {
                                 Some(f) => *slot = f,
                                 None => {
@@ -412,6 +440,13 @@ impl Sheet {
                                 }
                             },
                         }
+                    } else if has_error(v) {
+                        if let ResultData::Error(e) = v
+                            && !reference_like_error_arg(args.get(i))
+                        {
+                            return Ok(ResultData::Error(e.clone()));
+                        }
+                        return Ok(ResultData::Error("#NUM!".to_string()));
                     } else {
                         *slot = self.flatten_stat_numbers(v, false).iter().sum();
                     }
@@ -438,18 +473,25 @@ impl Sheet {
                 // not a numbers-only rule -- rejecting numeric strings
                 // too made QUOTIENT over a CONCATENATE/RIGHT result
                 // #VALUE! where Excel computes.
-                let coerce = |v: Option<&ResultData>| -> Option<f64> {
+                let coerce = |v: Option<&ResultData>| -> Result<f64, ResultData> {
                     match v {
-                        Some(ResultData::Boolean(_)) => None,
-                        Some(other) => self.to_f64(other),
-                        None => None,
+                        Some(err @ ResultData::Error(_)) => Err(err.clone()),
+                        Some(ResultData::Boolean(_)) => {
+                            Err(ResultData::Error("#VALUE!".to_string()))
+                        }
+                        Some(other) => self
+                            .to_f64(other)
+                            .ok_or_else(|| ResultData::Error("#VALUE!".to_string())),
+                        None => Err(ResultData::Error("#VALUE!".to_string())),
                     }
                 };
-                let (Some(num), Some(den)) = (
-                    coerce(evaluated_args.first()),
-                    coerce(evaluated_args.get(1)),
-                ) else {
-                    return Ok(ResultData::Error("#VALUE!".to_string()));
+                let num = match coerce(evaluated_args.first()) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(e),
+                };
+                let den = match coerce(evaluated_args.get(1)) {
+                    Ok(d) => d,
+                    Err(e) => return Ok(e),
                 };
                 res_to_rd(crate::core::math_trig::quotient(num, den))
             }

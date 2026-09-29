@@ -1347,12 +1347,15 @@ class ExcelFuzzGenerator:
             return f"={fn}({cost}, {date_purchased}, {first_period}, {salvage}, {period}, {rate}, {bond_basis()})"
 
         if fn in ("ODDFPRICE", "ODDFYIELD"):
-            issue = self._fin_date()
+            year = random.randint(1995, 2035)
+            month = random.choice([1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+            day = random.randint(2, 27)
             freq = bond_freq()
             period_days = 360 // freq
             stub_days = random.randint(10, max(11, period_days - 15))
-            first_coupon = f"({issue} + {stub_days})"
-            settlement = f"({issue} + {random.randint(0, stub_days)})"
+            first_coupon = f"DATE({year}, {month}, {day})"
+            issue = f"({first_coupon} - {stub_days})"
+            settlement = f"({issue} + {random.randint(1, stub_days - 1)})"
             maturity = f"EDATE({first_coupon}, {12 // freq * random.randint(2, 10)})"
             rate = bond_rate()
             redemption = random.choice([100, 100, 105])
@@ -2752,7 +2755,7 @@ class DifferentialComparator:
     _NUM_TOKEN_RE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?")
 
     def __init__(
-        self, float_rel_tol=1e-7, float_abs_tol=1e-7, strict_error_class=False
+        self, float_rel_tol=1e-7, float_abs_tol=1e-7, strict_error_class=True
     ):
         self.float_rel_tol = float_rel_tol
         self.float_abs_tol = float_abs_tol
@@ -3034,13 +3037,20 @@ def main():
         help="Directory to store test outputs and failure artifacts.",
     )
     parser.add_argument(
-        "--strict-error-class",
-        action="store_true",
+        "--allow-error-class-drift",
+        dest="strict_error_class",
+        action="store_false",
+        default=True,
         help=(
-            "Count a disagreement where both engines errored but with different "
-            "error classes as a failure. Off by default -- see "
-            "docs/excel-discrepancies.md section 12."
+            "Tolerate a disagreement where both engines errored but with different "
+            "error classes. Strict by default -- see docs/excel-discrepancies.md section 7."
         ),
+    )
+    parser.add_argument(
+        "--strict-error-class",
+        dest="strict_error_class",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
 
@@ -3174,7 +3184,7 @@ def main():
             " errored with different error classes"
         )
         print(
-            "            (documented divergence; re-run with --strict-error-class"
+            "            (documented divergence; omit --allow-error-class-drift"
             " to treat as failures)"
         )
     print("=====================================================================")

@@ -172,6 +172,94 @@ fn test_frequency_keeps_blank_bin_as_zero_and_drops_text_bins() {
 }
 
 #[test]
+fn test_fuzz_frequency_returns_counts_in_sorted_bin_order() {
+    let grid = [
+        ["FALSE", "49"],
+        ["-442", "-363.12"],
+        ["48", ""],
+        ["-454.24", ""],
+        ["-89", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.eval("=FREQUENCY(A1:A5, B1:B3)", None).unwrap().0 {
+        ResultData::List(values) => {
+            assert_eq!(values.len(), 3);
+            assert_float_close(&values[0], 2.0, 1e-9);
+            assert_float_close(&values[1], 2.0, 1e-9);
+            assert_float_close(&values[2], 0.0, 1e-9);
+        }
+        other => panic!("expected list, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_frequency_maps_counts_back_to_unsorted_numeric_bins() {
+    let grid = [
+        ["", "42"],
+        ["-89", "-42"],
+        ["", "36.6"],
+        ["paren(test)", ""],
+        ["PTgoyGH", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.eval("=FREQUENCY(A1:A5, B1:B3)", None).unwrap().0 {
+        ResultData::List(values) => {
+            assert_eq!(values.len(), 4);
+            assert_float_close(&values[0], 0.0, 1e-9);
+            assert_float_close(&values[1], 1.0, 1e-9);
+            assert_float_close(&values[2], 0.0, 1e-9);
+            assert_float_close(&values[3], 0.0, 1e-9);
+        }
+        other => panic!("expected list, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_frequency_ignores_numeric_text_bins() {
+    let grid = [
+        ["-87", "'2"],
+        ["BBtAGaeJ", "-5"],
+        ["-288.09", "-100"],
+        ["218.4468", ""],
+        ["", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.eval("=FREQUENCY(A1:A5, B1:B3)", None).unwrap().0 {
+        ResultData::List(values) => {
+            assert_eq!(values.len(), 3);
+            assert_float_close(&values[0], 1.0, 1e-9);
+            assert_float_close(&values[1], 1.0, 1e-9);
+            assert_float_close(&values[2], 1.0, 1e-9);
+        }
+        other => panic!("expected list, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_frequency_all_text_bins_behave_like_a_single_zero_bin() {
+    let grid = [
+        ["59", "htWilF3U"],
+        ["-37", "yxsf"],
+        ["7", "XF"],
+        ["-129", ""],
+        ["-78", ""],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.eval("=FREQUENCY(A1:A5, B1:B3)", None).unwrap().0 {
+        ResultData::List(values) => {
+            assert_eq!(values.len(), 2);
+            assert_float_close(&values[0], 3.0, 1e-9);
+            assert_float_close(&values[1], 2.0, 1e-9);
+        }
+        other => panic!("expected list, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_price_and_yield_are_inverses_and_match_real_excel() {
     assert_float_close(
         &eval1("=PRICE(DATE(1997,5,13), EDATE(DATE(1997,5,13),42), 0.0606, 0.0885, 100, 2, 3)"),
@@ -419,6 +507,17 @@ fn test_amordegrc_returns_declining_amount_before_later_zero_periods() {
 }
 
 #[test]
+fn test_fuzz_amordegrc_uses_rounded_first_period_for_remaining_balance() {
+    assert_float_close(
+        &eval1(
+            "=AMORDEGRC(38511.1, DATE(2027,8,12), EDATE(DATE(2027,8,12),10), 4806.98, 2, 0.1111, 3)",
+        ),
+        5933.0,
+        1e-9,
+    );
+}
+
+#[test]
 fn test_amordegrc_period_sequence_matches_real_excel() {
     // A full period-by-period depreciation schedule confirmed against real
     // Excel, including the first-period prorate and final-period taper.
@@ -563,6 +662,18 @@ fn test_euroconvert_rejects_unknown_currency_code() {
 fn test_euroconvert_rejects_triangulation_precision_below_3() {
     assert!(matches!(
         eval1("=EUROCONVERT(1, \"DEM\", \"FRF\", FALSE, 2)"),
+        ResultData::Error(ref e) if e.contains("#NUM!")
+    ));
+}
+
+#[test]
+fn test_oddf_functions_match_excel_num_for_rejected_coupon_schedules() {
+    assert!(matches!(
+        eval1("=ODDFYIELD(DATE(2035,8,1)+150, EDATE(DATE(2035,8,1)+211,108), DATE(2035,8,1), DATE(2035,8,1)+211, 0.0422, 108.76, 105, 1, 2)"),
+        ResultData::Error(ref e) if e.contains("#NUM!")
+    ));
+    assert!(matches!(
+        eval1("=ODDFPRICE(DATE(2024,9,10)+25, EDATE(DATE(2024,9,10)+50,42), DATE(2024,9,10), DATE(2024,9,10)+50, 0.0548, 0.0988, 105, 2, 0)"),
         ResultData::Error(ref e) if e.contains("#NUM!")
     ));
 }

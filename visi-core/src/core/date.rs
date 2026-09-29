@@ -523,9 +523,9 @@ pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate,
                         }
                     }
 
-                    if len2 == 4 || len2 == 2 {
+                    if len2 == 4 || len2 <= 2 {
                         let year_raw = val2;
-                        let year = if len2 == 2 {
+                        let year = if len2 <= 2 {
                             locale.expand_two_digit_year(year_raw)
                         } else {
                             year_raw
@@ -1219,6 +1219,14 @@ mod tests {
 
         let (date, format) = parse_date("2026-06-22").unwrap();
         assert_eq!(format_date(date, &format), "2026-06-22");
+    }
+
+    #[test]
+    fn test_parse_date_accepts_single_digit_trailing_year() {
+        let (date, _) = parse_date("1-3-4").unwrap();
+        assert_eq!(date.year, 2004);
+        assert_eq!(date.month, 1);
+        assert_eq!(date.day, 3);
     }
 
     #[test]

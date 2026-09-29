@@ -17,6 +17,41 @@ fn assert_float_close(result: &ResultData, expected: f64, tol: f64) {
 }
 
 #[test]
+fn test_paired_stat_error_order() {
+    let grid = [
+        [
+            "1",
+            "2",
+            "=VALUE(\"x\")",
+            "2",
+            "=ERROR.TYPE(RSQ(A1:B2,C1:D2))",
+        ],
+        ["3", "=1/0", "3", "4", "=ERROR.TYPE(CORREL(A1:B2,C1:D2))"],
+        ["", "", "", "", "=ERROR.TYPE(SUMX2PY2(A1:B2,C1:D2))"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+
+    let r1 = sheet.get_result_data(&CellRef::new(0, 4));
+    assert!(
+        matches!(r1, ResultData::Float(v) if (v - 3.0).abs() < 1e-9),
+        "{r1:?}"
+    );
+
+    let r2 = sheet.get_result_data(&CellRef::new(1, 4));
+    assert!(
+        matches!(r2, ResultData::Float(v) if (v - 3.0).abs() < 1e-9),
+        "{r2:?}"
+    );
+
+    let r3 = sheet.get_result_data(&CellRef::new(2, 4));
+    assert!(
+        matches!(r3, ResultData::Float(v) if (v - 2.0).abs() < 1e-9),
+        "{r3:?}"
+    );
+}
+
+#[test]
 fn test_statistical_summary_functions() {
     let grid = [
         ["10", "20", "30", "40", "50"],
@@ -320,6 +355,160 @@ fn test_f_test_and_confidence_intervals_match_independent_reference() {
 
     assert_float_close(&eval1("=CONFIDENCE.NORM(0.05,10,25)"), 3.919927969, 1e-5);
     assert_float_close(&eval1("=CONFIDENCE.T(0.05,10,25)"), 4.127797137, 1e-6);
+}
+
+#[test]
+fn test_fuzz_f_test_blank_only_range_is_value_error() {
+    let grid = [["1", "2", ""]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:B1,C1:C1)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_f_test_blank_first_range_beats_second_range_error() {
+    let grid = [["", "=NA()"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:A1,B1:B1)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_averagea_direct_text_beats_later_error() {
+    let mut sheet = create_sheet(&[["=AVERAGEA(CONCATENATE(-9,FALSE),SQRT(-1))"]]);
+    sheet.commit(None).unwrap();
+    let result = sheet.get_result_data(&CellRef::new(0, 0));
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_avedev_range_with_no_numbers_is_num() {
+    let grid = [["a,b"], ["TRUE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=AVEDEV(A1:A2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_f_test_null_error_range_is_num() {
+    let grid = [["1", "4"], ["2", "=SUM((A1:A1 B1:B1))"], ["3", ""]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:A3,B1:B2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_f_test_value_error_range_propagates_value() {
+    let grid = [["=NA()", "4"], ["2", "5"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=FTEST(A1:A2,B1:B2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#N/A"),
+        other => panic!("expected #N/A, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_logest_growth_nonpositive_y_is_num_before_later_text() {
+    let grid = [["-89", "53"], ["63", "-46"], ["pPa", "70"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    for formula in ["=INDEX(LOGEST(A1:A3,B1:B3),1)", "=GROWTH(A1:A3,B1:B3,2)"] {
+        let (result, _) = sheet.eval(formula, None).unwrap();
+        match result {
+            ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+            other => panic!("expected #NUM!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_logest_growth_leading_text_y_is_value_before_later_negative() {
+    let grid = [
+        ["bFjK", "192.0652"],
+        ["470", ""],
+        ["92", "22"],
+        ["-95", "214.15"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    for formula in ["=INDEX(LOGEST(A1:A4,B1:B4),1)", "=GROWTH(A1:A4,B1:B4,2)"] {
+        let (result, _) = sheet.eval(formula, None).unwrap();
+        match result {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+            other => panic!("expected #VALUE!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_logest_growth_known_x_value_error_wins_over_y_num_error() {
+    let grid = [["0", "55"], ["160.16", "TRUE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    for formula in ["=INDEX(LOGEST(A1:A2,B1:B2),1)", "=GROWTH(A1:A2,B1:B2,2)"] {
+        let (result, _) = sheet.eval(formula, None).unwrap();
+        match result {
+            ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+            other => panic!("expected #VALUE!, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn test_fuzz_prob_without_numeric_pairs_is_div_zero() {
+    let grid = [["x", "0.5"], ["y", "0.5"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=PROB(A1:A2,B1:B2,0,1)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_prob_numeric_x_without_numeric_probability_is_num() {
+    let grid = [["x", "-16"], ["-246.7", "TRUE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=PROB(A1:A2,B1:B2,-15,14)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fuzz_prob_no_numeric_probability_is_div_zero() {
+    let grid = [["-24", ""], ["FALSE", "FALSE"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=PROB(A1:A2,B1:B2,-18,16)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#DIV/0!"),
+        other => panic!("expected #DIV/0!, got {other:?}"),
+    }
 }
 
 #[test]
@@ -853,6 +1042,18 @@ fn test_fuzz_chitest_mismatched_range_with_no_numbers_is_value() {
             ResultData::Error(e) => assert_eq!(e, "#N/A", "row {row}"),
             other => panic!("expected #N/A in row {row}, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn test_fuzz_rsq_null_error_range_is_num() {
+    let grid = [["1", "2"], ["3", "=SUM((A1:A1 B1:B1))"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    let (result, _) = sheet.eval("=RSQ(A1:B1,A2:B2)", None).unwrap();
+    match result {
+        ResultData::Error(e) => assert_eq!(e, "#NUM!"),
+        other => panic!("expected #NUM!, got {other:?}"),
     }
 }
 

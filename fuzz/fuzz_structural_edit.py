@@ -454,7 +454,7 @@ def formula_references_uncached_blank_formula(formula, key, cells):
     return False
 
 
-def compare_values(visi_path, excel_path, strict_error_class=False):
+def compare_values(visi_path, excel_path, strict_error_class=True):
     visi_cells = XLSXEvaluatedReader.read_evaluated_cells(visi_path)
     excel_cells = XLSXEvaluatedReader.read_evaluated_cells(excel_path)
     comp = DifferentialComparator(strict_error_class=strict_error_class)
@@ -506,7 +506,18 @@ def main():
     parser.add_argument("--excel-path", default=None)
     parser.add_argument("--visi-path", default=None)
     parser.add_argument("--output-dir", default="fuzz_results")
-    parser.add_argument("--strict-error-class", action="store_true")
+    parser.add_argument(
+        "--allow-error-class-drift",
+        dest="strict_error_class",
+        action="store_false",
+        default=True,
+    )
+    parser.add_argument(
+        "--strict-error-class",
+        dest="strict_error_class",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

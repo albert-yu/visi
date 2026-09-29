@@ -42,7 +42,7 @@ def compare_presaved_file(
     backend: str = "auto",
     visi_path: str | None = None,
     output_dir: str | None = None,
-    strict_error_class: bool = False,
+    strict_error_class: bool = True,
     sheet_filter: str | None = None,
     cell_filter: str | None = None,
     verbose: bool = False,
@@ -144,9 +144,17 @@ def main():
         help="Directory to save generated comparison artifacts",
     )
     parser.add_argument(
+        "--allow-error-class-drift",
+        dest="strict_error_class",
+        action="store_false",
+        default=True,
+        help="Tolerate error class mismatches when both engines errored",
+    )
+    parser.add_argument(
         "--strict-error-class",
+        dest="strict_error_class",
         action="store_true",
-        help="Flag error class mismatches as failures",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--sheet", default=None, help="Compare only the specified sheet name"

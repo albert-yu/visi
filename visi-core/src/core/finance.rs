@@ -1105,7 +1105,7 @@ pub fn amordegrc(
         return Ok(round_half_away_from_zero(first_amort.min(cost - salvage)));
     }
 
-    let mut remaining = cost - first_amort;
+    let mut remaining = cost - round_half_away_from_zero(first_amort);
     let mut n = 1.0;
     loop {
         if remaining <= salvage {
@@ -1121,6 +1121,12 @@ pub fn amordegrc(
             return Ok(0.0);
         }
     }
+}
+
+pub(crate) fn oddf_excel_rejects_schedule(maturity: f64) -> bool {
+    let (year, month, day) = date_fn::serial_to_ymd(maturity);
+    (month == 2 && day == date_fn::days_in_month(year, month))
+        || (day == 30 && matches!(month, 4 | 6 | 9 | 11))
 }
 
 #[allow(clippy::too_many_arguments)]
