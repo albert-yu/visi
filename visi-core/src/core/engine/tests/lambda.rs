@@ -21,7 +21,7 @@ fn test_lambda_bare_is_uncallable() {
     // identifier), so an uninvoked, unnamed LAMBDA can't produce a value,
     // matching Excel's own #CALC! for this case.
     assert!(matches!(
-        eval1("=LAMBDA(x, x*2)"),
+        eval_formula("=LAMBDA(x, x*2)"),
         ResultData::Error(ref e) if e.contains("#CALC!")
     ));
 }
@@ -34,11 +34,11 @@ fn test_isomitted_best_effort() {
     // declared, in-scope parameter is never actually omitted -- this only
     // exercises the "identifier not found in scope at all" case.
     assert!(matches!(
-        eval1("=INDEX(MAP(1, LAMBDA(x, ISOMITTED(x))), 1)"),
+        eval_formula("=INDEX(MAP(1, LAMBDA(x, ISOMITTED(x))), 1)"),
         ResultData::Boolean(false)
     ));
     assert!(matches!(
-        eval1("=ISOMITTED(some_undeclared_name)"),
+        eval_formula("=ISOMITTED(some_undeclared_name)"),
         ResultData::Boolean(true)
     ));
 }
@@ -148,11 +148,11 @@ fn test_makearray_builds_row_major_flat_array_hand_verified() {
 
 #[test]
 fn test_let_binds_names_in_sequence_and_rejects_duplicate_names() {
-    assert_float_close(&eval1("=LET(x, 5, x * 2)"), 10.0, 1e-9);
+    assert_float_close(&eval_formula("=LET(x, 5, x * 2)"), 10.0, 1e-9);
     // Later pairs can reference earlier ones in the same LET.
-    assert_float_close(&eval1("=LET(x, 5, y, x + 1, x + y)"), 11.0, 1e-9);
+    assert_float_close(&eval_formula("=LET(x, 5, y, x + 1, x + y)"), 11.0, 1e-9);
     assert!(matches!(
-        eval1("=LET(x, 1, x, 2, x)"),
+        eval_formula("=LET(x, 1, x, 2, x)"),
         ResultData::Error(ref e) if e == "#VALUE!"
     ));
 }

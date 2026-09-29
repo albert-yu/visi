@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn eval1(source: &str) -> ResultData {
+pub(crate) fn eval_formula(source: &str) -> ResultData {
     let sheet = Sheet::new(SheetInit::default());
     sheet.eval(source, None).unwrap().0
 }

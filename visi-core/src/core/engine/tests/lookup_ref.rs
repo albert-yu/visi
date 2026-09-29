@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn test_choose_basic() {
-    assert_float_close(&eval1("=CHOOSE(1, 10, 20, 30)"), 10.0, 1e-9);
-    assert_float_close(&eval1("=CHOOSE(3, 10, 20, 30)"), 30.0, 1e-9);
+    assert_float_close(&eval_formula("=CHOOSE(1, 10, 20, 30)"), 10.0, 1e-9);
+    assert_float_close(&eval_formula("=CHOOSE(3, 10, 20, 30)"), 30.0, 1e-9);
     assert_eq!(
-        eval1("=CHOOSE(2, \"a\", \"b\", \"c\")").to_string(),
+        eval_formula("=CHOOSE(2, \"a\", \"b\", \"c\")").to_string(),
         "b".to_string()
     );
 }
@@ -13,10 +13,10 @@ fn test_choose_basic() {
 #[test]
 fn test_choose_out_of_range_errors() {
     assert!(
-        matches!(eval1("=CHOOSE(0, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!"))
+        matches!(eval_formula("=CHOOSE(0, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!"))
     );
     assert!(
-        matches!(eval1("=CHOOSE(5, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!"))
+        matches!(eval_formula("=CHOOSE(5, 10, 20)"), ResultData::Error(ref e) if e.contains("#VALUE!"))
     );
 }
 
@@ -24,7 +24,7 @@ fn test_choose_out_of_range_errors() {
 fn test_choose_lazy_evaluation_skips_unselected_branch_errors() {
     // Real Excel does not evaluate unselected CHOOSE branches; NA() in the
     // unselected branch must not surface.
-    let result = eval1("=CHOOSE(1, 42, NA())");
+    let result = eval_formula("=CHOOSE(1, 42, NA())");
     assert_float_close(&result, 42.0, 1e-9);
 }
 
@@ -86,8 +86,14 @@ fn test_rows_columns_areas_match_real_excel() {
 
 #[test]
 fn test_isref_distinguishes_references_from_values() {
-    assert!(matches!(eval1("=ISREF(A1)"), ResultData::Boolean(true)));
-    assert!(matches!(eval1("=ISREF(5)"), ResultData::Boolean(false)));
+    assert!(matches!(
+        eval_formula("=ISREF(A1)"),
+        ResultData::Boolean(true)
+    ));
+    assert!(matches!(
+        eval_formula("=ISREF(5)"),
+        ResultData::Boolean(false)
+    ));
 }
 
 #[test]
@@ -112,18 +118,18 @@ fn test_formulatext_and_isformula() {
 #[test]
 fn test_hyperlink_returns_friendly_name_or_link() {
     assert_eq!(
-        eval1("=HYPERLINK(\"https://example.com\")").to_string(),
+        eval_formula("=HYPERLINK(\"https://example.com\")").to_string(),
         "https://example.com"
     );
     assert_eq!(
-        eval1("=HYPERLINK(\"https://example.com\", \"Click\")").to_string(),
+        eval_formula("=HYPERLINK(\"https://example.com\", \"Click\")").to_string(),
         "Click"
     );
 }
 
 #[test]
 fn test_sheets_counts_context_sheets() {
-    assert!(matches!(eval1("=SHEETS()"), ResultData::Float(f) if f == 1.0));
+    assert!(matches!(eval_formula("=SHEETS()"), ResultData::Float(f) if f == 1.0));
 }
 
 #[test]
@@ -177,7 +183,7 @@ fn test_sheet_reports_real_workbook_ordinal() {
 
     // No context at all (standalone eval outside a WorkbookManager pass)
     // keeps the old documented fallback of 1.
-    assert!(matches!(eval1("=SHEET()"), ResultData::Float(f) if f == 1.0));
+    assert!(matches!(eval_formula("=SHEET()"), ResultData::Float(f) if f == 1.0));
 }
 
 #[test]

@@ -24,9 +24,17 @@ use super::*;
 #[test]
 fn test_transpose_swaps_rows_and_cols() {
     // SEQUENCE(2,3) = [[1,2,3],[4,5,6]]; transposed = [[1,4],[2,5],[3,6]].
-    assert_float_close(&eval1("=INDEX(TRANSPOSE(SEQUENCE(2,3)),3,1)"), 3.0, 1e-9);
-    assert_float_close(&eval1("=INDEX(TRANSPOSE(SEQUENCE(2,3)),1,2)"), 4.0, 1e-9);
-    assert_float_close(&eval1("=SUM(TRANSPOSE(SEQUENCE(2,3)))"), 21.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=INDEX(TRANSPOSE(SEQUENCE(2,3)),3,1)"),
+        3.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval_formula("=INDEX(TRANSPOSE(SEQUENCE(2,3)),1,2)"),
+        4.0,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=SUM(TRANSPOSE(SEQUENCE(2,3)))"), 21.0, 1e-9);
 }
 
 #[test]
@@ -46,23 +54,23 @@ fn test_index_recovers_shape_of_nested_reshape_function() {
 fn test_hstack_vstack_combine_arrays() {
     // HSTACK(SEQUENCE(2,1), SEQUENCE(2,1)) side-by-side: [[1,1],[2,2]].
     assert_float_close(
-        &eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,1)"),
+        &eval_formula("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,1)"),
         2.0,
         1e-9,
     );
     assert_float_close(
-        &eval1("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,2)"),
+        &eval_formula("=INDEX(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)),2,2)"),
         2.0,
         1e-9,
     );
     // VSTACK(SEQUENCE(1,2), SEQUENCE(1,2)) stacked: [[1,2],[1,2]].
     assert_float_close(
-        &eval1("=INDEX(VSTACK(SEQUENCE(1,2),SEQUENCE(1,2)),2,2)"),
+        &eval_formula("=INDEX(VSTACK(SEQUENCE(1,2),SEQUENCE(1,2)),2,2)"),
         2.0,
         1e-9,
     );
     assert_float_close(
-        &eval1("=SUM(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)))"),
+        &eval_formula("=SUM(HSTACK(SEQUENCE(2,1),SEQUENCE(2,1)))"),
         6.0,
         1e-9,
     );
@@ -71,34 +79,50 @@ fn test_hstack_vstack_combine_arrays() {
 #[test]
 fn test_chooserows_chosecols_select_by_index() {
     // SEQUENCE(3,3) = [[1,2,3],[4,5,6],[7,8,9]].
-    assert_float_close(&eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),2),1,1)"), 4.0, 1e-9);
     assert_float_close(
-        &eval1("=INDEX(CHOOSEROWS(SEQUENCE(3,3),-1),1,1)"),
+        &eval_formula("=INDEX(CHOOSEROWS(SEQUENCE(3,3),2),1,1)"),
+        4.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval_formula("=INDEX(CHOOSEROWS(SEQUENCE(3,3),-1),1,1)"),
         7.0,
         1e-9,
     );
-    assert_float_close(&eval1("=INDEX(CHOOSECOLS(SEQUENCE(3,3),2),1,1)"), 2.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=INDEX(CHOOSECOLS(SEQUENCE(3,3),2),1,1)"),
+        2.0,
+        1e-9,
+    );
 }
 
 #[test]
 fn test_drop_take_slice_from_either_end() {
-    assert_float_close(&eval1("=SUM(DROP(SEQUENCE(3,3),1))"), 39.0, 1e-9);
-    assert_float_close(&eval1("=SUM(DROP(SEQUENCE(3,3),-1))"), 21.0, 1e-9);
-    assert_float_close(&eval1("=SUM(TAKE(SEQUENCE(3,3),2))"), 21.0, 1e-9);
-    assert_float_close(&eval1("=SUM(TAKE(SEQUENCE(3,3),-1))"), 24.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(DROP(SEQUENCE(3,3),1))"), 39.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(DROP(SEQUENCE(3,3),-1))"), 21.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(TAKE(SEQUENCE(3,3),2))"), 21.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(TAKE(SEQUENCE(3,3),-1))"), 24.0, 1e-9);
 }
 
 #[test]
 fn test_expand_pads_with_given_value() {
-    assert_float_close(&eval1("=INDEX(EXPAND(SEQUENCE(2,2),3,3,0),3,3)"), 0.0, 1e-9);
-    assert_float_close(&eval1("=INDEX(EXPAND(SEQUENCE(2,2),3,3,0),1,1)"), 1.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=INDEX(EXPAND(SEQUENCE(2,2),3,3,0),3,3)"),
+        0.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval_formula("=INDEX(EXPAND(SEQUENCE(2,2),3,3,0),1,1)"),
+        1.0,
+        1e-9,
+    );
 }
 
 #[test]
 fn test_tocol_torow_flatten() {
-    assert_float_close(&eval1("=SUM(TOCOL(SEQUENCE(3,3)))"), 45.0, 1e-9);
-    assert_float_close(&eval1("=SUM(TOROW(SEQUENCE(3,3)))"), 45.0, 1e-9);
-    assert_float_close(&eval1("=INDEX(TOCOL(SEQUENCE(2,2)),3)"), 3.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(TOCOL(SEQUENCE(3,3)))"), 45.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(TOROW(SEQUENCE(3,3)))"), 45.0, 1e-9);
+    assert_float_close(&eval_formula("=INDEX(TOCOL(SEQUENCE(2,2)),3)"), 3.0, 1e-9);
 }
 
 #[test]
@@ -106,10 +130,18 @@ fn test_wraprows_wrapcols_reshape_flat_sequence() {
     // Confirmed against real Excel: WRAPROWS(SEQUENCE(7),3,0) wraps
     // [1..7] into rows of 3, padding the last row with 0; WRAPCOLS does
     // the same column-major.
-    assert_float_close(&eval1("=INDEX(WRAPROWS(SEQUENCE(7),3,0),3,1)"), 7.0, 1e-9);
-    assert_float_close(&eval1("=SUM(WRAPROWS(SEQUENCE(7),3,0))"), 28.0, 1e-9);
-    assert_float_close(&eval1("=INDEX(WRAPCOLS(SEQUENCE(7),3,0),1,3)"), 7.0, 1e-9);
-    assert_float_close(&eval1("=SUM(WRAPCOLS(SEQUENCE(7),3,0))"), 28.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=INDEX(WRAPROWS(SEQUENCE(7),3,0),3,1)"),
+        7.0,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=SUM(WRAPROWS(SEQUENCE(7),3,0))"), 28.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=INDEX(WRAPCOLS(SEQUENCE(7),3,0),1,3)"),
+        7.0,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=SUM(WRAPCOLS(SEQUENCE(7),3,0))"), 28.0, 1e-9);
 }
 
 #[test]
@@ -165,7 +197,7 @@ fn test_unique_sort_sortby_filter_trimrange() {
     assert_float_close(&sheet_f.get_result_data(&CellRef::new(0, 2)), 70.0, 1e-9);
 
     // TRIMRANGE(A1:A5) with no blank/error padding is a pass-through.
-    assert_float_close(&eval1("=SUM(TRIMRANGE(SEQUENCE(3,3)))"), 45.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(TRIMRANGE(SEQUENCE(3,3)))"), 45.0, 1e-9);
 }
 
 #[test]
@@ -207,7 +239,7 @@ fn test_sort_and_sortby_always_place_blanks_last() {
 
 #[test]
 fn test_randarray_respects_shape_bounds_and_whole_number_flag() {
-    match eval1("=RANDARRAY(2,3,10,20,TRUE)") {
+    match eval_formula("=RANDARRAY(2,3,10,20,TRUE)") {
         ResultData::List(rows) => {
             assert_eq!(rows.len(), 2);
             for row in &rows {

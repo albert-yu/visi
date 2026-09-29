@@ -1,6 +1,6 @@
 use super::*;
 
-fn eval1(source: &str) -> ResultData {
+fn eval_formula(source: &str) -> ResultData {
     let sheet = Sheet::new(SheetInit::default());
     sheet.eval(source, None).unwrap().0
 }
@@ -188,30 +188,58 @@ fn test_distributions_and_special_math() {
 
 #[test]
 fn test_probability_distributions_match_known_reference_values() {
-    assert_float_close(&eval1("=NORM.DIST(1,0,1,TRUE)"), 0.8413447461, 1e-6);
-    assert_float_close(&eval1("=PHI(0)"), 0.3989422804, 1e-8);
-    assert_float_close(&eval1("=GAUSS(1.96)"), 0.4750021049, 1e-6);
-    assert_float_close(&eval1("=GAMMA(5)"), 24.0, 1e-9);
-    assert_float_close(&eval1("=GAMMALN(5)"), 3.1780538303, 1e-8);
-    assert_float_close(&eval1("=GAMMA.DIST(2,3,1,FALSE)"), 0.2706705665, 1e-8);
-    assert_float_close(&eval1("=GAMMA.DIST(2,3,1,TRUE)"), 0.3233235838, 1e-8);
-    assert_float_close(&eval1("=BETA.DIST(0.5,2,2,FALSE,0,1)"), 1.5, 1e-8);
-    assert_float_close(&eval1("=BETA.DIST(0.5,2,2,TRUE,0,1)"), 0.5, 1e-8);
-    assert_float_close(&eval1("=BINOM.DIST(3,10,0.5,FALSE)"), 0.1171875, 1e-9);
-    assert_float_close(&eval1("=BINOM.DIST(3,10,0.5,TRUE)"), 0.171875, 1e-9);
-    assert_float_close(&eval1("=BINOM.DIST.RANGE(10,0.5,0,3)"), 0.171875, 1e-9);
-    assert_float_close(&eval1("=BINOM.INV(10,0.5,0.5)"), 5.0, 1e-9);
-    assert_float_close(&eval1("=POISSON.DIST(3,2,FALSE)"), 0.1804470443, 1e-8);
-    assert_float_close(&eval1("=POISSON.DIST(3,2,TRUE)"), 0.8571234605, 1e-8);
-    assert_float_close(&eval1("=WEIBULL.DIST(1,1,1,TRUE)"), 0.6321205588, 1e-8);
-    assert_float_close(&eval1("=HYPGEOM.DIST(1,2,4,10,FALSE)"), 0.5333333333, 1e-8);
-    assert_float_close(&eval1("=HYPGEOM.DIST(1,2,4,10,TRUE)"), 0.8666666667, 1e-8);
-    assert_float_close(&eval1("=NEGBINOM.DIST(2,3,0.5,FALSE)"), 0.1875, 1e-9);
-    assert_float_close(&eval1("=LOGNORM.DIST(1,0,1,TRUE)"), 0.5, 1e-9);
-    assert_float_close(&eval1("=CHISQ.DIST(3.841458821,1,TRUE)"), 0.95, 1e-6);
-    assert_float_close(&eval1("=CHISQ.DIST.RT(3.841458821,1)"), 0.05, 1e-6);
-    assert_float_close(&eval1("=T.DIST(1.5,10,TRUE)"), 0.9177463367, 1e-6);
-    assert_float_close(&eval1("=F.DIST(2,5,10,TRUE)"), 0.8358050491, 1e-6);
+    assert_float_close(&eval_formula("=NORM.DIST(1,0,1,TRUE)"), 0.8413447461, 1e-6);
+    assert_float_close(&eval_formula("=PHI(0)"), 0.3989422804, 1e-8);
+    assert_float_close(&eval_formula("=GAUSS(1.96)"), 0.4750021049, 1e-6);
+    assert_float_close(&eval_formula("=GAMMA(5)"), 24.0, 1e-9);
+    assert_float_close(&eval_formula("=GAMMALN(5)"), 3.1780538303, 1e-8);
+    assert_float_close(
+        &eval_formula("=GAMMA.DIST(2,3,1,FALSE)"),
+        0.2706705665,
+        1e-8,
+    );
+    assert_float_close(&eval_formula("=GAMMA.DIST(2,3,1,TRUE)"), 0.3233235838, 1e-8);
+    assert_float_close(&eval_formula("=BETA.DIST(0.5,2,2,FALSE,0,1)"), 1.5, 1e-8);
+    assert_float_close(&eval_formula("=BETA.DIST(0.5,2,2,TRUE,0,1)"), 0.5, 1e-8);
+    assert_float_close(
+        &eval_formula("=BINOM.DIST(3,10,0.5,FALSE)"),
+        0.1171875,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=BINOM.DIST(3,10,0.5,TRUE)"), 0.171875, 1e-9);
+    assert_float_close(
+        &eval_formula("=BINOM.DIST.RANGE(10,0.5,0,3)"),
+        0.171875,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=BINOM.INV(10,0.5,0.5)"), 5.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=POISSON.DIST(3,2,FALSE)"),
+        0.1804470443,
+        1e-8,
+    );
+    assert_float_close(&eval_formula("=POISSON.DIST(3,2,TRUE)"), 0.8571234605, 1e-8);
+    assert_float_close(
+        &eval_formula("=WEIBULL.DIST(1,1,1,TRUE)"),
+        0.6321205588,
+        1e-8,
+    );
+    assert_float_close(
+        &eval_formula("=HYPGEOM.DIST(1,2,4,10,FALSE)"),
+        0.5333333333,
+        1e-8,
+    );
+    assert_float_close(
+        &eval_formula("=HYPGEOM.DIST(1,2,4,10,TRUE)"),
+        0.8666666667,
+        1e-8,
+    );
+    assert_float_close(&eval_formula("=NEGBINOM.DIST(2,3,0.5,FALSE)"), 0.1875, 1e-9);
+    assert_float_close(&eval_formula("=LOGNORM.DIST(1,0,1,TRUE)"), 0.5, 1e-9);
+    assert_float_close(&eval_formula("=CHISQ.DIST(3.841458821,1,TRUE)"), 0.95, 1e-6);
+    assert_float_close(&eval_formula("=CHISQ.DIST.RT(3.841458821,1)"), 0.05, 1e-6);
+    assert_float_close(&eval_formula("=T.DIST(1.5,10,TRUE)"), 0.9177463367, 1e-6);
+    assert_float_close(&eval_formula("=F.DIST(2,5,10,TRUE)"), 0.8358050491, 1e-6);
 }
 
 #[test]
@@ -353,8 +381,16 @@ fn test_f_test_and_confidence_intervals_match_independent_reference() {
     let (f_test, _) = sheet.eval("=F.TEST(A1:E1,A2:E2)", None).unwrap();
     assert_float_close(&f_test, 0.208, 1e-4);
 
-    assert_float_close(&eval1("=CONFIDENCE.NORM(0.05,10,25)"), 3.919927969, 1e-5);
-    assert_float_close(&eval1("=CONFIDENCE.T(0.05,10,25)"), 4.127797137, 1e-6);
+    assert_float_close(
+        &eval_formula("=CONFIDENCE.NORM(0.05,10,25)"),
+        3.919927969,
+        1e-5,
+    );
+    assert_float_close(
+        &eval_formula("=CONFIDENCE.T(0.05,10,25)"),
+        4.127797137,
+        1e-6,
+    );
 }
 
 #[test]
@@ -513,23 +549,39 @@ fn test_fuzz_prob_no_numeric_probability_is_div_zero() {
 
 #[test]
 fn test_inverse_distributions_round_trip_through_their_forward_dist() {
-    assert_float_close(&eval1("=NORM.S.DIST(NORM.S.INV(0.9),TRUE)"), 0.9, 1e-6);
-    assert_float_close(&eval1("=NORM.DIST(NORM.INV(0.3,5,2),5,2,TRUE)"), 0.3, 1e-6);
     assert_float_close(
-        &eval1("=GAMMA.DIST(GAMMA.INV(0.4,3,2),3,2,TRUE)"),
+        &eval_formula("=NORM.S.DIST(NORM.S.INV(0.9),TRUE)"),
+        0.9,
+        1e-6,
+    );
+    assert_float_close(
+        &eval_formula("=NORM.DIST(NORM.INV(0.3,5,2),5,2,TRUE)"),
+        0.3,
+        1e-6,
+    );
+    assert_float_close(
+        &eval_formula("=GAMMA.DIST(GAMMA.INV(0.4,3,2),3,2,TRUE)"),
         0.4,
         1e-5,
     );
     assert_float_close(
-        &eval1("=BETA.DIST(BETA.INV(0.4,2,3,0,1),2,3,TRUE,0,1)"),
+        &eval_formula("=BETA.DIST(BETA.INV(0.4,2,3,0,1),2,3,TRUE,0,1)"),
         0.4,
         1e-5,
     );
-    assert_float_close(&eval1("=CHISQ.DIST(CHISQ.INV(0.9,5),5,TRUE)"), 0.9, 1e-5);
-    assert_float_close(&eval1("=CHISQ.DIST.RT(CHISQ.INV.RT(0.1,5),5)"), 0.1, 1e-5);
-    assert_float_close(&eval1("=T.DIST(T.INV(0.8,10),10,TRUE)"), 0.8, 1e-5);
     assert_float_close(
-        &eval1("=LOGNORM.DIST(LOGNORM.INV(0.4,0,1),0,1,TRUE)"),
+        &eval_formula("=CHISQ.DIST(CHISQ.INV(0.9,5),5,TRUE)"),
+        0.9,
+        1e-5,
+    );
+    assert_float_close(
+        &eval_formula("=CHISQ.DIST.RT(CHISQ.INV.RT(0.1,5),5)"),
+        0.1,
+        1e-5,
+    );
+    assert_float_close(&eval_formula("=T.DIST(T.INV(0.8,10),10,TRUE)"), 0.8, 1e-5);
+    assert_float_close(
+        &eval_formula("=LOGNORM.DIST(LOGNORM.INV(0.4,0,1),0,1,TRUE)"),
         0.4,
         1e-5,
     );
@@ -569,13 +621,13 @@ fn test_regression_and_correlation() {
 
 #[test]
 fn test_inv_normal_cdf_matches_real_excel_to_near_double_precision() {
-    assert_float_close(&eval1("=NORM.S.INV(0.975)"), 1.959963984540054, 1e-9);
+    assert_float_close(&eval_formula("=NORM.S.INV(0.975)"), 1.959963984540054, 1e-9);
 }
 
 #[test]
 fn test_tdist_honors_tails_argument() {
-    let one_tailed = eval1("=TDIST(2, 10, 1)");
-    let rt = eval1("=T.DIST.RT(2, 10)");
+    let one_tailed = eval_formula("=TDIST(2, 10, 1)");
+    let rt = eval_formula("=T.DIST.RT(2, 10)");
     assert_float_close(
         &one_tailed,
         match rt {
@@ -585,7 +637,7 @@ fn test_tdist_honors_tails_argument() {
         1e-9,
     );
 
-    let two_tailed = eval1("=TDIST(2, 10, 2)");
+    let two_tailed = eval_formula("=TDIST(2, 10, 2)");
     let one_val = match one_tailed {
         ResultData::Float(v) => v,
         other => panic!("expected float, got {other:?}"),
@@ -662,7 +714,7 @@ fn test_inverse_beta_and_f_distributions_converge_to_excel_values() {
         ("=FINV(0.868, 10, 9)", 0.4767239715231606),
         ("=_xlfn.F.INV.RT(0.38, 17, 1)", 3.9202240523326743),
     ] {
-        let got = eval1(f);
+        let got = eval_formula(f);
         match got {
             ResultData::Float(v) => {
                 let rel = (v - expected).abs() / expected.abs().max(1e-300);
@@ -687,7 +739,7 @@ fn test_chitest_single_category_is_not_available() {
 }
 
 fn assert_err(source: &str, expected: &str) {
-    match eval1(source) {
+    match eval_formula(source) {
         ResultData::Error(e) => assert_eq!(e, expected, "for {source}"),
         other => panic!("expected {expected} for {source}, got {other:?}"),
     }
@@ -695,21 +747,37 @@ fn assert_err(source: &str, expected: &str) {
 
 #[test]
 fn test_direct_numeric_text_is_coerced_by_stat_family() {
-    assert_float_close(&eval1("=SUM(\"12\", 3, 4, 5)"), 24.0, 1e-9);
-    assert_float_close(&eval1("=AVERAGE(\"12\", 3, 4, 5)"), 6.0, 1e-9);
-    assert_float_close(&eval1("=DEVSQ(\"12\", 3, 4, 5)"), 50.0, 1e-9);
-    assert_float_close(&eval1("=STDEV(\"12\", 3, 4, 5)"), 4.08248290463863, 1e-12);
-    assert_float_close(&eval1("=VAR(\"12\", 3, 4, 5)"), 16.666666666666668, 1e-12);
-    assert_float_close(&eval1("=MEDIAN(\"12\", 3, 4, 5)"), 4.5, 1e-9);
-    assert_float_close(&eval1("=SUMSQ(\"12\", 3, 4, 5)"), 194.0, 1e-9);
+    assert_float_close(&eval_formula("=SUM(\"12\", 3, 4, 5)"), 24.0, 1e-9);
+    assert_float_close(&eval_formula("=AVERAGE(\"12\", 3, 4, 5)"), 6.0, 1e-9);
+    assert_float_close(&eval_formula("=DEVSQ(\"12\", 3, 4, 5)"), 50.0, 1e-9);
     assert_float_close(
-        &eval1("=GEOMEAN(\"12\", 3, 4, 5)"),
+        &eval_formula("=STDEV(\"12\", 3, 4, 5)"),
+        4.08248290463863,
+        1e-12,
+    );
+    assert_float_close(
+        &eval_formula("=VAR(\"12\", 3, 4, 5)"),
+        16.666666666666668,
+        1e-12,
+    );
+    assert_float_close(&eval_formula("=MEDIAN(\"12\", 3, 4, 5)"), 4.5, 1e-9);
+    assert_float_close(&eval_formula("=SUMSQ(\"12\", 3, 4, 5)"), 194.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=GEOMEAN(\"12\", 3, 4, 5)"),
         5.180040128222703,
         1e-12,
     );
-    assert_float_close(&eval1("=AVEDEV(\"12\", 3, 4, 5)"), 3.0, 1e-9);
-    assert_float_close(&eval1("=SKEW(\"12\", 3, 4, 5)"), 1.7636326148038874, 1e-12);
-    assert_float_close(&eval1("=KURT(\"12\", 3, 4, 5)"), 3.2279999999999944, 1e-12);
+    assert_float_close(&eval_formula("=AVEDEV(\"12\", 3, 4, 5)"), 3.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=SKEW(\"12\", 3, 4, 5)"),
+        1.7636326148038874,
+        1e-12,
+    );
+    assert_float_close(
+        &eval_formula("=KURT(\"12\", 3, 4, 5)"),
+        3.2279999999999944,
+        1e-12,
+    );
 }
 
 #[test]
@@ -738,15 +806,15 @@ fn test_direct_uncoercible_text_is_value_error_in_stat_family() {
 
 #[test]
 fn test_count_never_errors_on_text() {
-    assert_float_close(&eval1("=COUNT(\"12\", 3, 4, 5)"), 4.0, 1e-9);
-    assert_float_close(&eval1("=COUNT(\"abc\", 3, 4, 5)"), 3.0, 1e-9);
+    assert_float_close(&eval_formula("=COUNT(\"12\", 3, 4, 5)"), 4.0, 1e-9);
+    assert_float_close(&eval_formula("=COUNT(\"abc\", 3, 4, 5)"), 3.0, 1e-9);
 }
 
 #[test]
 fn test_averagea_family_direct_vs_referenced_text() {
-    assert_float_close(&eval1("=AVERAGEA(\"12\", 3)"), 7.5, 1e-9);
-    assert_float_close(&eval1("=AVERAGEA(TRUE, 3)"), 2.0, 1e-9);
-    assert_float_close(&eval1("=MAXA(\"12\", 3)"), 12.0, 1e-9);
+    assert_float_close(&eval_formula("=AVERAGEA(\"12\", 3)"), 7.5, 1e-9);
+    assert_float_close(&eval_formula("=AVERAGEA(TRUE, 3)"), 2.0, 1e-9);
+    assert_float_close(&eval_formula("=MAXA(\"12\", 3)"), 12.0, 1e-9);
     assert_err("=AVERAGEA(\"abc\", 3)", "#VALUE!");
 
     let mut sheet = create_sheet(&[["=\"12\"", "=AVERAGEA(A1, 3)"]]);
@@ -756,10 +824,10 @@ fn test_averagea_family_direct_vs_referenced_text() {
 
 #[test]
 fn test_erf_family_coerces_numeric_text_but_rejects_booleans() {
-    assert_float_close(&eval1("=ERF(\"1\")"), 0.8427007929497149, 1e-15);
-    assert_float_close(&eval1("=ERF(\" 1 \")"), 0.8427007929497149, 1e-15);
-    assert_float_close(&eval1("=ERF(\"-39\")"), -1.0, 1e-15);
-    assert_float_close(&eval1("=ERFC(\"1\")"), 0.15729920705028513, 1e-15);
+    assert_float_close(&eval_formula("=ERF(\"1\")"), 0.8427007929497149, 1e-15);
+    assert_float_close(&eval_formula("=ERF(\" 1 \")"), 0.8427007929497149, 1e-15);
+    assert_float_close(&eval_formula("=ERF(\"-39\")"), -1.0, 1e-15);
+    assert_float_close(&eval_formula("=ERFC(\"1\")"), 0.15729920705028513, 1e-15);
     assert_err("=ERF(TRUE)", "#VALUE!");
     assert_err("=ERF(FALSE)", "#VALUE!");
     assert_err("=ERFC(TRUE)", "#VALUE!");
@@ -791,19 +859,19 @@ fn test_chitest_rejects_only_a_negative_total_not_negative_expected_values() {
 #[test]
 fn test_normal_cdf_keeps_its_left_tail() {
     assert_float_close(
-        &eval1("=NORM.S.DIST(-11, TRUE)"),
+        &eval_formula("=NORM.S.DIST(-11, TRUE)"),
         1.9106595744986622e-28,
         1e-40,
     );
     assert_float_close(
-        &eval1("=NORM.S.DIST(-30, TRUE)"),
+        &eval_formula("=NORM.S.DIST(-30, TRUE)"),
         4.9067139271479094e-198,
         1e-210,
     );
-    assert_float_close(&eval1("=SIGN(NORM.S.DIST(-11, TRUE))"), 1.0, 1e-12);
-    assert_float_close(&eval1("=NORM.S.DIST(0, TRUE)"), 0.5, 1e-15);
+    assert_float_close(&eval_formula("=SIGN(NORM.S.DIST(-11, TRUE))"), 1.0, 1e-12);
+    assert_float_close(&eval_formula("=NORM.S.DIST(0, TRUE)"), 0.5, 1e-15);
     assert_float_close(
-        &eval1("=NORM.S.DIST(1.96, TRUE)"),
+        &eval_formula("=NORM.S.DIST(1.96, TRUE)"),
         0.9750021048517795,
         1e-15,
     );
@@ -842,28 +910,44 @@ fn test_paired_sums_error_only_when_a_range_holds_no_numbers() {
 #[allow(clippy::excessive_precision)]
 fn test_f_right_tail_avoids_cancellation_and_fisherinv_saturates() {
     assert_float_close(
-        &eval1("=F.DIST.RT(120.02429320013077, 2, 4)"),
+        &eval_formula("=F.DIST.RT(120.02429320013077, 2, 4)"),
         2.6863796553017013481e-4,
         1e-18,
     );
     assert_float_close(
-        &eval1("=F.DIST.RT(1000000, 2, 4)"),
+        &eval_formula("=F.DIST.RT(1000000, 2, 4)"),
         3.9999840000480035e-12,
         1e-24,
     );
-    assert_float_close(&eval1("=F.DIST.RT(2, 3, 7)"), 0.20269364248665092207, 1e-15);
-    assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-12);
-    assert_float_close(&eval1("=F.DIST.RT(1, 5, 5)"), 0.4999999999999999, 1e-13);
     assert_float_close(
-        &eval1("=FDIST(4.28, 3, 10)"),
+        &eval_formula("=F.DIST.RT(2, 3, 7)"),
+        0.20269364248665092207,
+        1e-15,
+    );
+    assert_float_close(
+        &eval_formula("=F.DIST.RT(0.5, 10, 20)"),
+        0.8701603741696,
+        1e-12,
+    );
+    assert_float_close(
+        &eval_formula("=F.DIST.RT(1, 5, 5)"),
+        0.4999999999999999,
+        1e-13,
+    );
+    assert_float_close(
+        &eval_formula("=FDIST(4.28, 3, 10)"),
         0.034670525913903016847,
         1e-16,
     );
-    assert_float_close(&eval1("=F.DIST(2, 3, 7, TRUE)"), 0.7973063575133491, 1e-13);
+    assert_float_close(
+        &eval_formula("=F.DIST(2, 3, 7, TRUE)"),
+        0.7973063575133491,
+        1e-13,
+    );
 
-    assert_float_close(&eval1("=FISHERINV(1000)"), 1.0, 1e-15);
-    assert_float_close(&eval1("=FISHERINV(-1000)"), -1.0, 1e-15);
-    assert_float_close(&eval1("=FISHERINV(0.5)"), 0.46211715726000974, 1e-15);
+    assert_float_close(&eval_formula("=FISHERINV(1000)"), 1.0, 1e-15);
+    assert_float_close(&eval_formula("=FISHERINV(-1000)"), -1.0, 1e-15);
+    assert_float_close(&eval_formula("=FISHERINV(0.5)"), 0.46211715726000974, 1e-15);
 }
 
 #[test]
@@ -904,14 +988,14 @@ fn test_a_lone_blank_cell_is_a_missing_operand() {
         "=MULTINOMIAL(Z50)",
         "=MULTINOMIAL(Z50, Z51)",
     ] {
-        match eval1(src) {
+        match eval_formula(src) {
             ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
             other => panic!("expected #VALUE! for {src}, got {other:?}"),
         }
     }
-    assert_float_close(&eval1("=SUMPRODUCT(Z50:Z51)"), 0.0, 1e-12);
-    assert_float_close(&eval1("=MULTINOMIAL(3, Z50)"), 1.0, 1e-12);
-    assert_float_close(&eval1("=MULTINOMIAL(Z50, 3)"), 1.0, 1e-12);
+    assert_float_close(&eval_formula("=SUMPRODUCT(Z50:Z51)"), 0.0, 1e-12);
+    assert_float_close(&eval_formula("=MULTINOMIAL(3, Z50)"), 1.0, 1e-12);
+    assert_float_close(&eval_formula("=MULTINOMIAL(Z50, 3)"), 1.0, 1e-12);
 
     let mut sheet = create_sheet(&[["=\"abc\"", "=SUMPRODUCT(A1:A1)"]]);
     sheet.commit(None).unwrap();
@@ -920,11 +1004,11 @@ fn test_a_lone_blank_cell_is_a_missing_operand() {
 
 #[test]
 fn test_gamma_keeps_full_precision_at_integer_arguments() {
-    assert_float_close(&eval1("=GAMMA(34)"), 8.68331761881189e36, 1e24);
-    assert_float_close(&eval1("=GAMMA(5)"), 24.0, 1e-12);
-    assert_float_close(&eval1("=GAMMA(11)"), 3628800.0, 1e-6);
-    assert_float_close(&eval1("=GAMMA(0.5)"), 1.7724538509055159, 1e-15);
-    assert_float_close(&eval1("=GAMMA(-1.5)"), 2.3632718012073544, 1e-14);
+    assert_float_close(&eval_formula("=GAMMA(34)"), 8.68331761881189e36, 1e24);
+    assert_float_close(&eval_formula("=GAMMA(5)"), 24.0, 1e-12);
+    assert_float_close(&eval_formula("=GAMMA(11)"), 3628800.0, 1e-6);
+    assert_float_close(&eval_formula("=GAMMA(0.5)"), 1.7724538509055159, 1e-15);
+    assert_float_close(&eval_formula("=GAMMA(-1.5)"), 2.3632718012073544, 1e-14);
 }
 
 #[test]
@@ -964,21 +1048,21 @@ fn test_mode_family_rejects_a_lone_blank_operand() {
         "=MODE.MULT(241.965, Z90)",
         "=MODE(241.965, 241.965, Z90)",
     ] {
-        match eval1(src) {
+        match eval_formula(src) {
             ResultData::Error(e) => assert_eq!(e, "#VALUE!", "for {src}"),
             other => panic!("expected #VALUE! for {src}, got {other:?}"),
         }
     }
-    assert_float_close(&eval1("=MEDIAN(241.965, Z90)"), 241.965, 1e-12);
-    assert_float_close(&eval1("=MODE(241.965, 241.965)"), 241.965, 1e-12);
-    assert_float_close(&eval1("=MODE(1, 1, 2)"), 1.0, 1e-12);
+    assert_float_close(&eval_formula("=MEDIAN(241.965, Z90)"), 241.965, 1e-12);
+    assert_float_close(&eval_formula("=MODE(241.965, 241.965)"), 241.965, 1e-12);
+    assert_float_close(&eval_formula("=MODE(1, 1, 2)"), 1.0, 1e-12);
     assert_err("=MODE(1, 2)", "#N/A");
 }
 
 #[test]
 fn test_fuzz_ifna_sees_left_hand_shape_error_before_right_hand_value_error() {
     assert_float_close(
-        &eval1("=IFNA((SUMXMY2(A1:B3,C1:C2)+POWER(\"x\",-97)),0)"),
+        &eval_formula("=IFNA((SUMXMY2(A1:B3,C1:C2)+POWER(\"x\",-97)),0)"),
         0.0,
         1e-12,
     );
@@ -1059,11 +1143,15 @@ fn test_fuzz_rsq_null_error_range_is_num() {
 
 #[test]
 fn test_gcd_family_coerces_numeric_text_but_not_booleans() {
-    assert_float_close(&eval1("=GCD(\"12\", 8)"), 4.0, 1e-12);
-    assert_float_close(&eval1("=LCM(\"4\", 6)"), 12.0, 1e-12);
-    assert_float_close(&eval1("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
-    assert_float_close(&eval1("=MULTINOMIAL(RIGHT(\"a5\", 1), 2)"), 21.0, 1e-9);
-    assert_float_close(&eval1("=INT(MULTINOMIAL(0.1, 40))"), 1.0, 1e-12);
+    assert_float_close(&eval_formula("=GCD(\"12\", 8)"), 4.0, 1e-12);
+    assert_float_close(&eval_formula("=LCM(\"4\", 6)"), 12.0, 1e-12);
+    assert_float_close(&eval_formula("=MULTINOMIAL(\"3\", 2)"), 10.0, 1e-9);
+    assert_float_close(
+        &eval_formula("=MULTINOMIAL(RIGHT(\"a5\", 1), 2)"),
+        21.0,
+        1e-9,
+    );
+    assert_float_close(&eval_formula("=INT(MULTINOMIAL(0.1, 40))"), 1.0, 1e-12);
     for src in [
         "=GCD(\"x\", 8)",
         "=GCD(TRUE, 8)",
@@ -1102,15 +1190,19 @@ fn test_incomplete_beta_prefactor_accuracy() {
     assert_eq!(format!("{got:.15}"), "0.941716332833875");
 
     assert_float_close(
-        &eval1("=BETA.DIST(0.0378, 5, 50, TRUE)"),
+        &eval_formula("=BETA.DIST(0.0378, 5, 50, TRUE)"),
         0.052899172535742447319,
         3e-17,
     );
 
-    assert_float_close(&eval1("=F.DIST.RT(0.5, 10, 20)"), 0.8701603741696, 1e-15);
-    assert_float_close(&eval1("=BETA.DIST(0.5, 2, 3, TRUE)"), 0.6875, 1e-15);
     assert_float_close(
-        &eval1("=T.DIST(1.5, 10, TRUE)"),
+        &eval_formula("=F.DIST.RT(0.5, 10, 20)"),
+        0.8701603741696,
+        1e-15,
+    );
+    assert_float_close(&eval_formula("=BETA.DIST(0.5, 2, 3, TRUE)"), 0.6875, 1e-15);
+    assert_float_close(
+        &eval_formula("=T.DIST(1.5, 10, TRUE)"),
         0.91774633677727990958,
         1e-15,
     );
