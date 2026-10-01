@@ -16,6 +16,7 @@
   - In some cases, `visi` even produces more numerically accurate results
   - Excludes some functionality that require Microsoft web services
   - `visi` aims to match the classes of errors that Excel produces, but not the error message itself (`visi` may be able to improve upon Excel here)
+  - [Documented discrepancies](./docs/excel-discrepancies.md)
 - Prioritize performance
   - Written in Rust to maximize potential performance capacity
   - Fast startup time
