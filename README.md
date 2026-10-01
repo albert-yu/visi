@@ -1,4 +1,4 @@
-# visi monorepo
+# visi
 
 > [!NOTE]
 > While use of LLMs for generating _code_ is encouraged, LLM-generated _prose_
@@ -16,6 +16,7 @@
   - In some cases, `visi` even produces more numerically accurate results
   - Excludes some functionality that require Microsoft web services
   - `visi` aims to match the classes of errors that Excel produces, but not the error message itself (`visi` may be able to improve upon Excel here)
+  - [Documented discrepancies](./docs/excel-discrepancies.md)
 - Prioritize performance
   - Written in Rust to maximize potential performance capacity
   - Fast startup time
