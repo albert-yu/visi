@@ -1,4 +1,4 @@
-# visi monorepo
+# visi
 
 > [!NOTE]
 > While use of LLMs for generating _code_ is encouraged, LLM-generated _prose_
