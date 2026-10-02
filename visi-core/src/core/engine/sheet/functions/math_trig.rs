@@ -447,6 +447,14 @@ impl Sheet {
                             return Ok(ResultData::Error(e.clone()));
                         }
                         return Ok(ResultData::Error("#NUM!".to_string()));
+                    } else if !reference_like_error_arg(args.get(i)) {
+                        match v {
+                            ResultData::None => {}
+                            other => match self.to_f64(other) {
+                                Some(f) => *slot = f,
+                                None => return Ok(ResultData::Error("#VALUE!".to_string())),
+                            },
+                        }
                     } else {
                         *slot = self.flatten_stat_numbers(v, false).iter().sum();
                     }

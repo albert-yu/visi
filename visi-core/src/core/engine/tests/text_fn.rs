@@ -250,6 +250,8 @@ fn test_text_rounds_half_away_from_zero() {
         (-3873.705_f64, "0.00", "-3873.71"),
         (2.675, "0.00", "2.68"),
         (1.005, "0.00", "1.01"),
+        (-8885.0, "0.00E+00", "-8.89E+03"),
+        (9995.0, "0.00E+00", "1.00E+04"),
     ] {
         let got = crate::core::text::text_fn(value, fmt);
         assert_eq!(got, Ok(expected.to_string()), "TEXT({value}, {fmt:?})");

@@ -603,7 +603,7 @@ pub fn ispmt(rate: f64, per: f64, nper: f64, pv: f64) -> f64 {
     -pv * rate * (nper - per) / nper
 }
 
-use crate::core::date_fn;
+use crate::core::{date, date_fn};
 
 fn basis_days_between(start: f64, end: f64, basis: f64) -> f64 {
     match basis as i64 {
@@ -720,9 +720,15 @@ pub fn coupdays(settlement: f64, maturity: f64, frequency: f64, basis: f64) -> f
             let pcd = coupon_pcd(settlement, maturity, frequency);
             let ncd = coupon_ncd(settlement, maturity, frequency);
             let days = ncd - pcd;
-            let (_, pm, pd) = date_fn::serial_to_ymd(pcd);
+            let (py, pm, pd) = date_fn::serial_to_ymd(pcd);
             let (_, nm, nd) = date_fn::serial_to_ymd(ncd);
-            if frequency == 4.0 && pm == 11 && nm == 2 && pd == nd && days == 92.0 {
+            if frequency == 4.0
+                && pm == 11
+                && nm == 2
+                && pd == nd
+                && days == 92.0
+                && date::is_leap_year(py)
+            {
                 91.0
             } else {
                 days
