@@ -165,22 +165,17 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 
 - **macOS: A run that produces no output at all is a modal Excel dialog, not a slow
   run.** A VBA *compile* error (undefined name, duplicate `Dim`) is not
-  catchable by the `On Error` harness, so Excel goes modal and `osascript` never
+  catchable by the `On Error` harness, so Excel shows a blocking modal
+  and `osascript` never
   returns. `killall "Microsoft Excel"` and read the generated source.
 - **Windows: For VBA parsing, an Excel popup indicates a compile error.**
   Examples: syntax error, "sub or function not defined". Kill the process
   and try a different case.
 - Editing a shared VBA source constant (`HARNESS_TEMPLATE` in `fuzz_vba.py`, which
   both probe scripts splice in) breaks the importers as a **hang**, not a test
-  failure. Keep it self-contained.
+  failure.
 - Triaging a crash: use `--backend subprocess` (on `fuzz_excel.py`,
-  `fuzz_chart.py`, `fuzz_pivot.py` — the two VBA fuzzers have no such flag and
-  always run in process). Under the default bindings backend the engine shares
-  the harness process, so a Rust panic or stack overflow takes the whole run
-  down instead of one iteration.
-- `fuzz_excel.py` tolerates cells where both engines errored with *different*
-  error classes (documented divergence); `--strict-error-class` makes those
-  failures. Don't chase them unless the user asked for that mode.
+  `fuzz_chart.py`, `fuzz_pivot.py`).
 - Long runs: `fuzz_vba.py` takes `--restart-every` because Excel degrades over
   batches. If mismatches suddenly appear in bulk late in a run, restart Excel
   and re-run those seeds before believing them.
