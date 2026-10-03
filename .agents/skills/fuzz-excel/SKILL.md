@@ -198,10 +198,12 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 
 ## Things that will bite
 
-- **A run that produces no output at all is a modal Excel dialog, not a slow
+- **macOS: A run that produces no output at all is a modal Excel dialog, not a slow
   run.** A VBA *compile* error (undefined name, duplicate `Dim`) is not
   catchable by the `On Error` harness, so Excel goes modal and `osascript` never
   returns. `killall "Microsoft Excel"` and read the generated source.
+- **Windows: For VBA parsing, an Excel popup indicates a compile error.**
+  Examples: syntax error, "sub or function not defined"
 - Editing a shared VBA source constant (`HARNESS_TEMPLATE` in `fuzz_vba.py`, which
   both probe scripts splice in) breaks the importers as a **hang**, not a test
   failure. Keep it self-contained.
