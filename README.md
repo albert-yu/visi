@@ -15,7 +15,8 @@
 - Match Excel's execution behavior 100%, including pivot tables and macros (VBA).
   - In some cases, `visi` even produces more numerically accurate results
   - Excludes some functionality that require Microsoft web services
-  - `visi` aims to match the classes of errors that Excel produces, but not the error message itself (`visi` may be able to improve upon Excel here)
+  - `visi` aims to match the classes of errors that Excel produces,
+    but not the error message itself (`visi` may be able to improve upon Excel here)
   - [Documented discrepancies](./docs/excel-discrepancies.md)
 - Prioritize performance
   - Written in Rust to maximize potential performance capacity
@@ -135,8 +136,10 @@ visi export data.xlsx --sheet Sheet1 --format json --output sheet1.json
 
 This monorepo is structured follows:
 
-- **[`visi-core`](visi-core/)**: embeddable spreadsheet engine that parses and executes the formulas in the workbook
-- **[`visi`](visi/)**: Command-line application using `visi-core` which can edit and execute Excel files headlessly
+- **[`visi-core`](visi-core/)**: embeddable spreadsheet engine that
+  parses and executes the formulas in the workbook
+- **[`visi`](visi/)**: Command-line application using `visi-core`
+  which can edit and execute Excel files headlessly
 
 `visi` aims for feature parity with Excel by using
 a harness that drives a real copy of Excel via AppleScript or COM automation,
