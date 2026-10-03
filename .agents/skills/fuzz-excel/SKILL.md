@@ -8,9 +8,8 @@ description: Run a differential fuzz harness from fuzz/ against a real copy of M
 The harnesses in `fuzz/` drive **real Microsoft Excel** and compare it against
 `visi-core` cell-for-cell. This skill is the loop around them: run N iterations,
 and for each failure, find the root cause, decide *which engine is right*, fix
-or document, and leave behind a **Rust unit test that reproduces the case
-without Excel** — because CI has no Excel and a fuzz finding that only lives in
-`fuzz_results/` is a finding that comes back.
+or document, and deliver a **Rust unit test that reproduces the case
+without Excel**.
 
 The loop does not end at "I explained the failure". It ends when a **fresh full
 run of N iterations passes** with no failures.
@@ -19,8 +18,7 @@ run of N iterations passes** with no failures.
 
 - **Which harness** (table below). If the user just said "the fuzz tests",
   default to `fuzz_excel.py` — the formula-evaluation one.
-- **How many iterations** must pass. Default 20 for `fuzz_excel.py`, 200 for the
-  VBA ones (their cases are much cheaper).
+- **How many iterations** must pass. Default 20
 
 ## Preflight
 
@@ -33,7 +31,7 @@ path. On macOS, use AppleScript and pass the application path explicitly with
 `--excel-path "/Applications/Microsoft Excel.app"`.
 
 ```bash
-uname -s                                             # MINGW*/MSYS*/CYGWIN* = Windows, Darwin = macOS
+uname -s                                            # MINGW*/MSYS*/CYGWIN* = Windows, Darwin = macOS
 source fuzz/venv/bin/activate                       # macOS/Linux venv; never system python
 source fuzz/venv/Scripts/activate                   # Windows/Git Bash venv; never system python
 pip install -r fuzz/requirements.txt                # first run only
@@ -114,8 +112,8 @@ lowering the iteration count to get a green run.
 
 ## Triage: which engine is wrong?
 
-**Excel is not automatically right.** `docs/excel-discrepancies.md` already lists
-cases where visi is measurably more accurate, and "fixing" visi to match Excel
+**Excel is not always right.** There are
+cases where visi is more accurate, and "fixing" visi to match Excel
 there is a regression. Work in this order:
 
 1. **Check `docs/excel-discrepancies.md` first.** If the case is already listed,
@@ -134,8 +132,8 @@ there is a regression. Work in this order:
      memory about what Excel does.**
 3. **Arbitrate with a third reference**, not with the two disagreeing engines: a
    high-precision `decimal`/`mpmath` evaluation, the documented spec, or the day
-   count/financial definition. Whoever matches it is right.
-4. **Then act:**
+   count/financial definition.
+4. **If:**
    - *Excel is right* → fix `visi-core`, add the regression test.
    - *visi is right* → do **not** change the engine. Add a numbered section to
      `docs/excel-discrepancies.md` (state which kind: "Excel is wrong" / "visi
@@ -146,48 +144,13 @@ there is a regression. Work in this order:
    - *No stable answer* (Excel is internally inconsistent or heuristic) →
      document and exclude; do not encode Excel's coin flip.
 
-### Windows Excel wins
-
 Where **Windows Excel and macOS Excel disagree, Windows is authoritative.**
-visi's behaviour is pinned to Windows; the macOS result is then a platform note,
-never the thing a test asserts.
 
-- Reach for a Windows result whenever the case smells platform-specific: VBA
-  `Err.Number` values, object-model error numbers, locale/date rendering,
-  chart and drawing XML details, anything Mac-only in the AppleScript bridge.
-  Section 16 of `docs/excel-discrepancies.md` is an existing instance —
-  Excel for Mac's error number there is not even reproducible run to run.
-- On Windows, run the harnesses with `--driver win32com`. On macOS, run them
-  with `--excel-path "/Applications/Microsoft Excel.app"` (AppleScript). If no
-  Windows machine is available in this session for a platform-sensitive case,
-  **say so** and do not silently pin the engine to the macOS answer: either
-  leave the case documented as awaiting Windows confirmation, or ask the user
-  whether they can run the reduced case on Windows.
-- When a discrepancy entry records a platform split, name both results and mark
-  which one visi implements.
+## Deliver a test
 
-## The test is the deliverable
-
-Every fixed or documented failure leaves behind a Rust test that **runs in CI
-with no Excel installed**. Put it where the case actually lives:
-
-| Case | Where |
-| --- | --- |
-| formula evaluation | `visi-core/src/core/engine/tests/{aggregate,logical,math,math_trig,rounding,stats,text,text_fn,extended,new_functions}.rs` |
-| VBA host object model | inline `mod tests` in `visi-core/src/core/vba/host.rs` |
-| VBA `Variant` semantics | inline tests in `visi-core/src/core/vba/value.rs` |
-| tables / pivots / xlsx round-trip | inline `mod tests` in `table.rs`, `pivot.rs`, `xlsx.rs` (the pivot-XML round trip is tested from `xlsx.rs`, not `pivot_xlsx.rs`) |
-| structural edits | `grid_edit.rs` tests |
-| anything that needs a real file round trip | `visi/tests/cli_tests.rs` |
-
-Engine tests follow the harvested-fuzz-case convention: a literal grid handed to
-the local `create_sheet` helper, `sheet.commit(None).unwrap()`, then one
-assertion on one cell, with the expected value in the panic message. Name it
-after the behaviour (`test_fuzz_<what>_<condition>`) and keep the minimized grid,
-not the original 10×5 one.
-
-For a VBA host test, read the expected string **off a probe run** and paste it —
-that is why those tests assert exact strings.
+Write a Rust unit test that for every fix.
+Find the most appropriate place to put it among
+existing tests.
 
 Then:
 
@@ -196,26 +159,16 @@ cargo test -p visi-core
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Things that will bite
+## Excel modals/popups
 
-- **A run that produces no output at all is a modal Excel dialog, not a slow
+- **macOS: A run that produces no output at all is a modal Excel dialog, not a slow
   run.** A VBA *compile* error (undefined name, duplicate `Dim`) is not
-  catchable by the `On Error` harness, so Excel goes modal and `osascript` never
+  catchable by the `On Error` harness, so Excel shows a blocking modal
+  and `osascript` never
   returns. `killall "Microsoft Excel"` and read the generated source.
-- Editing a shared VBA source constant (`HARNESS_TEMPLATE` in `fuzz_vba.py`, which
-  both probe scripts splice in) breaks the importers as a **hang**, not a test
-  failure. Keep it self-contained.
-- Triaging a crash: use `--backend subprocess` (on `fuzz_excel.py`,
-  `fuzz_chart.py`, `fuzz_pivot.py` — the two VBA fuzzers have no such flag and
-  always run in process). Under the default bindings backend the engine shares
-  the harness process, so a Rust panic or stack overflow takes the whole run
-  down instead of one iteration.
-- `fuzz_excel.py` tolerates cells where both engines errored with *different*
-  error classes (documented divergence); `--strict-error-class` makes those
-  failures. Don't chase them unless the user asked for that mode.
-- Long runs: `fuzz_vba.py` takes `--restart-every` because Excel degrades over
-  batches. If mismatches suddenly appear in bulk late in a run, restart Excel
-  and re-run those seeds before believing them.
+- **Windows: For VBA parsing, an Excel popup indicates a compile error.**
+  Examples: syntax error, "sub or function not defined". Kill the process
+  and try a different case.
 
 ## Report
 
