@@ -112,8 +112,8 @@ lowering the iteration count to get a green run.
 
 ## Triage: which engine is wrong?
 
-**Excel is not automatically right.** `docs/excel-discrepancies.md` already lists
-cases where visi is measurably more accurate, and "fixing" visi to match Excel
+**Excel is not always right.** There are
+cases where visi is more accurate, and "fixing" visi to match Excel
 there is a regression. Work in this order:
 
 1. **Check `docs/excel-discrepancies.md` first.** If the case is already listed,
@@ -132,8 +132,8 @@ there is a regression. Work in this order:
      memory about what Excel does.**
 3. **Arbitrate with a third reference**, not with the two disagreeing engines: a
    high-precision `decimal`/`mpmath` evaluation, the documented spec, or the day
-   count/financial definition. Whoever matches it is right.
-4. **Then act:**
+   count/financial definition.
+4. **If:**
    - *Excel is right* → fix `visi-core`, add the regression test.
    - *visi is right* → do **not** change the engine. Add a numbered section to
      `docs/excel-discrepancies.md` (state which kind: "Excel is wrong" / "visi
@@ -144,14 +144,12 @@ there is a regression. Work in this order:
    - *No stable answer* (Excel is internally inconsistent or heuristic) →
      document and exclude; do not encode Excel's coin flip.
 
-### Windows Excel wins
-
 Where **Windows Excel and macOS Excel disagree, Windows is authoritative.**
 
-## The test is the deliverable
+## Deliver a test
 
-Every fixed or documented failure leaves behind a Rust test that **runs in CI
-with no Excel installed**. Find the most appropriate place to put it among
+Write a Rust unit test that for every fix.
+Find the most appropriate place to put it among
 existing tests.
 
 Then:
@@ -161,7 +159,7 @@ cargo test -p visi-core
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Important things to watch out for
+## Excel modals/popups
 
 - **macOS: A run that produces no output at all is a modal Excel dialog, not a slow
   run.** A VBA *compile* error (undefined name, duplicate `Dim`) is not
@@ -171,14 +169,6 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 - **Windows: For VBA parsing, an Excel popup indicates a compile error.**
   Examples: syntax error, "sub or function not defined". Kill the process
   and try a different case.
-- Editing a shared VBA source constant (`HARNESS_TEMPLATE` in `fuzz_vba.py`, which
-  both probe scripts splice in) breaks the importers as a **hang**, not a test
-  failure.
-- Triaging a crash: use `--backend subprocess` (on `fuzz_excel.py`,
-  `fuzz_chart.py`, `fuzz_pivot.py`).
-- Long runs: `fuzz_vba.py` takes `--restart-every` because Excel degrades over
-  batches. If mismatches suddenly appear in bulk late in a run, restart Excel
-  and re-run those seeds before believing them.
 
 ## Report
 
