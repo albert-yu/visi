@@ -1,0 +1,6 @@
+[environment]
+python = "./fuzz/venv"
+root = ["./fuzz", "./visi-python/tests"]
+
+[analysis]
+allowed-unresolved-imports = ["win32com.**"]
