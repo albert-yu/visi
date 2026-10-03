@@ -141,6 +141,7 @@ This monorepo is structured follows:
 - **[`visi`](visi/)**: Command-line application using `visi-core`
   which can edit and execute Excel files headlessly
 - [`fuzz`](fuzz/): differential fuzzing harness to match Excel behavior
+- [`visi-python`](visi-python/): Python bindings for `visi-core` (API unstable)
 
 `visi` aims for feature parity with Excel by using
 a harness (`fuzz`) that drives a real copy of Excel via AppleScript or COM automation,
