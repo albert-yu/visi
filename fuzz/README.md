@@ -20,6 +20,8 @@ resulting file.
 - The `visi_core` bindings (see below), and/or a compiled `visi` binary
   (`cargo build --release`)
 - Microsoft Excel (macOS or Windows) for actual Excel execution.
+- _Optional:_ [`ty`](https://github.com/astral-sh/ty) integration with your editor
+  for Python LSP support
 
 ### 2. In-process bindings
 
