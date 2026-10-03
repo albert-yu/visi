@@ -1,5 +1,5 @@
 use super::ast::{
-    Arg, CaseMatch, Expr, Literal, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
+    Arg, CaseMatch, Expr, Module, ModuleItem, Param, Procedure, Stmt, TypeRef, VarDecl,
 };
 use super::builtin_names::is_builtin;
 use super::parser::ParseError;
@@ -352,8 +352,14 @@ fn walk_declarations(
                 }
             }
             Stmt::SelectCase {
-                cases, case_else, ..
+                subject,
+                cases,
+                case_else,
+                ..
             } => {
+                if let Expr::Ident { name, .. } = subject {
+                    in_scope.insert(norm(name));
+                }
                 for c in cases {
                     walk_declarations(&c.body, in_scope)?;
                 }
@@ -391,6 +397,12 @@ fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
         } => check_call_name(name, *pos, ctx),
         Stmt::Call { expr, .. } => check_expr(expr, ctx),
         Stmt::Assign { target, value, .. } => {
+            if !is_assignable(target) {
+                return Err(ParseError {
+                    message: "invalid assignment target".to_string(),
+                    pos: target.pos(),
+                });
+            }
             check_expr(target, ctx)?;
             check_expr(value, ctx)
         }
@@ -422,9 +434,7 @@ fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
         } => {
             for (cond, b) in branches {
                 check_expr(cond, ctx)?;
-                if !expr_is_literal_false(cond) {
-                    check_block(b, ctx)?;
-                }
+                check_block(b, ctx)?;
             }
             if let Some(b) = else_body {
                 check_block(b, ctx)?;
@@ -511,6 +521,13 @@ fn check_var_decl_exprs(v: &VarDecl, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     Ok(())
 }
 
+fn is_assignable(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Ident { .. } | Expr::Member { .. } | Expr::Bang { .. } | Expr::Call { .. }
+    )
+}
+
 fn check_args(args: &[Arg], ctx: &Ctx<'_>) -> Result<(), ParseError> {
     for a in args {
         if let Some(v) = &a.value {
@@ -518,10 +535,6 @@ fn check_args(args: &[Arg], ctx: &Ctx<'_>) -> Result<(), ParseError> {
         }
     }
     Ok(())
-}
-
-fn expr_is_literal_false(expr: &Expr) -> bool {
-    matches!(expr, Expr::Literal(Literal::Bool(false)))
 }
 
 fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
@@ -792,11 +805,25 @@ mod tests {
     }
 
     #[test]
-    fn name_resolution_skips_statically_false_if_bodies() {
-        assert!(
+    fn name_resolution_checks_statically_false_if_bodies() {
+        let err =
             check("Sub Test()\n    If False Then\n        x = arr(1, 2)\n    End If\nEnd Sub\n")
-                .is_ok()
-        );
+                .unwrap_err();
+        assert!(err.contains("Sub or Function not defined: arr"), "{err}");
+    }
+
+    #[test]
+    fn rejects_literal_assignment_target_in_statically_false_if() {
+        let err = check("Sub Test()\n    If False Then If x > x Then x = 2 Else 1 = 3\nEnd Sub\n")
+            .unwrap_err();
+        assert!(err.contains("invalid assignment target"), "{err}");
+    }
+
+    #[test]
+    fn rejects_dim_after_select_case_subject_use() {
+        let err = check("Sub Test()\n    If False Then\n        Select Case x\n        Case 1\n            y = 1\n        End Select\n        Dim x As Long\n    End If\nEnd Sub\n")
+            .unwrap_err();
+        assert!(err.contains("Duplicate declaration"), "{err}");
     }
 
     #[test]

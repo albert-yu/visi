@@ -1309,9 +1309,9 @@ pub fn f_test(array1: &[f64], array2: &[f64]) -> Result<f64, String> {
     let f_stat = s1 / s2;
     let df1 = (array1.len() - 1) as f64;
     let df2 = (array2.len() - 1) as f64;
-
-    let p1 = f_dist_rt(f_stat, df1, df2)?;
-    let p_two_tailed = (2.0 * p1.min(1.0 - p1)).min(1.0);
+    let p_left = f_dist(f_stat, df1, df2, true)?;
+    let p_right = f_dist_rt(f_stat, df1, df2)?;
+    let p_two_tailed = (2.0 * p_left.min(p_right)).min(1.0);
     Ok(p_two_tailed)
 }
 

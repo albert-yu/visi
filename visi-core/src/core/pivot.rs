@@ -327,13 +327,13 @@ pub(crate) fn field_is_numeric(records: &[Vec<ResultData>], field_idx: usize) ->
         })
 }
 
-fn text_sort_key(s: &str) -> String {
+fn text_sort_key(s: &str) -> (String, bool) {
     let trimmed = s.trim();
-    let key = match trimmed.strip_prefix('-') {
-        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => rest,
-        _ => trimmed,
+    let (key, negative) = match trimmed.strip_prefix('-') {
+        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => (rest, true),
+        _ => (trimmed, false),
     };
-    key.to_lowercase()
+    (key.to_lowercase(), negative)
 }
 
 fn sort_group_entries(pairs: &mut [(String, Vec<usize>)], numeric: bool) {
@@ -346,7 +346,9 @@ fn sort_group_entries(pairs: &mut [(String, Vec<usize>)], numeric: bool) {
             let fb: f64 = b.0.trim().parse().unwrap_or(0.0);
             fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
         }
-        (false, false) => text_sort_key(&a.0).cmp(&text_sort_key(&b.0)),
+        (false, false) => text_sort_key(&a.0)
+            .cmp(&text_sort_key(&b.0))
+            .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())),
     });
 }
 
@@ -1712,21 +1714,27 @@ mod tests {
     fn test_negative_looking_text_sorts_by_stripped_digits_not_last() {
         let mut sheet = Sheet::new(SheetInit {
             name: Some("Data".to_string()),
-            rows: 4,
+            rows: 6,
             cols: 2,
             ..Default::default()
         });
         for (c, h) in ["Code", "Amount"].iter().enumerate() {
             sheet.set_cell_src(0, c, h.to_string());
         }
-        let rows: [(&str, &str); 3] = [("\"12\"", "1"), ("\"37\"", "2"), ("\"-25\"", "3")];
+        let rows: [(&str, &str); 5] = [
+            ("\"12\"", "1"),
+            ("\"37\"", "2"),
+            ("\"-25\"", "3"),
+            ("\"-13\"", "4"),
+            ("\"13\"", "5"),
+        ];
         for (r, (code, amount)) in rows.iter().enumerate() {
             sheet.set_cell_src(r + 1, 0, code.to_string());
             sheet.set_cell_src(r + 1, 1, amount.to_string());
         }
         sheet.commit(None).unwrap();
         sheet
-            .add_table("Sales".to_string(), 0, 0, 3, 1, true, false)
+            .add_table("Sales".to_string(), 0, 0, 5, 1, true, false)
             .unwrap();
 
         let mut pivot = base_pivot();
@@ -1739,7 +1747,7 @@ mod tests {
             .iter()
             .map(|r| r.row_labels[0].as_str())
             .collect();
-        assert_eq!(codes, vec!["12", "-25", "37"]);
+        assert_eq!(codes, vec!["12", "13", "-13", "-25", "37"]);
     }
 
     #[test]

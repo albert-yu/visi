@@ -621,9 +621,22 @@ fn format_scientific_number(abs_val: f64, pattern: &str) -> Option<String> {
         .filter(|c| matches!(c, '0' | '#' | '?'))
         .count()
         .max(1);
-    let raw = format!("{:.*E}", dec_count, abs_val);
-    let (mantissa, exp) = raw.split_once('E')?;
-    let exp_num: i32 = exp.parse().ok()?;
+    let mut exp_num = if abs_val == 0.0 {
+        0
+    } else {
+        abs_val.log10().floor() as i32
+    };
+    let mut mantissa_val = if abs_val == 0.0 {
+        0.0
+    } else {
+        abs_val / 10f64.powi(exp_num)
+    };
+    mantissa_val = round_half_away_from_zero(mantissa_val, dec_count).abs();
+    if mantissa_val >= 10.0 {
+        mantissa_val /= 10.0;
+        exp_num += 1;
+    }
+    let mantissa = format!("{:.*}", dec_count, mantissa_val);
     let sign = if exponent_pattern.contains('-') && exp_num < 0 {
         "-"
     } else if exponent_pattern.contains('+') {

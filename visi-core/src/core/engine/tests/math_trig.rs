@@ -1002,3 +1002,14 @@ fn test_fuzz_seriessum_rejects_numeric_looking_text_coefficient() {
         other => panic!("expected #VALUE!, got {other:?}"),
     }
 }
+
+#[test]
+fn test_fuzz_percentof_rejects_direct_text_result() {
+    let grid = [["=PERCENTOF(IF(1, ASC(\"abc\"), 1), -21)"]];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    match sheet.get_result_data(&CellRef::new(0, 0)) {
+        ResultData::Error(e) => assert_eq!(e, "#VALUE!"),
+        other => panic!("expected #VALUE!, got {other:?}"),
+    }
+}

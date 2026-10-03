@@ -87,6 +87,16 @@ fn test_coupdays_basis1_quarterly_november_to_february_schedule() {
         91.0,
         1e-9,
     );
+    assert_float_close(
+        &eval_formula("=COUPDAYS(DATE(2006,11,8), EDATE(DATE(2006,11,8),15), 4, 1)"),
+        92.0,
+        1e-9,
+    );
+    assert_float_close(
+        &eval_formula("=COUPDAYS(DATE(2005,11,16), EDATE(DATE(2005,11,16),42), 4, 1)"),
+        92.0,
+        1e-9,
+    );
 }
 
 #[test]

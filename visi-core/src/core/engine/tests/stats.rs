@@ -1316,3 +1316,20 @@ fn test_fuzz_frequency_all_text_bins_behave_like_a_single_zero_bin() {
         other => panic!("expected list, got {other:?}"),
     }
 }
+
+#[test]
+fn test_fuzz_ftest_tiny_probability_stays_positive() {
+    let grid = [
+        ["-72.1799", "dash-test", "", ""],
+        ["63.572", "", "", ""],
+        ["-271", "253.89", "-4910016030537.618", "-21"],
+        ["3.141592653589793", "-49", "-21", "-479.9573"],
+    ];
+    let mut sheet = create_sheet(&grid);
+    sheet.commit(None).unwrap();
+    assert_float_close(
+        &sheet.eval("=FTEST(A1:B4, A3:D4)", None).unwrap().0,
+        9.067149194908695e-50,
+        1e-62,
+    );
+}

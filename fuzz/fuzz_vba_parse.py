@@ -129,7 +129,10 @@ class VbaSourceGenerator:
             toks[i], toks[j] = toks[j], toks[i]
         elif kind == "truncate":
             toks = toks[: max(1, i)]
-        return " ".join(toks)
+        mutated = " ".join(toks)
+        if mutated.count('"') % 2:
+            return src
+        return mutated
 
 
 MODULE_TEMPLATE = """Attribute VB_Name = "M"
