@@ -26,7 +26,7 @@ infinite loops on malformed input -- no output property is checked.
   repo's own ~300-line `BuildFuzzPivot.bas` alongside files concentrating the
   awkward corners (type suffixes, `&H`/`&O` literals, date literals, line
   continuations, `#If` blocks, every loop and declaration form). Whether the
-  parser's verdict *agrees with Excel* is a different question, answered by
+  parser's verdict _agrees with Excel_ is a different question, answered by
   the differential harness at `../../fuzz/fuzz_vba_parse.py`.
 - **`formula_eval`** -- feeds arbitrary bytes as formula text through the
   full formula pipeline (`compile_formula` -> `serialize_formula` ->
@@ -34,7 +34,7 @@ infinite loops on malformed input -- no output property is checked.
   `Sheet::commit`, against a small pre-populated sheet. Added because the
   differential harness at `../../fuzz/` only ever generates formulas its own
   generator functions consider well-formed, and the Python-side VBA
-  crash-fuzzing this directory used to cover was the *only* Rust-level fuzz
+  crash-fuzzing this directory used to cover was the _only_ Rust-level fuzz
   coverage that existed -- zero formula-level crash coverage (see #26).
   Found a real bug on its first run: a `\` as the last character of an
   unterminated quoted string (e.g. `="\`) panicked `compile_formula` with an
@@ -82,7 +82,7 @@ from `cov: 86` to `cov: 1600+` in the same time budget.
 
 **Always list the gitignored `fuzz/corpus/<target>` dir first and the
 checked-in `fuzz/seeds/<target>` dir after.** libFuzzer writes every new
-coverage-increasing input to the *first* corpus directory it's given and
+coverage-increasing input to the _first_ corpus directory it's given and
 only reads the rest -- pass `fuzz/seeds/vba_import` alone (with no corpus
 dir preceding it) and it becomes the write target instead, silently
 flooding the checked-in seeds with hundreds of generated files on the very

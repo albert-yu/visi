@@ -7,7 +7,7 @@ description: Run a differential fuzz harness from fuzz/ against a real copy of M
 
 The harnesses in `fuzz/` drive **real Microsoft Excel** and compare it against
 `visi-core` cell-for-cell. This skill is the loop around them: run N iterations,
-and for each failure, find the root cause, decide *which engine is right*, fix
+and for each failure, find the root cause, decide _which engine is right_, fix
 or document, and deliver a **Rust unit test that reproduces the case
 without Excel**.
 
@@ -73,7 +73,7 @@ All of them exit non-zero when anything failed and take `--iterations`,
 `--seed`, `--excel-path`, `--driver` and `--output-dir`. **Always record the
 reproduction handle**, but note it differs by harness: `fuzz_excel.py`,
 `fuzz_chart.py` and `fuzz_pivot.py` print a per-iteration seed next to each
-verdict, while the two VBA fuzzers seed the whole *run* (`--seed`, random when
+verdict, while the two VBA fuzzers seed the whole _run_ (`--seed`, random when
 omitted) and identify failures by case number. So a VBA failure is reproduced
 by re-running with that run's seed, and the artifact directory is the durable
 record — the case number alone means nothing against a fresh seed.
@@ -134,14 +134,14 @@ there is a regression. Work in this order:
    high-precision `decimal`/`mpmath` evaluation, the documented spec, or the day
    count/financial definition.
 4. **If:**
-   - *Excel is right* → fix `visi-core`, add the regression test.
-   - *visi is right* → do **not** change the engine. Add a numbered section to
+   - _Excel is right_ → fix `visi-core`, add the regression test.
+   - _visi is right_ → do **not** change the engine. Add a numbered section to
      `docs/excel-discrepancies.md` (state which kind: "Excel is wrong" / "visi
      gap" / "no stable answer"), exclude the case in the generator with a
      comment pointing at that section, and add a test pinning visi against the
      independent reference — the same shape as
      `test_besselj_stays_accurate_where_excel_does_not`.
-   - *No stable answer* (Excel is internally inconsistent or heuristic) →
+   - _No stable answer_ (Excel is internally inconsistent or heuristic) →
      document and exclude; do not encode Excel's coin flip.
 
 Where **Windows Excel and macOS Excel disagree, Windows is authoritative.**
@@ -162,7 +162,7 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ## Excel modals/popups
 
 - **macOS: A run that produces no output at all is a modal Excel dialog, not a slow
-  run.** A VBA *compile* error (undefined name, duplicate `Dim`) is not
+  run.** A VBA _compile_ error (undefined name, duplicate `Dim`) is not
   catchable by the `On Error` harness, so Excel shows a blocking modal
   and `osascript` never
   returns. `killall "Microsoft Excel"` and read the generated source.
