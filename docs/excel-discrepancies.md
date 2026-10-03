@@ -10,7 +10,7 @@ fuzz harness** in `fuzz/fuzz_excel.py`.
 
 Everything here has been reduced to a specific, reproducible case. Nothing is
 listed as "known" merely because it was inconvenient -- an item earns a place
-here only once the root cause is understood well enough to say *which* engine
+here only once the root cause is understood well enough to say _which_ engine
 is right, or to say precisely why the question has no stable answer.
 
 Three kinds of entry:
@@ -23,7 +23,7 @@ Three kinds of entry:
 
 ---
 
-## 1. BESSELI / BESSELJ / BESSELK / BESSELY -- *Excel is wrong*
+## 1. BESSELI / BESSELJ / BESSELK / BESSELY -- _Excel is wrong_
 
 Excel's Bessel routines lose accuracy well before visi's do. Arbitrated
 against 60-significant-digit references (a `decimal` evaluation of the same
@@ -35,13 +35,13 @@ ascending series):
 | `BESSELJ(8.72, 2)` | 0.0795586089024345565 | 6.5e-15 | **1.3e-6** |
 | `BESSELJ(2.95, 3)` | 0.300141005800689674 | 2.5e-16 | **3.8e-7** |
 
-Excel's error grows with the *order* as well as the argument, so no argument
+Excel's error grows with the _order_ as well as the argument, so no argument
 cap keeps it usable as a reference -- capping x at 8 was tried first and still
 failed at order 3. The whole family is excluded from the harness; visi's own
 accuracy is pinned directly against those references by
 `test_besselj_stays_accurate_where_excel_does_not`.
 
-## 2. XIRR on series with no internal rate of return -- *Excel is wrong*
+## 2. XIRR on series with no internal rate of return -- _Excel is wrong_
 
 Given a cashflow series that has no root, Excel does not report `#NUM!` -- it
 returns a non-answer:
@@ -54,11 +54,11 @@ returns a non-answer:
 
 For the first two, XNPV has no sign change anywhere in `(-0.999, 10)`: no root
 exists to find. visi's `#NUM!` is correct. Rather than exclude XIRR, the
-harness now generates *well-posed* cashflows (one outlay followed by returns
+harness now generates _well-posed_ cashflows (one outlay followed by returns
 that more than repay it), so IRR/XIRR/MIRR always have a unique root and the
 comparison stays meaningful.
 
-## 3. QUOTIENT past 2^53 -- *Excel is wrong*
+## 3. QUOTIENT past 2^53 -- _Excel is wrong_
 
 Above the exactly-representable integer range Excel's `QUOTIENT` drifts while
 visi's stays correct:
@@ -77,13 +77,13 @@ section 1). visi is left alone.
 
 This is not excluded: it needs operands above 2^53 to show up at all, so it
 costs roughly one cell per few hundred iterations, and the same generator
-range is what exercises the number-to-text formatting rules that *did* turn up
+range is what exercises the number-to-text formatting rules that _did_ turn up
 real bugs.
 
-## 4. FORECAST.ETS.SEASONALITY -- *No stable answer*
+## 4. FORECAST.ETS.SEASONALITY -- _No stable answer_
 
 Excel's automatic season-length detection does not report the series' true
-period, and its answer turns on the *arrangement* of the seasonal offsets
+period, and its answer turns on the _arrangement_ of the seasonal offsets
 rather than their magnitude. Over 16 points with slope 2 and the same four
 offsets merely permuted:
 
@@ -101,7 +101,7 @@ slope from 0 to 4 leaves the answer at 4 throughout.
 harness is handed an **explicit** season length, so what gets compared is the
 model (timeline handling, the Holt-Winters recurrences, extrapolation) rather
 than the detector. Detection is covered by visi's unit tests on the patterns
-where Excel's answer *is* the true period.
+where Excel's answer _is_ the true period.
 
 Related, and the reason the ETS series are exactly-modelled: Excel fits
 alpha/beta/gamma with a proprietary optimizer and reports them to three
@@ -110,7 +110,7 @@ digits, so `FORECAST.ETS.STAT` types **1-3** (the fitted parameters) are
 excluded too. Types 4-8 (MASE/SMAPE/MAE/RMSE/step) are well-defined and are
 fuzzed.
 
-## 5. DATEDIF `"YD"` -- *No stable answer*
+## 5. DATEDIF `"YD"` -- _No stable answer_
 
 Excel's `"YD"` is internally inconsistent. Tested against 8 real-Excel data
 points, no candidate rule fits:
@@ -118,7 +118,7 @@ points, no candidate rule fits:
 | Rule | Fits |
 | --- | --- |
 | Anchor the start date in the end date's year | 5/8 |
-| Anchor the end date in the start date's year | 5/8 (a *different* 5) |
+| Anchor the end date in the start date's year | 5/8 (a _different_ 5) |
 | `total days - 365 * whole years` | 0/8 |
 | Remap both into 1900/1901 (Excel's phantom leap day) | 3/8 |
 
@@ -127,7 +127,7 @@ keeps the defensible definition -- days since the most recent anniversary of
 the start date -- and `"YD"` is excluded from the harness. The other units
 (`"Y"`, `"M"`, `"D"`, `"MD"`, `"YM"`) agree with Excel and stay fuzzed.
 
-## 6. RATE -- *No stable answer*
+## 6. RATE -- _No stable answer_
 
 Excel's `RATE` iterates from its `guess` (default 0.1) and gives up with
 `#NUM!` on series where a root demonstrably exists -- handed a guess near that
@@ -140,7 +140,7 @@ RATE(275, -1582.09, 12951.19, 0, 0, 0.12)   Excel 0.12215788664979609
 
 So the `#NUM!` is a statement about Excel's iteration from its default
 starting point, not about the problem having no answer. visi's solver is more
-robust and reports the root. (The genuinely-degenerate direction *was* a visi
+robust and reports the root. (The genuinely-degenerate direction _was_ a visi
 bug and is fixed: for an annuity-due with `fv = 0` the payment term carries a
 factor of `(1 + r)`, so `r = -1` satisfies the equation for any inputs, and
 the iteration used to slide into that basin and report ~-0.9999 as if it were
@@ -150,9 +150,9 @@ Excluded because "did the other engine's iteration happen to converge from
 0.1" is not a property worth asserting. `IRR`, `XIRR`, `MIRR`, `NPV` and the
 rest of the TVM family stay fuzzed.
 
-## 7. Error-class precedence in composed expressions -- *strict by default; optionally tolerated*
+## 7. Error-class precedence in composed expressions -- _strict by default; optionally tolerated_
 
-When several sub-expressions of one formula each produce a *different* error,
+When several sub-expressions of one formula each produce a _different_ error,
 visi and Excel sometimes surface different ones:
 
 ```
@@ -192,7 +192,7 @@ harness's value lies.
 
 The engine now mirrors the broad rules above where they are stable enough to
 model, and the comparator is strict by default. For exploratory fuzzing, pass
-`--allow-error-class-drift` to downgrade a disagreement where *both* engines
+`--allow-error-class-drift` to downgrade a disagreement where _both_ engines
 produced an error, differing only in class, into a separate tolerated count.
 Crucially it is still counted and printed in the run summary:
 
@@ -211,7 +211,7 @@ output.
 
 ---
 
-## 8. MOD with a divisor far larger than the dividend -- *Excel is wrong*
+## 8. MOD with a divisor far larger than the dividend -- _Excel is wrong_
 
 When `|d|` is enormous relative to `|n|` and the signs differ, Excel returns
 `0` where the remainder is not zero:
@@ -232,7 +232,7 @@ A remainder of `0` would require `d` to divide `n` exactly, and it cannot:
 formula, so this is Excel losing the small operand rather than visi being
 imprecise, and visi keeps the mathematically correct value.
 
-Note this is *not* the same as the deliberate `#NUM!` cutoff already in
+Note this is _not_ the same as the deliberate `#NUM!` cutoff already in
 `MOD` for large **quotients** (`MOD(28^31, 3)`), which is a real Excel
 behavior visi reproduces. Here the quotient is vanishingly small; it is the
 result that is large.
@@ -254,7 +254,7 @@ of `PERCENTOF`, for the same reason it already avoids `POWER`/`^` there; visi's
 correct behavior remains pinned by
 `test_fuzz_mod_stays_exact_at_an_integer_quotient_boundary`.
 
-## 9. VBA: an infinity poisons the next string-to-number conversion -- *Excel is wrong*
+## 9. VBA: an infinity poisons the next string-to-number conversion -- _Excel is wrong_
 
 VBA's `^` is the one operator that returns an infinity rather than raising
 overflow (`a = 3.75 : a ^ 32767` is the `Double` `INF`, measured). Once a
@@ -278,10 +278,10 @@ rule:
 | `CDbl("abc")` | error 13 -- the type check comes first |
 | `1 <> 0`, `"abc" & 1` | fine -- no conversion involved |
 | an intervening `b = 1` or `c = 1 + 1`, then `CDbl("1.5")` | still error 6 |
-| a *first* conversion swallowed by `On Error Resume Next`, then another | fine |
+| a _first_ conversion swallowed by `On Error Resume Next`, then another | fine |
 
 The last two rows are the tell: the condition is not cleared by unrelated
-work, but *is* cleared by being reported once -- the behaviour of a sticky
+work, but _is_ cleared by being reported once -- the behaviour of a sticky
 floating-point exception flag that the conversion routine reads and clears.
 `Val`, which does not consult it, is unaffected.
 
@@ -294,12 +294,12 @@ Measured with `fuzz/vba_expr_probe.py`; it is why `fuzz_vba.py` case
 
 ---
 
-## 10. VBA: `Err.Number` on a `Range` whose cells were deleted -- *No stable answer*
+## 10. VBA: `Err.Number` on a `Range` whose cells were deleted -- _No stable answer_
 
 Excel's `Range` objects track a structural edit: `Set r = ws.Range("A5")`
 followed by `ws.Rows(1).Insert` leaves `r` reading `$A$6`, and still holding
 the value that was in `A5`. visi matches that, by interning ranges. But when
-the edit deletes *every* cell a range covered, the object enters a state with
+the edit deletes _every_ cell a range covered, the object enters a state with
 no reproducible error number:
 
 ```vba
@@ -317,7 +317,7 @@ What is stable, and what visi reproduces exactly:
 | `r.Address` | raises, `Method 'Address' of object 'Range' failed` |
 | `r.Value` | raises, `Method 'Value' of object 'Range' failed` |
 
-What is not stable is `Err.Number`. The *same* case returned `-1667945984` on
+What is not stable is `Err.Number`. The _same_ case returned `-1667945984` on
 one run and `-1667949824` on the next; two different members returned the same
 number on one run and different numbers on another. These are raw automation
 error values from Excel for Mac, not the documented VBA error codes, and they
@@ -330,12 +330,12 @@ family (a bad address, an out-of-sheet `Offset`, a failing
 `WorksheetFunction`). Pinning Excel for Mac's number would be pinning noise.
 
 Measured with `fuzz/vba_range_tracking_probe.py`, which also establishes that
-the *geometry* of the tracking -- move vs. grow vs. shrink -- is identical to
+the _geometry_ of the tracking -- move vs. grow vs. shrink -- is identical to
 `core::grid_edit`'s rules for a formula's range reference, case for case.
 
 ---
 
-## 11. A tiny power underflows to exactly 0 in Excel -- *Excel is wrong*
+## 11. A tiny power underflows to exactly 0 in Excel -- _Excel is wrong_
 
 `FACT(15) ^ -26` (`1307674368000 ^ -26`) is a legitimate positive subnormal,
 about `9.35e-316`. visi computes it via `f64::powf` and gets that value, so
@@ -344,7 +344,7 @@ this call instead, so the same comparison is `FALSE`.
 
 Both engines agree at ordinary magnitudes; this is specifically an
 extreme-magnitude base raised to a large negative exponent, well past where
-the true result underflows the *normal* `f64` range but is still representable
+the true result underflows the _normal_ `f64` range but is still representable
 as a subnormal. Excel's own `^` implementation evidently doesn't handle
 subnormals here (likely computing `exp(y * ln(x))` without a path back down
 into subnormal territory), while Rust's `powf` does. The true mathematical
@@ -356,11 +356,11 @@ Found via fuzz/fuzz_excel.py, seed 795107:
 The generator now avoids `^`/`POWER` calls whose result would underflow to a
 subnormal, rather than chasing Excel's underflow threshold.
 
-## 12. Negative base raised to a tiny fractional exponent -- *No stable answer*
+## 12. Negative base raised to a tiny fractional exponent -- _No stable answer_
 
 `-2 ^ POWER(-15, -6)` -- precedence-wise this is `(-2) ^ (POWER(-15, -6))`,
 not `-(2 ^ POWER(-15, -6))`: `-2^2` really is `4` in Excel's formula
-language, unary minus binding *tighter* than `^` there (the opposite of
+language, unary minus binding _tighter_ than `^` there (the opposite of
 VBA's `^`, and the opposite of most languages' convention) -- confirmed
 directly (`=-2^2` is `4` in real Excel), so visi's existing precedence
 here was already correct and needed no fix. `POWER(-15, -6)` is
@@ -387,7 +387,7 @@ disagreed (visi `16`, an error code; Excel `1`, a number) purely because
 of this. The generator now avoids `^`/`POWER` calls that could combine a
 possibly-negative base with a fractional exponent close to zero.
 
-## 13. VBA: a never-executed statement can change which error a procedure raises -- *Under investigation*
+## 13. VBA: a never-executed statement can change which error a procedure raises -- _Under investigation_
 
 `fuzz/fuzz_vba.py` first ran against real Windows Excel this session (a
 `win32com` driver alongside the existing macOS AppleScript one), and one
@@ -413,7 +413,7 @@ Real Excel raises **13** (Type Mismatch) calling this; visi raises **94**
 (Invalid use of Null). Both numbers are individually explicable --
 `(Not Null) \ (...)` on line 7 is 94 on both engines when isolated, and
 `Not "a"` on the last line is a `Not` of a non-numeric string literal, which
-is a plausible source of 13 -- the puzzle is *which one wins*, and why.
+is a plausible source of 13 -- the puzzle is _which one wins_, and why.
 
 Measured directly (win32com, real Windows Excel), holding everything else
 fixed and varying only how much of the function survives:
@@ -425,14 +425,14 @@ fixed and varying only how much of the function survives:
 
 Line 7 executes and raises before line 10 (`Not "a"`) is ever reached -- VBA
 does not roll a statement back or re-run the function once an error fires.
-So Excel's 13 cannot come from *executing* line 10; the only thing that
+So Excel's 13 cannot come from _executing_ line 10; the only thing that
 changed between the two rows of that table is whether line 10 (and 8, 9)
 exist **anywhere in the compiled procedure**, executed or not. That points
 at something in Excel's own compile step for the procedure -- the same
 "compiles lazily, once, per invoked procedure" step `fuzz_vba_parse.py` is
 built around -- evaluating (or type-checking) a constant sub-expression like
 `Not "a"` and having that outcome override which runtime error the
-*procedure* is later reported as raising, rather than the error simply
+_procedure_ is later reported as raising, rather than the error simply
 propagating up from whichever statement actually executed first.
 
 Not fixed and not excluded: the mechanism above is a hypothesis from a
@@ -445,13 +445,13 @@ the meantime (94 is genuinely what `(Not Null) \ (...)` raises), so this is
 left as a known open question rather than either "Excel is wrong" or a
 "visi gap" verdict.
 
-## 14. VBA: an extreme `^` exponent may raise Overflow directly rather than giving infinity -- *Under investigation*
+## 14. VBA: an extreme `^` exponent may raise Overflow directly rather than giving infinity -- _Under investigation_
 
 Section 15 and `writing_an_infinity_stores_the_num_error_excel_stores`
 (`vba/host.rs`) establish, with real-Excel measurements, that `^` never
 raises Overflow -- `3.75 ^ 32767` and `-2.5 ^ 1000` both give a `Double`
 infinity with no trapped error, and assigning that infinity to a
-`Range.Value` leaves a `#NUM!` error *cell* rather than raising anything
+`Range.Value` leaves a `#NUM!` error _cell_ rather than raising anything
 in the macro. `fuzz/fuzz_vba.py`'s new win32com driver found a case that
 looks like the same shape but isn't: `va` holding a cell-read `33`
 (`va = wsh.Cells(1, 5).Value`, itself `=SUM(A1:B2)`), then
@@ -470,7 +470,7 @@ distinguishes for plain arithmetic overflow. Left open rather than guessed
 at; a systematic sweep of exponent magnitude (and literal- vs
 variable-sourced base) is future work.
 
-## 15. SORT/SORTBY Unicode text collation -- *No stable answer*
+## 15. SORT/SORTBY Unicode text collation -- _No stable answer_
 
 `SORT` and `SORTBY` use Windows' locale-sensitive text collation for strings.
 The differential generator used a small set of non-ASCII sample strings and hit
@@ -485,7 +485,7 @@ keeps random generated cell text ASCII-only (with punctuation still included)
 so dynamic-array sort tests exercise spreadsheet behavior without depending on
 locale-specific Unicode collation.
 
-## 16. MULTINOMIAL returns just below exact integers -- *Excel is wrong*
+## 16. MULTINOMIAL returns just below exact integers -- _Excel is wrong_
 
 Excel's `MULTINOMIAL` can return a value just below an exact integer even when
 all inputs truncate to ordinary non-negative integers:
@@ -502,7 +502,7 @@ integer result. The random formula fuzzer no longer generates `MULTINOMIAL`,
 while direct coercion/domain behavior remains covered by Rust tests.
 
 
-## 17. COTH near negative saturation changes integer wrappers -- *Excel is wrong*
+## 17. COTH near negative saturation changes integer wrappers -- _Excel is wrong_
 
 Excel rounds `COTH` to exactly `-1` for some moderately large negative
 arguments where the true value is still just below `-1`. That changes wrappers
@@ -518,7 +518,7 @@ A high-precision decimal evaluation of `coth(x) = (exp(2x)+1)/(exp(2x)-1)` gives
 cotangent to exactly `-1`, which is farther from the mathematical value and
 mirrors its known tendency to saturate extreme hyperbolic results too early.
 
-## 18. TANH rounding changes numeric-to-text length -- *Excel is wrong*
+## 18. TANH rounding changes numeric-to-text length -- _Excel is wrong_
 
 Formula fuzz seed `858539` reduced to `LENB(TANH(3))`. Excel for Mac 16.113
 returns 17; visi returns 16. The underlying values and text conversions are:

@@ -140,11 +140,12 @@ This monorepo is structured follows:
   parses and executes the formulas in the workbook
 - **[`visi`](visi/)**: Command-line application using `visi-core`
   which can edit and execute Excel files headlessly
+- [`fuzz`](fuzz/): differential fuzzing harness to match Excel behavior
 
 `visi` aims for feature parity with Excel by using
-a harness that drives a real copy of Excel via AppleScript or COM automation,
+a harness (`fuzz`) that drives a real copy of Excel via AppleScript or COM automation,
 runs computations, and compares the results. Both the cell values and types
-should match exactly. See [`fuzz`](./fuzz/README.md) for more details.
+should match exactly.
 
 ## LLM Policy
 

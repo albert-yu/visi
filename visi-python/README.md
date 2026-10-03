@@ -30,7 +30,7 @@ wb.evaluate()
 wb.save("out.xlsx")
 ```
 
-Formula failures are *values*, not exceptions — `evaluate()` almost never
+Formula failures are _values_, not exceptions — `evaluate()` almost never
 raises:
 
 ```python
@@ -41,7 +41,7 @@ v.code                               # '#DIV/0!'
 ```
 
 `CellError` compares equal to its code string for convenience, which means a
-cell holding the *text* `#DIV/0!` also compares equal to it. The type is what
+cell holding the _text_ `#DIV/0!` also compares equal to it. The type is what
 distinguishes them; use `isinstance`, not `==`.
 
 Engine failures raise a hierarchy under `VisiError`, carrying structured
@@ -61,7 +61,7 @@ Three things here are load-bearing and easy to undo by accident:
 - **`extension-module` is not a default cargo feature.** Enabling it by default
   breaks `cargo test --workspace`'s link step with an undefined
   `_PyModule_Create2`, an error that points nowhere near the cause. maturin
-  turns it on through `pyproject.toml`. This is *not* what `maturin new`
+  turns it on through `pyproject.toml`. This is _not_ what `maturin new`
   generates, so anyone tidying the manifest is likely to reintroduce it.
 - **The module is `visi_core`, not `visi`.** The repo root holds a `visi/`
   directory with no `__init__.py`, which PEP 420 makes an implicit namespace

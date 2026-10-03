@@ -30,7 +30,7 @@ user-visible capability is a `minor`; a fix-only run is a `patch`.
 `visi-core/Cargo.toml`) but should be released **together**: only a `visi` tag
 starts the pipeline, so a lone `visi-core` bump ships nothing until the next
 release. cargo-release handles the coupling — a `visi-core` bump rewrites the
-requirement in *both* `visi/Cargo.toml` and `visi-python`'s **aliased**
+requirement in _both_ `visi/Cargo.toml` and `visi-python`'s **aliased**
 `visi_engine = { package = "visi-core", ... }`. The aliased one is exactly what a
 hand-edit or an obvious `sed` misses, and `publish-crates.yml` fails the release
 on it. Do not edit the versions by hand.
@@ -69,7 +69,7 @@ git push origin v<version>              # this is what starts the release
 ```
 
 Tagging is deliberately manual — `release.toml` sets `tag = false` alongside
-`push = false`. Left to itself cargo-release tags the commit on the *branch*,
+`push = false`. Left to itself cargo-release tags the commit on the _branch_,
 but what lands on `main` is the merge commit, a different SHA, so the tag would
 point at a commit no branch contains. Tags aren't covered by the branch ruleset,
 so that last push goes straight to origin.
