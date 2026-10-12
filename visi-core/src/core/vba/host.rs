@@ -8,7 +8,7 @@ use super::color;
 use crate::core::parser::{Expr as FExpr, col_idx_to_letters};
 use crate::core::workbook::WorkbookManager;
 
-use super::value::{VResult, VarArray, Variant, VbaError};
+use super::value::{VResult, VarArray, Variant, VbaError, format_number};
 
 pub const MAX_ROWS: u32 = 1_048_576;
 
@@ -1911,17 +1911,18 @@ fn cell_src(v: &Variant) -> VResult<String> {
     Ok(match v {
         Variant::Empty | Variant::Null => String::new(),
         Variant::Boolean(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-        Variant::Str(s) => s.clone(),
+        Variant::Str(s) => match s.trim().parse::<f64>() {
+            Ok(f) if f.is_finite() => format_number(f),
+            _ => s.clone(),
+        },
         Variant::ErrValue(n) => error_text(*n).to_string(),
         Variant::Object(_) | Variant::Array(_) => return Err(VbaError::type_mismatch()),
         other => {
             let f = other.to_f64()?;
             if !f.is_finite() {
                 "#NUM!".to_string()
-            } else if f == f.trunc() && f.abs() < 1e15 {
-                format!("{}", f as i64)
             } else {
-                format!("{f}")
+                format_number(f)
             }
         }
     })
@@ -2400,13 +2401,35 @@ mod tests {
     fn writing_whitespace_padded_numeric_text_stores_a_number() {
         assert_eq!(
             probe(
-                "ws.Range(\"H5\").Value = \"  3  \" :: TypeName(ws.Range(\"H5\").Value) & \"|\" & CStr(ws.Range(\"H5\").Value)"
+                "ws.Range(\"H5\").Value = \"  3  \" :: TypeName(ws.Range(\"H5\").Value) & \"|\" & CStr(ws.Range(\"H5\").Value) & \"|\" & ws.Range(\"H5\").Formula"
             ),
-            "String|Double|3"
+            "String|Double|3|3"
+        );
+        assert_eq!(
+            probe(
+                "ws.Range(\"H7\").Value = \"01\" :: TypeName(ws.Range(\"H7\").Value) & \"|\" & CStr(ws.Range(\"H7\").Value) & \"|\" & ws.Range(\"H7\").Formula"
+            ),
+            "String|Double|1|1"
         );
         assert_eq!(
             probe("ws.Range(\"H6\").Value = \"  x  \" :: TypeName(ws.Range(\"H6\").Value)"),
             "String|String"
+        );
+    }
+
+    #[test]
+    fn writing_numeric_values_formats_cell_source_like_excel() {
+        assert_eq!(
+            probe(
+                "ws.Range(\"H8\").Value = (1 / 715) :: CStr(ws.Range(\"H8\").Value) & \"|\" & ws.Range(\"H8\").Formula"
+            ),
+            "String|0.0013986013986014|0.0013986013986014"
+        );
+        assert_eq!(
+            probe(
+                "ws.Range(\"H9\").Value = (13108 / 3) :: CStr(ws.Range(\"H9\").Value) & \"|\" & ws.Range(\"H9\").Formula"
+            ),
+            "String|4369.33333333333|4369.33333333333"
         );
     }
 
