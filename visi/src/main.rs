@@ -2014,3 +2014,31 @@ fn handle_export(args: ExportArgs) {
         print!("{}", rendered);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_circular_dependencies_formats_single_group() {
+        let cycles = vec![vec!["Sheet1!A1".to_string(), "Sheet1!B1".to_string()]];
+
+        assert_eq!(
+            format_circular_dependencies(&cycles),
+            "Circular dependency detected\n  Sheet1!A1, Sheet1!B1"
+        );
+    }
+
+    #[test]
+    fn format_circular_dependencies_formats_multiple_groups() {
+        let cycles = vec![
+            vec!["Sheet1!A1".to_string()],
+            vec!["Sheet2!B2".to_string(), "Sheet2!C2".to_string()],
+        ];
+
+        assert_eq!(
+            format_circular_dependencies(&cycles),
+            "Circular dependencies detected: 2 groups\n  Sheet1!A1\n  Sheet2!B2, Sheet2!C2"
+        );
+    }
+}

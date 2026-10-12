@@ -1582,3 +1582,85 @@ impl WorkbookManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn circular_node(sheet: usize, row: usize, col: usize) -> CircularNode {
+        CircularNode { sheet, row, col }
+    }
+
+    fn workbook_with_sheets(names: &[&str]) -> WorkbookManager {
+        let mut wb = WorkbookManager {
+            sheets: Vec::new(),
+            charts: Vec::new(),
+            pivot_tables: Vec::new(),
+            vba_project: None,
+            locale: Locale::default(),
+        };
+        for name in names {
+            wb.add_sheet(name).unwrap();
+        }
+        wb
+    }
+
+    #[test]
+    fn find_circular_components_reports_only_self_and_multi_node_cycles() {
+        let a = circular_node(0, 0, 0);
+        let b = circular_node(0, 0, 1);
+        let c = circular_node(0, 0, 2);
+        let d = circular_node(0, 1, 0);
+        let e = circular_node(0, 1, 1);
+        let f = circular_node(0, 1, 2);
+        let adjacency = HashMap::from([
+            (a, vec![b]),
+            (b, vec![c]),
+            (c, vec![a]),
+            (d, vec![d]),
+            (e, vec![f]),
+            (f, Vec::new()),
+        ]);
+
+        let components = find_circular_components(&adjacency);
+        assert_eq!(components, vec![vec![a, b, c], vec![d]]);
+    }
+
+    #[test]
+    fn detect_circular_references_returns_empty_for_acyclic_formulas() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "=B1+1".to_string());
+        wb.set_cell(0, 0, 1, "=C1+1".to_string());
+        wb.set_cell(0, 0, 2, "3".to_string());
+
+        assert!(wb.detect_circular_references().is_empty());
+    }
+
+    #[test]
+    fn detect_circular_references_reports_self_reference() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "=A1+1".to_string());
+
+        assert_eq!(wb.detect_circular_references(), vec![vec!["Sheet1!A1"]]);
+    }
+
+    #[test]
+    fn detect_circular_references_reports_whole_column_self_cycle() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "=SUM(A:A)".to_string());
+
+        assert_eq!(wb.detect_circular_references(), vec![vec!["Sheet1!A1"]]);
+    }
+
+    #[test]
+    fn detect_circular_references_reports_remote_whole_column_cycle() {
+        let mut wb = workbook_with_sheets(&["First", "Second"]);
+        wb.set_cell(0, 0, 0, "=SUM(Second!A:A)".to_string());
+        wb.set_cell(1, 0, 0, "=SUM(First!A:A)".to_string());
+
+        assert_eq!(
+            wb.detect_circular_references(),
+            vec![vec!["First!A1", "Second!A1"]]
+        );
+    }
+}
