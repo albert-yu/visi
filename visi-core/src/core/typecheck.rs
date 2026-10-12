@@ -1,0 +1,1794 @@
+use std::collections::HashMap;
+
+use crate::core::engine::{CellRef, Context, ResultData, Sheet};
+use crate::core::parser::{Expr, Op, parse_excel_formula};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormulaDiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormulaDiagnosticKind {
+    Syntax,
+    Reference,
+    Function,
+    Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormulaDiagnostic {
+    pub severity: FormulaDiagnosticSeverity,
+    pub kind: FormulaDiagnosticKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FormulaType {
+    Any,
+    Blank,
+    Number,
+    Text(Option<String>),
+    Boolean,
+    Error,
+    Array {
+        item: Box<FormulaType>,
+        rows: Option<usize>,
+        cols: Option<usize>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedType {
+    Any,
+    Number,
+    Text,
+    Boolean,
+    Reference,
+    Array,
+}
+
+struct TypeContext<'a> {
+    sheet: &'a Sheet,
+    workbook_context: Option<&'a Context<'a>>,
+    row: Option<usize>,
+    bindings: HashMap<String, FormulaType>,
+    diagnostics: Vec<FormulaDiagnostic>,
+}
+
+pub fn check_formula(
+    input: &str,
+    sheet: &Sheet,
+    context: Option<&Context>,
+    row: Option<usize>,
+    col: Option<usize>,
+) -> Vec<FormulaDiagnostic> {
+    let src = input.strip_prefix('=').unwrap_or(input);
+    if src.trim().is_empty() || !input.starts_with('=') {
+        return Vec::new();
+    }
+    let ast = match parse_excel_formula(src) {
+        Ok(ast) => ast,
+        Err(e) => {
+            return vec![FormulaDiagnostic {
+                severity: FormulaDiagnosticSeverity::Error,
+                kind: FormulaDiagnosticKind::Syntax,
+                message: e,
+            }];
+        }
+    };
+    let mut ctx = TypeContext {
+        sheet,
+        workbook_context: context,
+        row,
+        bindings: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+    let _ = col;
+    infer_expr_type(&ast, &mut ctx);
+    ctx.diagnostics
+}
+
+fn infer_expr_type(expr: &Expr, ctx: &mut TypeContext<'_>) -> FormulaType {
+    match expr {
+        Expr::Number(_) => FormulaType::Number,
+        Expr::String(s) => FormulaType::Text(Some(s.clone())),
+        Expr::Boolean(_) => FormulaType::Boolean,
+        Expr::Error(_) => FormulaType::Error,
+        Expr::Identifier(name) => ctx
+            .bindings
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_else(|| {
+                push(
+                    ctx,
+                    FormulaDiagnosticSeverity::Error,
+                    FormulaDiagnosticKind::Reference,
+                    format!("Unknown name: {name}"),
+                );
+                FormulaType::Any
+            }),
+        Expr::CellRef {
+            sheet, row, col, ..
+        } => infer_cell_ref(sheet.as_deref(), *row, *col, ctx),
+        Expr::RangeRef {
+            sheet,
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+            ..
+        } => infer_range_ref(
+            sheet.as_deref(),
+            *start_row,
+            *start_col,
+            *end_row,
+            *end_col,
+            ctx,
+        ),
+        Expr::StructuredRef {
+            sheet,
+            column,
+            is_this_row,
+            section,
+        } => infer_structured_ref(
+            sheet.as_deref(),
+            column.as_deref(),
+            *is_this_row,
+            *section,
+            ctx,
+        ),
+        Expr::List(items) => {
+            let mut item_type = FormulaType::Blank;
+            for item in items {
+                item_type = merge_types(item_type, infer_expr_type(item, ctx));
+            }
+            FormulaType::Array {
+                item: Box::new(item_type),
+                rows: Some(1),
+                cols: Some(items.len()),
+            }
+        }
+        Expr::Slice { expr, start, end } => {
+            let value = infer_expr_type(expr, ctx);
+            if let Some(start) = start {
+                let ty = infer_expr_type(start, ctx);
+                check_expected(ctx, &ty, ExpectedType::Number, "slice start");
+            }
+            if let Some(end) = end {
+                let ty = infer_expr_type(end, ctx);
+                check_expected(ctx, &ty, ExpectedType::Number, "slice end");
+            }
+            match value {
+                FormulaType::Array { item, .. } => FormulaType::Array {
+                    item,
+                    rows: None,
+                    cols: None,
+                },
+                FormulaType::Error => FormulaType::Error,
+                _ => FormulaType::Any,
+            }
+        }
+        Expr::UnaryOp { op, expr } => infer_unary(*op, expr, ctx),
+        Expr::BinaryOp { op, left, right } => infer_binary(*op, left, right, ctx),
+        Expr::FunctionCall { name, args } => infer_function_call(name, args, ctx),
+    }
+}
+
+fn infer_cell_ref(
+    sheet_name: Option<&str>,
+    row: usize,
+    col: usize,
+    ctx: &mut TypeContext<'_>,
+) -> FormulaType {
+    match resolve_sheet(sheet_name, ctx.sheet, ctx.workbook_context) {
+        Ok(sheet) => {
+            if row >= sheet.row_count() || col >= sheet.col_count() {
+                push(
+                    ctx,
+                    FormulaDiagnosticSeverity::Warning,
+                    FormulaDiagnosticKind::Reference,
+                    format!(
+                        "Cell reference {}{} is outside sheet bounds",
+                        col + 1,
+                        row + 1
+                    ),
+                );
+                FormulaType::Blank
+            } else {
+                result_type(&sheet.get_result_data(&CellRef::new(row, col)))
+            }
+        }
+        Err(name) => {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Reference,
+                format!("Sheet not found: {name}"),
+            );
+            FormulaType::Any
+        }
+    }
+}
+
+fn infer_range_ref(
+    sheet_name: Option<&str>,
+    start_row: usize,
+    start_col: usize,
+    end_row: usize,
+    end_col: usize,
+    ctx: &mut TypeContext<'_>,
+) -> FormulaType {
+    let sheet = match resolve_sheet(sheet_name, ctx.sheet, ctx.workbook_context) {
+        Ok(sheet) => sheet,
+        Err(name) => {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Reference,
+                format!("Sheet not found: {name}"),
+            );
+            return FormulaType::Any;
+        }
+    };
+    let actual_end_row = if end_row == usize::MAX {
+        sheet.row_count().saturating_sub(1)
+    } else {
+        end_row
+    };
+    let actual_end_col = if end_col == usize::MAX {
+        sheet.col_count().saturating_sub(1)
+    } else {
+        end_col
+    };
+    if start_row >= sheet.row_count()
+        || start_col >= sheet.col_count()
+        || actual_end_row >= sheet.row_count()
+        || actual_end_col >= sheet.col_count()
+    {
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Warning,
+            FormulaDiagnosticKind::Reference,
+            "Range reference extends outside sheet bounds".to_string(),
+        );
+    }
+    let rows = actual_end_row.saturating_sub(start_row).saturating_add(1);
+    let cols = actual_end_col.saturating_sub(start_col).saturating_add(1);
+    let item = if rows.saturating_mul(cols) <= 256 {
+        let mut ty = FormulaType::Blank;
+        for r in start_row..=actual_end_row.min(sheet.row_count().saturating_sub(1)) {
+            for c in start_col..=actual_end_col.min(sheet.col_count().saturating_sub(1)) {
+                ty = merge_types(ty, result_type(&sheet.get_result_data(&CellRef::new(r, c))));
+            }
+        }
+        ty
+    } else {
+        FormulaType::Any
+    };
+    FormulaType::Array {
+        item: Box::new(item),
+        rows: Some(rows),
+        cols: Some(cols),
+    }
+}
+
+fn infer_structured_ref(
+    table_name: Option<&str>,
+    column: Option<&str>,
+    is_this_row: bool,
+    section: crate::core::SheetSection,
+    ctx: &mut TypeContext<'_>,
+) -> FormulaType {
+    let Some(name) = table_name else {
+        if let Some(column) = column {
+            if is_this_row {
+                return FormulaType::Any;
+            }
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Warning,
+                FormulaDiagnosticKind::Reference,
+                format!("Structured column reference [{column}] has no table name"),
+            );
+        }
+        return FormulaType::Any;
+    };
+    let mut found = ctx.sheet.find_table(name).map(|table| (ctx.sheet, table));
+    if found.is_none()
+        && let Some(workbook_context) = ctx.workbook_context
+    {
+        for sheet in workbook_context.sheets.values() {
+            if let Some(table) = sheet.find_table(name) {
+                found = Some((sheet, table));
+                break;
+            }
+        }
+    }
+    let Some((sheet, table)) = found else {
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Reference,
+            format!("Table not found: {name}"),
+        );
+        return FormulaType::Any;
+    };
+    let cols = if let Some(column) = column {
+        if table.local_column_index(column).is_none() {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Reference,
+                format!("Column not found: {column}"),
+            );
+            return FormulaType::Any;
+        }
+        1
+    } else {
+        table.col_count()
+    };
+    if section == crate::core::SheetSection::Headers {
+        if cols == 1 {
+            FormulaType::Text(None)
+        } else {
+            FormulaType::Array {
+                item: Box::new(FormulaType::Text(None)),
+                rows: Some(1),
+                cols: Some(cols),
+            }
+        }
+    } else if is_this_row && cols == 1 {
+        if ctx.row.is_none() {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Reference,
+                "This row reference cannot be checked without row context".to_string(),
+            );
+        }
+        FormulaType::Any
+    } else {
+        let rows = match section {
+            crate::core::SheetSection::Totals => usize::from(table.totals_row().is_some()),
+            crate::core::SheetSection::Data | crate::core::SheetSection::All => {
+                table.data_row_count()
+            }
+            crate::core::SheetSection::Headers => 1,
+        };
+        let _ = sheet;
+        FormulaType::Array {
+            item: Box::new(FormulaType::Any),
+            rows: Some(rows),
+            cols: Some(cols),
+        }
+    }
+}
+
+fn infer_unary(op: Op, expr: &Expr, ctx: &mut TypeContext<'_>) -> FormulaType {
+    let ty = infer_expr_type(expr, ctx);
+    match op {
+        Op::Sub | Op::Percent => {
+            check_expected(ctx, &ty, ExpectedType::Number, "unary numeric operator");
+            FormulaType::Number
+        }
+        Op::ImplicitIntersection => scalarize(ty),
+        Op::Spill => match ty {
+            FormulaType::Array { .. } => ty,
+            FormulaType::Error => FormulaType::Error,
+            _ => {
+                if !is_reference_expr(expr) {
+                    push(
+                        ctx,
+                        FormulaDiagnosticSeverity::Warning,
+                        FormulaDiagnosticKind::Type,
+                        "Spill operator is usually applied to a reference or array".to_string(),
+                    );
+                }
+                ty
+            }
+        },
+        _ => ty,
+    }
+}
+
+fn infer_binary(op: Op, left: &Expr, right: &Expr, ctx: &mut TypeContext<'_>) -> FormulaType {
+    if matches!(op, Op::Intersect | Op::Union) {
+        if !is_reference_expr(left) {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Type,
+                "Left operand must be a reference".to_string(),
+            );
+        }
+        if !is_reference_expr(right) {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Type,
+                "Right operand must be a reference".to_string(),
+            );
+        }
+        let _ = infer_expr_type(left, ctx);
+        let _ = infer_expr_type(right, ctx);
+        return FormulaType::Array {
+            item: Box::new(FormulaType::Any),
+            rows: None,
+            cols: None,
+        };
+    }
+    let l_ty = infer_expr_type(left, ctx);
+    let r_ty = infer_expr_type(right, ctx);
+    match op {
+        Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Exp => {
+            check_expected(ctx, &l_ty, ExpectedType::Number, "left operand");
+            check_expected(ctx, &r_ty, ExpectedType::Number, "right operand");
+            FormulaType::Number
+        }
+        Op::Concat => {
+            check_expected(ctx, &l_ty, ExpectedType::Text, "left operand");
+            check_expected(ctx, &r_ty, ExpectedType::Text, "right operand");
+            FormulaType::Text(None)
+        }
+        Op::Eq | Op::Ne | Op::Lt | Op::Gt | Op::Le | Op::Ge => {
+            check_scalar(ctx, &l_ty, "left operand");
+            check_scalar(ctx, &r_ty, "right operand");
+            FormulaType::Boolean
+        }
+        _ => FormulaType::Any,
+    }
+}
+
+fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    let upper = normalize_function_name(name);
+    if !is_known_function(&upper) {
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Function,
+            format!("Unknown function: {name}"),
+        );
+        for arg in args {
+            let _ = infer_expr_type(arg, ctx);
+        }
+        return FormulaType::Any;
+    }
+    match upper.as_str() {
+        "IF" => infer_if(args, ctx),
+        "IFERROR" | "IFNA" => infer_fixed_lazy(&upper, args, 2, ctx),
+        "IFS" => infer_ifs(args, ctx),
+        "SWITCH" => infer_switch(args, ctx),
+        "CHOOSE" => infer_choose(args, ctx),
+        "LET" => infer_let(args, ctx),
+        "LAMBDA" => infer_lambda(args, ctx),
+        "SUM" | "AVERAGE" | "MIN" | "MAX" | "PRODUCT" | "SUMSQ" => {
+            check_arity(ctx, &upper, args.len(), 1, None);
+            for arg in args {
+                let ty = infer_expr_type(arg, ctx);
+                check_expected(ctx, &ty, ExpectedType::Number, &upper);
+            }
+            FormulaType::Number
+        }
+        "COUNT" | "COUNTA" | "COUNTBLANK" => {
+            check_arity(ctx, &upper, args.len(), 1, None);
+            for arg in args {
+                let _ = infer_expr_type(arg, ctx);
+            }
+            FormulaType::Number
+        }
+        "ROUND" | "ROUNDDOWN" | "ROUNDUP" | "MROUND" | "MOD" | "POWER" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(2),
+            &[ExpectedType::Number, ExpectedType::Number],
+            FormulaType::Number,
+            ctx,
+        ),
+        "ABS" | "SQRT" | "EXP" | "LN" | "LOG10" | "SIN" | "COS" | "TAN" | "ASIN" | "ACOS"
+        | "ATAN" | "INT" | "TRUNC" | "SIGN" | "EVEN" | "ODD" | "FACT" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Number],
+            FormulaType::Number,
+            ctx,
+        ),
+        "AND" | "OR" | "XOR" => {
+            check_arity(ctx, &upper, args.len(), 1, None);
+            for arg in args {
+                let ty = infer_expr_type(arg, ctx);
+                check_expected(ctx, &ty, ExpectedType::Boolean, &upper);
+            }
+            FormulaType::Boolean
+        }
+        "NOT" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Boolean],
+            FormulaType::Boolean,
+            ctx,
+        ),
+        "LEFT" | "RIGHT" | "LEFTB" | "RIGHTB" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(2),
+            &[ExpectedType::Text, ExpectedType::Number],
+            FormulaType::Text(None),
+            ctx,
+        ),
+        "MID" | "MIDB" => infer_signature(
+            &upper,
+            args,
+            3,
+            Some(3),
+            &[
+                ExpectedType::Text,
+                ExpectedType::Number,
+                ExpectedType::Number,
+            ],
+            FormulaType::Text(None),
+            ctx,
+        ),
+        "LEN" | "LENB" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Text],
+            FormulaType::Number,
+            ctx,
+        ),
+        "LOWER" | "UPPER" | "PROPER" | "TRIM" | "CLEAN" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Text],
+            FormulaType::Text(None),
+            ctx,
+        ),
+        "FIND" | "FINDB" | "SEARCH" | "SEARCHB" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(3),
+            &[ExpectedType::Text, ExpectedType::Text, ExpectedType::Number],
+            FormulaType::Number,
+            ctx,
+        ),
+        "CONCAT" | "CONCATENATE" | "TEXTJOIN" => {
+            check_arity(ctx, &upper, args.len(), 1, None);
+            for arg in args {
+                let ty = infer_expr_type(arg, ctx);
+                check_expected(ctx, &ty, ExpectedType::Text, &upper);
+            }
+            FormulaType::Text(None)
+        }
+        "TEXT" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(2),
+            &[ExpectedType::Any, ExpectedType::Text],
+            FormulaType::Text(None),
+            ctx,
+        ),
+        "VALUE" | "NUMBERVALUE" => infer_signature(
+            &upper,
+            args,
+            1,
+            None,
+            &[ExpectedType::Text],
+            FormulaType::Number,
+            ctx,
+        ),
+        "ROW" | "COLUMN" | "ROWS" | "COLUMNS" | "AREAS" | "ISREF" | "FORMULATEXT" | "ISFORMULA"
+        | "SHEET" | "SHEETS" => {
+            if args.len() > 1 {
+                check_arity(ctx, &upper, args.len(), 0, Some(1));
+            }
+            for arg in args {
+                if !is_reference_expr(arg) {
+                    let ty = infer_expr_type(arg, ctx);
+                    check_expected(ctx, &ty, ExpectedType::Reference, &upper);
+                } else {
+                    let _ = infer_expr_type(arg, ctx);
+                }
+            }
+            FormulaType::Number
+        }
+        "INDEX" => infer_index(args, ctx),
+        "MATCH" | "XMATCH" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(4),
+            &[
+                ExpectedType::Any,
+                ExpectedType::Array,
+                ExpectedType::Number,
+                ExpectedType::Number,
+            ],
+            FormulaType::Number,
+            ctx,
+        ),
+        "VLOOKUP" | "HLOOKUP" => infer_signature(
+            &upper,
+            args,
+            3,
+            Some(4),
+            &[
+                ExpectedType::Any,
+                ExpectedType::Array,
+                ExpectedType::Number,
+                ExpectedType::Boolean,
+            ],
+            FormulaType::Any,
+            ctx,
+        ),
+        "XLOOKUP" => infer_signature(
+            &upper,
+            args,
+            3,
+            Some(6),
+            &[
+                ExpectedType::Any,
+                ExpectedType::Array,
+                ExpectedType::Array,
+                ExpectedType::Any,
+                ExpectedType::Number,
+                ExpectedType::Number,
+            ],
+            FormulaType::Any,
+            ctx,
+        ),
+        "FILTER" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(3),
+            &[ExpectedType::Array, ExpectedType::Array, ExpectedType::Any],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "SORT" | "UNIQUE" | "TRANSPOSE" | "TOCOL" | "TOROW" => infer_signature(
+            &upper,
+            args,
+            1,
+            None,
+            &[ExpectedType::Array],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "TAKE" | "DROP" | "CHOOSECOLS" | "CHOOSEROWS" => infer_signature(
+            &upper,
+            args,
+            2,
+            None,
+            &[ExpectedType::Array, ExpectedType::Number],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "HSTACK" | "VSTACK" => {
+            check_arity(ctx, &upper, args.len(), 1, None);
+            for arg in args {
+                let ty = infer_expr_type(arg, ctx);
+                check_expected(ctx, &ty, ExpectedType::Array, &upper);
+            }
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            }
+        }
+        "ISERROR" | "ISNA" | "ISERR" | "ISBLANK" | "ISTEXT" | "ISNONTEXT" | "ISNUMBER"
+        | "ISLOGICAL" | "ISEVEN" | "ISODD" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Any],
+            FormulaType::Boolean,
+            ctx,
+        ),
+        "TYPE" | "ERROR.TYPE" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Any],
+            FormulaType::Number,
+            ctx,
+        ),
+        _ => {
+            for arg in args {
+                let _ = infer_expr_type(arg, ctx);
+            }
+            FormulaType::Any
+        }
+    }
+}
+
+fn infer_signature(
+    name: &str,
+    args: &[Expr],
+    min: usize,
+    max: Option<usize>,
+    expected: &[ExpectedType],
+    return_type: FormulaType,
+    ctx: &mut TypeContext<'_>,
+) -> FormulaType {
+    check_arity(ctx, name, args.len(), min, max);
+    for (idx, arg) in args.iter().enumerate() {
+        let ty = infer_expr_type(arg, ctx);
+        let expected = expected
+            .get(idx)
+            .copied()
+            .or_else(|| expected.last().copied())
+            .unwrap_or(ExpectedType::Any);
+        check_expected(ctx, &ty, expected, name);
+    }
+    return_type
+}
+
+fn infer_if(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    check_arity(ctx, "IF", args.len(), 2, Some(3));
+    if let Some(cond) = args.first() {
+        let cond_ty = infer_expr_type(cond, ctx);
+        check_expected(ctx, &cond_ty, ExpectedType::Boolean, "IF condition");
+    }
+    let then_ty = args
+        .get(1)
+        .map(|expr| infer_expr_type(expr, ctx))
+        .unwrap_or(FormulaType::Blank);
+    let else_ty = args
+        .get(2)
+        .map(|expr| infer_expr_type(expr, ctx))
+        .unwrap_or(FormulaType::Blank);
+    merge_types(then_ty, else_ty)
+}
+
+fn infer_fixed_lazy(
+    name: &str,
+    args: &[Expr],
+    count: usize,
+    ctx: &mut TypeContext<'_>,
+) -> FormulaType {
+    check_arity(ctx, name, args.len(), count, Some(count));
+    let mut ty = FormulaType::Blank;
+    for arg in args {
+        ty = merge_types(ty, infer_expr_type(arg, ctx));
+    }
+    ty
+}
+
+fn infer_ifs(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    if args.len() < 2 || !args.len().is_multiple_of(2) {
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Function,
+            "IFS requires condition/value pairs".to_string(),
+        );
+    }
+    let mut out = FormulaType::Blank;
+    for pair in args.chunks(2) {
+        if let Some(cond) = pair.first() {
+            let cond_ty = infer_expr_type(cond, ctx);
+            check_expected(ctx, &cond_ty, ExpectedType::Boolean, "IFS condition");
+        }
+        if let Some(value) = pair.get(1) {
+            out = merge_types(out, infer_expr_type(value, ctx));
+        }
+    }
+    out
+}
+
+fn infer_switch(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    check_arity(ctx, "SWITCH", args.len(), 3, None);
+    let mut out = FormulaType::Blank;
+    for (idx, arg) in args.iter().enumerate() {
+        let ty = infer_expr_type(arg, ctx);
+        if idx >= 2 && idx.is_multiple_of(2) {
+            out = merge_types(out, ty);
+        }
+    }
+    if args.len().is_multiple_of(2)
+        && let Some(default) = args.last()
+    {
+        out = merge_types(out, infer_expr_type(default, ctx));
+    }
+    out
+}
+
+fn infer_choose(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    check_arity(ctx, "CHOOSE", args.len(), 2, None);
+    if let Some(index) = args.first() {
+        let ty = infer_expr_type(index, ctx);
+        check_expected(ctx, &ty, ExpectedType::Number, "CHOOSE index");
+    }
+    let mut out = FormulaType::Blank;
+    for arg in args.iter().skip(1) {
+        out = merge_types(out, infer_expr_type(arg, ctx));
+    }
+    out
+}
+
+fn infer_let(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    if args.len() < 3 || args.len().is_multiple_of(2) {
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Function,
+            "LET requires name/value pairs followed by a result expression".to_string(),
+        );
+    }
+    let saved = ctx.bindings.clone();
+    let mut i = 0;
+    while i + 1 < args.len().saturating_sub(1) {
+        if let Expr::Identifier(name) = &args[i] {
+            let value_ty = infer_expr_type(&args[i + 1], ctx);
+            ctx.bindings.insert(name.to_ascii_lowercase(), value_ty);
+        } else {
+            let _ = infer_expr_type(&args[i], ctx);
+            let _ = infer_expr_type(&args[i + 1], ctx);
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Function,
+                "LET binding name must be an identifier".to_string(),
+            );
+        }
+        i += 2;
+    }
+    let out = args
+        .last()
+        .map(|expr| infer_expr_type(expr, ctx))
+        .unwrap_or(FormulaType::Any);
+    ctx.bindings = saved;
+    out
+}
+
+fn infer_lambda(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    check_arity(ctx, "LAMBDA", args.len(), 2, None);
+    let saved = ctx.bindings.clone();
+    if args.len() >= 2 {
+        for arg in &args[..args.len() - 1] {
+            if let Expr::Identifier(name) = arg {
+                ctx.bindings
+                    .insert(name.to_ascii_lowercase(), FormulaType::Any);
+            } else {
+                let _ = infer_expr_type(arg, ctx);
+                push(
+                    ctx,
+                    FormulaDiagnosticSeverity::Error,
+                    FormulaDiagnosticKind::Function,
+                    "LAMBDA parameter must be an identifier".to_string(),
+                );
+            }
+        }
+    }
+    if let Some(body) = args.last() {
+        let _ = infer_expr_type(body, ctx);
+    }
+    ctx.bindings = saved;
+    FormulaType::Any
+}
+
+fn infer_index(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
+    check_arity(ctx, "INDEX", args.len(), 2, Some(4));
+    let array_ty = args
+        .first()
+        .map(|expr| infer_expr_type(expr, ctx))
+        .unwrap_or(FormulaType::Any);
+    check_expected(ctx, &array_ty, ExpectedType::Array, "INDEX array");
+    for arg in args.iter().skip(1) {
+        let ty = infer_expr_type(arg, ctx);
+        check_expected(ctx, &ty, ExpectedType::Number, "INDEX position");
+    }
+    match array_ty {
+        FormulaType::Array { item, .. } => *item,
+        other => scalarize(other),
+    }
+}
+
+fn check_arity(
+    ctx: &mut TypeContext<'_>,
+    name: &str,
+    actual: usize,
+    min: usize,
+    max: Option<usize>,
+) {
+    if actual < min || max.is_some_and(|m| actual > m) {
+        let message = match max {
+            Some(max) if max == min => format!("{name} requires {min} argument(s), got {actual}"),
+            Some(max) => {
+                format!("{name} requires between {min} and {max} argument(s), got {actual}")
+            }
+            None => format!("{name} requires at least {min} argument(s), got {actual}"),
+        };
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Function,
+            message,
+        );
+    }
+}
+
+fn check_expected(
+    ctx: &mut TypeContext<'_>,
+    actual: &FormulaType,
+    expected: ExpectedType,
+    label: &str,
+) {
+    if expected == ExpectedType::Any || matches!(actual, FormulaType::Any | FormulaType::Error) {
+        return;
+    }
+    match expected {
+        ExpectedType::Any => {}
+        ExpectedType::Number => check_number(ctx, actual, label),
+        ExpectedType::Text => check_text(ctx, actual, label),
+        ExpectedType::Boolean => check_boolean(ctx, actual, label),
+        ExpectedType::Reference => {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Type,
+                format!("{label} expects a reference, got {}", describe_type(actual)),
+            );
+        }
+        ExpectedType::Array => {
+            if !matches!(actual, FormulaType::Array { .. }) {
+                push(
+                    ctx,
+                    FormulaDiagnosticSeverity::Error,
+                    FormulaDiagnosticKind::Type,
+                    format!(
+                        "{label} expects an array or range, got {}",
+                        describe_type(actual)
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn check_number(ctx: &mut TypeContext<'_>, actual: &FormulaType, label: &str) {
+    match actual {
+        FormulaType::Number | FormulaType::Blank | FormulaType::Boolean => {}
+        FormulaType::Text(Some(s)) if s.trim().parse::<f64>().is_ok() => push(
+            ctx,
+            FormulaDiagnosticSeverity::Warning,
+            FormulaDiagnosticKind::Type,
+            format!("{label} uses numeric text as a number"),
+        ),
+        FormulaType::Text(_) => push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            format!("{label} expects a number, got text"),
+        ),
+        FormulaType::Array { .. } => push(
+            ctx,
+            FormulaDiagnosticSeverity::Warning,
+            FormulaDiagnosticKind::Type,
+            format!("{label} expects a scalar number, got array"),
+        ),
+        FormulaType::Any | FormulaType::Error => {}
+    }
+}
+
+fn check_text(ctx: &mut TypeContext<'_>, actual: &FormulaType, label: &str) {
+    match actual {
+        FormulaType::Text(_) | FormulaType::Blank | FormulaType::Number | FormulaType::Boolean => {}
+        FormulaType::Array { .. } => push(
+            ctx,
+            FormulaDiagnosticSeverity::Warning,
+            FormulaDiagnosticKind::Type,
+            format!("{label} expects scalar text, got array"),
+        ),
+        FormulaType::Any | FormulaType::Error => {}
+    }
+}
+
+fn check_boolean(ctx: &mut TypeContext<'_>, actual: &FormulaType, label: &str) {
+    match actual {
+        FormulaType::Boolean | FormulaType::Blank | FormulaType::Number => {}
+        FormulaType::Text(Some(s))
+            if s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false") =>
+        {
+            push(
+                ctx,
+                FormulaDiagnosticSeverity::Warning,
+                FormulaDiagnosticKind::Type,
+                format!("{label} uses logical text as a boolean"),
+            );
+        }
+        FormulaType::Text(_) => push(
+            ctx,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            format!("{label} expects a boolean, got text"),
+        ),
+        FormulaType::Array { .. } => push(
+            ctx,
+            FormulaDiagnosticSeverity::Warning,
+            FormulaDiagnosticKind::Type,
+            format!("{label} expects a scalar boolean, got array"),
+        ),
+        FormulaType::Any | FormulaType::Error => {}
+    }
+}
+
+fn check_scalar(ctx: &mut TypeContext<'_>, actual: &FormulaType, label: &str) {
+    if matches!(actual, FormulaType::Array { .. }) {
+        push(
+            ctx,
+            FormulaDiagnosticSeverity::Warning,
+            FormulaDiagnosticKind::Type,
+            format!("{label} expects a scalar, got array"),
+        );
+    }
+}
+
+fn scalarize(ty: FormulaType) -> FormulaType {
+    match ty {
+        FormulaType::Array { item, .. } => *item,
+        other => other,
+    }
+}
+
+fn result_type(value: &ResultData) -> FormulaType {
+    match value {
+        ResultData::None => FormulaType::Blank,
+        ResultData::Boolean(_) => FormulaType::Boolean,
+        ResultData::Integer(_) | ResultData::Float(_) => FormulaType::Number,
+        ResultData::String(s) => FormulaType::Text(Some(s.clone())),
+        ResultData::List(values) => {
+            let mut item = FormulaType::Blank;
+            for value in values {
+                item = merge_types(item, result_type(value));
+            }
+            FormulaType::Array {
+                item: Box::new(item),
+                rows: None,
+                cols: Some(values.len()),
+            }
+        }
+        ResultData::Dict(_) => FormulaType::Any,
+        ResultData::Error(_) => FormulaType::Error,
+    }
+}
+
+fn merge_types(left: FormulaType, right: FormulaType) -> FormulaType {
+    if left == right {
+        return left;
+    }
+    match (left, right) {
+        (FormulaType::Blank, other) | (other, FormulaType::Blank) => other,
+        (FormulaType::Any, _) | (_, FormulaType::Any) => FormulaType::Any,
+        (FormulaType::Error, other) | (other, FormulaType::Error) => other,
+        (
+            FormulaType::Array {
+                item: l_item,
+                rows: l_rows,
+                cols: l_cols,
+            },
+            FormulaType::Array {
+                item: r_item,
+                rows: r_rows,
+                cols: r_cols,
+            },
+        ) => FormulaType::Array {
+            item: Box::new(merge_types(*l_item, *r_item)),
+            rows: if l_rows == r_rows { l_rows } else { None },
+            cols: if l_cols == r_cols { l_cols } else { None },
+        },
+        _ => FormulaType::Any,
+    }
+}
+
+fn resolve_sheet<'a>(
+    sheet_name: Option<&str>,
+    current_sheet: &'a Sheet,
+    workbook_context: Option<&'a Context<'a>>,
+) -> Result<&'a Sheet, String> {
+    match sheet_name {
+        None => Ok(current_sheet),
+        Some(name) if name == current_sheet.name => Ok(current_sheet),
+        Some(name) => workbook_context
+            .and_then(|ctx| ctx.sheets.get(name).copied())
+            .ok_or_else(|| name.to_string()),
+    }
+}
+
+fn is_reference_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::CellRef { .. } | Expr::RangeRef { .. } | Expr::StructuredRef { .. }
+    ) || matches!(
+        expr,
+        Expr::UnaryOp {
+            op: Op::Spill | Op::ImplicitIntersection,
+            ..
+        }
+    ) || matches!(
+        expr,
+        Expr::BinaryOp {
+            op: Op::Intersect | Op::Union,
+            ..
+        }
+    )
+}
+
+fn normalize_function_name(name: &str) -> String {
+    let mut upper = name.to_ascii_uppercase();
+    if upper.starts_with("_XLFN.") {
+        upper = upper["_XLFN.".len()..].to_string();
+    }
+    if upper.starts_with("_XLWS.") {
+        upper = upper["_XLWS.".len()..].to_string();
+    }
+    upper
+}
+
+fn describe_type(ty: &FormulaType) -> &'static str {
+    match ty {
+        FormulaType::Any => "unknown",
+        FormulaType::Blank => "blank",
+        FormulaType::Number => "number",
+        FormulaType::Text(_) => "text",
+        FormulaType::Boolean => "boolean",
+        FormulaType::Error => "error",
+        FormulaType::Array { .. } => "array",
+    }
+}
+
+fn push(
+    ctx: &mut TypeContext<'_>,
+    severity: FormulaDiagnosticSeverity,
+    kind: FormulaDiagnosticKind,
+    message: String,
+) {
+    ctx.diagnostics.push(FormulaDiagnostic {
+        severity,
+        kind,
+        message,
+    });
+}
+
+fn is_known_function(name: &str) -> bool {
+    matches!(
+        name,
+        "ABS"
+            | "ACCRINT"
+            | "ACCRINTM"
+            | "ACOS"
+            | "ACOSH"
+            | "ACOT"
+            | "ACOTH"
+            | "ADDRESS"
+            | "AGGREGATE"
+            | "AMORDEGRC"
+            | "AMORLINC"
+            | "ANCHORARRAY"
+            | "AND"
+            | "ARABIC"
+            | "AREAS"
+            | "ARRAYTOTEXT"
+            | "ASC"
+            | "ASIN"
+            | "ASINH"
+            | "ATAN"
+            | "ATAN2"
+            | "ATANH"
+            | "AVEDEV"
+            | "AVERAGE"
+            | "AVERAGEA"
+            | "AVERAGEIF"
+            | "AVERAGEIFS"
+            | "BAHTTEXT"
+            | "BASE"
+            | "BESSELI"
+            | "BESSELJ"
+            | "BESSELK"
+            | "BESSELY"
+            | "BETA.DIST"
+            | "BETA.INV"
+            | "BETADIST"
+            | "BETAINV"
+            | "BIN2DEC"
+            | "BIN2HEX"
+            | "BIN2OCT"
+            | "BINOM.DIST"
+            | "BINOM.DIST.RANGE"
+            | "BINOM.INV"
+            | "BINOMDIST"
+            | "BITAND"
+            | "BITLSHIFT"
+            | "BITOR"
+            | "BITRSHIFT"
+            | "BITXOR"
+            | "BYCOL"
+            | "BYROW"
+            | "CEILING"
+            | "CEILING.MATH"
+            | "CEILING.PRECISE"
+            | "CELL"
+            | "CHAR"
+            | "CHIDIST"
+            | "CHIINV"
+            | "CHISQ.DIST"
+            | "CHISQ.DIST.RT"
+            | "CHISQ.INV"
+            | "CHISQ.INV.RT"
+            | "CHISQ.TEST"
+            | "CHITEST"
+            | "CHOOSE"
+            | "CHOOSECOLS"
+            | "CHOOSEROWS"
+            | "CLEAN"
+            | "CODE"
+            | "COLUMN"
+            | "COLUMNS"
+            | "COMBIN"
+            | "COMBINA"
+            | "COMPLEX"
+            | "CONCAT"
+            | "CONCATENATE"
+            | "CONFIDENCE"
+            | "CONFIDENCE.NORM"
+            | "CONFIDENCE.T"
+            | "CONVERT"
+            | "CORREL"
+            | "COS"
+            | "COSH"
+            | "COT"
+            | "COTH"
+            | "COUNT"
+            | "COUNTA"
+            | "COUNTBLANK"
+            | "COUNTIF"
+            | "COUNTIFS"
+            | "COUPDAYBS"
+            | "COUPDAYS"
+            | "COUPDAYSNC"
+            | "COUPNCD"
+            | "COUPNUM"
+            | "COUPPCD"
+            | "COVAR"
+            | "COVARIANCE.P"
+            | "COVARIANCE.S"
+            | "CRITBINOM"
+            | "CSC"
+            | "CSCH"
+            | "CUBEKPIMEMBER"
+            | "CUBEMEMBER"
+            | "CUBEMEMBERPROPERTY"
+            | "CUBERANKEDMEMBER"
+            | "CUBESET"
+            | "CUBESETCOUNT"
+            | "CUBEVALUE"
+            | "CUMIPMT"
+            | "CUMPRINC"
+            | "DATE"
+            | "DATEDIF"
+            | "DATEVALUE"
+            | "DAVERAGE"
+            | "DAY"
+            | "DAYS"
+            | "DAYS360"
+            | "DB"
+            | "DBCS"
+            | "DCOUNT"
+            | "DCOUNTA"
+            | "DDB"
+            | "DEC2BIN"
+            | "DEC2HEX"
+            | "DEC2OCT"
+            | "DECIMAL"
+            | "DEGREES"
+            | "DELTA"
+            | "DETECTLANGUAGE"
+            | "DEVSQ"
+            | "DGET"
+            | "DISC"
+            | "DMAX"
+            | "DMIN"
+            | "DOLLAR"
+            | "DOLLARDE"
+            | "DOLLARFR"
+            | "DPRODUCT"
+            | "DROP"
+            | "DSTDEV"
+            | "DSTDEVP"
+            | "DSUM"
+            | "DURATION"
+            | "DVAR"
+            | "DVARP"
+            | "EDATE"
+            | "EFFECT"
+            | "ENCODEURL"
+            | "EOMONTH"
+            | "ERF"
+            | "ERF.PRECISE"
+            | "ERFC"
+            | "ERFC.PRECISE"
+            | "ERROR.TYPE"
+            | "EUROCONVERT"
+            | "EVEN"
+            | "EXACT"
+            | "EXP"
+            | "EXPAND"
+            | "EXPON.DIST"
+            | "EXPONDIST"
+            | "F.DIST"
+            | "F.DIST.RT"
+            | "F.INV"
+            | "F.INV.RT"
+            | "F.TEST"
+            | "FACT"
+            | "FACTDOUBLE"
+            | "FALSE"
+            | "FDIST"
+            | "FILTER"
+            | "FILTERXML"
+            | "FIND"
+            | "FINDB"
+            | "FINV"
+            | "FISHER"
+            | "FISHERINV"
+            | "FIXED"
+            | "FLOOR"
+            | "FLOOR.MATH"
+            | "FLOOR.PRECISE"
+            | "FORECAST"
+            | "FORECAST.ETS"
+            | "FORECAST.ETS.CONFINT"
+            | "FORECAST.ETS.SEASONALITY"
+            | "FORECAST.ETS.STAT"
+            | "FORECAST.LINEAR"
+            | "FORMULATEXT"
+            | "FREQUENCY"
+            | "FTEST"
+            | "FV"
+            | "FVSCHEDULE"
+            | "GAMMA"
+            | "GAMMA.DIST"
+            | "GAMMA.INV"
+            | "GAMMADIST"
+            | "GAMMAINV"
+            | "GAMMALN"
+            | "GAMMALN.PRECISE"
+            | "GAUSS"
+            | "GCD"
+            | "GEOMEAN"
+            | "GESTEP"
+            | "GETPIVOTDATA"
+            | "GROUPBY"
+            | "GROWTH"
+            | "HARMEAN"
+            | "HEX2BIN"
+            | "HEX2DEC"
+            | "HEX2OCT"
+            | "HLOOKUP"
+            | "HOUR"
+            | "HSTACK"
+            | "HYPERLINK"
+            | "HYPGEOM.DIST"
+            | "HYPGEOMDIST"
+            | "IF"
+            | "IFERROR"
+            | "IFNA"
+            | "IFS"
+            | "IMABS"
+            | "IMAGE"
+            | "IMAGINARY"
+            | "IMARGUMENT"
+            | "IMCONJUGATE"
+            | "IMCOS"
+            | "IMCOSH"
+            | "IMCOT"
+            | "IMCSC"
+            | "IMCSCH"
+            | "IMDIV"
+            | "IMEXP"
+            | "IMLN"
+            | "IMLOG10"
+            | "IMLOG2"
+            | "IMPOWER"
+            | "IMPRODUCT"
+            | "IMREAL"
+            | "IMSEC"
+            | "IMSECH"
+            | "IMSIN"
+            | "IMSINH"
+            | "IMSQRT"
+            | "IMSUB"
+            | "IMSUM"
+            | "IMTAN"
+            | "INDEX"
+            | "INDIRECT"
+            | "INFO"
+            | "INT"
+            | "INTERCEPT"
+            | "INTRATE"
+            | "IPMT"
+            | "IRR"
+            | "ISBLANK"
+            | "ISERR"
+            | "ISERROR"
+            | "ISEVEN"
+            | "ISFORMULA"
+            | "ISLOGICAL"
+            | "ISNA"
+            | "ISNONTEXT"
+            | "ISNUMBER"
+            | "ISO.CEILING"
+            | "ISODD"
+            | "ISOMITTED"
+            | "ISOWEEKNUM"
+            | "ISPMT"
+            | "ISREF"
+            | "ISTEXT"
+            | "JIS"
+            | "KURT"
+            | "LAMBDA"
+            | "LARGE"
+            | "LCM"
+            | "LEFT"
+            | "LEFTB"
+            | "LEN"
+            | "LENB"
+            | "LET"
+            | "LINEST"
+            | "LN"
+            | "LOG"
+            | "LOG10"
+            | "LOGEST"
+            | "LOGINV"
+            | "LOGNORM.DIST"
+            | "LOGNORM.INV"
+            | "LOGNORMDIST"
+            | "LOGNORMINV"
+            | "LOOKUP"
+            | "LOWER"
+            | "MAKEARRAY"
+            | "MAP"
+            | "MATCH"
+            | "MAX"
+            | "MAXA"
+            | "MAXIFS"
+            | "MDETERM"
+            | "MDURATION"
+            | "MEDIAN"
+            | "MID"
+            | "MIDB"
+            | "MIN"
+            | "MINA"
+            | "MINIFS"
+            | "MINUTE"
+            | "MINVERSE"
+            | "MIRR"
+            | "MMULT"
+            | "MOD"
+            | "MODE"
+            | "MODE.MULT"
+            | "MODE.SNGL"
+            | "MONTH"
+            | "MROUND"
+            | "MULTINOMIAL"
+            | "MUNIT"
+            | "NA"
+            | "NEGBINOM.DIST"
+            | "NEGBINOMDIST"
+            | "NETWORKDAYS"
+            | "NETWORKDAYS.INTL"
+            | "NOMINAL"
+            | "NORM.DIST"
+            | "NORM.INV"
+            | "NORM.S.DIST"
+            | "NORM.S.INV"
+            | "NORMDIST"
+            | "NORMINV"
+            | "NORMSDIST"
+            | "NORMSINV"
+            | "NOT"
+            | "NOW"
+            | "NPER"
+            | "NPV"
+            | "NUMBERVALUE"
+            | "OCT2BIN"
+            | "OCT2DEC"
+            | "OCT2HEX"
+            | "ODD"
+            | "ODDFPRICE"
+            | "ODDFYIELD"
+            | "ODDLPRICE"
+            | "ODDLYIELD"
+            | "OFFSET"
+            | "OR"
+            | "PDURATION"
+            | "PEARSON"
+            | "PERCENTILE"
+            | "PERCENTILE.EXC"
+            | "PERCENTILE.INC"
+            | "PERCENTOF"
+            | "PERCENTRANK"
+            | "PERCENTRANK.EXC"
+            | "PERCENTRANK.INC"
+            | "PERMUT"
+            | "PERMUTATIONA"
+            | "PHI"
+            | "PHONETIC"
+            | "PI"
+            | "PIVOTBY"
+            | "PMT"
+            | "POISSON"
+            | "POISSON.DIST"
+            | "POWER"
+            | "PPMT"
+            | "PRICE"
+            | "PRICEDISC"
+            | "PRICEMAT"
+            | "PROB"
+            | "PRODUCT"
+            | "PROPER"
+            | "PV"
+            | "QUARTILE"
+            | "QUARTILE.EXC"
+            | "QUARTILE.INC"
+            | "QUOTIENT"
+            | "RADIANS"
+            | "RAND"
+            | "RANDARRAY"
+            | "RANDBETWEEN"
+            | "RANK"
+            | "RANK.AVG"
+            | "RANK.EQ"
+            | "RATE"
+            | "RECEIVED"
+            | "REDUCE"
+            | "REGEXEXTRACT"
+            | "REGEXREPLACE"
+            | "REGEXTEST"
+            | "REPLACE"
+            | "REPLACEB"
+            | "REPT"
+            | "RIGHT"
+            | "RIGHTB"
+            | "ROMAN"
+            | "ROUND"
+            | "ROUNDDOWN"
+            | "ROUNDUP"
+            | "ROW"
+            | "ROWS"
+            | "RRI"
+            | "RSQ"
+            | "RTD"
+            | "SCAN"
+            | "SEARCH"
+            | "SEARCHB"
+            | "SEC"
+            | "SECH"
+            | "SECOND"
+            | "SEQUENCE"
+            | "SERIESSUM"
+            | "SHEET"
+            | "SHEETS"
+            | "SIGN"
+            | "SIN"
+            | "SINGLE"
+            | "SINH"
+            | "SKEW"
+            | "SKEW.P"
+            | "SLN"
+            | "SLOPE"
+            | "SMALL"
+            | "SORT"
+            | "SORTBY"
+            | "SQRT"
+            | "SQRTPI"
+            | "STANDARDIZE"
+            | "STDEV"
+            | "STDEV.P"
+            | "STDEV.S"
+            | "STDEVA"
+            | "STDEVP"
+            | "STDEVPA"
+            | "STEYX"
+            | "STOCKHISTORY"
+            | "SUBSTITUTE"
+            | "SUBTOTAL"
+            | "SUM"
+            | "SUMIF"
+            | "SUMIFS"
+            | "SUMPRODUCT"
+            | "SUMSQ"
+            | "SUMX2MY2"
+            | "SUMX2PY2"
+            | "SUMXMY2"
+            | "SWITCH"
+            | "SYD"
+            | "T.DIST"
+            | "T.DIST.2T"
+            | "T.DIST.RT"
+            | "T.INV"
+            | "T.INV.2T"
+            | "T.TEST"
+            | "TAKE"
+            | "TAN"
+            | "TANH"
+            | "TBILLEQ"
+            | "TBILLPRICE"
+            | "TBILLYIELD"
+            | "TDIST"
+            | "TEXT"
+            | "TEXTAFTER"
+            | "TEXTBEFORE"
+            | "TEXTJOIN"
+            | "TEXTSPLIT"
+            | "TIME"
+            | "TIMEVALUE"
+            | "TINV"
+            | "TOCOL"
+            | "TODAY"
+            | "TOROW"
+            | "TRANSLATE"
+            | "TRANSPOSE"
+            | "TREND"
+            | "TRIM"
+            | "TRIMMEAN"
+            | "TRIMRANGE"
+            | "TRUE"
+            | "TRUNC"
+            | "TTEST"
+            | "TYPE"
+            | "UNICHAR"
+            | "UNICODE"
+            | "UNIQUE"
+            | "UPPER"
+            | "VALUE"
+            | "VALUETOTEXT"
+            | "VAR"
+            | "VAR.P"
+            | "VAR.S"
+            | "VARA"
+            | "VARP"
+            | "VARPA"
+            | "VDB"
+            | "VLOOKUP"
+            | "VSTACK"
+            | "WEBSERVICE"
+            | "WEEKDAY"
+            | "WEEKNUM"
+            | "WEIBULL"
+            | "WEIBULL.DIST"
+            | "WORKDAY"
+            | "WORKDAY.INTL"
+            | "WRAPCOLS"
+            | "WRAPROWS"
+            | "XIRR"
+            | "XLOOKUP"
+            | "XMATCH"
+            | "XNPV"
+            | "XOR"
+            | "YEAR"
+            | "YEARFRAC"
+            | "YIELD"
+            | "YIELDDISC"
+            | "YIELDMAT"
+            | "Z.TEST"
+            | "ZTEST"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Sheet, SheetInit};
+
+    fn sheet() -> Sheet {
+        Sheet::new(SheetInit {
+            rows: 10,
+            cols: 10,
+            ..Default::default()
+        })
+    }
+
+    fn messages(diags: &[FormulaDiagnostic]) -> Vec<String> {
+        diags.iter().map(|d| d.message.clone()).collect()
+    }
+
+    #[test]
+    fn valid_arithmetic_has_no_diagnostics() {
+        let sheet = sheet();
+        let diags = check_formula("=1+2", &sheet, None, None, None);
+        assert_eq!(diags, Vec::new());
+    }
+
+    #[test]
+    fn invalid_arithmetic_reports_type_error() {
+        let sheet = sheet();
+        let diags = check_formula("=\"abc\"+1", &sheet, None, None, None);
+        assert!(
+            messages(&diags)
+                .iter()
+                .any(|m| m.contains("expects a number"))
+        );
+    }
+
+    #[test]
+    fn numeric_text_reports_coercion_warning() {
+        let sheet = sheet();
+        let diags = check_formula("=\"1\"+1", &sheet, None, None, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == FormulaDiagnosticSeverity::Warning)
+        );
+    }
+
+    #[test]
+    fn bad_arity_reports_function_error() {
+        let sheet = sheet();
+        let diags = check_formula("=LEFT()", &sheet, None, None, None);
+        assert!(messages(&diags).iter().any(|m| m.contains("LEFT requires")));
+    }
+
+    #[test]
+    fn unknown_function_reports_error() {
+        let sheet = sheet();
+        let diags = check_formula("=NO_SUCH_FN(1)", &sheet, None, None, None);
+        assert!(
+            messages(&diags)
+                .iter()
+                .any(|m| m.contains("Unknown function"))
+        );
+    }
+
+    #[test]
+    fn unknown_sheet_reports_reference_error() {
+        let sheet = sheet();
+        let diags = check_formula("=Missing!A1", &sheet, None, None, None);
+        assert!(
+            messages(&diags)
+                .iter()
+                .any(|m| m.contains("Sheet not found"))
+        );
+    }
+
+    #[test]
+    fn range_to_scalar_function_reports_array_mismatch() {
+        let sheet = sheet();
+        let diags = check_formula("=LEFT(A1:A2)", &sheet, None, None, None);
+        assert!(messages(&diags).iter().any(|m| m.contains("got array")));
+    }
+
+    #[test]
+    fn let_binding_is_available_to_result_expression() {
+        let sheet = sheet();
+        let diags = check_formula("=LET(x, 1, x + 2)", &sheet, None, None, None);
+        assert_eq!(diags, Vec::new());
+    }
+}
