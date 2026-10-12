@@ -269,6 +269,12 @@ pub struct EvalArgs {
     /// Output display format if --print is specified [table, csv, tsv, json]
     #[usage(short, long, value_enum, default = "table")]
     pub format: OutputFormat,
+
+    #[usage(
+        long,
+        help = "Detect circular dependencies and fail before recalculating"
+    )]
+    pub detect_cycles: bool,
 }
 
 #[derive(Args, Debug)]

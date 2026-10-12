@@ -9,10 +9,11 @@ use crate::core::{
     PivotTable, PivotValueField, VbaModule, VbaModuleKind, VbaProject,
     chart::{Chart, ChartType},
     compute_pivot,
-    engine::{Context, DataColumn, ResultData, Sheet, generate_unique_id},
+    engine::{CellRef, Context, DataColumn, Dependency, ResultData, Sheet, generate_unique_id},
     validate_vba_module_name,
 };
 use crate::{Error, ObjectKind};
+use std::collections::{HashMap, HashSet};
 
 fn resize_table_columns(
     table: &mut ExcelTable,
@@ -71,6 +72,106 @@ pub struct WorkbookManager {
     pub vba_project: Option<VbaProject>,
 
     pub locale: Locale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct CircularNode {
+    sheet: usize,
+    row: usize,
+    col: usize,
+}
+
+struct CircularSearch<'a> {
+    adjacency: &'a HashMap<CircularNode, Vec<CircularNode>>,
+    next_index: usize,
+    indices: HashMap<CircularNode, usize>,
+    lowlinks: HashMap<CircularNode, usize>,
+    stack: Vec<CircularNode>,
+    on_stack: HashSet<CircularNode>,
+    components: Vec<Vec<CircularNode>>,
+}
+
+impl<'a> CircularSearch<'a> {
+    fn new(adjacency: &'a HashMap<CircularNode, Vec<CircularNode>>) -> Self {
+        Self {
+            adjacency,
+            next_index: 0,
+            indices: HashMap::new(),
+            lowlinks: HashMap::new(),
+            stack: Vec::new(),
+            on_stack: HashSet::new(),
+            components: Vec::new(),
+        }
+    }
+
+    fn visit(&mut self, node: CircularNode) {
+        self.indices.insert(node, self.next_index);
+        self.lowlinks.insert(node, self.next_index);
+        self.next_index += 1;
+        self.stack.push(node);
+        self.on_stack.insert(node);
+
+        if let Some(edges) = self.adjacency.get(&node) {
+            for next in edges {
+                if !self.indices.contains_key(next) {
+                    self.visit(*next);
+                    if let (Some(node_lowlink), Some(next_lowlink)) = (
+                        self.lowlinks.get(&node).copied(),
+                        self.lowlinks.get(next).copied(),
+                    ) {
+                        self.lowlinks.insert(node, node_lowlink.min(next_lowlink));
+                    }
+                } else if self.on_stack.contains(next)
+                    && let (Some(node_lowlink), Some(next_index)) = (
+                        self.lowlinks.get(&node).copied(),
+                        self.indices.get(next).copied(),
+                    )
+                {
+                    self.lowlinks.insert(node, node_lowlink.min(next_index));
+                }
+            }
+        }
+
+        if self.lowlinks.get(&node) == self.indices.get(&node) {
+            let mut component = Vec::new();
+            while let Some(member) = self.stack.pop() {
+                self.on_stack.remove(&member);
+                component.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            component.sort();
+            let self_cycle = component.len() == 1
+                && self
+                    .adjacency
+                    .get(&component[0])
+                    .is_some_and(|edges| edges.contains(&component[0]));
+            if component.len() > 1 || self_cycle {
+                self.components.push(component);
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<Vec<CircularNode>> {
+        let mut nodes: Vec<CircularNode> = self.adjacency.keys().copied().collect();
+        nodes.sort();
+
+        for node in nodes {
+            if !self.indices.contains_key(&node) {
+                self.visit(node);
+            }
+        }
+
+        self.components.sort();
+        self.components
+    }
+}
+
+fn find_circular_components(
+    adjacency: &HashMap<CircularNode, Vec<CircularNode>>,
+) -> Vec<Vec<CircularNode>> {
+    CircularSearch::new(adjacency).finish()
 }
 
 fn pivot_label_literal(text: &str) -> String {
@@ -146,6 +247,150 @@ impl WorkbookManager {
         for sheet in &mut self.sheets {
             sheet.locale = locale.clone();
         }
+    }
+
+    pub fn detect_circular_references(&self) -> Vec<Vec<String>> {
+        let mut formula_nodes = Vec::new();
+        let mut formula_set = HashSet::new();
+        let mut formulas_by_column: HashMap<(usize, usize), Vec<CircularNode>> = HashMap::new();
+
+        for (sheet_idx, sheet) in self.sheets.iter().enumerate() {
+            for col in 0..sheet.col_count() {
+                for row in 0..sheet.row_count() {
+                    let cell = CellRef::new(row, col);
+                    if sheet.get_src(&cell).is_some_and(|src| src.starts_with('=')) {
+                        let node = CircularNode {
+                            sheet: sheet_idx,
+                            row,
+                            col,
+                        };
+                        formula_nodes.push(node);
+                        formula_set.insert(node);
+                        formulas_by_column
+                            .entry((sheet_idx, col))
+                            .or_default()
+                            .push(node);
+                    }
+                }
+            }
+        }
+
+        for nodes in formulas_by_column.values_mut() {
+            nodes.sort();
+        }
+
+        let sheet_indices_by_name: HashMap<String, usize> = self
+            .sheets
+            .iter()
+            .enumerate()
+            .map(|(idx, sheet)| (sheet.name.to_lowercase(), idx))
+            .collect();
+        let mut adjacency: HashMap<CircularNode, Vec<CircularNode>> = formula_nodes
+            .iter()
+            .copied()
+            .map(|node| (node, Vec::new()))
+            .collect();
+
+        for node in &formula_nodes {
+            let deps = self.formula_dependencies(*node);
+            let mut edges = Vec::new();
+
+            for dep in deps {
+                match dep {
+                    Dependency::Local(cell) => {
+                        let candidate = CircularNode {
+                            sheet: node.sheet,
+                            row: cell.row,
+                            col: cell.col,
+                        };
+                        if formula_set.contains(&candidate) {
+                            edges.push(candidate);
+                        }
+                    }
+                    Dependency::Remote { sheet, cell } => {
+                        if let Some(sheet_idx) = sheet_indices_by_name.get(&sheet.to_lowercase()) {
+                            let candidate = CircularNode {
+                                sheet: *sheet_idx,
+                                row: cell.row,
+                                col: cell.col,
+                            };
+                            if formula_set.contains(&candidate) {
+                                edges.push(candidate);
+                            }
+                        }
+                    }
+                    Dependency::LocalColumn(col) => {
+                        if let Some(nodes) = formulas_by_column.get(&(node.sheet, col)) {
+                            edges.extend(nodes.iter().copied());
+                        }
+                    }
+                    Dependency::RemoteColumn { sheet, col } => {
+                        if let Some(sheet_idx) = sheet_indices_by_name.get(&sheet.to_lowercase())
+                            && let Some(nodes) = formulas_by_column.get(&(*sheet_idx, col))
+                        {
+                            edges.extend(nodes.iter().copied());
+                        }
+                    }
+                }
+            }
+
+            edges.sort();
+            edges.dedup();
+            if let Some(slot) = adjacency.get_mut(node) {
+                *slot = edges;
+            }
+        }
+
+        find_circular_components(&adjacency)
+            .into_iter()
+            .map(|cycle| {
+                cycle
+                    .into_iter()
+                    .map(|node| self.circular_node_label(node))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn formula_dependencies(&self, node: CircularNode) -> Vec<Dependency> {
+        let Some(sheet) = self.sheets.get(node.sheet) else {
+            return Vec::new();
+        };
+        let cell = CellRef::new(node.row, node.col);
+        let Some(src) = sheet.get_src(&cell) else {
+            return Vec::new();
+        };
+
+        let mut context = Context::new();
+        for (idx, other_sheet) in self.sheets.iter().enumerate() {
+            if idx != node.sheet {
+                context.add_table(other_sheet.name.clone(), other_sheet);
+            }
+        }
+        context.pivot_tables = &self.pivot_tables;
+        context.sheet_order = self.sheets.iter().map(|sheet| sheet.name.clone()).collect();
+
+        let sheets_for_compilation = sheet.get_all_sheets_for_compilation(Some(&context));
+        let compiled = crate::core::parser::compile_formula(src, &sheets_for_compilation);
+        let eval_src = crate::core::parser::serialize_formula(&compiled, &sheets_for_compilation);
+        sheet
+            .eval_with_row(&eval_src, Some(&context), Some(node.row), Some(node.col))
+            .map(|(_, deps)| deps)
+            .unwrap_or_default()
+    }
+
+    fn circular_node_label(&self, node: CircularNode) -> String {
+        let sheet_name = self
+            .sheets
+            .get(node.sheet)
+            .map(|sheet| sheet.name.as_str())
+            .unwrap_or("");
+        format!(
+            "{}!{}{}",
+            sheet_name,
+            crate::core::parser::col_idx_to_letters(node.col),
+            node.row + 1
+        )
     }
 
     pub fn evaluate(&mut self) -> crate::Result<()> {
@@ -1335,5 +1580,87 @@ impl WorkbookManager {
                 self.sheets[sheet_idx].set_cell_src(r, c, String::new());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn circular_node(sheet: usize, row: usize, col: usize) -> CircularNode {
+        CircularNode { sheet, row, col }
+    }
+
+    fn workbook_with_sheets(names: &[&str]) -> WorkbookManager {
+        let mut wb = WorkbookManager {
+            sheets: Vec::new(),
+            charts: Vec::new(),
+            pivot_tables: Vec::new(),
+            vba_project: None,
+            locale: Locale::default(),
+        };
+        for name in names {
+            wb.add_sheet(name).unwrap();
+        }
+        wb
+    }
+
+    #[test]
+    fn find_circular_components_reports_only_self_and_multi_node_cycles() {
+        let a = circular_node(0, 0, 0);
+        let b = circular_node(0, 0, 1);
+        let c = circular_node(0, 0, 2);
+        let d = circular_node(0, 1, 0);
+        let e = circular_node(0, 1, 1);
+        let f = circular_node(0, 1, 2);
+        let adjacency = HashMap::from([
+            (a, vec![b]),
+            (b, vec![c]),
+            (c, vec![a]),
+            (d, vec![d]),
+            (e, vec![f]),
+            (f, Vec::new()),
+        ]);
+
+        let components = find_circular_components(&adjacency);
+        assert_eq!(components, vec![vec![a, b, c], vec![d]]);
+    }
+
+    #[test]
+    fn detect_circular_references_returns_empty_for_acyclic_formulas() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "=B1+1".to_string());
+        wb.set_cell(0, 0, 1, "=C1+1".to_string());
+        wb.set_cell(0, 0, 2, "3".to_string());
+
+        assert!(wb.detect_circular_references().is_empty());
+    }
+
+    #[test]
+    fn detect_circular_references_reports_self_reference() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "=A1+1".to_string());
+
+        assert_eq!(wb.detect_circular_references(), vec![vec!["Sheet1!A1"]]);
+    }
+
+    #[test]
+    fn detect_circular_references_reports_whole_column_self_cycle() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "=SUM(A:A)".to_string());
+
+        assert_eq!(wb.detect_circular_references(), vec![vec!["Sheet1!A1"]]);
+    }
+
+    #[test]
+    fn detect_circular_references_reports_remote_whole_column_cycle() {
+        let mut wb = workbook_with_sheets(&["First", "Second"]);
+        wb.set_cell(0, 0, 0, "=SUM(Second!A:A)".to_string());
+        wb.set_cell(1, 0, 0, "=SUM(First!A:A)".to_string());
+
+        assert_eq!(
+            wb.detect_circular_references(),
+            vec![vec!["First!A1", "Second!A1"]]
+        );
     }
 }

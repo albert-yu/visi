@@ -366,12 +366,37 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
     }
 }
 
+fn format_circular_dependencies(cycles: &[Vec<String>]) -> String {
+    let mut msg = if cycles.len() == 1 {
+        "Circular dependency detected".to_string()
+    } else {
+        format!("Circular dependencies detected: {} groups", cycles.len())
+    };
+
+    for cycle in cycles {
+        if cycle.is_empty() {
+            continue;
+        }
+        msg.push_str("\n  ");
+        msg.push_str(&cycle.join(", "));
+    }
+
+    msg
+}
+
 fn handle_eval(args: EvalArgs, quiet: bool, locale: Option<visi_core::core::Locale>) {
     let mut wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
         exit_with_error(e, EXIT_IO_ERROR);
     });
     if let Some(loc) = locale {
         wb.set_locale(loc);
+    }
+
+    if args.detect_cycles {
+        let cycles = wb.detect_circular_references();
+        if !cycles.is_empty() {
+            exit_with_error(format_circular_dependencies(&cycles), EXIT_ENGINE_ERROR);
+        }
     }
 
     wb.evaluate().unwrap_or_else(|e| {
@@ -1987,5 +2012,33 @@ fn handle_export(args: ExportArgs) {
         });
     } else {
         print!("{}", rendered);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_circular_dependencies_formats_single_group() {
+        let cycles = vec![vec!["Sheet1!A1".to_string(), "Sheet1!B1".to_string()]];
+
+        assert_eq!(
+            format_circular_dependencies(&cycles),
+            "Circular dependency detected\n  Sheet1!A1, Sheet1!B1"
+        );
+    }
+
+    #[test]
+    fn format_circular_dependencies_formats_multiple_groups() {
+        let cycles = vec![
+            vec!["Sheet1!A1".to_string()],
+            vec!["Sheet2!B2".to_string(), "Sheet2!C2".to_string()],
+        ];
+
+        assert_eq!(
+            format_circular_dependencies(&cycles),
+            "Circular dependencies detected: 2 groups\n  Sheet1!A1\n  Sheet2!B2, Sheet2!C2"
+        );
     }
 }
