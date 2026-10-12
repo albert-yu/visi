@@ -81,91 +81,97 @@ struct CircularNode {
     col: usize,
 }
 
-fn visit_circular_node(
-    node: CircularNode,
-    adjacency: &HashMap<CircularNode, Vec<CircularNode>>,
-    next_index: &mut usize,
-    indices: &mut HashMap<CircularNode, usize>,
-    lowlinks: &mut HashMap<CircularNode, usize>,
-    stack: &mut Vec<CircularNode>,
-    on_stack: &mut HashSet<CircularNode>,
-    components: &mut Vec<Vec<CircularNode>>,
-) {
-    indices.insert(node, *next_index);
-    lowlinks.insert(node, *next_index);
-    *next_index += 1;
-    stack.push(node);
-    on_stack.insert(node);
+struct CircularSearch<'a> {
+    adjacency: &'a HashMap<CircularNode, Vec<CircularNode>>,
+    next_index: usize,
+    indices: HashMap<CircularNode, usize>,
+    lowlinks: HashMap<CircularNode, usize>,
+    stack: Vec<CircularNode>,
+    on_stack: HashSet<CircularNode>,
+    components: Vec<Vec<CircularNode>>,
+}
 
-    if let Some(edges) = adjacency.get(&node) {
-        for next in edges {
-            if !indices.contains_key(next) {
-                visit_circular_node(
-                    *next, adjacency, next_index, indices, lowlinks, stack, on_stack, components,
-                );
-                if let (Some(node_lowlink), Some(next_lowlink)) =
-                    (lowlinks.get(&node).copied(), lowlinks.get(next).copied())
+impl<'a> CircularSearch<'a> {
+    fn new(adjacency: &'a HashMap<CircularNode, Vec<CircularNode>>) -> Self {
+        Self {
+            adjacency,
+            next_index: 0,
+            indices: HashMap::new(),
+            lowlinks: HashMap::new(),
+            stack: Vec::new(),
+            on_stack: HashSet::new(),
+            components: Vec::new(),
+        }
+    }
+
+    fn visit(&mut self, node: CircularNode) {
+        self.indices.insert(node, self.next_index);
+        self.lowlinks.insert(node, self.next_index);
+        self.next_index += 1;
+        self.stack.push(node);
+        self.on_stack.insert(node);
+
+        if let Some(edges) = self.adjacency.get(&node) {
+            for next in edges {
+                if !self.indices.contains_key(next) {
+                    self.visit(*next);
+                    if let (Some(node_lowlink), Some(next_lowlink)) = (
+                        self.lowlinks.get(&node).copied(),
+                        self.lowlinks.get(next).copied(),
+                    ) {
+                        self.lowlinks.insert(node, node_lowlink.min(next_lowlink));
+                    }
+                } else if self.on_stack.contains(next)
+                    && let (Some(node_lowlink), Some(next_index)) = (
+                        self.lowlinks.get(&node).copied(),
+                        self.indices.get(next).copied(),
+                    )
                 {
-                    lowlinks.insert(node, node_lowlink.min(next_lowlink));
+                    self.lowlinks.insert(node, node_lowlink.min(next_index));
                 }
-            } else if on_stack.contains(next)
-                && let (Some(node_lowlink), Some(next_index)) =
-                    (lowlinks.get(&node).copied(), indices.get(next).copied())
-            {
-                lowlinks.insert(node, node_lowlink.min(next_index));
+            }
+        }
+
+        if self.lowlinks.get(&node) == self.indices.get(&node) {
+            let mut component = Vec::new();
+            while let Some(member) = self.stack.pop() {
+                self.on_stack.remove(&member);
+                component.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            component.sort();
+            let self_cycle = component.len() == 1
+                && self
+                    .adjacency
+                    .get(&component[0])
+                    .is_some_and(|edges| edges.contains(&component[0]));
+            if component.len() > 1 || self_cycle {
+                self.components.push(component);
             }
         }
     }
 
-    if lowlinks.get(&node) == indices.get(&node) {
-        let mut component = Vec::new();
-        while let Some(member) = stack.pop() {
-            on_stack.remove(&member);
-            component.push(member);
-            if member == node {
-                break;
+    fn finish(mut self) -> Vec<Vec<CircularNode>> {
+        let mut nodes: Vec<CircularNode> = self.adjacency.keys().copied().collect();
+        nodes.sort();
+
+        for node in nodes {
+            if !self.indices.contains_key(&node) {
+                self.visit(node);
             }
         }
-        component.sort();
-        let self_cycle = component.len() == 1
-            && adjacency
-                .get(&component[0])
-                .is_some_and(|edges| edges.contains(&component[0]));
-        if component.len() > 1 || self_cycle {
-            components.push(component);
-        }
+
+        self.components.sort();
+        self.components
     }
 }
 
 fn find_circular_components(
     adjacency: &HashMap<CircularNode, Vec<CircularNode>>,
 ) -> Vec<Vec<CircularNode>> {
-    let mut next_index = 0;
-    let mut indices = HashMap::new();
-    let mut lowlinks = HashMap::new();
-    let mut stack = Vec::new();
-    let mut on_stack = HashSet::new();
-    let mut components = Vec::new();
-    let mut nodes: Vec<CircularNode> = adjacency.keys().copied().collect();
-    nodes.sort();
-
-    for node in nodes {
-        if !indices.contains_key(&node) {
-            visit_circular_node(
-                node,
-                adjacency,
-                &mut next_index,
-                &mut indices,
-                &mut lowlinks,
-                &mut stack,
-                &mut on_stack,
-                &mut components,
-            );
-        }
-    }
-
-    components.sort();
-    components
+    CircularSearch::new(adjacency).finish()
 }
 
 fn pivot_label_literal(text: &str) -> String {
