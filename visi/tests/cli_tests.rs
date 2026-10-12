@@ -939,6 +939,42 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
 }
 
 #[test]
+fn test_detect_circular_references_reports_local_cycle_cells() {
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+        locale: visi_core::core::Locale::default(),
+    };
+    wb.add_sheet("s").unwrap();
+    wb.sheets[0].set_cell_src(0, 0, "=B1+1".to_string());
+    wb.sheets[0].set_cell_src(0, 1, "=C1+1".to_string());
+    wb.sheets[0].set_cell_src(0, 2, "=A1+1".to_string());
+
+    let cycles = wb.detect_circular_references();
+    assert_eq!(cycles, vec![vec!["s!A1", "s!B1", "s!C1"]]);
+}
+
+#[test]
+fn test_detect_circular_references_reports_cross_sheet_cycle_cells() {
+    let mut wb = WorkbookManager {
+        sheets: Vec::new(),
+        charts: Vec::new(),
+        pivot_tables: Vec::new(),
+        vba_project: None,
+        locale: visi_core::core::Locale::default(),
+    };
+    wb.add_sheet("First").unwrap();
+    wb.add_sheet("Second").unwrap();
+    wb.sheets[0].set_cell_src(0, 0, "=Second!A1+1".to_string());
+    wb.sheets[1].set_cell_src(0, 0, "=First!A1+1".to_string());
+
+    let cycles = wb.detect_circular_references();
+    assert_eq!(cycles, vec![vec!["First!A1", "Second!A1"]]);
+}
+
+#[test]
 fn test_cross_sheet_circular_reference_terminates_without_hanging() {
     let mut wb = WorkbookManager {
         sheets: Vec::new(),
@@ -1222,6 +1258,18 @@ fn test_vba_macro_run_reads_and_writes_a_real_workbook() {
 
     let _ = fs::remove_file(file_path);
     let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn test_eval_parses_detect_cycles() {
+    let cli = try_parse(&["visi", "eval", "book.xlsx", "--detect-cycles", "--print"])
+        .expect("should parse cycle detection flag");
+
+    let Commands::Eval(eval_args) = cli.command else {
+        panic!("expected Commands::Eval");
+    };
+    assert!(eval_args.detect_cycles);
+    assert!(eval_args.print);
 }
 
 #[test]
