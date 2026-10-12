@@ -82,11 +82,12 @@ def test_vba_grammar_generator_covers_wide_syntax():
 
 
 def test_vba_extended_host_surface_generates_stateful_object_model_cases():
-    gen = VbaGenerator(seed=96, host_surface="extended")
-    sources = "\n".join(gen.module(i) for i in range(1, 40))
+    gen = VbaGenerator(seed=0, host_surface="extended")
+    sources = "\n".join(gen.module(i) for i in range(1, 100))
     assert ".Interior." in sources or ".Font." in sources
     assert ".Rows(" in sources or ".Columns(" in sources
     assert ".ListObjects(" in sources
+    assert ".PivotTables(" in sources
 
 
 def test_chart_rich_shape_writes_dates_blanks_and_extra_columns(tmp_path):

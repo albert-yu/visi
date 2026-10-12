@@ -131,6 +131,8 @@ FONT_NAMES = ['"Calibri"', '"Arial"', '"Courier New"', '"Times New Roman"']
 NUMBER_FORMATS = ['"General"', '"0"', '"0.00"', '"@"', '"m/d/yy"']
 TABLE_COLUMNS = ['"Region"', '"Amount"', '"Flag"']
 TABLE_COLUMN_NAMES = ['"Region2"', '"Amount2"', '"Flag2"', '"Total"']
+PIVOT_NAME = "SalesPivot"
+PIVOT_FIELDS = ['"Region"', '"Amount"', '"Flag"']
 ADDRESS_ARGS = ["", "(False, False)", "(True, False)", "(False, True)", "(True, True)"]
 
 
@@ -356,6 +358,9 @@ class VbaGenerator:
         ]
 
     def extended_host_statement(self, target, vars_in_scope, depth):
+        if self.rng.random() < 0.12:
+            return self.pivot_host_statement(target)
+
         kind = self.rng.random()
         row, col = self.cell()
         srow, scol = self.cell(scratch=True)
@@ -559,6 +564,37 @@ class VbaGenerator:
             f'{target} = {HOST_SHEET_VAR}.ListObjects("{new_name}").Name & "/" & TypeName({HOST_SHEET_VAR}.ListObjects("{new_name}"))',
         ]
 
+    def pivot_host_statement(self, target):
+        pivot = f'{HOST_SHEET_VAR}.PivotTables("{PIVOT_NAME}")'
+        kind = self.rng.random()
+        if kind < 0.18:
+            return [
+                f'{target} = CStr({HOST_SHEET_VAR}.PivotTables.Count) & "/" & TypeName({HOST_SHEET_VAR}.PivotTables(1))'
+            ]
+        if kind < 0.36:
+            return [
+                f'{target} = {pivot}.Name & "/" & {pivot}.TableRange1.Address(False, False) & "/" & {pivot}.TableRange2.Address(False, False)'
+            ]
+        if kind < 0.56:
+            field = self.rng.choice(PIVOT_FIELDS)
+            return [
+                f'{target} = {pivot}.PivotFields({field}).Name & "/" & CStr({pivot}.PivotFields({field}).Orientation)'
+            ]
+        if kind < 0.72:
+            return [
+                f'{pivot}.PivotFields("Flag").CurrentPage = "(All)"',
+                f'{target} = {pivot}.PivotFields("Flag").CurrentPage',
+            ]
+        if kind < 0.86:
+            page = self.rng.choice(['"True"', '"False"'])
+            return [
+                f'{pivot}.PivotFields("Flag").CurrentPage = {page}',
+                f'{target} = {pivot}.PivotFields("Flag").CurrentPage',
+            ]
+        return [
+            f'{target} = CStr({pivot}.RefreshTable) & "/" & {pivot}.TableRange2.Address(False, False)'
+        ]
+
     def module(self, index):
         depth = self.rng.randint(1, 3)
         n_vars = self.rng.randint(2, len(VAR_NAMES))
@@ -612,12 +648,62 @@ GRID_HELPERS = """Public Sub ResetGrid()
 {writes}
 End Sub
 
-Private Function CellText(ByVal c As Range) As String
+Private Function CellText(ByVal c As Range, ByVal includeFormula As Boolean) As String
     On Error GoTo Unrenderable
-    CellText = TypeName(c.Value) & ":" & CStr(c.Value2)
+    Dim formulaText As String
+    If includeFormula Then
+        formulaText = CStr(c.Formula)
+    Else
+        formulaText = ""
+    End If
+    CellText = TypeName(c.Value) & ":" & CStr(c.Value2) & ":" & formulaText & ":" & CStr(c.NumberFormat) & ":" & CStr(c.Font.Bold) & ":" & CStr(c.Font.Italic) & ":" & CStr(c.Interior.Color) & ":" & CStr(c.Font.Color)
     Exit Function
 Unrenderable:
     CellText = TypeName(c.Value) & ":?" & CStr(Err.Number)
+End Function
+
+Private Function CellValueText(ByVal c As Range) As String
+    On Error GoTo Unrenderable
+    CellValueText = TypeName(c.Value) & ":" & CStr(c.Value2)
+    Exit Function
+Unrenderable:
+    CellValueText = TypeName(c.Value) & ":?" & CStr(Err.Number)
+End Function
+
+Private Function TableState(ByVal ws As Worksheet) As String
+    On Error GoTo Missing
+    Dim lo As ListObject, s As String, i As Long
+    If ws.ListObjects.Count = 0 Then
+        TableState = "NOTABLE"
+        Exit Function
+    End If
+    Set lo = ws.ListObjects(1)
+    s = lo.Name & ":" & lo.Range.Address(False, False) & ":" & CStr(lo.ShowHeaders) & ":" & CStr(lo.ShowTotals) & ":" & CStr(lo.ListRows.Count) & ":" & CStr(lo.ListColumns.Count)
+    For i = 1 To lo.ListColumns.Count
+        s = s & ":" & lo.ListColumns(i).Name
+    Next i
+    TableState = s
+    Exit Function
+Missing:
+    TableState = "TABLEERR:" & CStr(Err.Number)
+End Function
+
+Private Function PivotState(ByVal ws As Worksheet) As String
+    On Error GoTo Missing
+    Dim pt As PivotTable, s As String
+    If ws.PivotTables.Count = 0 Then
+        PivotState = "NOPIVOT"
+        Exit Function
+    End If
+    Set pt = ws.PivotTables(1)
+    s = pt.Name & ":" & pt.TableRange1.Address(False, False) & ":" & pt.TableRange2.Address(False, False) & ":" & CStr(pt.PivotFields.Count)
+    s = s & ":" & pt.PivotFields("Region").Name & ":" & CStr(pt.PivotFields("Region").Orientation)
+    s = s & ":" & pt.PivotFields("Amount").Name & ":" & CStr(pt.PivotFields("Amount").Orientation)
+    s = s & ":" & pt.PivotFields("Flag").CurrentPage
+    PivotState = s
+    Exit Function
+Missing:
+    PivotState = "PIVOTERR:" & CStr(Err.Number)
 End Function
 
 Private Function GridState() As String
@@ -625,10 +711,15 @@ Private Function GridState() As String
     Set ws = ThisWorkbook.Worksheets("Data")
     For r = 1 To {rows}
         For c = 1 To {cols}
-            s = s & CellText(ws.Cells(r, c)) & ","
+            s = s & CellText(ws.Cells(r, c), c = 3 Or c >= 5) & ","
         Next c
     Next r
-    GridState = s
+    For r = 1 To 4
+        For c = 8 To 10
+            s = s & CellValueText(ws.Cells(r, c)) & ","
+        Next c
+    Next r
+    GridState = s & "|TABLE|" & TableState(ws) & "|PIVOT|" & PivotState(ws)
 End Function"""
 
 
@@ -682,7 +773,7 @@ def build_module(cases):
     return check_no_duplicate_dims("\n\n".join(parts) + "\n")
 
 
-def build_workbook(path):
+def build_workbook(path, include_pivot=False):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Data"
@@ -703,6 +794,15 @@ def build_workbook(path):
     )
     ws.add_table(table)
     wb.save(path)
+
+    if include_pivot:
+        wb = visi_core.Workbook.load(path)
+        wb.add_pivot_from_table(PIVOT_NAME, "Sales", dest_row=6, dest_col=0)
+        wb.add_pivot_field(PIVOT_NAME, "row", "Region")
+        wb.add_pivot_field(PIVOT_NAME, "value", "Amount", agg="sum")
+        wb.add_pivot_field(PIVOT_NAME, "filter", "Flag")
+        wb.refresh_pivot(PIVOT_NAME)
+        wb.save(path)
 
 
 def visi_result(source, proc, workbook=None, harness=False):
@@ -1019,7 +1119,7 @@ def main():
             indices = [i for i, _ in cases]
 
             base = os.path.join(workdir, "base.xlsx")
-            build_workbook(base)
+            build_workbook(base, include_pivot=args.host_surface == "extended")
 
             excel = {}
             if driver.driver_type != "mock":
