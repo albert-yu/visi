@@ -1706,7 +1706,7 @@ fn is_known_function(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Sheet, SheetInit};
+    use crate::core::{Context, Sheet, SheetInit};
 
     fn sheet() -> Sheet {
         Sheet::new(SheetInit {
@@ -1718,6 +1718,34 @@ mod tests {
 
     fn messages(diags: &[FormulaDiagnostic]) -> Vec<String> {
         diags.iter().map(|d| d.message.clone()).collect()
+    }
+
+    fn has_diag(
+        diags: &[FormulaDiagnostic],
+        severity: FormulaDiagnosticSeverity,
+        kind: FormulaDiagnosticKind,
+        message: &str,
+    ) -> bool {
+        diags
+            .iter()
+            .any(|d| d.severity == severity && d.kind == kind && d.message.contains(message))
+    }
+
+    #[test]
+    fn non_formula_inputs_are_ignored() {
+        let sheet = sheet();
+        assert_eq!(check_formula("1+2", &sheet, None, None, None), Vec::new());
+        assert_eq!(check_formula("=   ", &sheet, None, None, None), Vec::new());
+    }
+
+    #[test]
+    fn syntax_errors_report_syntax_diagnostics() {
+        let sheet = sheet();
+        let diags = check_formula("=SUM(", &sheet, None, None, None);
+        assert!(diags.iter().any(|d| {
+            d.severity == FormulaDiagnosticSeverity::Error
+                && d.kind == FormulaDiagnosticKind::Syntax
+        }));
     }
 
     #[test]
@@ -1790,5 +1818,70 @@ mod tests {
         let sheet = sheet();
         let diags = check_formula("=LET(x, 1, x + 2)", &sheet, None, None, None);
         assert_eq!(diags, Vec::new());
+    }
+
+    #[test]
+    fn cell_reference_types_are_checked_from_evaluated_results() {
+        let mut sheet = sheet();
+        sheet.set_cell_src(0, 0, "not a number".to_string());
+        sheet.commit(None).unwrap();
+        let diags = check_formula("=A1+1", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "left operand expects a number"
+        ));
+    }
+
+    #[test]
+    fn cross_sheet_references_use_workbook_context() {
+        let sheet1 = Sheet::new(SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 10,
+            cols: 10,
+            ..Default::default()
+        });
+        let mut sheet2 = Sheet::new(SheetInit {
+            name: Some("Sheet2".to_string()),
+            rows: 10,
+            cols: 10,
+            ..Default::default()
+        });
+        sheet2.set_cell_src(0, 0, "text".to_string());
+        sheet2.commit(None).unwrap();
+        let mut context = Context::new();
+        context.add_table(sheet2.name.clone(), &sheet2);
+        let diags = check_formula("=Sheet2!A1+1", &sheet1, Some(&context), None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "left operand expects a number"
+        ));
+    }
+
+    #[test]
+    fn lookup_functions_require_array_arguments() {
+        let sheet = sheet();
+        let diags = check_formula("=MATCH(1, 2, 0)", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "MATCH expects an array or range"
+        ));
+    }
+
+    #[test]
+    fn reference_functions_reject_scalar_arguments() {
+        let sheet = sheet();
+        let diags = check_formula("=ROW(1)", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "ROW expects a reference"
+        ));
     }
 }
