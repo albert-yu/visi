@@ -1,10 +1,11 @@
 use serde_json::json;
 use visi::cli::{
-    CellTypeArg, ChartArgs, ChartSubcommands, ChartTypeArg, Cli, ColArgs, ColSubcommands, Commands,
-    EvalArgs, ExportArgs, ExportFormat, InfoArgs, MacroArgs, MacroCheckArgs, MacroRunArgs,
-    MacroSubcommands, OutputFormat, PivotAggArg, PivotAreaArg, PivotArgs, PivotSubcommands,
-    ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs, SheetSubcommands, StyleArgs,
-    StyleCellArgs, StyleSubcommands, StyleTableArgs, TableArgs, TableSubcommands, VbaModuleKindArg,
+    CellTypeArg, ChartArgs, ChartSubcommands, ChartTypeArg, CheckArgs, Cli, ColArgs,
+    ColSubcommands, Commands, EvalArgs, ExportArgs, ExportFormat, InfoArgs, MacroArgs,
+    MacroCheckArgs, MacroRunArgs, MacroSubcommands, OutputFormat, PivotAggArg, PivotAreaArg,
+    PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs,
+    SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands, StyleTableArgs, TableArgs,
+    TableSubcommands, VbaModuleKindArg,
 };
 use visi::engine::{WorkbookFile, WorkbookManager};
 use visi::format::{get_cell_display_val, render_grid};
@@ -13,7 +14,8 @@ use visi::utils::{
     exit_with_error, parse_cell_ref, parse_range_ref, parse_row_spec,
 };
 use visi_core::core::chart::ChartType;
-use visi_core::core::{PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
+use visi_core::core::typecheck::{FormulaDiagnosticKind, FormulaDiagnosticSeverity, check_formula};
+use visi_core::core::{Context, PivotAggregation, PivotArea, VbaModuleKind, value_field_labels};
 
 fn resolve_locale(cli_locale: Option<&str>) -> Option<visi_core::core::Locale> {
     if let Some(loc_str) = cli_locale {
@@ -42,6 +44,7 @@ fn main() {
         Commands::Read(args) => handle_read(args, locale),
         Commands::Set(args) => handle_set(args, quiet, locale),
         Commands::Eval(args) => handle_eval(args, quiet, locale),
+        Commands::Check(args) => handle_check(args, quiet, locale),
         Commands::Sheet(args) => handle_sheet(args, quiet),
         Commands::Row(args) => handle_row(args, quiet),
         Commands::Col(args) => handle_col(args, quiet),
@@ -366,6 +369,32 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
     }
 }
 
+fn build_workbook_context(wb: &WorkbookManager) -> Context<'_> {
+    let mut context = Context::new();
+    for sheet in &wb.sheets {
+        context.add_table(sheet.name.clone(), sheet);
+    }
+    context.pivot_tables = &wb.pivot_tables;
+    context.sheet_order = wb.sheets.iter().map(|sheet| sheet.name.clone()).collect();
+    context
+}
+
+fn formula_diagnostic_severity_str(severity: &FormulaDiagnosticSeverity) -> &'static str {
+    match severity {
+        FormulaDiagnosticSeverity::Error => "error",
+        FormulaDiagnosticSeverity::Warning => "warning",
+    }
+}
+
+fn formula_diagnostic_kind_str(kind: &FormulaDiagnosticKind) -> &'static str {
+    match kind {
+        FormulaDiagnosticKind::Syntax => "syntax",
+        FormulaDiagnosticKind::Reference => "reference",
+        FormulaDiagnosticKind::Function => "function",
+        FormulaDiagnosticKind::Type => "type",
+    }
+}
+
 fn format_circular_dependencies(cycles: &[Vec<String>]) -> String {
     let mut msg = if cycles.len() == 1 {
         "Circular dependency detected".to_string()
@@ -382,6 +411,137 @@ fn format_circular_dependencies(cycles: &[Vec<String>]) -> String {
     }
 
     msg
+}
+
+fn handle_check(args: CheckArgs, quiet: bool, locale: Option<visi_core::core::Locale>) {
+    let mut wb = WorkbookManager::load_file(&args.file).unwrap_or_else(|e| {
+        exit_with_error(e, EXIT_IO_ERROR);
+    });
+    if let Some(loc) = locale {
+        wb.set_locale(loc);
+    }
+
+    if args.eval {
+        wb.evaluate().unwrap_or_else(|e| {
+            exit_with_error(
+                format!("Formula evaluation failed: {}", e),
+                EXIT_ENGINE_ERROR,
+            );
+        });
+    }
+
+    let mut sheet_name_opt = args.sheet.clone();
+    let mut target_cell = None;
+    let mut target_range = None;
+
+    if let Some(ref c_str) = args.cell {
+        let (s_name, row, col) = parse_cell_ref(c_str).unwrap_or_else(|e| {
+            exit_with_error(e, EXIT_USAGE_ERROR);
+        });
+        if s_name.is_some() {
+            sheet_name_opt = s_name;
+        }
+        target_cell = Some((row, col));
+    } else if let Some(ref r_str) = args.range {
+        let (s_name, s_row, s_col, e_row, e_col) = parse_range_ref(r_str).unwrap_or_else(|e| {
+            exit_with_error(e, EXIT_USAGE_ERROR);
+        });
+        if s_name.is_some() {
+            sheet_name_opt = s_name;
+        }
+        target_range = Some((s_row, s_col, e_row, e_col));
+    }
+
+    let sheet_indices: Vec<usize> =
+        if target_cell.is_some() || target_range.is_some() || sheet_name_opt.is_some() {
+            vec![
+                wb.find_sheet_index(sheet_name_opt.as_deref())
+                    .unwrap_or_else(|e| {
+                        exit_with_error(e, EXIT_USAGE_ERROR);
+                    }),
+            ]
+        } else {
+            (0..wb.sheets.len()).collect()
+        };
+
+    let context = build_workbook_context(&wb);
+    let mut rendered = Vec::new();
+    let mut json_diags = Vec::new();
+    let mut error_count = 0usize;
+    let mut warning_count = 0usize;
+
+    for sheet_idx in sheet_indices {
+        let sheet = &wb.sheets[sheet_idx];
+        let (min_row, min_col, max_row, max_col) = if let Some((row, col)) = target_cell {
+            (row, col, row, col)
+        } else if let Some((s_row, s_col, e_row, e_col)) = target_range {
+            (s_row, s_col, e_row, e_col)
+        } else {
+            (
+                0,
+                0,
+                sheet.row_count().saturating_sub(1),
+                sheet.col_count().saturating_sub(1),
+            )
+        };
+        for row in min_row..=max_row.min(sheet.row_count().saturating_sub(1)) {
+            for col in min_col..=max_col.min(sheet.col_count().saturating_sub(1)) {
+                let cell = visi_core::core::CellRef::new(row, col);
+                let src = sheet.get_src(&cell).cloned().unwrap_or_default();
+                if !src.starts_with('=') {
+                    continue;
+                }
+                let diagnostics = check_formula(&src, sheet, Some(&context), Some(row), Some(col));
+                for diagnostic in diagnostics {
+                    let severity = formula_diagnostic_severity_str(&diagnostic.severity);
+                    let kind = formula_diagnostic_kind_str(&diagnostic.kind);
+                    match diagnostic.severity {
+                        FormulaDiagnosticSeverity::Error => error_count += 1,
+                        FormulaDiagnosticSeverity::Warning => warning_count += 1,
+                    }
+                    let cell_label = format!("{}{}", col_idx_to_letters(col), row + 1);
+                    rendered.push(format!(
+                        "{}!{}: {}[{}]: {}",
+                        sheet.name, cell_label, severity, kind, diagnostic.message
+                    ));
+                    json_diags.push(json!({
+                        "sheet": sheet.name,
+                        "cell": cell_label,
+                        "row": row + 1,
+                        "col": col_idx_to_letters(col),
+                        "severity": severity,
+                        "kind": kind,
+                        "message": diagnostic.message,
+                        "formula": src,
+                    }));
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "error_count": error_count,
+                "warning_count": warning_count,
+                "diagnostics": json_diags,
+            }))
+            .unwrap()
+        );
+    } else if rendered.is_empty() {
+        if !quiet {
+            println!("No formula type diagnostics found.");
+        }
+    } else {
+        for line in rendered {
+            println!("{}", line);
+        }
+    }
+
+    if error_count > 0 {
+        std::process::exit(EXIT_ENGINE_ERROR);
+    }
 }
 
 fn handle_eval(args: EvalArgs, quiet: bool, locale: Option<visi_core::core::Locale>) {

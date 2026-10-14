@@ -41,6 +41,9 @@ pub enum Commands {
     #[usage(alias = "recalc")]
     Eval(EvalArgs),
 
+    #[usage(alias = "typecheck")]
+    Check(CheckArgs),
+
     /// Manage worksheets in the workbook (list, add, delete, rename)
     Sheet(SheetArgs),
 
@@ -243,6 +246,26 @@ pub struct SetArgs {
 
     #[usage(long = "num-format", alias = "number-format")]
     pub num_format: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct CheckArgs {
+    pub file: String,
+
+    #[usage(short, long)]
+    pub sheet: Option<String>,
+
+    #[usage(short, long, conflicts = "--range")]
+    pub cell: Option<String>,
+
+    #[usage(short, long, conflicts = "--cell")]
+    pub range: Option<String>,
+
+    #[usage(long, default = "true", negate = "--no-eval")]
+    pub eval: bool,
+
+    #[usage(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]
