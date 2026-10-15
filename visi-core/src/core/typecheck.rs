@@ -4,24 +4,39 @@ use crate::core::engine::{CellRef, Context, ResultData, Sheet};
 use crate::core::function_registry::{is_known_function, normalize_function_name};
 use crate::core::parser::{Expr, Op, parse_excel_formula};
 
+/// Either error or warning
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormulaDiagnosticSeverity {
+    /// Incorrect, will cause undesired results
     Error,
+    /// Won't break, but something worth looking into
     Warning,
 }
 
+/// The kind of diagnostic
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormulaDiagnosticKind {
+    /// Syntax issue
     Syntax,
+
+    /// Reference issue
     Reference,
+
+    /// Incorrect function usage
     Function,
+
+    /// Type error
     Type,
 }
 
+/// A diagnostic message for a formula
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormulaDiagnostic {
+    /// Severity of the diagnostic
     pub severity: FormulaDiagnosticSeverity,
+    /// The kind of diagnostic
     pub kind: FormulaDiagnosticKind,
+    /// Further details
     pub message: String,
 }
 
@@ -59,6 +74,7 @@ struct TypeContext<'a> {
     diagnostics: Vec<FormulaDiagnostic>,
 }
 
+/// Returns diagnostics for a formula, if any
 pub fn check_formula(
     input: &str,
     sheet: &Sheet,

@@ -28,7 +28,7 @@ pub mod style;
 #[doc = "Excel table metadata and structured-reference helpers."]
 pub mod table;
 pub(crate) mod text;
-#[allow(missing_docs)]
+#[doc = "Type checking of cell values and formula inputs"]
 pub mod typecheck;
 #[doc = "VBA project, module, syntax-checking, and macro execution support."]
 pub mod vba;
