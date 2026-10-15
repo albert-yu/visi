@@ -54,6 +54,7 @@ struct TypeContext<'a> {
     sheet: &'a Sheet,
     workbook_context: Option<&'a Context<'a>>,
     row: Option<usize>,
+    col: Option<usize>,
     bindings: HashMap<String, FormulaType>,
     diagnostics: Vec<FormulaDiagnostic>,
 }
@@ -83,10 +84,10 @@ pub fn check_formula(
         sheet,
         workbook_context: context,
         row,
+        col,
         bindings: HashMap::new(),
         diagnostics: Vec::new(),
     };
-    let _ = col;
     infer_expr_type(&ast, &mut ctx);
     ctx.diagnostics
 }
@@ -282,22 +283,10 @@ fn infer_structured_ref(
     section: crate::core::SheetSection,
     ctx: &mut TypeContext<'_>,
 ) -> FormulaType {
-    let Some(name) = table_name else {
-        if let Some(column) = column {
-            if is_this_row {
-                return FormulaType::Any;
-            }
-            push(
-                ctx,
-                FormulaDiagnosticSeverity::Warning,
-                FormulaDiagnosticKind::Reference,
-                format!("Structured column reference [{column}] has no table name"),
-            );
-        }
-        return FormulaType::Any;
-    };
-    let mut found = ctx.sheet.find_table(name).map(|table| (ctx.sheet, table));
+    let mut found =
+        table_name.and_then(|name| ctx.sheet.find_table(name).map(|table| (ctx.sheet, table)));
     if found.is_none()
+        && let Some(name) = table_name
         && let Some(workbook_context) = ctx.workbook_context
     {
         for sheet in workbook_context.sheets.values() {
@@ -307,31 +296,58 @@ fn infer_structured_ref(
             }
         }
     }
+    if found.is_none()
+        && table_name.is_none()
+        && let (Some(row), Some(col)) = (ctx.row, ctx.col)
+    {
+        found = ctx.sheet.tables.iter().find_map(|table| {
+            (table.start_row <= row
+                && row <= table.end_row
+                && table.start_col <= col
+                && col <= table.end_col)
+                .then_some((ctx.sheet, table))
+        });
+    }
     let Some((sheet, table)) = found else {
-        push(
-            ctx,
-            FormulaDiagnosticSeverity::Error,
-            FormulaDiagnosticKind::Reference,
-            format!("Table not found: {name}"),
-        );
-        return FormulaType::Any;
-    };
-    let cols = if let Some(column) = column {
-        if table.local_column_index(column).is_none() {
-            push(
+        match table_name {
+            Some(name) => push(
                 ctx,
                 FormulaDiagnosticSeverity::Error,
                 FormulaDiagnosticKind::Reference,
-                format!("Column not found: {column}"),
-            );
-            return FormulaType::Any;
+                format!("Table not found: {name}"),
+            ),
+            None if column.is_some() && !is_this_row => push(
+                ctx,
+                FormulaDiagnosticSeverity::Warning,
+                FormulaDiagnosticKind::Reference,
+                format!(
+                    "Structured column reference [{}] has no table context",
+                    column.unwrap()
+                ),
+            ),
+            None => {}
         }
-        1
-    } else {
-        table.col_count()
+        return FormulaType::Any;
     };
+    let columns: Vec<usize> = match column {
+        Some(column) => match table.local_column_index(column) {
+            Some(column) => vec![column],
+            None => {
+                push(
+                    ctx,
+                    FormulaDiagnosticSeverity::Error,
+                    FormulaDiagnosticKind::Reference,
+                    format!("Column not found: {column}"),
+                );
+                return FormulaType::Any;
+            }
+        },
+        None => (0..table.col_count()).collect(),
+    };
+    let cols = columns.len();
+
     if section == crate::core::SheetSection::Headers {
-        if cols == 1 {
+        return if cols == 1 {
             FormulaType::Text(None)
         } else {
             FormulaType::Array {
@@ -339,32 +355,73 @@ fn infer_structured_ref(
                 rows: Some(1),
                 cols: Some(cols),
             }
-        }
-    } else if is_this_row && cols == 1 {
-        if ctx.row.is_none() {
+        };
+    }
+
+    if is_this_row {
+        let Some(row) = ctx.row else {
             push(
                 ctx,
                 FormulaDiagnosticSeverity::Error,
                 FormulaDiagnosticKind::Reference,
                 "This row reference cannot be checked without row context".to_string(),
             );
-        }
-        FormulaType::Any
-    } else {
-        let rows = match section {
-            crate::core::SheetSection::Totals => usize::from(table.totals_row().is_some()),
-            crate::core::SheetSection::Data | crate::core::SheetSection::All => {
-                table.data_row_count()
-            }
-            crate::core::SheetSection::Headers => 1,
+            return FormulaType::Any;
         };
-        let _ = sheet;
-        FormulaType::Array {
-            item: Box::new(FormulaType::Any),
-            rows: Some(rows),
-            cols: Some(cols),
-        }
+        let item = table_row_type(sheet, table.start_col, row, &columns);
+        return if cols == 1 {
+            item
+        } else {
+            FormulaType::Array {
+                item: Box::new(item),
+                rows: Some(1),
+                cols: Some(cols),
+            }
+        };
     }
+
+    if section == crate::core::SheetSection::Totals {
+        let Some(row) = table.totals_row() else {
+            return FormulaType::Blank;
+        };
+        let item = table_row_type(sheet, table.start_col, row, &columns);
+        return if cols == 1 {
+            item
+        } else {
+            FormulaType::Array {
+                item: Box::new(item),
+                rows: Some(1),
+                cols: Some(cols),
+            }
+        };
+    }
+
+    let rows = table.data_row_count();
+    let item = if rows.saturating_mul(cols) <= 256 {
+        let mut item = FormulaType::Blank;
+        for row in table.data_start_row()..table.data_start_row().saturating_add(rows) {
+            item = merge_types(item, table_row_type(sheet, table.start_col, row, &columns));
+        }
+        item
+    } else {
+        FormulaType::Any
+    };
+    FormulaType::Array {
+        item: Box::new(item),
+        rows: Some(rows),
+        cols: Some(cols),
+    }
+}
+
+fn table_row_type(sheet: &Sheet, start_col: usize, row: usize, columns: &[usize]) -> FormulaType {
+    let mut item = FormulaType::Blank;
+    for column in columns {
+        item = merge_types(
+            item,
+            result_type(&sheet.get_result_data(&CellRef::new(row, start_col + column))),
+        );
+    }
+    item
 }
 
 fn infer_unary(op: Op, expr: &Expr, ctx: &mut TypeContext<'_>) -> FormulaType {
@@ -1315,6 +1372,28 @@ mod tests {
         })
     }
 
+    fn table_sheet() -> Sheet {
+        let mut sheet = sheet();
+        for (row, values) in [
+            ["Name", "Amount"],
+            ["Widget", "10"],
+            ["Gadget", "20"],
+            ["Total", "=SUM(B2:B3)"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            for (col, value) in values.iter().enumerate() {
+                sheet.set_cell_src(row, col, (*value).to_string());
+            }
+        }
+        sheet.commit(None).unwrap();
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 3, 1, true, true)
+            .unwrap();
+        sheet
+    }
+
     fn messages(diags: &[FormulaDiagnostic]) -> Vec<String> {
         diags.iter().map(|d| d.message.clone()).collect()
     }
@@ -1336,6 +1415,7 @@ mod tests {
             sheet,
             workbook_context: None,
             row: None,
+            col: None,
             bindings: HashMap::new(),
             diagnostics: Vec::new(),
         };
@@ -1697,6 +1777,41 @@ mod tests {
                 .filter(|d| d.message.contains("Unknown name: missing"))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn structured_references_infer_table_column_types() {
+        let sheet = table_sheet();
+
+        assert_eq!(
+            inferred_type("=Sales[Amount]", &sheet).0,
+            FormulaType::Array {
+                item: Box::new(FormulaType::Number),
+                rows: Some(2),
+                cols: Some(1),
+            }
+        );
+        assert_eq!(
+            inferred_type("=Sales[[#Totals],[Amount]]", &sheet).0,
+            FormulaType::Number
+        );
+
+        assert_eq!(
+            check_formula("=Sales[@Amount]+1", &sheet, None, Some(1), Some(1)),
+            Vec::new()
+        );
+        let diags = check_formula("=Sales[@Name]+1", &sheet, None, Some(1), Some(0));
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "left operand expects a number, got text"
+        ));
+
+        assert_eq!(
+            check_formula("=[@Amount]+1", &sheet, None, Some(1), Some(1)),
+            Vec::new()
         );
     }
 
