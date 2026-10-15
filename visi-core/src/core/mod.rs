@@ -10,6 +10,7 @@ pub(crate) mod ets;
 pub(crate) mod extended_fn;
 pub(crate) mod finance;
 pub(crate) mod formula;
+pub(crate) mod function_registry;
 pub(crate) mod grid_edit;
 #[doc = "Locale settings used for date parsing and formatting."]
 pub mod locale;
@@ -27,6 +28,8 @@ pub mod style;
 #[doc = "Excel table metadata and structured-reference helpers."]
 pub mod table;
 pub(crate) mod text;
+#[doc = "Type checking of cell values and formula inputs"]
+pub mod typecheck;
 #[doc = "VBA project, module, syntax-checking, and macro execution support."]
 pub mod vba;
 pub(crate) mod vba_synth;

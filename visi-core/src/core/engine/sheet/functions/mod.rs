@@ -21,6 +21,7 @@ mod text;
 use super::{Context, LetScope, Sheet};
 use crate::core::engine::cell::{Dependency, EngineError, EvalError};
 use crate::core::engine::result_data::ResultData;
+use crate::core::function_registry::normalize_function_name;
 use crate::core::parser::Expr;
 
 /// One evaluated function call, as handed to a family module.
@@ -88,10 +89,7 @@ impl Sheet {
         scope: &LetScope<'_>,
     ) -> Result<ResultData, EngineError> {
         use crate::core::parser::Expr;
-        let mut upper_name = name.to_uppercase();
-        if upper_name.starts_with("_XLFN.") {
-            upper_name = upper_name["_XLFN.".len()..].to_string();
-        }
+        let upper_name = normalize_function_name(name);
         // Real Excel's OOXML writer additionally nests some dynamic-array
         // worksheet functions (UNIQUE, SORT, FILTER, ...) under a second
         // `_xlws.` prefix inside `_xlfn.` -- e.g. `_xlfn._xlws.SORT`, not
@@ -99,9 +97,6 @@ impl Sheet {
         // name never matches any dispatch arm here -- confirmed as a real
         // mismatch by checking real Excel's own OOXML export for these
         // functions directly.
-        if upper_name.starts_with("_XLWS.") {
-            upper_name = upper_name["_XLWS.".len()..].to_string();
-        }
 
         if matches!(upper_name.as_str(), "ANCHORARRAY" | "SINGLE") {
             let [arg] = args else {
@@ -440,13 +435,7 @@ impl Sheet {
                     ..
                 } => false,
                 Expr::FunctionCall { name, .. } => {
-                    let mut n = name.to_uppercase();
-                    if n.starts_with("_XLFN.") {
-                        n = n["_XLFN.".len()..].to_string();
-                    }
-                    if n.starts_with("_XLWS.") {
-                        n = n["_XLWS.".len()..].to_string();
-                    }
+                    let n = normalize_function_name(name);
                     n != "IF"
                         && n != "IFERROR"
                         && n != "CHOOSE"

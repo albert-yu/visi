@@ -12,6 +12,46 @@ fn try_parse<'a>(args: &'a [&'a str]) -> Result<Cli, usage::Error<'static, 'a>> 
 }
 
 #[test]
+fn test_check_command_parses_cell_target() {
+    let cli = try_parse(&[
+        "visi",
+        "check",
+        "data.xlsx",
+        "--sheet",
+        "Sheet1",
+        "--cell",
+        "A1",
+        "--json",
+        "--no-eval",
+    ])
+    .expect("should parse check command");
+    let Commands::Check(args) = cli.command else {
+        panic!("expected Commands::Check");
+    };
+    assert_eq!(args.file, "data.xlsx");
+    assert_eq!(args.sheet.as_deref(), Some("Sheet1"));
+    assert_eq!(args.cell.as_deref(), Some("A1"));
+    assert!(args.json);
+    assert!(!args.eval);
+}
+
+#[test]
+fn test_check_cell_and_range_are_mutually_exclusive() {
+    assert!(
+        try_parse(&[
+            "visi",
+            "check",
+            "data.xlsx",
+            "--cell",
+            "A1",
+            "--range",
+            "A1:B2",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn test_row_and_col_positions_parse_index_or_label() {
     let cli = try_parse(&[
         "visi",
