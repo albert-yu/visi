@@ -468,7 +468,9 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             check_arity(ctx, &upper, args.len(), 1, None);
             for arg in args {
                 let ty = infer_expr_type(arg, ctx);
-                check_expected(ctx, &ty, ExpectedType::Number, &upper);
+                if !matches!(ty, FormulaType::Array { .. }) {
+                    check_expected(ctx, &ty, ExpectedType::Number, &upper);
+                }
             }
             FormulaType::Number
         }
@@ -564,7 +566,14 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             FormulaType::Number,
             ctx,
         ),
-        "CONCAT" | "CONCATENATE" | "TEXTJOIN" => {
+        "CONCAT" => {
+            check_arity(ctx, &upper, args.len(), 1, None);
+            for arg in args {
+                let _ = infer_expr_type(arg, ctx);
+            }
+            FormulaType::Text(None)
+        }
+        "CONCATENATE" => {
             check_arity(ctx, &upper, args.len(), 1, None);
             for arg in args {
                 let ty = infer_expr_type(arg, ctx);
@@ -572,6 +581,15 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             }
             FormulaType::Text(None)
         }
+        "TEXTJOIN" => infer_signature(
+            &upper,
+            args,
+            3,
+            None,
+            &[ExpectedType::Text, ExpectedType::Boolean, ExpectedType::Any],
+            FormulaType::Text(None),
+            ctx,
+        ),
         "TEXT" => infer_signature(
             &upper,
             args,
@@ -581,32 +599,66 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             FormulaType::Text(None),
             ctx,
         ),
-        "VALUE" | "NUMBERVALUE" => infer_signature(
+        "VALUE" => infer_signature(
             &upper,
             args,
             1,
-            None,
+            Some(1),
             &[ExpectedType::Text],
             FormulaType::Number,
             ctx,
         ),
-        "ROW" | "COLUMN" | "ROWS" | "COLUMNS" | "AREAS" | "ISREF" | "FORMULATEXT" | "ISFORMULA"
-        | "SHEET" | "SHEETS" => {
-            if args.len() > 1 {
-                check_arity(ctx, &upper, args.len(), 0, Some(1));
-            }
-            for arg in args {
-                if !is_reference_expr(arg) {
-                    let ty = infer_expr_type(arg, ctx);
-                    check_expected(ctx, &ty, ExpectedType::Reference, &upper);
-                } else {
-                    let _ = infer_expr_type(arg, ctx);
-                }
-            }
-            FormulaType::Number
+        "NUMBERVALUE" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(3),
+            &[ExpectedType::Text],
+            FormulaType::Number,
+            ctx,
+        ),
+        "ROW" | "COLUMN" => {
+            infer_reference_function(&upper, args, 0, Some(1), FormulaType::Number, ctx)
         }
+        "ROWS" | "COLUMNS" | "AREAS" => {
+            infer_reference_function(&upper, args, 1, Some(1), FormulaType::Number, ctx)
+        }
+        "ISREF" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
+            &[ExpectedType::Any],
+            FormulaType::Boolean,
+            ctx,
+        ),
+        "FORMULATEXT" => {
+            infer_reference_function(&upper, args, 1, Some(1), FormulaType::Text(None), ctx)
+        }
+        "ISFORMULA" => {
+            infer_reference_function(&upper, args, 1, Some(1), FormulaType::Boolean, ctx)
+        }
+        "SHEET" => infer_signature(
+            &upper,
+            args,
+            0,
+            Some(1),
+            &[ExpectedType::Any],
+            FormulaType::Number,
+            ctx,
+        ),
+        "SHEETS" => infer_reference_function(&upper, args, 0, Some(1), FormulaType::Number, ctx),
         "INDEX" => infer_index(args, ctx),
-        "MATCH" | "XMATCH" => infer_signature(
+        "MATCH" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(3),
+            &[ExpectedType::Any, ExpectedType::Array, ExpectedType::Number],
+            FormulaType::Number,
+            ctx,
+        ),
+        "XMATCH" => infer_signature(
             &upper,
             args,
             2,
@@ -663,11 +715,46 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             },
             ctx,
         ),
-        "SORT" | "UNIQUE" | "TRANSPOSE" | "TOCOL" | "TOROW" => infer_signature(
+        "SORT" => infer_signature(
             &upper,
             args,
             1,
-            None,
+            Some(4),
+            &[
+                ExpectedType::Array,
+                ExpectedType::Number,
+                ExpectedType::Number,
+                ExpectedType::Boolean,
+            ],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "UNIQUE" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(3),
+            &[
+                ExpectedType::Array,
+                ExpectedType::Boolean,
+                ExpectedType::Boolean,
+            ],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "TRANSPOSE" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(1),
             &[ExpectedType::Array],
             FormulaType::Array {
                 item: Box::new(FormulaType::Any),
@@ -676,7 +763,37 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             },
             ctx,
         ),
-        "TAKE" | "DROP" | "CHOOSECOLS" | "CHOOSEROWS" => infer_signature(
+        "TOCOL" | "TOROW" => infer_signature(
+            &upper,
+            args,
+            1,
+            Some(3),
+            &[
+                ExpectedType::Array,
+                ExpectedType::Number,
+                ExpectedType::Boolean,
+            ],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "TAKE" | "DROP" => infer_signature(
+            &upper,
+            args,
+            2,
+            Some(3),
+            &[ExpectedType::Array, ExpectedType::Number],
+            FormulaType::Array {
+                item: Box::new(FormulaType::Any),
+                rows: None,
+                cols: None,
+            },
+            ctx,
+        ),
+        "CHOOSECOLS" | "CHOOSEROWS" => infer_signature(
             &upper,
             args,
             2,
@@ -727,6 +844,26 @@ fn infer_function_call(name: &str, args: &[Expr], ctx: &mut TypeContext<'_>) -> 
             FormulaType::Any
         }
     }
+}
+
+fn infer_reference_function(
+    name: &str,
+    args: &[Expr],
+    min: usize,
+    max: Option<usize>,
+    return_type: FormulaType,
+    ctx: &mut TypeContext<'_>,
+) -> FormulaType {
+    check_arity(ctx, name, args.len(), min, max);
+    for arg in args {
+        if is_reference_expr(arg) {
+            let _ = infer_expr_type(arg, ctx);
+        } else {
+            let ty = infer_expr_type(arg, ctx);
+            check_expected(ctx, &ty, ExpectedType::Reference, name);
+        }
+    }
+    return_type
 }
 
 fn infer_signature(
@@ -809,14 +946,11 @@ fn infer_switch(args: &[Expr], ctx: &mut TypeContext<'_>) -> FormulaType {
     let mut out = FormulaType::Blank;
     for (idx, arg) in args.iter().enumerate() {
         let ty = infer_expr_type(arg, ctx);
-        if idx >= 2 && idx.is_multiple_of(2) {
+        if idx >= 2
+            && (idx.is_multiple_of(2) || (args.len().is_multiple_of(2) && idx == args.len() - 1))
+        {
             out = merge_types(out, ty);
         }
-    }
-    if args.len().is_multiple_of(2)
-        && let Some(default) = args.last()
-    {
-        out = merge_types(out, infer_expr_type(default, ctx));
     }
     out
 }
@@ -1089,6 +1223,7 @@ fn merge_types(left: FormulaType, right: FormulaType) -> FormulaType {
         (FormulaType::Blank, other) | (other, FormulaType::Blank) => other,
         (FormulaType::Any, _) | (_, FormulaType::Any) => FormulaType::Any,
         (FormulaType::Error, other) | (other, FormulaType::Error) => other,
+        (FormulaType::Text(_), FormulaType::Text(_)) => FormulaType::Text(None),
         (
             FormulaType::Array {
                 item: l_item,
@@ -1193,6 +1328,19 @@ mod tests {
         diags
             .iter()
             .any(|d| d.severity == severity && d.kind == kind && d.message.contains(message))
+    }
+
+    fn inferred_type(input: &str, sheet: &Sheet) -> (FormulaType, Vec<FormulaDiagnostic>) {
+        let ast = parse_excel_formula(input.strip_prefix('=').unwrap_or(input)).unwrap();
+        let mut ctx = TypeContext {
+            sheet,
+            workbook_context: None,
+            row: None,
+            bindings: HashMap::new(),
+            diagnostics: Vec::new(),
+        };
+        let ty = infer_expr_type(&ast, &mut ctx);
+        (ty, ctx.diagnostics)
     }
 
     #[test]
@@ -1326,6 +1474,33 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_functions_accept_range_arguments() {
+        let sheet = sheet();
+        for formula in [
+            "=SUM(A1:A3)",
+            "=AVERAGE(A1:A3)",
+            "=MIN(A1:A3)",
+            "=MAX(A1:A3)",
+            "=PRODUCT(A1:A3)",
+            "=SUMSQ(A1:A3)",
+        ] {
+            assert_eq!(
+                check_formula(formula, &sheet, None, None, None),
+                Vec::new(),
+                "{formula}"
+            );
+        }
+
+        let diags = check_formula("=SUM(\"not numeric\")", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "SUM expects a number, got text"
+        ));
+    }
+
+    #[test]
     fn lookup_functions_require_array_arguments() {
         let sheet = sheet();
         let diags = check_formula("=MATCH(1, 2, 0)", &sheet, None, None, None);
@@ -1346,6 +1521,213 @@ mod tests {
             FormulaDiagnosticSeverity::Error,
             FormulaDiagnosticKind::Type,
             "ROW expects a reference"
+        ));
+    }
+
+    #[test]
+    fn merged_text_branches_remain_text() {
+        let sheet = sheet();
+        let (ty, diags) = inferred_type("=IF(TRUE, \"left\", \"right\")", &sheet);
+        assert_eq!(ty, FormulaType::Text(None));
+        assert_eq!(diags, Vec::new());
+
+        let diags = check_formula(
+            "=IF(TRUE, \"left\", \"right\") + 1",
+            &sheet,
+            None,
+            None,
+            None,
+        );
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "left operand expects a number, got text"
+        ));
+    }
+
+    #[test]
+    fn reference_function_signatures_and_return_types_are_distinct() {
+        let sheet = sheet();
+        assert_eq!(
+            inferred_type("=FORMULATEXT(A1)", &sheet).0,
+            FormulaType::Text(None)
+        );
+        assert_eq!(
+            inferred_type("=ISFORMULA(A1)", &sheet).0,
+            FormulaType::Boolean
+        );
+        assert_eq!(inferred_type("=ISREF(1)", &sheet).0, FormulaType::Boolean);
+        assert_eq!(
+            check_formula("=ISREF(1)", &sheet, None, None, None),
+            Vec::new()
+        );
+
+        for formula in ["=ROWS()", "=AREAS()", "=ISREF()", "=FORMULATEXT()"] {
+            let diags = check_formula(formula, &sheet, None, None, None);
+            assert!(has_diag(
+                &diags,
+                FormulaDiagnosticSeverity::Error,
+                FormulaDiagnosticKind::Function,
+                "requires 1 argument(s)"
+            ));
+        }
+
+        let diags = check_formula("=FORMULATEXT(1)", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "FORMULATEXT expects a reference"
+        ));
+    }
+
+    #[test]
+    fn textjoin_checks_its_boolean_argument_and_minimum_arity() {
+        let sheet = sheet();
+        assert_eq!(
+            check_formula(
+                "=TEXTJOIN(\",\", TRUE, \"a\", \"b\")",
+                &sheet,
+                None,
+                None,
+                None,
+            ),
+            Vec::new()
+        );
+
+        let diags = check_formula("=TEXTJOIN(\",\", TRUE)", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Function,
+            "requires at least 3 argument(s)"
+        ));
+
+        let diags = check_formula(
+            "=TEXTJOIN(\",\", \"sometimes\", \"a\")",
+            &sheet,
+            None,
+            None,
+            None,
+        );
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Type,
+            "TEXTJOIN expects a boolean, got text"
+        ));
+    }
+
+    #[test]
+    fn concat_accepts_ranges() {
+        let sheet = sheet();
+        assert_eq!(
+            check_formula("=CONCAT(A1:A3)", &sheet, None, None, None),
+            Vec::new()
+        );
+        assert_eq!(
+            check_formula("=CONCATENATE(\"value: \", 1)", &sheet, None, None, None),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn dynamic_array_optional_arguments_use_their_own_types() {
+        let sheet = sheet();
+        for formula in [
+            "=SORT(A1:A3, 1, -1, FALSE)",
+            "=UNIQUE(A1:A3, FALSE, TRUE)",
+            "=TOCOL(A1:A3, 1, TRUE)",
+            "=TOROW(A1:A3, 2, FALSE)",
+        ] {
+            assert_eq!(
+                check_formula(formula, &sheet, None, None, None),
+                Vec::new(),
+                "{formula}"
+            );
+        }
+
+        for formula in ["=TRANSPOSE(A1:A3, A1:A3)", "=TAKE(A1:A3, 1, 1, 1)"] {
+            let diags = check_formula(formula, &sheet, None, None, None);
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.kind == FormulaDiagnosticKind::Function),
+                "{formula}: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn similar_functions_keep_separate_arity_rules() {
+        let sheet = sheet();
+        for formula in ["=VALUE(\"1\", \".\")", "=MATCH(1, A1:A3, 0, 1)"] {
+            let diags = check_formula(formula, &sheet, None, None, None);
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.kind == FormulaDiagnosticKind::Function),
+                "{formula}: {diags:?}"
+            );
+        }
+        assert_eq!(
+            check_formula(
+                "=NUMBERVALUE(\"1,000.5\", \".\", \",\")",
+                &sheet,
+                None,
+                None,
+                None,
+            ),
+            Vec::new()
+        );
+        assert_eq!(
+            check_formula("=XMATCH(1, A1:A3, 0, 1)", &sheet, None, None, None),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn switch_default_expression_is_checked_once() {
+        let sheet = sheet();
+        let diags = check_formula("=SWITCH(1, 1, 2, missing)", &sheet, None, None, None);
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| d.message.contains("Unknown name: missing"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn structured_references_validate_tables_columns_and_row_context() {
+        let mut sheet = sheet();
+        sheet.set_cell_src(0, 0, "Name".to_string());
+        sheet.set_cell_src(0, 1, "Amount".to_string());
+        sheet
+            .add_table("Sales".to_string(), 0, 0, 3, 1, true, false)
+            .unwrap();
+
+        assert_eq!(
+            inferred_type("=Sales[[#Headers],[Name]]", &sheet).0,
+            FormulaType::Text(None)
+        );
+
+        let diags = check_formula("=Sales[Missing]", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Reference,
+            "Column not found: Missing"
+        ));
+
+        let diags = check_formula("=Sales[@Name]", &sheet, None, None, None);
+        assert!(has_diag(
+            &diags,
+            FormulaDiagnosticSeverity::Error,
+            FormulaDiagnosticKind::Reference,
+            "without row context"
         ));
     }
 }
