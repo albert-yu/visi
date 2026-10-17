@@ -68,7 +68,7 @@ visi eval data.xlsx --print --format table
 
 ```bash
 visi set example.xlsx \
-  -S 'A1==SUM("not numeric")' \
+  --cell A1 --value '=SUM("not numeric")' \
   --output example.xlsx \
   --quiet
 
