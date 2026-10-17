@@ -44,36 +44,13 @@ execution/verification layer for spreadsheets.
 brew install albert-yu/tap/visi
 ```
 
-### Examples
+## Usage
 
-#### Inspect Workbook Structure
+`visi` provides a deep API to read/write XLSX files.
+In addition, it can evaluate (`eval`) and typecheck
+(`check`) spreadsheets.
 
-```bash
-# Display summary of sheets, dimensions, and formula counts
-visi info data.xlsx
-
-# Output summary as JSON
-visi info data.xlsx --json
-```
-
-#### Read Sheet Contents, Ranges, or Cells
-
-```bash
-# View first sheet as a formatted ASCII table in the terminal
-visi read data.xlsx
-
-# View specific sheet and range
-visi read data.xlsx --sheet Sheet1 --range A1:C10
-
-# Read a single cell result or raw formula
-visi read data.xlsx --cell A1
-visi read data.xlsx --cell A3 --raw
-
-visi read data.xlsx --format csv
-visi read data.xlsx --format json
-```
-
-#### Recalculate Formulas
+### Recalculate Formulas
 
 You can take a spreadsheet authored with `openpyxl` and
 perform the computation with `eval`.
@@ -87,47 +64,19 @@ visi eval data.xlsx --in-place
 visi eval data.xlsx --print --format table
 ```
 
-#### Update Cells & Set Formulas
+### Typecheck Formulas
 
 ```bash
-visi set data.xlsx --sheet Sheet1 --cell A1 --value 100 --output updated.xlsx
+visi set example.xlsx \
+  --cell A1 --value '=SUM("not numeric")' \
+  --output example.xlsx \
+  --quiet
 
-# Set multiple cell values and formulas at once
-visi set data.xlsx -s Sheet1 -S A1=100 -S A2=200 -S A3="=A1+A2" -S A4="=AVERAGE(A1:A2)" -i
-
-# Cross-sheet reference
-visi set data.xlsx -s Sheet2 -S B1="=Sheet1!A3 + 50" -i
+visi check example.xlsx
 ```
 
-#### Manage Worksheets
-
-```bash
-visi sheet list data.xlsx
-visi sheet add data.xlsx --name "Summary" -i
-visi sheet rename data.xlsx --old "Sheet1" --new "Data" -i
-visi sheet delete data.xlsx --name "OldSheet" -i
-```
-
-#### Manipulate Rows and Columns
-
-Use `--index` for a 0-based offset or `--label`
-if you want to follow the UI labels.
-
-```bash
-# Insert a new row at start
-visi row delete data.xlsx --sheet Sheet1 --label 1 -i
-visi row insert data.xlsx --sheet Sheet1 --index 0 -i
-
-# Delete column label 'C'
-visi col delete data.xlsx --sheet Sheet1 --label C -i
-visi col delete data.xlsx --sheet Sheet1 --index 2 -i
-```
-
-#### Export Sheet Data
-
-```bash
-visi export data.xlsx --sheet Sheet1 --format csv --output sheet1.csv
-visi export data.xlsx --sheet Sheet1 --format json --output sheet1.json
+```text
+Sheet1!A1: error[type]: SUM expects a number, got text
 ```
 
 ---
