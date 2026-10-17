@@ -4,8 +4,11 @@ use std::path::PathBuf;
 
 use visi_engine::WorkbookManager;
 use visi_engine::core::chart::ChartType;
+use visi_engine::core::typecheck::{
+    FormulaDiagnosticKind, FormulaDiagnosticSeverity, check_formula,
+};
 use visi_engine::core::{
-    CellRef, PivotArea, VbaModuleKind, col_idx_to_letters, value_field_labels,
+    CellRef, Context, PivotArea, VbaModuleKind, col_idx_to_letters, value_field_labels,
 };
 
 use crate::enums::{
@@ -22,6 +25,22 @@ pub struct Workbook {
 impl Workbook {
     fn sheet_idx(&self, sheet: Option<&str>) -> PyResult<usize> {
         Ok(self.inner.find_sheet_index(sheet).map_err(Wrapped)?)
+    }
+}
+
+fn diagnostic_severity(severity: &FormulaDiagnosticSeverity) -> &'static str {
+    match severity {
+        FormulaDiagnosticSeverity::Error => "error",
+        FormulaDiagnosticSeverity::Warning => "warning",
+    }
+}
+
+fn diagnostic_kind(kind: &FormulaDiagnosticKind) -> &'static str {
+    match kind {
+        FormulaDiagnosticKind::Syntax => "syntax",
+        FormulaDiagnosticKind::Reference => "reference",
+        FormulaDiagnosticKind::Function => "function",
+        FormulaDiagnosticKind::Type => "type",
     }
 }
 
@@ -93,6 +112,100 @@ impl Workbook {
     fn evaluate(&mut self) -> PyResult<()> {
         self.inner.evaluate().map_err(Wrapped)?;
         Ok(())
+    }
+
+    #[pyo3(signature = (*, sheet=None, cell=None, range=None))]
+    fn typecheck<'py>(
+        &self,
+        py: Python<'py>,
+        sheet: Option<&str>,
+        cell: Option<(usize, usize)>,
+        range: Option<(usize, usize, usize, usize)>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if cell.is_some() && range.is_some() {
+            return Err(invalid_argument("pass either cell or range, not both"));
+        }
+        if let Some((start_row, start_col, end_row, end_col)) = range
+            && (start_row > end_row || start_col > end_col)
+        {
+            return Err(invalid_argument("range end must not precede its start"));
+        }
+
+        let sheet_indices = if cell.is_some() || range.is_some() || sheet.is_some() {
+            vec![self.sheet_idx(sheet)?]
+        } else {
+            (0..self.inner.sheets.len()).collect()
+        };
+
+        let mut context = Context::new();
+        for workbook_sheet in &self.inner.sheets {
+            context.add_table(workbook_sheet.name.clone(), workbook_sheet);
+        }
+        context.pivot_tables = &self.inner.pivot_tables;
+        context.sheet_order = self
+            .inner
+            .sheets
+            .iter()
+            .map(|workbook_sheet| workbook_sheet.name.clone())
+            .collect();
+
+        let diagnostics = PyList::empty(py);
+        let mut error_count = 0usize;
+        let mut warning_count = 0usize;
+
+        for sheet_idx in sheet_indices {
+            let workbook_sheet = &self.inner.sheets[sheet_idx];
+            let (start_row, start_col, end_row, end_col) = if let Some((row, col)) = cell {
+                (row, col, row, col)
+            } else if let Some(bounds) = range {
+                bounds
+            } else {
+                (
+                    0,
+                    0,
+                    workbook_sheet.row_count().saturating_sub(1),
+                    workbook_sheet.col_count().saturating_sub(1),
+                )
+            };
+
+            let last_row = end_row.min(workbook_sheet.row_count().saturating_sub(1));
+            let last_col = end_col.min(workbook_sheet.col_count().saturating_sub(1));
+            for row in start_row..=last_row {
+                for col in start_col..=last_col {
+                    let src = workbook_sheet
+                        .get_src(&CellRef::new(row, col))
+                        .cloned()
+                        .unwrap_or_default();
+                    if !src.starts_with('=') {
+                        continue;
+                    }
+                    for diagnostic in
+                        check_formula(&src, workbook_sheet, Some(&context), Some(row), Some(col))
+                    {
+                        match &diagnostic.severity {
+                            FormulaDiagnosticSeverity::Error => error_count += 1,
+                            FormulaDiagnosticSeverity::Warning => warning_count += 1,
+                        }
+                        let item = PyDict::new(py);
+                        item.set_item("sheet", &workbook_sheet.name)?;
+                        item.set_item("cell", format!("{}{}", col_idx_to_letters(col), row + 1))?;
+                        item.set_item("row", row)?;
+                        item.set_item("col", col)?;
+                        item.set_item("severity", diagnostic_severity(&diagnostic.severity))?;
+                        item.set_item("kind", diagnostic_kind(&diagnostic.kind))?;
+                        item.set_item("message", diagnostic.message)?;
+                        item.set_item("formula", &src)?;
+                        diagnostics.append(item)?;
+                    }
+                }
+            }
+        }
+
+        let result = PyDict::new(py);
+        result.set_item("error_count", error_count)?;
+        result.set_item("warning_count", warning_count)?;
+        result.set_item("diagnostics", diagnostics)?;
+        Ok(result)
     }
 
     #[getter]

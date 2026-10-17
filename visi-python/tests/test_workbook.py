@@ -80,6 +80,53 @@ def test_result_types(src, expected, expected_type):
     assert isinstance(v, expected_type)
 
 
+def test_typecheck_returns_structured_diagnostics():
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, '="abc"+1')
+    wb.set_cell(0, 1, '="1"+1')
+    wb.set_cell(0, 2, "=1+2")
+
+    result = wb.typecheck()
+
+    assert result["error_count"] == 1
+    assert result["warning_count"] == 1
+    assert len(result["diagnostics"]) == 2
+    assert result["diagnostics"][0] == {
+        "sheet": "Sheet1",
+        "cell": "A1",
+        "row": 0,
+        "col": 0,
+        "severity": "error",
+        "kind": "type",
+        "message": "left operand expects a number, got text",
+        "formula": '="abc"+1',
+    }
+
+
+def test_typecheck_can_be_limited_to_a_cell_or_range():
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, "=NO_SUCH_FN(1)")
+    wb.set_cell(1, 1, "=Missing!A1")
+
+    cell_result = wb.typecheck(cell=(1, 1))
+    assert cell_result["error_count"] == 1
+    assert cell_result["diagnostics"][0]["cell"] == "B2"
+    assert cell_result["diagnostics"][0]["kind"] == "reference"
+
+    range_result = wb.typecheck(range=(0, 0, 0, 1))
+    assert range_result["error_count"] == 1
+    assert range_result["diagnostics"][0]["cell"] == "A1"
+    assert range_result["diagnostics"][0]["kind"] == "function"
+
+
+def test_typecheck_rejects_conflicting_or_reversed_selectors():
+    wb = visi_core.Workbook()
+    with pytest.raises(visi_core.InvalidArgumentError):
+        wb.typecheck(cell=(0, 0), range=(0, 0, 1, 1))
+    with pytest.raises(visi_core.InvalidArgumentError):
+        wb.typecheck(range=(1, 0, 0, 0))
+
+
 def test_set_cell_with_explicit_type():
     wb = visi_core.Workbook()
     wb.set_cell(0, 0, "12345", cell_type="string")

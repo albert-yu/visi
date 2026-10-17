@@ -44,6 +44,22 @@ v.code                               # '#DIV/0!'
 cell holding the _text_ `#DIV/0!` also compares equal to it. The type is what
 distinguishes them; use `isinstance`, not `==`.
 
+Typecheck every formula in a workbook, or limit the scan with zero-based cell
+coordinates:
+
+```python
+result = wb.typecheck()
+result = wb.typecheck(sheet="Sheet1", cell=(0, 0))
+result = wb.typecheck(sheet="Sheet1", range=(0, 0, 9, 4))
+
+result["error_count"]
+result["warning_count"]
+result["diagnostics"]
+```
+
+Each diagnostic includes the sheet, A1 cell label, zero-based `row` and `col`,
+severity, kind, message, and formula source.
+
 Engine failures raise a hierarchy under `VisiError`, carrying structured
 payload rather than only a message:
 
