@@ -794,7 +794,6 @@ name = "visi"
 version = "0.3.0"
 dependencies = [
  "cfb",
- "csv",
  "serde",
  "serde_json",
  "usage-rs",
@@ -808,6 +807,7 @@ version = "0.3.0"
 dependencies = [
  "calamine",
  "cfb",
+ "csv",
  "getrandom 0.2.17",
  "libm",
  "log",

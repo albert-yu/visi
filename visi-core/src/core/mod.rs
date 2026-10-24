@@ -1,6 +1,7 @@
 pub(crate) mod actions;
 #[doc = "Chart definitions and workbook chart helpers."]
 pub mod chart;
+pub(crate) mod csv_import;
 pub(crate) mod date;
 pub(crate) mod date_fn;
 #[doc = "Spreadsheet engine types for cells, columns, sheets, and evaluation."]

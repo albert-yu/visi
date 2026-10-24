@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+use crate::core::csv_import::parse_csv_sheet;
 use crate::core::formula::CompiledFormula;
 use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;
@@ -227,6 +228,53 @@ impl WorkbookManager {
             &self.pivot_tables,
             self.vba_project.as_ref(),
         )
+    }
+
+    pub fn from_csv_bytes(buffer: &[u8], sheet_name: &str) -> crate::Result<Self> {
+        let locale = Locale::default();
+        let sheet = parse_csv_sheet(buffer, sheet_name, None, &locale)?;
+        Ok(Self {
+            sheets: vec![sheet],
+            charts: Vec::new(),
+            pivot_tables: Vec::new(),
+            vba_project: None,
+            locale,
+        })
+    }
+
+    pub fn import_csv_bytes(
+        &mut self,
+        buffer: &[u8],
+        sheet_name: &str,
+        replace_existing: bool,
+    ) -> crate::Result<usize> {
+        let existing = self
+            .sheets
+            .iter()
+            .position(|sheet| sheet.name.eq_ignore_ascii_case(sheet_name));
+
+        match (existing, replace_existing) {
+            (Some(_), false) => Err(Error::AlreadyExists {
+                kind: ObjectKind::Sheet,
+                name: sheet_name.to_string(),
+            }),
+            (None, true) => Err(Error::not_found_among(
+                ObjectKind::Sheet,
+                sheet_name.to_string(),
+                self.sheets.iter().map(|sheet| sheet.name.clone()).collect(),
+            )),
+            (Some(index), true) => {
+                let name = self.sheets[index].name.clone();
+                let id = self.sheets[index].id;
+                self.sheets[index] = parse_csv_sheet(buffer, &name, Some(id), &self.locale)?;
+                Ok(index)
+            }
+            (None, false) => {
+                let sheet = parse_csv_sheet(buffer, sheet_name, None, &self.locale)?;
+                self.sheets.push(sheet);
+                Ok(self.sheets.len() - 1)
+            }
+        }
     }
 
     pub fn new_empty() -> crate::Result<Self> {
@@ -1662,5 +1710,64 @@ mod tests {
             wb.detect_circular_references(),
             vec![vec!["First!A1", "Second!A1"]]
         );
+    }
+
+    #[test]
+    fn from_csv_bytes_creates_a_single_named_sheet() {
+        let mut wb = WorkbookManager::from_csv_bytes(b"value,double\n21,=A2*2\n", "Data").unwrap();
+        wb.evaluate().unwrap();
+
+        assert_eq!(wb.sheets.len(), 1);
+        assert_eq!(wb.sheets[0].name, "Data");
+        assert_eq!(
+            wb.sheets[0]
+                .get_result_data(&CellRef::new(1, 1))
+                .to_string(),
+            "42"
+        );
+    }
+
+    #[test]
+    fn import_csv_bytes_appends_and_replaces_sheets() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        let appended = wb
+            .import_csv_bytes(b"name,value\nWidget,10\n", "Data", false)
+            .unwrap();
+        let original_id = wb.sheets[appended].id;
+
+        assert_eq!(appended, 1);
+        assert_eq!(wb.sheets.len(), 2);
+        assert!(matches!(
+            wb.import_csv_bytes(b"replacement\n", "Data", false),
+            Err(Error::AlreadyExists {
+                kind: ObjectKind::Sheet,
+                ..
+            })
+        ));
+
+        let replaced = wb
+            .import_csv_bytes(b"replacement\n99\n", "data", true)
+            .unwrap();
+
+        assert_eq!(replaced, appended);
+        assert_eq!(wb.sheets.len(), 2);
+        assert_eq!(wb.sheets[replaced].id, original_id);
+        assert_eq!(wb.sheets[replaced].name, "Data");
+        assert_eq!(
+            wb.sheets[replaced].get_src(&CellRef::new(1, 0)).unwrap(),
+            "99"
+        );
+    }
+
+    #[test]
+    fn replacing_a_missing_csv_sheet_fails() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        assert!(matches!(
+            wb.import_csv_bytes(b"value\n1\n", "Missing", true),
+            Err(Error::NotFound {
+                kind: ObjectKind::Sheet,
+                ..
+            })
+        ));
     }
 }

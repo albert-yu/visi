@@ -88,6 +88,8 @@ pub enum Error {
 
     InvalidArgument(String),
 
+    Csv(String),
+
     Xlsx(String),
 
     Vba(String),
@@ -166,6 +168,7 @@ impl std::fmt::Display for Error {
                 f.write_str("that sheet already has a bound document module")
             }
             Error::InvalidArgument(msg) => f.write_str(msg),
+            Error::Csv(msg) => write!(f, "csv error: {msg}"),
             Error::Xlsx(msg) => write!(f, "xlsx error: {msg}"),
             Error::Vba(msg) => write!(f, "VBA error: {msg}"),
             Error::VbaRuntime { message, number } => {

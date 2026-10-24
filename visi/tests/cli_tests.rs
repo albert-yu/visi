@@ -1,5 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use visi::cli::{
     ChartSubcommands, Cli, ColSubcommands, Commands, MacroSubcommands, PivotSubcommands,
     RowSubcommands,
@@ -9,6 +11,126 @@ use visi::engine::{WorkbookFile, WorkbookManager};
 fn try_parse<'a>(args: &'a [&'a str]) -> Result<Cli, usage::Error<'static, 'a>> {
     let os_strs: Vec<&OsStr> = args.iter().copied().map(OsStr::new).collect();
     Cli::try_parse_from(&os_strs)
+}
+
+#[test]
+fn test_import_command_parses_append_and_replace_options() {
+    let cli = try_parse(&[
+        "visi",
+        "import",
+        "data.csv",
+        "--into",
+        "book.xlsx",
+        "--sheet",
+        "Data",
+        "--replace",
+        "--in-place",
+    ])
+    .expect("should parse import command");
+    let Commands::Import(args) = cli.command else {
+        panic!("expected Commands::Import");
+    };
+    assert_eq!(args.file, "data.csv");
+    assert_eq!(args.into.as_deref(), Some("book.xlsx"));
+    assert_eq!(args.sheet.as_deref(), Some("Data"));
+    assert!(args.replace);
+    assert!(args.in_place);
+}
+
+#[test]
+fn test_import_output_and_in_place_are_mutually_exclusive() {
+    assert!(
+        try_parse(&[
+            "visi",
+            "import",
+            "data.csv",
+            "--output",
+            "book.xlsx",
+            "--in-place",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn test_import_replace_and_in_place_require_into() {
+    assert!(try_parse(&["visi", "import", "data.csv", "--replace"]).is_err());
+    assert!(try_parse(&["visi", "import", "data.csv", "--in-place"]).is_err());
+}
+
+#[test]
+fn test_import_command_creates_and_replaces_a_workbook() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("visi_csv_import_{suffix}"));
+    fs::create_dir_all(&temp_dir).unwrap();
+    let csv_path = temp_dir.join("data.csv");
+    let replacement_path = temp_dir.join("replacement.csv");
+    let workbook_path = temp_dir.join("book.xlsx");
+    fs::write(&csv_path, "value,double\n21,=A2*2\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_visi"))
+        .args([
+            "import",
+            csv_path.to_str().unwrap(),
+            "--sheet",
+            "Data",
+            "--output",
+            workbook_path.to_str().unwrap(),
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut wb = WorkbookManager::load_file(workbook_path.to_str().unwrap()).unwrap();
+    wb.evaluate().unwrap();
+    assert_eq!(wb.sheets.len(), 1);
+    assert_eq!(wb.sheets[0].name, "Data");
+    assert_eq!(
+        wb.sheets[0]
+            .get_result_data(&visi_core::core::CellRef::new(1, 1))
+            .to_string(),
+        "42"
+    );
+
+    fs::write(&replacement_path, "replacement\n99\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_visi"))
+        .args([
+            "import",
+            replacement_path.to_str().unwrap(),
+            "--into",
+            workbook_path.to_str().unwrap(),
+            "--sheet",
+            "Data",
+            "--replace",
+            "--in-place",
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let wb = WorkbookManager::load_file(workbook_path.to_str().unwrap()).unwrap();
+    assert_eq!(wb.sheets.len(), 1);
+    assert_eq!(
+        wb.sheets[0]
+            .get_src(&visi_core::core::CellRef::new(1, 0))
+            .unwrap(),
+        "99"
+    );
+
+    fs::remove_dir_all(temp_dir).unwrap();
 }
 
 #[test]
