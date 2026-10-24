@@ -68,6 +68,9 @@ pub enum Commands {
     /// Manage cell styles (color, fill background, bold, italic, font) and table themes
     Style(StyleArgs),
 
+    #[usage(help = "Import a CSV file into a new or existing Excel workbook")]
+    Import(ImportArgs),
+
     /// Export a worksheet to CSV, TSV, or JSON format
     Export(ExportArgs),
 }
@@ -1072,6 +1075,32 @@ pub struct MacroSetSourceArgs {
     pub output: Option<String>,
     /// Save updated workbook in-place
     #[usage(short = 'i', long)]
+    pub in_place: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ImportArgs {
+    #[usage(help = "Input CSV file path (use '-' to read from stdin)")]
+    pub file: String,
+    #[usage(long, help = "Existing XLSX workbook to import into")]
+    pub into: Option<String>,
+    #[usage(short, long, help = "Worksheet name (defaults to the CSV file stem)")]
+    pub sheet: Option<String>,
+    #[usage(
+        long,
+        requires = "--into",
+        help = "Replace an existing worksheet with the same name"
+    )]
+    pub replace: bool,
+    #[usage(short, long, help = "Write the resulting workbook to this path")]
+    pub output: Option<String>,
+    #[usage(
+        short = 'i',
+        long,
+        conflicts = "--output",
+        requires = "--into",
+        help = "Overwrite the workbook specified by --into"
+    )]
     pub in_place: bool,
 }
 

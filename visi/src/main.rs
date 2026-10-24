@@ -1,7 +1,7 @@
 use serde_json::json;
 use visi::cli::{
     CellTypeArg, ChartArgs, ChartSubcommands, ChartTypeArg, CheckArgs, Cli, ColArgs,
-    ColSubcommands, Commands, EvalArgs, ExportArgs, ExportFormat, InfoArgs, MacroArgs,
+    ColSubcommands, Commands, EvalArgs, ExportArgs, ExportFormat, ImportArgs, InfoArgs, MacroArgs,
     MacroCheckArgs, MacroRunArgs, MacroSubcommands, OutputFormat, PivotAggArg, PivotAreaArg,
     PivotArgs, PivotSubcommands, ReadArgs, RowArgs, RowSubcommands, SetArgs, SheetArgs,
     SheetSubcommands, StyleArgs, StyleCellArgs, StyleSubcommands, StyleTableArgs, TableArgs,
@@ -53,6 +53,7 @@ fn main() {
         Commands::Pivot(args) => handle_pivot(args, quiet),
         Commands::Macro(args) => handle_macro(args, quiet),
         Commands::Style(args) => handle_style(args, quiet),
+        Commands::Import(args) => handle_import(args, quiet, locale),
         Commands::Export(args) => handle_export(args),
     }
 }
@@ -2123,6 +2124,100 @@ fn handle_macro(args: MacroArgs, quiet: bool) {
                 );
             }
         }
+    }
+}
+
+fn read_binary_input(path: &str) -> Result<Vec<u8>, String> {
+    if path == "-" {
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes)
+            .map_err(|e| format!("Failed to read stdin: {e}"))?;
+        Ok(bytes)
+    } else {
+        std::fs::read(path).map_err(|e| format!("Failed to read '{path}': {e}"))
+    }
+}
+
+fn default_csv_sheet_name(path: &str) -> String {
+    if path == "-" {
+        return "Sheet1".to_string();
+    }
+
+    let raw = std::path::Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "Sheet1".into());
+    let name: String = raw
+        .chars()
+        .map(|ch| match ch {
+            '[' | ']' | ':' | '*' | '?' | '/' | '\\' => '_',
+            _ => ch,
+        })
+        .take(31)
+        .collect();
+
+    if name.is_empty() {
+        "Sheet1".to_string()
+    } else {
+        name
+    }
+}
+
+fn handle_import(args: ImportArgs, quiet: bool, locale: Option<visi_core::core::Locale>) {
+    if args.file == "-" && args.into.as_deref() == Some("-") {
+        exit_with_error(
+            "CSV input and --into cannot both read from stdin (-)",
+            EXIT_USAGE_ERROR,
+        );
+    }
+    if args.in_place && args.into.is_none() {
+        exit_with_error(
+            "--in-place requires --into <XLSX>; use --output <PATH> for a new workbook",
+            EXIT_USAGE_ERROR,
+        );
+    }
+    if args.replace && args.into.is_none() {
+        exit_with_error("--replace requires --into <XLSX>", EXIT_USAGE_ERROR);
+    }
+
+    let csv_bytes =
+        read_binary_input(&args.file).unwrap_or_else(|e| exit_with_error(e, EXIT_IO_ERROR));
+    let requested_sheet_name = args
+        .sheet
+        .unwrap_or_else(|| default_csv_sheet_name(&args.file));
+
+    let (mut wb, sheet_idx, save_path, action) = if let Some(into) = args.into {
+        let mut wb =
+            WorkbookManager::load_file(&into).unwrap_or_else(|e| exit_with_error(e, EXIT_IO_ERROR));
+        let sheet_idx = wb
+            .import_csv_bytes(&csv_bytes, &requested_sheet_name, args.replace)
+            .unwrap_or_else(|e| exit_with_error(e, EXIT_ENGINE_ERROR));
+        let save_path = resolve_output_path(args.output, args.in_place, &into);
+        let action = if args.replace { "Replaced" } else { "Added" };
+        (wb, sheet_idx, save_path, action)
+    } else {
+        let wb = WorkbookManager::from_csv_bytes(&csv_bytes, &requested_sheet_name)
+            .unwrap_or_else(|e| exit_with_error(e, EXIT_IO_ERROR));
+        let save_path = resolve_output_path(args.output, false, &args.file);
+        (wb, 0, save_path, "Imported")
+    };
+
+    if let Some(loc) = locale {
+        wb.set_locale(loc);
+    }
+    wb.evaluate().unwrap_or_else(|e| {
+        exit_with_error(format!("Formula evaluation failed: {e}"), EXIT_ENGINE_ERROR)
+    });
+    let sheet_name = wb.sheets[sheet_idx].name.clone();
+    wb.save_file(&save_path)
+        .unwrap_or_else(|e| exit_with_error(e, EXIT_IO_ERROR));
+
+    if !quiet {
+        eprintln!(
+            "{action} CSV '{}' as sheet '{}' and saved to '{}'.",
+            args.file, sheet_name, save_path
+        );
     }
 }
 

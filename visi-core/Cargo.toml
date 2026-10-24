@@ -25,6 +25,7 @@ wasm = ["getrandom/js"]
 [dependencies]
 calamine = "0.36"
 cfb = "0.14"
+csv = "1.3"
 getrandom = "0.2"
 libm = "0.2"
 log = "0.4"
