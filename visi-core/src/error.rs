@@ -92,6 +92,8 @@ pub enum Error {
 
     Xlsx(String),
 
+    Xlsb(String),
+
     Vba(String),
 
     VbaSyntax {
@@ -170,6 +172,7 @@ impl std::fmt::Display for Error {
             Error::InvalidArgument(msg) => f.write_str(msg),
             Error::Csv(msg) => write!(f, "csv error: {msg}"),
             Error::Xlsx(msg) => write!(f, "xlsx error: {msg}"),
+            Error::Xlsb(msg) => write!(f, "xlsb error: {msg}"),
             Error::Vba(msg) => write!(f, "VBA error: {msg}"),
             Error::VbaRuntime { message, number } => {
                 write!(f, "run-time error {number}: {message}")

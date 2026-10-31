@@ -2070,6 +2070,28 @@ fn test_workbook_set_cell_type_and_roundtrip() {
 }
 
 #[test]
+fn test_workbook_file_infers_xlsb_output_format() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("visi_format_{suffix}.xlsb"));
+    let mut workbook = WorkbookManager::new_empty().unwrap();
+    workbook.set_cell(0, 0, 0, "5".to_string());
+    workbook.set_cell(0, 0, 1, "=A1+7".to_string());
+    workbook.evaluate().unwrap();
+    workbook.save_file(path.to_str().unwrap()).unwrap();
+    let loaded = WorkbookManager::load_file(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        loaded.sheets[0]
+            .get_result_data(&visi_core::core::CellRef::new(0, 1))
+            .to_string(),
+        "12"
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn test_cli_global_locale_flag_parses() {
     let cli = try_parse(&["visi", "--locale", "de-DE", "eval", "data.xlsx"])
         .expect("should parse global --locale flag");

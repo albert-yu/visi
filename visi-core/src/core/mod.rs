@@ -8,6 +8,8 @@ pub(crate) mod date_fn;
 pub mod engine;
 pub(crate) mod engineering;
 pub(crate) mod ets;
+#[doc = "Excel package format detection and output format selection."]
+pub mod excel;
 pub(crate) mod extended_fn;
 pub(crate) mod finance;
 pub(crate) mod formula;
@@ -38,6 +40,8 @@ pub(crate) mod vba_synth;
 pub mod vba_xlsx;
 #[doc = "Workbook-level management APIs over sheets and workbook objects."]
 pub mod workbook;
+#[doc = "Import and export support for `.xlsb` workbooks."]
+pub mod xlsb;
 #[doc = "Import and export support for `.xlsx` workbooks."]
 pub mod xlsx;
 pub(crate) mod xml;
@@ -52,6 +56,7 @@ pub use engine::{
     EngineError, EvalError, RefType, ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id,
     get_word_boundaries_from_str,
 };
+pub use excel::{WorkbookFormat, detect_workbook_format};
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
 pub use locale::{DateOrder, Locale};
 pub use parser::{

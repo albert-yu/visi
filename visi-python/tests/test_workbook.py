@@ -32,6 +32,26 @@ def test_save_bytes_load_bytes_roundtrip(tmp_path):
     assert again.get_cell(0, 0) == 42
 
 
+def test_xlsb_save_bytes_load_bytes_roundtrip():
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, "7")
+    wb.set_cell(0, 1, "=A1+5")
+    wb.evaluate()
+
+    again = visi_core.Workbook.load_bytes(wb.save_bytes(format="xlsb"))
+    assert again.get_cell(0, 0) == 7
+    assert again.get_cell(0, 1) == 12
+
+
+def test_save_infers_xlsb_from_path(tmp_path):
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, "9")
+    wb.evaluate()
+    out = tmp_path / "book.xlsb"
+    wb.save(out)
+    assert visi_core.Workbook.load(out).get_cell(0, 0) == 9
+
+
 def test_roundtrip_matches_manual_save_load():
     wb = visi_core.Workbook()
     wb.set_cell(0, 0, "7")

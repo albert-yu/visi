@@ -1,9 +1,11 @@
 #![allow(missing_docs)]
 use crate::core::csv_import::parse_csv_sheet;
+use crate::core::excel::{WorkbookFormat, detect_workbook_format};
 use crate::core::formula::CompiledFormula;
 use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;
 use crate::core::parser::col_idx_to_letters;
+use crate::core::xlsb::{export_xlsb_data, import_xlsb_data};
 use crate::core::xlsx::{export_xlsx_data, import_xlsx_data};
 use crate::core::{
     ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
@@ -205,7 +207,10 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 impl WorkbookManager {
     pub fn load_bytes(buffer: &[u8]) -> crate::Result<Self> {
         let (imported_sheets, charts, pivot_tables, vba_project) =
-            import_xlsx_data(buffer, &[], |_, _, _| {})?;
+            match detect_workbook_format(buffer)? {
+                WorkbookFormat::Xlsx => import_xlsx_data(buffer, &[], |_, _, _| {})?,
+                WorkbookFormat::Xlsb => import_xlsb_data(buffer, &[], |_, _, _| {})?,
+            };
 
         let locale = Locale::default();
         let mut sheets: Vec<Sheet> = imported_sheets.into_iter().map(|it| it.sheet).collect();
@@ -222,12 +227,41 @@ impl WorkbookManager {
     }
 
     pub fn save_bytes(&self) -> crate::Result<Vec<u8>> {
-        export_xlsx_data(
-            &self.sheets,
-            &self.charts,
-            &self.pivot_tables,
-            self.vba_project.as_ref(),
-        )
+        self.save_bytes_as(WorkbookFormat::Xlsx)
+    }
+
+    pub fn save_bytes_as(&self, format: WorkbookFormat) -> crate::Result<Vec<u8>> {
+        match format {
+            WorkbookFormat::Xlsx => export_xlsx_data(
+                &self.sheets,
+                &self.charts,
+                &self.pivot_tables,
+                self.vba_project.as_ref(),
+            ),
+            WorkbookFormat::Xlsb => {
+                if !self.charts.is_empty() {
+                    return Err(Error::Xlsb(
+                        "charts are not supported in XLSB output".to_string(),
+                    ));
+                }
+                if !self.pivot_tables.is_empty() {
+                    return Err(Error::Xlsb(
+                        "pivot tables are not supported in XLSB output".to_string(),
+                    ));
+                }
+                if self.vba_project.is_some() {
+                    return Err(Error::Xlsb(
+                        "VBA projects are not supported in XLSB output".to_string(),
+                    ));
+                }
+                if self.sheets.iter().any(|sheet| !sheet.tables.is_empty()) {
+                    return Err(Error::Xlsb(
+                        "Excel tables are not supported in XLSB output".to_string(),
+                    ));
+                }
+                export_xlsb_data(&self.sheets)
+            }
+        }
     }
 
     pub fn from_csv_bytes(buffer: &[u8], sheet_name: &str) -> crate::Result<Self> {

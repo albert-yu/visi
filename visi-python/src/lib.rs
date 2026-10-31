@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use visi_engine::WorkbookManager;
+use visi_engine::{WorkbookFormat, WorkbookManager};
 
 mod enums;
 mod errors;
@@ -13,7 +13,13 @@ fn eval_file(input: std::path::PathBuf, output: std::path::PathBuf) -> PyResult<
     let bytes = std::fs::read(&input)?;
     let mut wb = WorkbookManager::load_bytes(&bytes).map_err(Wrapped)?;
     wb.evaluate().map_err(Wrapped)?;
-    std::fs::write(&output, wb.save_bytes().map_err(Wrapped)?)?;
+    let format = WorkbookFormat::from_path(&output).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+            output.display()
+        ))
+    })?;
+    std::fs::write(&output, wb.save_bytes_as(format).map_err(Wrapped)?)?;
     Ok(())
 }
 
