@@ -141,8 +141,10 @@ fn normalize_workbook_records(data: &[u8]) -> Result<(Vec<u8>, bool), String> {
                 && calamine_end <= payload.len()
                 && String::from_utf16(
                     &payload[12..calamine_end]
-                        .chunks_exact(2)
-                        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|bytes| u16::from_le_bytes(*bytes))
                         .collect::<Vec<_>>(),
                 )
                 .is_ok_and(|value| value.starts_with("rId"));
@@ -150,8 +152,10 @@ fn normalize_workbook_records(data: &[u8]) -> Result<(Vec<u8>, bool), String> {
                 && standard_end <= payload.len()
                 && String::from_utf16(
                     &payload[16..standard_end]
-                        .chunks_exact(2)
-                        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|bytes| u16::from_le_bytes(*bytes))
                         .collect::<Vec<_>>(),
                 )
                 .is_ok_and(|value| value.starts_with("rId"));
@@ -306,8 +310,10 @@ fn read_wide_string(data: &[u8], offset: &mut usize) -> Option<String> {
     let end = offset.checked_add(length.checked_mul(2)?)?;
     let encoded = data
         .get(*offset..end)?
-        .chunks_exact(2)
-        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| u16::from_le_bytes(*bytes))
         .collect::<Vec<_>>();
     *offset = end;
     String::from_utf16(&encoded).ok()
@@ -711,8 +717,10 @@ mod tests {
         assert_eq!(
             String::from_utf16(
                 &normalized_payload[12..20]
-                    .chunks_exact(2)
-                    .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|bytes| u16::from_le_bytes(*bytes))
                     .collect::<Vec<_>>()
             )
             .unwrap(),
