@@ -1,4 +1,4 @@
-pub use visi_core::{SheetSummary, WorkbookManager, WorkbookSummary};
+pub use visi_core::{SheetSummary, WorkbookFormat, WorkbookManager, WorkbookSummary};
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -37,7 +37,17 @@ impl WorkbookFile for WorkbookManager {
     }
 
     fn save_file(&self, path_str: &str) -> Result<(), String> {
-        let bytes = self.save_bytes().map_err(|e| e.to_string())?;
+        let format = if path_str == "-" {
+            WorkbookFormat::Xlsx
+        } else {
+            WorkbookFormat::from_path(path_str).ok_or_else(|| {
+                format!(
+                    "Cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                    path_str
+                )
+            })?
+        };
+        let bytes = self.save_bytes_as(format).map_err(|e| e.to_string())?;
 
         if path_str == "-" {
             io::stdout()

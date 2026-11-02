@@ -9,6 +9,8 @@
 pub mod core;
 mod error;
 
+pub use core::excel::{WorkbookFormat, detect_workbook_format};
 pub use core::workbook::{SheetSummary, WorkbookManager, WorkbookSummary};
+pub use core::xlsb::{export_xlsb_data, import_xlsb_data};
 pub use core::xlsx::{export_xlsx_data, import_xlsx_data};
 pub use error::{Error, ObjectKind, Result};

@@ -2574,6 +2574,104 @@ class ExcelDriver:
             if res.returncode != 0:
                 raise RuntimeError(f"Excel CLI command failed:\nSTDERR: {res.stderr}")
 
+    def convert(
+        self,
+        input_file,
+        output_file,
+        recalculate=True,
+        manual_calculation=False,
+    ):
+        abs_input = os.path.abspath(input_file)
+        abs_output = os.path.abspath(output_file)
+        if self.driver_type == "mock":
+            try:
+                import visi_core
+
+                workbook = visi_core.Workbook.load(abs_input)
+                if recalculate:
+                    workbook.evaluate()
+                workbook.save(abs_output)
+            except Exception:
+                shutil.copyfile(abs_input, abs_output)
+            return
+        if self.driver_type == "applescript":
+            app_name = self.excel_path if self.excel_path else "Microsoft Excel"
+            if app_name.endswith(".app"):
+                app_name = os.path.splitext(os.path.basename(app_name))[0]
+            output_format = (
+                "Excel binary file format"
+                if abs_output.lower().endswith(".xlsb")
+                else "Excel XML file format"
+            )
+            calculation = (
+                "set calculation to calculation manual"
+                if manual_calculation
+                else "set calculation to calculation automatic"
+            )
+            calculate = "calculate" if recalculate else ""
+            script = f'''
+            tell application "{app_name}"
+                set display alerts to false
+                try
+                    close workbooks saving no
+                end try
+                try
+                    {calculation}
+                    open POSIX file "{abs_input}"
+                    {calculate}
+                    save as active workbook filename (POSIX file "{abs_output}") file format {output_format}
+                    close active workbook saving no
+                    set calculation to calculation automatic
+                on error errText number errNum
+                    try
+                        close workbooks saving no
+                        set calculation to calculation automatic
+                    end try
+                    error errText number errNum
+                end try
+            end tell
+            '''
+            res = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if res.returncode != 0:
+                raise RuntimeError(f"Excel AppleScript conversion failed:\n{res.stderr}")
+            return
+        if self.driver_type == "win32com":
+            try:
+                import win32com.client
+            except ImportError as exc:
+                raise RuntimeError(
+                    "pywin32 (win32com) is required for Excel automation on Windows."
+                ) from exc
+            excel = win32com.client.Dispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.Calculation = -4135 if manual_calculation else -4105
+            try:
+                workbook = excel.Workbooks.Open(abs_input)
+                if recalculate:
+                    excel.CalculateFullRebuild()
+                file_format = 50 if abs_output.lower().endswith(".xlsb") else 51
+                workbook.SaveAs(abs_output, FileFormat=file_format)
+                workbook.Close(SaveChanges=False)
+            finally:
+                excel.Calculation = -4105
+                excel.Quit()
+            return
+        if self.driver_type == "cli":
+            cmd = [self.excel_path, abs_input, abs_output]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if res.returncode != 0:
+                raise RuntimeError(f"Excel CLI conversion failed:\nSTDERR: {res.stderr}")
+
+    def recalculate(self, input_file, output_file):
+        self.convert(input_file, output_file, recalculate=True)
+
 
 class XLSXEvaluatedReader:
     @staticmethod

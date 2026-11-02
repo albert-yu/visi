@@ -152,6 +152,28 @@ def _assert_eval_parity(src, tmp_path):
     )
 
 
+@requires_cli
+def test_xlsb_eval_parity(tmp_path):
+    import visi_core
+
+    src = str(tmp_path / "source.xlsx")
+    wb = visi_core.Workbook()
+    wb.set_cell(0, 0, "4")
+    wb.set_cell(0, 1, "=A1+6")
+    wb.evaluate()
+    wb.save(src)
+
+    cli_out = str(tmp_path / "cli.xlsb")
+    bnd_out = str(tmp_path / "bindings.xlsb")
+    VisiDriver(backend="subprocess").run(src, cli_out)
+    VisiDriver(backend="bindings").run(src, bnd_out)
+
+    cli = visi_core.Workbook.load(cli_out)
+    bindings = visi_core.Workbook.load(bnd_out)
+    assert cli.get_cell(0, 0) == bindings.get_cell(0, 0) == 4
+    assert cli.get_cell(0, 1) == bindings.get_cell(0, 1) == 10
+
+
 def test_run_returns_the_bytes_it_wrote(tmp_path):
     src = str(tmp_path / "source.xlsx")
     out = str(tmp_path / "out.xlsx")

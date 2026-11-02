@@ -2,7 +2,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::path::PathBuf;
 
-use visi_engine::WorkbookManager;
 use visi_engine::core::chart::ChartType;
 use visi_engine::core::typecheck::{
     FormulaDiagnosticKind, FormulaDiagnosticSeverity, check_formula,
@@ -10,6 +9,7 @@ use visi_engine::core::typecheck::{
 use visi_engine::core::{
     CellRef, Context, PivotArea, VbaModuleKind, col_idx_to_letters, value_field_labels,
 };
+use visi_engine::{WorkbookFormat, WorkbookManager};
 
 use crate::enums::{
     parse_cell_type, parse_chart_type, parse_pivot_agg, parse_pivot_area, parse_vba_module_kind,
@@ -86,13 +86,21 @@ impl Workbook {
         })
     }
 
-    fn save_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let data = self.inner.save_bytes().map_err(Wrapped)?;
+    #[pyo3(signature = (format="xlsx"))]
+    fn save_bytes<'py>(&self, py: Python<'py>, format: &str) -> PyResult<Bound<'py, PyBytes>> {
+        let format = format.parse::<WorkbookFormat>().map_err(Wrapped)?;
+        let data = self.inner.save_bytes_as(format).map_err(Wrapped)?;
         Ok(PyBytes::new(py, &data))
     }
 
     fn save(&self, path: PathBuf) -> PyResult<()> {
-        let data = self.inner.save_bytes().map_err(Wrapped)?;
+        let format = WorkbookFormat::from_path(&path).ok_or_else(|| {
+            invalid_argument(format!(
+                "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                path.display()
+            ))
+        })?;
+        let data = self.inner.save_bytes_as(format).map_err(Wrapped)?;
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {

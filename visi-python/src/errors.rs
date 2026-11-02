@@ -59,6 +59,12 @@ create_exception!(
 );
 create_exception!(
     visi_core,
+    XlsbError,
+    VisiError,
+    "Reading or writing the .xlsb container failed."
+);
+create_exception!(
+    visi_core,
     VbaError,
     VisiError,
     "Reading or writing the VBA project failed."
@@ -122,6 +128,7 @@ impl From<Wrapped> for PyErr {
             CoreError::InvalidRange(_) => PyErr::new::<InvalidRangeError, _>((msg,)),
             CoreError::InvalidArgument(_) => PyErr::new::<InvalidArgumentError, _>((msg,)),
             CoreError::Xlsx(_) => PyErr::new::<XlsxError, _>((msg,)),
+            CoreError::Xlsb(_) => PyErr::new::<XlsbError, _>((msg,)),
             CoreError::Vba(_) => PyErr::new::<VbaError, _>((msg,)),
             CoreError::VbaSyntax { .. } => PyErr::new::<VbaSyntaxError, _>((msg,)),
             CoreError::VbaRuntime { .. } => PyErr::new::<VbaRuntimeError, _>((msg,)),
@@ -197,6 +204,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<InvalidArgumentError>(),
     )?;
     m.add("XlsxError", py.get_type::<XlsxError>())?;
+    m.add("XlsbError", py.get_type::<XlsbError>())?;
     m.add("VbaError", py.get_type::<VbaError>())?;
     m.add("VbaSyntaxError", py.get_type::<VbaSyntaxError>())?;
     m.add("VbaRuntimeError", py.get_type::<VbaRuntimeError>())?;

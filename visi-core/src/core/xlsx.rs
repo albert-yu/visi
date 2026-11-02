@@ -32,17 +32,8 @@ fn cell_type_and_src_for_calamine(cell_value: &calamine::Data) -> (CellType, Str
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ImportedSheet {
-    pub sheet: Sheet,
-}
-
-pub type ImportedXlsxData = (
-    Vec<ImportedSheet>,
-    Vec<crate::core::chart::Chart>,
-    Vec<crate::core::pivot::PivotTable>,
-    Option<crate::core::vba::VbaProject>,
-);
+pub use crate::core::excel::ImportedSheet;
+pub type ImportedXlsxData = crate::core::excel::ImportedWorkbookData;
 
 pub fn import_xlsx_data(
     buffer: &[u8],

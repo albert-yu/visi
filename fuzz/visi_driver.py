@@ -98,10 +98,9 @@ class VisiDriver(_BaseDriver):
         if self.backend == "bindings":
             wb = _vc.Workbook.load(input_file)
             wb.evaluate()
-            data = wb.save_bytes()
-            with open(output_file, "wb") as f:
-                f.write(data)
-            return data
+            wb.save(output_file)
+            with open(output_file, "rb") as f:
+                return f.read()
 
         self._cli("eval", [input_file, "--output", output_file])
         with open(output_file, "rb") as f:
