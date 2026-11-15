@@ -99,3 +99,30 @@ jobs:
 
       - name: pytest
         run: pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/
+
+  wasm:
+    name: wasm bindings
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable && rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build and test visi-wasm
+        run: |
+          wasm-pack build visi-wasm --target web --release
+          node --test visi-wasm/tests/test_workbook.mjs

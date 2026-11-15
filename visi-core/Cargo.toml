@@ -20,7 +20,7 @@ default = []
 # For `wasm32-unknown-unknown` in a browser: routes `getrandom` through the JS
 # crypto API. Enable this only from a final binary -- getrandom's backend is a
 # global choice, so a library that turns it on forces it on every consumer.
-wasm = ["getrandom/js"]
+wasm = ["getrandom/js", "rust_xlsxwriter/wasm"]
 
 [dependencies]
 calamine = "0.36"
