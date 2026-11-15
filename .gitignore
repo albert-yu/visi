@@ -39,3 +39,5 @@ fuzz/pivot_macro_template.xlsm
 *.dylib
 *.egg-info/
 visi-python/target/
+visi-wasm/pkg/
+visi-wasm/target/
