@@ -1,6 +1,6 @@
 [package]
 name = "visi-wasm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
@@ -17,11 +17,11 @@ crate-type = ["cdylib", "rlib"]
 js-sys = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
-visi_engine = { package = "visi-core", path = "../visi-core", version = "0.3.1" }
+visi_engine = { package = "visi-core", path = "../visi-core", version = "0.4.0" }
 wasm-bindgen = "0.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-visi_engine = { package = "visi-core", path = "../visi-core", version = "0.3.1", features = ["wasm"] }
+visi_engine = { package = "visi-core", path = "../visi-core", version = "0.4.0", features = ["wasm"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
