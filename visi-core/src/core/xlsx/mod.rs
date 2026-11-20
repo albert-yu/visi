@@ -8,6 +8,8 @@ pub(crate) mod patch;
 pub(crate) mod shared_strings;
 pub(crate) mod styles;
 pub(crate) mod table;
+#[cfg(test)]
+pub(crate) mod validate;
 pub(crate) mod workbook;
 pub(crate) mod worksheet;
 pub(crate) mod xml_util;
@@ -244,7 +246,7 @@ fn import_xlsx_from_parsed(
         return Err("No worksheets found in the Excel file".to_string());
     }
 
-    for (orig_sheet_name, parsed) in import_tables_from_opc(&pkg).unwrap_or_default() {
+    for (orig_sheet_name, parsed) in import_tables_from_opc(pkg).unwrap_or_default() {
         let Some(assigned_sheet_name) = orig_to_assigned_name.get(&orig_sheet_name) else {
             continue;
         };
@@ -290,7 +292,7 @@ fn import_xlsx_from_parsed(
     );
 
     let mut imported_charts = Vec::new();
-    if let Ok(parsed_charts) = import_charts_from_opc(&pkg) {
+    if let Ok(parsed_charts) = import_charts_from_opc(pkg) {
         let mut chart_index_by_sheet: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         for parsed in parsed_charts {

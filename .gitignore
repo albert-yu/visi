@@ -21,15 +21,10 @@ Thumbs.db
 .claude/scheduled_tasks.lock
 .pi/
 
-# Fuzzing test harness artifacts
+# Python artifacts
+.venv
 venv
-fuzz_results/
 __pycache__
-
-# Macro-enabled workbook for fuzz_pivot.py's AppleScript driver -- a build
-# output, generated on first use from the checked-in fuzz/BuildFuzzPivot.bas
-# by `visi macro add` (ExcelPivotDriver._ensure_macro_template).
-fuzz/pivot_macro_template.xlsm
 
 # Python extension module built from visi-python by `maturin develop`.
 # `maturin develop` installs into the active venv (already ignored), but an

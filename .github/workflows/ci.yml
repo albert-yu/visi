@@ -60,7 +60,7 @@ jobs:
         run: cargo test --workspace --exclude visi-python
 
   python:
-    name: bindings + parity
+    name: bindings + ooxml conformance
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -85,20 +85,20 @@ jobs:
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install Python deps
-        run: pip install -r fuzz/requirements.txt
+        run: pip install "lxml>=5.0" "maturin>=1.7" "pytest>=8.0"
 
       - name: Build the bindings and the CLI
         run: |
           maturin develop -m visi-python/Cargo.toml --release
           cargo build --release -p visi
 
-      - name: Check the harness is actually wired up
+      - name: Check bindings and CLI are wired up
         run: |
           python -c "import visi_core; visi_core.Workbook()"
           test -x target/release/visi
 
-      - name: pytest
-        run: pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/
+      - name: pytest (bindings, CLI parity, OOXML conformance)
+        run: pytest visi-python/tests/ tools/ooxml-validate/
 
   wasm:
     name: wasm bindings

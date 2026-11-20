@@ -4,11 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
-description = "Python bindings for visi-core, for the fuzz harness"
+description = "Python bindings for visi-core"
 homepage.workspace = true
 repository.workspace = true
-# Development-only: this exists so `fuzz/`'s differential harness can drive the
-# engine in-process. It is not a supported distribution channel for visi-core.
 publish = false
 
 [lib]

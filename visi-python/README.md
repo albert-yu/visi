@@ -3,20 +3,19 @@
 _The following content is LLM-generated._
 
 Python bindings for [`visi-core`](../visi-core), exposed as the module
-`visi_core`. **Development-only** — not published, no stability promise. It
-exists so the differential fuzz harness in [`fuzz/`](../fuzz) can drive the
-engine in process instead of spawning the `visi` CLI once per operation.
+`visi_core`. **Development-only** — not published, no stability promise.
 
 ## Building
 
-Into the project venv (`maturin develop` installs into whichever venv is
+Into a virtualenv (`maturin develop` installs into whichever venv is
 active, so activate it first):
 
 ```bash
-source ../fuzz/venv/bin/activate
-pip install -r ../fuzz/requirements.txt
+python -m venv ../.venv
+source ../.venv/bin/activate
+pip install maturin pytest lxml
 maturin develop -m Cargo.toml --release
-pytest tests/
+pytest tests/ ../tools/ooxml-validate/
 ```
 
 ## Usage
@@ -87,8 +86,8 @@ Three things here are load-bearing and easy to undo by accident:
 - **Some behavior is mirrored from the CLI, not shared with it.** This crate
   depends on `visi-core` only, so `edit_chart`'s clear-vs-set flags and
   `add_pivot_field`'s post-add subtotal/label mutation are reimplementations of
-  what `visi/src/main.rs` does. `fuzz/test_backend_parity.py` is the only thing
-  that will catch them drifting apart.
+  `visi-python/tests/test_cli_parity.py` is the only thing that will catch them
+  drifting apart.
 
 Adding a binding is not a reason to widen `visi-core`'s public API. `get_cell`
 reaches through the already-public `sheets` field rather than adding a method

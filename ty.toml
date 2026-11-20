@@ -1,6 +1,3 @@
 [environment]
-python = "./fuzz/venv"
-root = ["./fuzz", "./visi-python/tests"]
-
-[analysis]
-allowed-unresolved-imports = ["win32com.**"]
+python = "./.venv"
+root = ["./visi-python/tests", "./tools/ooxml-validate"]

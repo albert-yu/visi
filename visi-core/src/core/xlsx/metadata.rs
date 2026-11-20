@@ -73,10 +73,8 @@ pub(crate) fn parse_metadata_xml(xml: &str) -> ParsedMetadata {
             Ok(Event::End(ref e)) => match e.local_name().as_ref() {
                 b"metadataTypes" => in_metadata_types = false,
                 b"cellMetadata" => in_cell_metadata = false,
-                b"bk" if in_cell_metadata => {
-                    if current_bk_is_xldapr {
-                        out.dynamic_array_cm_indices.insert(cm_index);
-                    }
+                b"bk" if in_cell_metadata && current_bk_is_xldapr => {
+                    out.dynamic_array_cm_indices.insert(cm_index);
                 }
                 _ => {}
             },

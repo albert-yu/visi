@@ -31,12 +31,11 @@ pub(crate) fn parse_shared_strings(xml: &str) -> Result<Vec<String>, String> {
                 }
                 _ => {}
             },
-            Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
-                b"si" => {
+            Ok(Event::Empty(ref e)) => {
+                if e.local_name().as_ref() == b"si" {
                     strings.push(String::new());
                 }
-                _ => {}
-            },
+            }
             Ok(Event::Text(e)) if in_t && phonetic_depth == 0 => {
                 let decoded = e
                     .decode()

@@ -5,13 +5,18 @@ build-backend = "maturin"
 [project]
 name = "visi-core"
 requires-python = ">=3.9"
-description = "Python bindings for visi-core (development harness only)"
+description = "Python bindings for visi-core"
 license = { text = "MIT OR Apache-2.0" }
 dynamic = ["version"]
-# Development-only: this is built with `maturin develop` into fuzz/venv and is
-# not a distribution channel for visi-core. The classifier makes PyPI reject an
-# upload outright rather than relying on nobody trying.
 classifiers = ["Private :: Do Not Upload"]
+
+[project.optional-dependencies]
+dev = [
+    "lxml>=5.0",
+    "maturin>=1.7",
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
 
 [tool.maturin]
 module-name = "visi_core"

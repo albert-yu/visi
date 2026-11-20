@@ -89,13 +89,8 @@ This monorepo is structured follows:
   parses and executes the formulas in the workbook
 - **[`visi`](visi/)**: Command-line application using `visi-core`
   which can edit and execute Excel files headlessly
-- [`fuzz`](fuzz/): differential fuzzing harness to match Excel behavior
 - [`visi-python`](visi-python/): Python bindings for `visi-core` (API unstable)
-
-`visi` aims for feature parity with Excel by using
-a harness (`fuzz`) that drives a real copy of Excel via AppleScript or COM automation,
-runs computations, and compares the results. Both the cell values and types
-should match exactly.
+- [`tools/ooxml-validate`](tools/ooxml-validate/): ECMA-376 / OOXML conformance validation using `lxml`
 
 ## LLM Policy
 
