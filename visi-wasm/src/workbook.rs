@@ -86,6 +86,7 @@ impl From<JsCellStyle> for CellStyle {
             font_family: s.font_family,
             font_size: s.font_size,
             num_format: s.num_format,
+            ..Default::default()
         }
     }
 }

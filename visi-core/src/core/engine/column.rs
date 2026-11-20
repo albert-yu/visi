@@ -275,6 +275,9 @@ pub struct DataColumn {
     /// Excel/OpenXML column width in character units, when one was explicitly stored.
     #[serde(default)]
     pub width: Option<f64>,
+    #[doc = "Whether this column is hidden in the worksheet."]
+    #[serde(default)]
+    pub hidden: bool,
     /// The computed values
     #[serde(skip, default)]
     pub(crate) data: ColumnData,
@@ -307,6 +310,7 @@ impl DataColumn {
             id: generate_unique_id(),
             name: String::new(),
             width: None,
+            hidden: false,
             data: ColumnData::new(size),
             src: vec![String::new(); size].into(),
             cell_types: vec![CellType::Empty; size].into(),

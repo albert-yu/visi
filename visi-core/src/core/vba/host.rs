@@ -1990,7 +1990,10 @@ mod tests {
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            defined_names: Vec::new(),
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
+            source_package: None,
         };
         let s = &mut wb.sheets[0];
         for (row, (a, b)) in [(1, 10), (2, 20), (3, 30)].into_iter().enumerate() {
@@ -2559,7 +2562,10 @@ mod tests {
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            defined_names: Vec::new(),
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
+            source_package: None,
         };
         let s = &mut wb.sheets[0];
         for row in 0..10 {
@@ -3030,7 +3036,10 @@ mod tests {
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            defined_names: Vec::new(),
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
+            source_package: None,
         };
         let rows: [[&str; 3]; 4] = [
             ["Region", "Product", "Amount"],
@@ -3356,7 +3365,10 @@ mod tests {
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            defined_names: Vec::new(),
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
+            source_package: None,
         };
         let rows: [[&str; 3]; 7] = [
             ["Region", "Product", "Amount"],

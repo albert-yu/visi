@@ -652,17 +652,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "rust_xlsxwriter"
-version = "0.98.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "093d730a6f64f9620e047b2de2876e61a691fbcaca3aaf436edade9b897c7a27"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
- "zip",
-]
-
-[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -902,7 +891,6 @@ dependencies = [
  "quick-xml",
  "rand 0.8.7",
  "regex",
- "rust_xlsxwriter",
  "serde",
  "serde_json",
  "web-time",

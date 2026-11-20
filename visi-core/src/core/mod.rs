@@ -18,6 +18,7 @@ pub(crate) mod grid_edit;
 #[doc = "Locale settings used for date parsing and formatting."]
 pub mod locale;
 pub(crate) mod math_trig;
+pub(crate) mod opc;
 #[doc(hidden)]
 pub mod ovba;
 pub(crate) mod parser;
@@ -48,13 +49,16 @@ pub(crate) mod xml;
 
 pub use actions::SheetAction;
 pub use date::{
-    DateFormat, SimpleDate, StringCase, date_to_excel_serial, excel_serial_to_date, format_date,
-    is_date_code, parse_date, parse_date_with_locale, render_date_code,
+    DateFormat, EXCEL_1904_EPOCH_OFFSET, SimpleDate, StringCase, date_to_excel_serial,
+    date_to_excel_serial_with_epoch, excel_serial_to_date, excel_serial_to_date_with_epoch,
+    format_date, is_date_code, parse_date, parse_date_with_locale, render_date_code,
 };
 pub use engine::{
-    Bitmask, CellRef, CellType, ColumnData, Context, DataColumn, Dependency, Direction,
-    EngineError, EvalError, RefType, ResultData, Sheet, SheetInit, TextCellRef, generate_unique_id,
-    get_word_boundaries_from_str,
+    ArrayFormulaEntry, ArrayFormulaKind, Bitmask, CellComment, CellHyperlink, CellRef, CellType,
+    ColumnData, ConditionalFormatRule, Context, DataColumn, DataValidationKind,
+    DataValidationOperator, DataValidationRule, Dependency, Direction, EngineError, EvalError,
+    FreezePane, MergedCellRange, RefType, ResultData, Sheet, SheetInit, SheetVisibility,
+    TextCellRef, generate_unique_id, get_word_boundaries_from_str,
 };
 pub use excel::{WorkbookFormat, detect_workbook_format};
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
@@ -67,10 +71,13 @@ pub use pivot::{
     PivotSource, PivotTable, PivotValueField, compute_pivot, value_field_labels,
 };
 pub use shared_vec::SharedVec;
-pub use style::CellStyle;
+pub use style::{
+    BorderSide, BorderStyle, CellAlignment, CellBorders, CellStyle, FillPattern,
+    HorizontalAlignment, VerticalAlignment,
+};
 pub use table::ExcelTable;
 pub use vba::{
     ModuleSyntax, RunOutcome, VbaModule, VbaModuleKind, VbaProject, check_syntax,
     check_syntax_partial, run_macro, validate_vba_module_name,
 };
-pub use workbook::{SheetSummary, WorkbookManager, WorkbookSummary};
+pub use workbook::{DefinedName, SheetSummary, WorkbookManager, WorkbookSummary};

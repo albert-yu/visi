@@ -18,4 +18,8 @@ pub use cell::{
 };
 pub use column::{ColumnData, DataColumn};
 pub use result_data::ResultData;
-pub use sheet::{Context, Direction, Sheet, SheetInit, get_word_boundaries_from_str};
+pub use sheet::{
+    ArrayFormulaEntry, ArrayFormulaKind, CellComment, CellHyperlink, ConditionalFormatRule,
+    Context, DataValidationKind, DataValidationOperator, DataValidationRule, Direction, FreezePane,
+    MergedCellRange, Sheet, SheetInit, SheetVisibility, get_word_boundaries_from_str,
+};

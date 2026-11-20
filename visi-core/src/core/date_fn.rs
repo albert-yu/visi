@@ -35,25 +35,15 @@ pub fn ymd_to_serial(year: i32, month: i32, day: i32) -> f64 {
     }
     days += day;
 
-    let mut serial = (days - 693595) as f64;
-    if serial >= 60.0 {
-        serial += 1.0;
-    }
-    serial
+    (days - 693594) as f64
 }
 
 pub fn serial_to_ymd(serial: f64) -> (i32, i32, i32) {
-    let mut s = serial.floor() as i64;
-    if s < 1 {
-        return (1900, 1, 0);
+    let s = serial.floor() as i64;
+    let days = s + 693594;
+    if days < 1 {
+        return (1, 1, 1);
     }
-    if s == 60 {
-        return (1900, 2, 29);
-    }
-    if s > 60 {
-        s -= 1;
-    }
-    let days = s + 693595;
 
     let mut y = (days as f64 / 365.2425) as i64 + 2;
     let mut y1 = y - 1;
@@ -450,7 +440,7 @@ pub fn second_fn(serial: f64) -> Result<f64, String> {
 
 pub fn weekday(serial: f64, return_type: Option<f64>) -> Result<f64, String> {
     let s = serial.floor() as i64;
-    if s < 1 {
+    if s < 0 {
         return Err("#NUM!".to_string());
     }
     let r_type = return_type.unwrap_or(1.0).floor() as i32;
@@ -490,7 +480,15 @@ pub fn isoweeknum(serial: f64) -> Result<f64, String> {
     }
     if iso_week > 52.0 {
         let next_jan1_wday = weekday(ymd_to_serial(y + 1, 1, 1), Some(2.0))?;
-        if next_jan1_wday <= 4.0 && (day_of_year >= 363.0 - (if y % 4 == 0 { 1.0 } else { 0.0 })) {
+        if next_jan1_wday <= 4.0
+            && (day_of_year
+                >= 363.0
+                    - (if crate::core::date::is_leap_year(y) {
+                        1.0
+                    } else {
+                        0.0
+                    }))
+        {
             return Ok(1.0);
         }
     }

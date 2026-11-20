@@ -376,6 +376,27 @@ pub fn is_date_code(code: &str) -> bool {
     (has_year_or_day || has_month) && !has_time_token && !has_number_placeholder
 }
 
+#[doc = "Day offset between Excel's 1900 and 1904 date systems."]
+pub const EXCEL_1904_EPOCH_OFFSET: f64 = 1462.0;
+
+#[doc = "Converts an Excel date serial to a calendar date using either the 1900 or 1904 epoch."]
+pub fn excel_serial_to_date_with_epoch(serial: f64, date1904: bool) -> SimpleDate {
+    if date1904 {
+        excel_serial_to_date(serial + EXCEL_1904_EPOCH_OFFSET)
+    } else {
+        excel_serial_to_date(serial)
+    }
+}
+
+#[doc = "Converts a calendar date to an Excel date serial using either the 1900 or 1904 epoch."]
+pub fn date_to_excel_serial_with_epoch(date: SimpleDate, date1904: bool) -> f64 {
+    if date1904 {
+        date_to_excel_serial(date) - EXCEL_1904_EPOCH_OFFSET
+    } else {
+        date_to_excel_serial(date)
+    }
+}
+
 /// The inverse of [`date_to_excel_serial`], for rendering a computed serial.
 pub fn excel_serial_to_date(serial: f64) -> SimpleDate {
     let (year, month, day) = crate::core::date_fn::serial_to_ymd(serial);
@@ -874,28 +895,18 @@ pub fn parse_date_with_locale(src: &str, locale: &Locale) -> Option<(SimpleDate,
     None
 }
 
-/// Converts a date to Excel's day count, where 1 is 1900-01-01.
+/// Converts a date to a serial day count using the 1899-12-30 epoch,
+/// where 0 is 1899-12-30, 1 is 1899-12-31, 2 is 1900-01-01, 60 is
+/// 1900-02-28, and 61 is 1900-03-01.
 ///
-/// Reproduces Excel's 1900 leap-year bug -- serial 60 is the nonexistent
-/// 1900-02-29 -- by adding a day for every date after 1900-02-28, which is
-/// what makes serials agree with Excel's for every date a workbook is likely
-/// to contain. Dates before 1900 have no serial and return `0.0`.
+/// Unlike Excel, 1900 is not treated as a leap year; serial numbers from
+/// 1900-03-01 onward match Excel's 1900 date system. Dates before
+/// 1899-12-30 have no serial and return `0.0`.
 pub fn date_to_excel_serial(date: SimpleDate) -> f64 {
-    if date.year < 1900 {
+    if (date.year, date.month, date.day) < (1899, 12, 30) {
         return 0.0;
     }
-    let mut days = 0;
-    for y in 1900..date.year {
-        days += if is_leap_year(y) { 366 } else { 365 };
-    }
-    for m in 1..date.month {
-        days += days_in_month(date.year, m) as i32;
-    }
-    days += date.day as i32;
-    if date.year > 1900 || (date.year == 1900 && date.month > 2) {
-        days += 1;
-    }
-    days as f64
+    crate::core::date_fn::ymd_to_serial(date.year, date.month as i32, date.day as i32)
 }
 
 #[cfg(test)]
@@ -1317,30 +1328,60 @@ mod tests {
 
     #[test]
     fn test_date_to_excel_serial() {
-        assert_eq!(
-            date_to_excel_serial(SimpleDate {
-                year: 1900,
-                month: 1,
-                day: 1
-            }),
-            1.0
-        );
-        assert_eq!(
-            date_to_excel_serial(SimpleDate {
-                year: 1900,
-                month: 3,
-                day: 1
-            }),
-            61.0
-        );
-        assert_eq!(
-            date_to_excel_serial(SimpleDate {
-                year: 2026,
-                month: 6,
-                day: 22
-            }),
-            46195.0
-        );
+        let cases = [
+            (
+                SimpleDate {
+                    year: 1899,
+                    month: 12,
+                    day: 30,
+                },
+                0.0,
+            ),
+            (
+                SimpleDate {
+                    year: 1899,
+                    month: 12,
+                    day: 31,
+                },
+                1.0,
+            ),
+            (
+                SimpleDate {
+                    year: 1900,
+                    month: 1,
+                    day: 1,
+                },
+                2.0,
+            ),
+            (
+                SimpleDate {
+                    year: 1900,
+                    month: 2,
+                    day: 28,
+                },
+                60.0,
+            ),
+            (
+                SimpleDate {
+                    year: 1900,
+                    month: 3,
+                    day: 1,
+                },
+                61.0,
+            ),
+            (
+                SimpleDate {
+                    year: 2026,
+                    month: 6,
+                    day: 22,
+                },
+                46195.0,
+            ),
+        ];
+        for (date, serial) in cases {
+            assert_eq!(date_to_excel_serial(date), serial);
+            assert_eq!(excel_serial_to_date(serial), date);
+        }
     }
 
     use proptest::prelude::*;

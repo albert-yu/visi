@@ -20,6 +20,8 @@ pub struct Context<'a> {
     /// Every pivot table in the workbook, so `GETPIVOTDATA` can resolve a
     /// rendered pivot's destination cell back to its definition
     pub pivot_tables: &'a [crate::core::pivot::PivotTable],
+    #[doc = "Workbook- and sheet-scoped defined names available during formula evaluation."]
+    pub defined_names: &'a [crate::core::DefinedName],
     /// Store sheet order, so `SHEET()` works.
     /// `sheets` is a HashMap, so this is needed
     pub sheet_order: Vec<String>,
@@ -31,8 +33,31 @@ impl<'a> Context<'a> {
         Self {
             sheets: HashMap::new(),
             pivot_tables: &[],
+            defined_names: &[],
             sheet_order: Vec::new(),
         }
+    }
+
+    pub(crate) fn resolve_defined_name(
+        &self,
+        name: &str,
+        current_sheet_name: &str,
+    ) -> Option<&crate::core::DefinedName> {
+        let current_sheet_idx = self
+            .sheet_order
+            .iter()
+            .position(|s| s.eq_ignore_ascii_case(current_sheet_name));
+        if let Some(sheet_idx) = current_sheet_idx
+            && let Some(local) = self
+                .defined_names
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(name) && d.local_sheet_id == Some(sheet_idx))
+        {
+            return Some(local);
+        }
+        self.defined_names
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(name) && d.local_sheet_id.is_none())
     }
 
     /// Add a sheet to the context for lookup during evaluation
@@ -92,6 +117,270 @@ pub enum Direction {
     Right,
 }
 
+#[doc = "A rectangular merged cell range in zero-based inclusive coordinates."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MergedCellRange {
+    #[doc = "Topmost row of the merged range, 0-based."]
+    pub start_row: usize,
+    #[doc = "Leftmost column of the merged range, 0-based."]
+    pub start_col: usize,
+    #[doc = "Bottommost row of the merged range, 0-based and inclusive."]
+    pub end_row: usize,
+    #[doc = "Rightmost column of the merged range, 0-based and inclusive."]
+    pub end_col: usize,
+}
+
+#[doc = "Worksheet visibility state per ECMA-376 §18.18.68 ST_SheetState."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SheetVisibility {
+    #[doc = "Normally visible sheet."]
+    #[default]
+    Visible,
+    #[doc = "Hidden sheet (can be unhidden by the user in Excel)."]
+    Hidden,
+    #[doc = "Very hidden sheet (only accessible programmatically)."]
+    VeryHidden,
+}
+
+#[doc = "Array formula evaluation mode per ECMA-376 §18.3.1.40 and MS-XLSX."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArrayFormulaKind {
+    #[doc = "Legacy Ctrl+Shift+Enter (CSE) array formula (`t=\"array\"`)."]
+    LegacyCse,
+    #[doc = "Modern Excel 365 dynamic array / spill formula (`t=\"array\"` + `cm` + `XLDAPR`)."]
+    DynamicArray,
+}
+
+#[doc = "An array formula region anchored at `(start_row, start_col)`."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ArrayFormulaEntry {
+    #[doc = "Anchor row, 0-based."]
+    pub start_row: usize,
+    #[doc = "Anchor column, 0-based."]
+    pub start_col: usize,
+    #[doc = "Bottommost row of the array range, 0-based inclusive."]
+    pub end_row: usize,
+    #[doc = "Rightmost column of the array range, 0-based inclusive."]
+    pub end_col: usize,
+    #[doc = "Whether this is a legacy CSE or modern dynamic array formula."]
+    pub kind: ArrayFormulaKind,
+}
+
+#[doc = "A cell comment/note per ECMA-376 §18.7."]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CellComment {
+    #[doc = "Zero-based row index."]
+    pub row: usize,
+    #[doc = "Zero-based column index."]
+    pub col: usize,
+    #[doc = "Comment author name."]
+    #[serde(default)]
+    pub author: String,
+    #[doc = "Plain text body of the comment."]
+    pub text: String,
+}
+
+#[doc = "A worksheet hyperlink per ECMA-376 §18.3.1.48."]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CellHyperlink {
+    #[doc = "Topmost row of the hyperlink range, 0-based."]
+    pub start_row: usize,
+    #[doc = "Leftmost column of the hyperlink range, 0-based."]
+    pub start_col: usize,
+    #[doc = "Bottommost row of the hyperlink range, 0-based inclusive."]
+    pub end_row: usize,
+    #[doc = "Rightmost column of the hyperlink range, 0-based inclusive."]
+    pub end_col: usize,
+    #[doc = "External URI target (stored in worksheet `.rels`), if external."]
+    #[serde(default)]
+    pub target: Option<String>,
+    #[doc = "Internal workbook location (e.g. `Sheet2!A1`), if any."]
+    #[serde(default)]
+    pub location: Option<String>,
+    #[doc = "Optional display text override."]
+    #[serde(default)]
+    pub display: Option<String>,
+    #[doc = "Optional hover tooltip."]
+    #[serde(default)]
+    pub tooltip: Option<String>,
+}
+
+#[doc = "Data validation type per ECMA-376 §18.18.21 ST_DataValidationType."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DataValidationKind {
+    #[doc = "No validation."]
+    #[default]
+    None,
+    #[doc = "Whole number validation."]
+    Whole,
+    #[doc = "Decimal number validation."]
+    Decimal,
+    #[doc = "Dropdown list validation."]
+    List,
+    #[doc = "Date validation."]
+    Date,
+    #[doc = "Time validation."]
+    Time,
+    #[doc = "Text length validation."]
+    TextLength,
+    #[doc = "Custom formula validation."]
+    Custom,
+}
+
+impl DataValidationKind {
+    #[doc = "Returns the ECMA-376 ST_DataValidationType token."]
+    pub fn as_ooxml(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Whole => "whole",
+            Self::Decimal => "decimal",
+            Self::List => "list",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::TextLength => "textLength",
+            Self::Custom => "custom",
+        }
+    }
+
+    #[doc = "Parses an ECMA-376 ST_DataValidationType token."]
+    pub fn from_ooxml(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "whole" => Some(Self::Whole),
+            "decimal" => Some(Self::Decimal),
+            "list" => Some(Self::List),
+            "date" => Some(Self::Date),
+            "time" => Some(Self::Time),
+            "textLength" => Some(Self::TextLength),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+#[doc = "Data validation comparison operator per ECMA-376 §18.18.20 ST_DataValidationOperator."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DataValidationOperator {
+    #[doc = "Between formula1 and formula2."]
+    Between,
+    #[doc = "Not between formula1 and formula2."]
+    NotBetween,
+    #[doc = "Equal to formula1."]
+    Equal,
+    #[doc = "Not equal to formula1."]
+    NotEqual,
+    #[doc = "Less than formula1."]
+    LessThan,
+    #[doc = "Less than or equal to formula1."]
+    LessThanOrEqual,
+    #[doc = "Greater than formula1."]
+    GreaterThan,
+    #[doc = "Greater than or equal to formula1."]
+    GreaterThanOrEqual,
+}
+
+impl DataValidationOperator {
+    #[doc = "Returns the ECMA-376 ST_DataValidationOperator token."]
+    pub fn as_ooxml(self) -> &'static str {
+        match self {
+            Self::Between => "between",
+            Self::NotBetween => "notBetween",
+            Self::Equal => "equal",
+            Self::NotEqual => "notEqual",
+            Self::LessThan => "lessThan",
+            Self::LessThanOrEqual => "lessThanOrEqual",
+            Self::GreaterThan => "greaterThan",
+            Self::GreaterThanOrEqual => "greaterThanOrEqual",
+        }
+    }
+
+    #[doc = "Parses an ECMA-376 ST_DataValidationOperator token."]
+    pub fn from_ooxml(s: &str) -> Option<Self> {
+        match s {
+            "between" => Some(Self::Between),
+            "notBetween" => Some(Self::NotBetween),
+            "equal" => Some(Self::Equal),
+            "notEqual" => Some(Self::NotEqual),
+            "lessThan" => Some(Self::LessThan),
+            "lessThanOrEqual" => Some(Self::LessThanOrEqual),
+            "greaterThan" => Some(Self::GreaterThan),
+            "greaterThanOrEqual" => Some(Self::GreaterThanOrEqual),
+            _ => None,
+        }
+    }
+}
+
+#[doc = "A worksheet data validation rule per ECMA-376 §18.3.1.32."]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct DataValidationRule {
+    #[doc = "Space-separated A1 cell/range references (sqref)."]
+    pub sqref: String,
+    #[doc = "Validation kind."]
+    pub kind: DataValidationKind,
+    #[doc = "Optional comparison operator."]
+    #[serde(default)]
+    pub operator: Option<DataValidationOperator>,
+    #[doc = "Whether blank values are permitted."]
+    #[serde(default)]
+    pub allow_blank: bool,
+    #[doc = "First constraint formula or list."]
+    #[serde(default)]
+    pub formula1: Option<String>,
+    #[doc = "Second constraint formula (for between/notBetween)."]
+    #[serde(default)]
+    pub formula2: Option<String>,
+    #[doc = "Input prompt title."]
+    #[serde(default)]
+    pub prompt_title: Option<String>,
+    #[doc = "Input prompt body."]
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[doc = "Error alert title."]
+    #[serde(default)]
+    pub error_title: Option<String>,
+    #[doc = "Error alert body."]
+    #[serde(default)]
+    pub error: Option<String>,
+    #[doc = "Whether to show the input message."]
+    #[serde(default)]
+    pub show_input_message: bool,
+    #[doc = "Whether to show the error alert."]
+    #[serde(default)]
+    pub show_error_message: bool,
+}
+
+#[doc = "A worksheet conditional formatting rule per ECMA-376 §18.3.1.18."]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionalFormatRule {
+    #[doc = "Space-separated A1 cell/range references (sqref)."]
+    pub sqref: String,
+    #[doc = "ECMA-376 ST_CfType token (e.g. `cellIs`, `expression`, `containsText`)."]
+    pub rule_type: String,
+    #[doc = "Optional ST_ConditionalFormattingOperator token (e.g. `greaterThan`)."]
+    #[serde(default)]
+    pub operator: Option<String>,
+    #[doc = "Rule evaluation priority (1-based)."]
+    pub priority: u32,
+    #[doc = "Whether to stop evaluating lower-priority rules when matched."]
+    #[serde(default)]
+    pub stop_if_true: bool,
+    #[doc = "Rule formulas."]
+    #[serde(default)]
+    pub formulas: Vec<String>,
+    #[doc = "Differential formatting style applied when the rule matches (`<dxf>`)."]
+    #[serde(default)]
+    pub style: Option<crate::core::CellStyle>,
+}
+
+#[doc = "Frozen pane configuration specifying how many top rows and left columns stay fixed."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FreezePane {
+    #[doc = "Number of frozen top rows (0 for column-only freeze)."]
+    pub rows: usize,
+    #[doc = "Number of frozen left columns (0 for row-only freeze)."]
+    pub cols: usize,
+}
+
 /// A worksheet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sheet {
@@ -108,6 +397,35 @@ pub struct Sheet {
     /// Excel/OpenXML row heights in point units, aligned with sheet rows.
     #[serde(default)]
     pub(crate) row_heights: Vec<Option<f64>>,
+    #[serde(default)]
+    pub(crate) hidden_rows: Vec<bool>,
+    #[doc = "Merged cell ranges on this worksheet."]
+    #[serde(default)]
+    pub merged_cells: Vec<MergedCellRange>,
+    #[doc = "Worksheet visibility state."]
+    #[serde(default)]
+    pub visibility: SheetVisibility,
+    #[doc = "Frozen row/column pane configuration, if any."]
+    #[serde(default)]
+    pub freeze_pane: Option<FreezePane>,
+    #[doc = "Whether this worksheet uses the 1904 date system."]
+    #[serde(default)]
+    pub date1904: bool,
+    #[doc = "Legacy CSE and dynamic array formula metadata anchored on this worksheet."]
+    #[serde(default)]
+    pub array_formulas: Vec<ArrayFormulaEntry>,
+    #[doc = "Cell comments/notes attached to cells on this worksheet."]
+    #[serde(default)]
+    pub comments: Vec<CellComment>,
+    #[doc = "Hyperlinks attached to cells or ranges on this worksheet."]
+    #[serde(default)]
+    pub hyperlinks: Vec<CellHyperlink>,
+    #[doc = "Data validation rules defined on this worksheet."]
+    #[serde(default)]
+    pub data_validations: Vec<DataValidationRule>,
+    #[doc = "Conditional formatting rules defined on this worksheet."]
+    #[serde(default)]
+    pub conditional_formats: Vec<ConditionalFormatRule>,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
@@ -198,6 +516,16 @@ impl Sheet {
             name: sheet_name,
             columns,
             row_heights: vec![None; rows],
+            hidden_rows: vec![false; rows],
+            merged_cells: Vec::new(),
+            visibility: SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
+            array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),
@@ -213,6 +541,7 @@ impl Sheet {
         }
         let row_count = self.row_count();
         self.row_heights.resize(row_count, None);
+        self.hidden_rows.resize(row_count, false);
         self.mark_all_dirty();
     }
 
@@ -923,7 +1252,22 @@ impl Sheet {
             Expr::Error(code) => Ok(ResultData::Error(code.to_string())),
             Expr::Identifier(name) => match scope.get(name) {
                 Some(val) => Ok(val.clone()),
-                None => Ok(ResultData::Error("#NAME?".to_string())),
+                None => {
+                    if let Some(dn) =
+                        context.and_then(|ctx| ctx.resolve_defined_name(name, &self.name))
+                    {
+                        let expr_src = dn.formula.strip_prefix('=').unwrap_or(&dn.formula);
+                        if let Ok(parsed) = crate::core::parser::parse_excel_formula(expr_src) {
+                            let guard = LetScope::Bound {
+                                name,
+                                value: &ResultData::Error("#NAME?".to_string()),
+                                parent: scope,
+                            };
+                            return self.evaluate_ast(&parsed, context, row, col, deps, &guard);
+                        }
+                    }
+                    Ok(ResultData::Error("#NAME?".to_string()))
+                }
             },
             Expr::StructuredRef {
                 sheet,

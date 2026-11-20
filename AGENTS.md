@@ -16,53 +16,30 @@ cargo test -p visi-core --lib core::engine::tests::rounding
 cargo test -p visi --test cli_tests
 ```
 
-## Fuzzing/verification
+## OOXML Spec Validation & Fuzzing
 
-In `fuzz/`, we perform differential fuzzing
-against a real instance of Microsoft Excel.
-Use `venv`, not the system Python when running.
+The ECMA-376 / `[MS-XLSX]` specifications are the source of truth.
 
 ```bash
-source fuzz/venv/bin/activate
-pip install -r fuzz/requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+pip install "lxml>=5.0" "maturin>=1.7" "pytest>=8.0"
 maturin develop -m visi-python/Cargo.toml --release
 
-# macos
-python fuzz/fuzz_excel.py --excel-path "/Applications/Microsoft Excel.app" --iterations 20
-
-# reproduce a specific failure
-python fuzz/fuzz_excel.py --seed 48291 --iterations 1    
-
-# test VBA execution
-python fuzz/fuzz_vba.py --iterations 200 --seed 909
-
-# various *_probe.py scripts to test
-# pieces of Excel functionality
-python fuzz/vba_host_probe.py                            # what Excel's object model actually does
-python fuzz/vba_expr_probe.py -e 'a = 1 :: a + 1'        # one expression, both engines, side by side
-
-# unit tests for the fuzz harness itself
-pytest fuzz/test_backend_parity.py fuzz/test_comparator.py visi-python/tests/
+# validate exported/patched workbooks against OPC rules, semantic invariants, and optional ECMA-376 XSDs
+pytest visi-python/tests/ tools/ooxml-validate/
+python tools/ooxml-validate/validate_ooxml.py path/to/file.xlsx --xsd-dir path/to/ecma376-xsds --require-xsd
 ```
-
-Be careful when generating VBA source code in a fuzz.
-A compile error, causes Excel to show a modal, which
-cannot be caught by the Excel driver. In such an event,
-kill the Microsoft Excel process and inspect the generated
-source code for errors. Examples of errors include:
-
-- undefined name
-- duplicate `Dim`
 
 ### Rust fuzzing
 
-Crash/panic fuzzing for Rust code lives in `visi-core/fuzz/`,
-separate from the Python differential harness above.
+Crash/panic fuzzing for Rust code lives in `visi-core/fuzz/`.
 
 ```bash
 # needs a nightly toolchain
-cargo install cargo-fuzz                                          
+cargo install cargo-fuzz
 cd visi-core && cargo +nightly fuzz run ovba_decompress
+cargo +nightly fuzz run xlsx_import
 mkdir -p fuzz/corpus/vba_import
 cargo +nightly fuzz run vba_import fuzz/corpus/vba_import fuzz/seeds/vba_import   # seed corpus gets past the CFB-magic-bytes gate
 mkdir -p fuzz/corpus/vba_parse
@@ -77,8 +54,8 @@ Cargo workspace, edition 2024:
 - **`visi`** — usage-rs-based CLI. `cli.rs` is the arg surface, `main.rs` holds one `handle_*` fn per subcommand, `engine.rs` wraps everything in `WorkbookManager`.
   - be sure to follow [Command Line Interface Guidelines](https://clig.dev) when making changes to the CLI
   - the CLI keeps its own `Result<_, String>` style internally and converts at the boundary (`exit_with_error` takes `impl Display`)
-- **`visi-python`** — pyo3 bindings over `visi-core`, exposed to Python as the module `visi_core`. `crate-type = ["cdylib"]`, `abi3-py39`, `publish = false`; built with maturin for `fuzz/`, which drives the engine in-process instead of spawning the CLI per operation. Three things about it are load-bearing:
-  - It depends on **`visi-core` only**, never on `visi`. Where it has to mirror CLI behavior — `edit_chart`'s `--title`/`--clear-title` pair, `add_pivot_field`'s post-add subtotal/label mutation (`visi/src/main.rs`'s AddField arm), and `add_macro`'s sheet-name-to-id resolution with its `ThisWorkbook` exemption (the Add arm of `handle_macro`) — that mirroring is duplicated logic, and `fuzz/test_backend_parity.py` is the only thing that will notice it drifting.
+- **`visi-python`** — pyo3 bindings over `visi-core`, exposed to Python as the module `visi_core`. `crate-type = ["cdylib"]`, `abi3-py39`, `publish = false`; built with maturin. Three things about it are load-bearing:
+  - It depends on **`visi-core` only**, never on `visi`. Where it has to mirror CLI behavior — `edit_chart`'s `--title`/`--clear-title` pair, `add_pivot_field`'s post-add subtotal/label mutation (`visi/src/main.rs`'s AddField arm), and `add_macro`'s sheet-name-to-id resolution with its `ThisWorkbook` exemption (the Add arm of `handle_macro`) — that mirroring is duplicated logic, and `visi-python/tests/test_cli_parity.py` is the only thing that will notice it drifting.
   - `extension-module` is **not** a default cargo feature. Turning it on breaks `cargo test --workspace`'s link step with an undefined `_PyModule_Create2`, whose message points nowhere near the cause. maturin enables it via `pyproject.toml`.
   - The Python module is named `visi_core`, not `visi`: the repo root holds a `visi/` directory with no `__init__.py`, which PEP 420 makes an implicit namespace package, so `import visi` from the root resolves to the CLI crate's source directory.
 
@@ -99,9 +76,10 @@ Follows clig.dev. `-` means stdin/stdout for the file argument. Writes require e
 ## Tests
 
 - `visi-core/src/core/engine/tests/unit.rs` — hand-written engine tests.
-- `visi-core/src/core/engine/tests/{aggregate,logical,math,rounding,text}.rs` — **regression cases harvested from the differential fuzzer**, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell. When the Python harness finds an Excel mismatch, minimize it and add it here.
-- `visi-core/src/core/table.rs`, `pivot.rs`, and `xlsx.rs` have inline `#[cfg(test)] mod tests` for table CRUD, pivot computation/grouping, and xlsx round-tripping (including a pivot table round-trip through the hand-rolled OOXML).
-- `visi-core/src/core/vba/host.rs` has inline tests over the VBA host object model, each asserting the exact string `fuzz/vba_host_probe.py` got back from real Excel for the same expression. Read one off a probe run rather than reasoning about it.
+- `visi-core/src/core/engine/tests/{aggregate,logical,math,rounding,text}.rs` — spec/regression test cases, each a literal grid fed to the local `create_sheet` helper plus an assertion on one cell.
+- `visi-core/src/core/xlsx/validate.rs` — pure-Rust OOXML OPC/sequence/semantic invariant validator and round-trip conformance tests.
+- `visi-core/src/core/table.rs`, `pivot.rs`, and `xlsx/` have inline `#[cfg(test)] mod tests` for table CRUD, pivot computation/grouping, and xlsx round-tripping.
+- `visi-core/src/core/vba/host.rs` has inline tests over the VBA host object model.
 - `visi/tests/cli_tests.rs` — integration tests that drive `WorkbookManager` (the same API the CLI handlers call) through real file round-trips.
 
 ## Source Code Comments

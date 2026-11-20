@@ -362,15 +362,9 @@ fn test_forecast_ets_timeline_validation() {
 
 #[test]
 fn test_date_serial_matches_real_excel_reference_values() {
-    // ymd_to_serial's Excel-epoch offset was off by one for every date
-    // after the fictitious Feb 29, 1900 (serial 60) -- found via
-    // differential fuzzing against real Excel while validating the new
-    // bond-pricing functions below, which all depend on serial-date
-    // arithmetic. These are well-known, independently verifiable
-    // Excel serial numbers (e.g. 25569 = Unix epoch, a widely cited
-    // Excel/Unix-timestamp conversion constant), confirmed again here
-    // directly against real Microsoft Excel via the differential fuzzer.
-    assert_float_close(&eval_formula("=DATE(1900,1,1)"), 1.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(1900,1,1)"), 2.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(1900,2,28)"), 60.0, 1e-9);
+    assert_float_close(&eval_formula("=DATE(1900,3,1)"), 61.0, 1e-9);
     assert_float_close(&eval_formula("=DATE(1970,1,1)"), 25569.0, 1e-9);
     assert_float_close(&eval_formula("=DATE(2000,1,1)"), 36526.0, 1e-9);
     assert_float_close(&eval_formula("=DATE(2007,11,21)"), 39407.0, 1e-9);

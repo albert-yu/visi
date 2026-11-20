@@ -1024,13 +1024,7 @@ fn test_pivot_filter_field_materializes_as_header_row_above_grid() {
 
 #[test]
 fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
-    let mut wb = WorkbookManager {
-        sheets: Vec::new(),
-        charts: Vec::new(),
-        pivot_tables: Vec::new(),
-        vba_project: None,
-        locale: visi_core::core::Locale::default(),
-    };
+    let mut wb = WorkbookManager::default();
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
     wb.add_sheet("Third").unwrap();
@@ -1063,13 +1057,7 @@ fn test_sheet_function_reports_real_ordinal_across_workbook_manager_evaluate() {
 
 #[test]
 fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
-    let mut wb = WorkbookManager {
-        sheets: Vec::new(),
-        charts: Vec::new(),
-        pivot_tables: Vec::new(),
-        vba_project: None,
-        locale: visi_core::core::Locale::default(),
-    };
+    let mut wb = WorkbookManager::default();
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
 
@@ -1102,13 +1090,7 @@ fn test_evaluate_resolves_a_two_hop_cross_sheet_dependency_chain() {
 
 #[test]
 fn test_detect_circular_references_reports_local_cycle_cells() {
-    let mut wb = WorkbookManager {
-        sheets: Vec::new(),
-        charts: Vec::new(),
-        pivot_tables: Vec::new(),
-        vba_project: None,
-        locale: visi_core::core::Locale::default(),
-    };
+    let mut wb = WorkbookManager::default();
     wb.add_sheet("s").unwrap();
     wb.sheets[0].set_cell_src(0, 0, "=B1+1".to_string());
     wb.sheets[0].set_cell_src(0, 1, "=C1+1".to_string());
@@ -1120,13 +1102,7 @@ fn test_detect_circular_references_reports_local_cycle_cells() {
 
 #[test]
 fn test_detect_circular_references_reports_cross_sheet_cycle_cells() {
-    let mut wb = WorkbookManager {
-        sheets: Vec::new(),
-        charts: Vec::new(),
-        pivot_tables: Vec::new(),
-        vba_project: None,
-        locale: visi_core::core::Locale::default(),
-    };
+    let mut wb = WorkbookManager::default();
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
     wb.sheets[0].set_cell_src(0, 0, "=Second!A1+1".to_string());
@@ -1138,13 +1114,7 @@ fn test_detect_circular_references_reports_cross_sheet_cycle_cells() {
 
 #[test]
 fn test_cross_sheet_circular_reference_terminates_without_hanging() {
-    let mut wb = WorkbookManager {
-        sheets: Vec::new(),
-        charts: Vec::new(),
-        pivot_tables: Vec::new(),
-        vba_project: None,
-        locale: visi_core::core::Locale::default(),
-    };
+    let mut wb = WorkbookManager::default();
     wb.add_sheet("First").unwrap();
     wb.add_sheet("Second").unwrap();
     wb.sheets[0].set_cell_src(0, 0, "=Second!A1+1".to_string());

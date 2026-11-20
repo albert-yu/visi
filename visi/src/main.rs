@@ -306,6 +306,7 @@ fn handle_set(args: SetArgs, quiet: bool, locale: Option<visi_core::core::Locale
         font_family: args.font_family,
         font_size: args.font_size,
         num_format: args.num_format,
+        ..Default::default()
     };
 
     if updates.is_empty() && type_only_cells.is_empty() {
@@ -1270,6 +1271,7 @@ fn handle_style_cell(args: StyleCellArgs, quiet: bool) {
         font_family: args.font_family,
         font_size: args.font_size,
         num_format: args.num_format,
+        ..Default::default()
     };
 
     if style.is_empty() {

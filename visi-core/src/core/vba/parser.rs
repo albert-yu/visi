@@ -2501,8 +2501,8 @@ End Sub
     }
 
     #[test]
-    fn parses_the_repos_own_pivot_fuzzing_macro() {
-        let src = include_str!("../../../../fuzz/BuildFuzzPivot.bas");
+    fn parses_real_vba_seed_module() {
+        let src = include_str!("../../../fuzz/seeds/vba_parse/real_module.bas");
         let m = parse(src);
         assert!(
             m.procedures().len() >= 2,
