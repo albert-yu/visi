@@ -1991,6 +1991,7 @@ mod tests {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
             source_package: None,
         };
         let s = &mut wb.sheets[0];
@@ -2561,6 +2562,7 @@ mod tests {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
             source_package: None,
         };
         let s = &mut wb.sheets[0];
@@ -3033,6 +3035,7 @@ mod tests {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
             source_package: None,
         };
         let rows: [[&str; 3]; 4] = [
@@ -3360,6 +3363,7 @@ mod tests {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale: crate::core::locale::Locale::default(),
+            date1904: false,
             source_package: None,
         };
         let rows: [[&str; 3]; 7] = [

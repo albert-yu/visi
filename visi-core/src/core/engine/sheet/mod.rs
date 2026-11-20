@@ -92,6 +92,40 @@ pub enum Direction {
     Right,
 }
 
+#[doc = "A rectangular merged cell range in zero-based inclusive coordinates."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MergedCellRange {
+    #[doc = "Topmost row of the merged range, 0-based."]
+    pub start_row: usize,
+    #[doc = "Leftmost column of the merged range, 0-based."]
+    pub start_col: usize,
+    #[doc = "Bottommost row of the merged range, 0-based and inclusive."]
+    pub end_row: usize,
+    #[doc = "Rightmost column of the merged range, 0-based and inclusive."]
+    pub end_col: usize,
+}
+
+#[doc = "Worksheet visibility state per ECMA-376 §18.18.68 ST_SheetState."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SheetVisibility {
+    #[doc = "Normally visible sheet."]
+    #[default]
+    Visible,
+    #[doc = "Hidden sheet (can be unhidden by the user in Excel)."]
+    Hidden,
+    #[doc = "Very hidden sheet (only accessible programmatically)."]
+    VeryHidden,
+}
+
+#[doc = "Frozen pane configuration specifying how many top rows and left columns stay fixed."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FreezePane {
+    #[doc = "Number of frozen top rows (0 for column-only freeze)."]
+    pub rows: usize,
+    #[doc = "Number of frozen left columns (0 for row-only freeze)."]
+    pub cols: usize,
+}
+
 /// A worksheet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sheet {
@@ -108,6 +142,20 @@ pub struct Sheet {
     /// Excel/OpenXML row heights in point units, aligned with sheet rows.
     #[serde(default)]
     pub(crate) row_heights: Vec<Option<f64>>,
+    #[serde(default)]
+    pub(crate) hidden_rows: Vec<bool>,
+    #[doc = "Merged cell ranges on this worksheet."]
+    #[serde(default)]
+    pub merged_cells: Vec<MergedCellRange>,
+    #[doc = "Worksheet visibility state."]
+    #[serde(default)]
+    pub visibility: SheetVisibility,
+    #[doc = "Frozen row/column pane configuration, if any."]
+    #[serde(default)]
+    pub freeze_pane: Option<FreezePane>,
+    #[doc = "Whether this worksheet uses the 1904 date system."]
+    #[serde(default)]
+    pub date1904: bool,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
@@ -198,6 +246,11 @@ impl Sheet {
             name: sheet_name,
             columns,
             row_heights: vec![None; rows],
+            hidden_rows: vec![false; rows],
+            merged_cells: Vec::new(),
+            visibility: SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),
@@ -213,6 +266,7 @@ impl Sheet {
         }
         let row_count = self.row_count();
         self.row_heights.resize(row_count, None);
+        self.hidden_rows.resize(row_count, false);
         self.mark_all_dirty();
     }
 

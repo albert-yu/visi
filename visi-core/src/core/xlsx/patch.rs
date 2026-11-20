@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::chart::Chart;
-use crate::core::engine::{CellType, ResultData, Sheet};
+use crate::core::engine::{
+    CellType, FreezePane, MergedCellRange, ResultData, Sheet, SheetVisibility,
+};
 use crate::core::opc::{
     CT_SHARED_STRINGS, OpcPackage, REL_SHARED_STRINGS, Relationship, next_rid, rel_type_matches,
 };
@@ -11,7 +13,8 @@ use crate::core::style::CellStyle;
 use crate::core::table::ExcelTable;
 use crate::core::vba::VbaProject;
 use crate::core::xlsx::dom::{
-    STYLESHEET_SCHEMA_ORDER, WORKSHEET_SCHEMA_ORDER, XmlDocument, XmlElement, XmlNode,
+    STYLESHEET_SCHEMA_ORDER, WORKBOOK_SCHEMA_ORDER, WORKSHEET_SCHEMA_ORDER, XmlDocument,
+    XmlElement, XmlNode,
 };
 use crate::core::xlsx::styles::parse_color_argb;
 use crate::core::xlsx::xml_util::{NamespaceFlavor, encode_xstring, needs_xml_space_preserve};
@@ -52,10 +55,15 @@ fn result_data_eq(a: &ResultData, b: &ResultData) -> bool {
 struct SheetSnapshot {
     sheet_id: u64,
     name: String,
+    visibility: SheetVisibility,
     part_path: String,
     cells: HashMap<(usize, usize), CellSnapshot>,
     column_widths: HashMap<usize, f64>,
+    hidden_cols: HashSet<usize>,
     row_heights: HashMap<usize, f64>,
+    hidden_rows: HashSet<usize>,
+    merged_cells: Vec<MergedCellRange>,
+    freeze_pane: Option<FreezePane>,
     tables: Vec<ExcelTable>,
 }
 
@@ -64,6 +72,7 @@ pub(crate) struct OoxmlSourceState {
     package: OpcPackage,
     workbook_part: String,
     flavor: NamespaceFlavor,
+    date1904: bool,
     shared_strings_part: Option<String>,
     styles_part: Option<String>,
     sheet_snapshots: Vec<SheetSnapshot>,
@@ -86,10 +95,15 @@ impl OoxmlSourceState {
             sheet_snapshots.push(SheetSnapshot {
                 sheet_id: sheet.id,
                 name: sheet.name.clone(),
+                visibility: sheet.visibility,
                 part_path: meta.part_path.clone(),
                 cells: snapshot_cells(sheet),
                 column_widths: snapshot_col_widths(sheet),
+                hidden_cols: snapshot_hidden_cols(sheet),
                 row_heights: snapshot_row_heights(sheet),
+                hidden_rows: snapshot_hidden_rows(sheet),
+                merged_cells: sheet.merged_cells.clone(),
+                freeze_pane: sheet.freeze_pane,
                 tables: sheet.tables.clone(),
             });
         }
@@ -97,6 +111,7 @@ impl OoxmlSourceState {
             package,
             workbook_part: wb.workbook_part.clone(),
             flavor: wb.flavor,
+            date1904: wb.date1904,
             shared_strings_part: wb.shared_strings_part.clone(),
             styles_part: wb.styles_part.clone(),
             sheet_snapshots,
@@ -133,14 +148,26 @@ impl OoxmlSourceState {
     pub(crate) fn patch_to_bytes(&self, sheets: &[Sheet]) -> Result<Vec<u8>, String> {
         let mut pkg = self.package.clone();
 
-        let any_renamed = sheets
-            .iter()
-            .zip(self.sheet_snapshots.iter())
-            .any(|(s, snap)| s.name != snap.name);
-        if any_renamed
+        let cur_date1904 = sheets.iter().any(|s| s.date1904);
+        let workbook_meta_changed = cur_date1904 != self.date1904
+            || sheets
+                .iter()
+                .zip(self.sheet_snapshots.iter())
+                .any(|(s, snap)| s.name != snap.name || s.visibility != snap.visibility);
+        if workbook_meta_changed
             && let Some(wb_xml) = pkg.get_str(&self.workbook_part)
             && let Ok(mut doc) = XmlDocument::parse(&wb_xml)
         {
+            if cur_date1904 != self.date1904 {
+                if cur_date1904 {
+                    let wb_pr = doc
+                        .root
+                        .ensure_child_in_schema_order("workbookPr", WORKBOOK_SCHEMA_ORDER);
+                    wb_pr.set_attr("date1904", "1");
+                } else if let Some(wb_pr) = doc.root.child_mut("workbookPr") {
+                    wb_pr.remove_attr("date1904");
+                }
+            }
             if let Some(sheets_el) = doc.root.child_mut("sheets") {
                 let mut sheet_idx = 0usize;
                 for node in &mut sheets_el.children {
@@ -149,6 +176,14 @@ impl OoxmlSourceState {
                     {
                         if let Some(sheet) = sheets.get(sheet_idx) {
                             el.set_attr("name", sheet.name.clone());
+                            match crate::core::xlsx::workbook::sheet_visibility_attr(
+                                sheet.visibility,
+                            ) {
+                                Some(state) => el.set_attr("state", state),
+                                None => {
+                                    el.remove_attr("state");
+                                }
+                            }
                         }
                         sheet_idx += 1;
                     }
@@ -163,13 +198,25 @@ impl OoxmlSourceState {
         for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
             let cur_cells = snapshot_cells(sheet);
             let cur_widths = snapshot_col_widths(sheet);
+            let cur_hidden_cols = snapshot_hidden_cols(sheet);
             let cur_heights = snapshot_row_heights(sheet);
+            let cur_hidden_rows = snapshot_hidden_rows(sheet);
 
             let cells_changed = cur_cells != snap.cells;
-            let widths_changed = cur_widths != snap.column_widths;
+            let cols_changed =
+                cur_widths != snap.column_widths || cur_hidden_cols != snap.hidden_cols;
             let heights_changed = cur_heights != snap.row_heights;
+            let hidden_rows_changed = cur_hidden_rows != snap.hidden_rows;
+            let merges_changed = sheet.merged_cells != snap.merged_cells;
+            let freeze_changed = sheet.freeze_pane != snap.freeze_pane;
 
-            if !cells_changed && !widths_changed && !heights_changed {
+            if !cells_changed
+                && !cols_changed
+                && !heights_changed
+                && !hidden_rows_changed
+                && !merges_changed
+                && !freeze_changed
+            {
                 continue;
             }
 
@@ -178,11 +225,19 @@ impl OoxmlSourceState {
             };
             let mut doc = XmlDocument::parse(&ws_xml)?;
 
-            if widths_changed {
-                patch_cols(&mut doc.root, &cur_widths);
+            if freeze_changed {
+                patch_freeze_pane(&mut doc.root, sheet.freeze_pane);
             }
 
-            if cells_changed || heights_changed {
+            if cols_changed {
+                patch_cols(&mut doc.root, &cur_widths, &cur_hidden_cols);
+            }
+
+            if merges_changed {
+                patch_merge_cells(&mut doc.root, &sheet.merged_cells);
+            }
+
+            if cells_changed || heights_changed || hidden_rows_changed {
                 let mut changed_cells: Vec<(usize, usize, Option<&CellSnapshot>)> = Vec::new();
                 for (&rc, cur) in &cur_cells {
                     if snap.cells.get(&rc) != Some(cur) {
@@ -209,6 +264,19 @@ impl OoxmlSourceState {
                 }
                 changed_heights.sort_by_key(|(r, _)| *r);
 
+                let mut changed_hidden_rows: Vec<(usize, bool)> = Vec::new();
+                for &r in &cur_hidden_rows {
+                    if !snap.hidden_rows.contains(&r) {
+                        changed_hidden_rows.push((r, true));
+                    }
+                }
+                for &r in &snap.hidden_rows {
+                    if !cur_hidden_rows.contains(&r) {
+                        changed_hidden_rows.push((r, false));
+                    }
+                }
+                changed_hidden_rows.sort_by_key(|(r, _)| *r);
+
                 if sst_patcher.is_none() {
                     sst_patcher = Some(SharedStringsPatcher::load(
                         &pkg,
@@ -229,6 +297,7 @@ impl OoxmlSourceState {
                     sheet,
                     &changed_cells,
                     &changed_heights,
+                    &changed_hidden_rows,
                     sst_patcher.as_mut().unwrap(),
                     styles_patcher.as_mut().unwrap(),
                 );
@@ -328,6 +397,15 @@ fn snapshot_col_widths(sheet: &Sheet) -> HashMap<usize, f64> {
         .collect()
 }
 
+fn snapshot_hidden_cols(sheet: &Sheet) -> HashSet<usize> {
+    sheet
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, col)| col.hidden.then_some(idx))
+        .collect()
+}
+
 fn snapshot_row_heights(sheet: &Sheet) -> HashMap<usize, f64> {
     sheet
         .row_heights
@@ -337,6 +415,15 @@ fn snapshot_row_heights(sheet: &Sheet) -> HashMap<usize, f64> {
             (*h).filter(|v| v.is_finite() && *v >= 0.0)
                 .map(|v| (idx, v))
         })
+        .collect()
+}
+
+fn snapshot_hidden_rows(sheet: &Sheet) -> HashSet<usize> {
+    sheet
+        .hidden_rows
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &hidden)| hidden.then_some(idx))
         .collect()
 }
 
@@ -582,21 +669,94 @@ impl StylesPatcher {
     }
 }
 
-fn patch_cols(ws_root: &mut XmlElement, widths: &HashMap<usize, f64>) {
-    ws_root.remove_children_by_local("cols");
-    if widths.is_empty() {
+fn patch_freeze_pane(ws_root: &mut XmlElement, freeze: Option<FreezePane>) {
+    let sheet_views = ws_root.ensure_child_in_schema_order("sheetViews", WORKSHEET_SCHEMA_ORDER);
+    let sheet_view = if let Some(sv) = sheet_views.child_mut("sheetView") {
+        sv
+    } else {
+        let mut sv = XmlElement::new(sheet_views.qualified_child_name("sheetView"));
+        sv.set_attr("workbookViewId", "0");
+        sheet_views.children.push(XmlNode::Element(sv));
+        sheet_views.child_mut("sheetView").unwrap()
+    };
+    sheet_view.remove_children_by_local("pane");
+    if let Some(pane) = freeze
+        && (pane.rows > 0 || pane.cols > 0)
+    {
+        let top_left = format!("{}{}", col_idx_to_letters(pane.cols), pane.rows + 1);
+        let active_pane = match (pane.rows > 0, pane.cols > 0) {
+            (true, true) => "bottomRight",
+            (true, false) => "bottomLeft",
+            (false, true) => "topRight",
+            (false, false) => "topLeft",
+        };
+        let mut pane_el = XmlElement::new(sheet_view.qualified_child_name("pane"));
+        if pane.cols > 0 {
+            pane_el.set_attr("xSplit", pane.cols.to_string());
+        }
+        if pane.rows > 0 {
+            pane_el.set_attr("ySplit", pane.rows.to_string());
+        }
+        pane_el.set_attr("topLeftCell", top_left);
+        pane_el.set_attr("activePane", active_pane);
+        pane_el.set_attr("state", "frozen");
+        sheet_view.children.insert(0, XmlNode::Element(pane_el));
+    }
+}
+
+fn patch_merge_cells(ws_root: &mut XmlElement, merges: &[MergedCellRange]) {
+    ws_root.remove_children_by_local("mergeCells");
+    if merges.is_empty() {
         return;
     }
-    let mut sorted: Vec<(usize, f64)> = widths.iter().map(|(&c, &w)| (c, w)).collect();
-    sorted.sort_by_key(|(c, _)| *c);
+    let mut mc_el = XmlElement::new(ws_root.qualified_child_name("mergeCells"));
+    mc_el.set_attr("count", merges.len().to_string());
+    for m in merges {
+        let mut item = XmlElement::new(mc_el.qualified_child_name("mergeCell"));
+        item.set_attr(
+            "ref",
+            format!(
+                "{}{}:{}{}",
+                col_idx_to_letters(m.start_col),
+                m.start_row + 1,
+                col_idx_to_letters(m.end_col),
+                m.end_row + 1
+            ),
+        );
+        mc_el.children.push(XmlNode::Element(item));
+    }
+    ws_root.insert_child_in_schema_order(mc_el, WORKSHEET_SCHEMA_ORDER);
+}
+
+fn patch_cols(
+    ws_root: &mut XmlElement,
+    widths: &HashMap<usize, f64>,
+    hidden_cols: &HashSet<usize>,
+) {
+    ws_root.remove_children_by_local("cols");
+    let mut all_cols: Vec<usize> = widths
+        .keys()
+        .copied()
+        .chain(hidden_cols.iter().copied())
+        .collect();
+    all_cols.sort_unstable();
+    all_cols.dedup();
+    if all_cols.is_empty() {
+        return;
+    }
     let mut cols_el = XmlElement::new(ws_root.qualified_child_name("cols"));
-    for (col_idx, width) in sorted {
+    for col_idx in all_cols {
         let mut col_el = XmlElement::new(cols_el.qualified_child_name("col"));
         let one_based = (col_idx + 1).to_string();
         col_el.set_attr("min", one_based.clone());
         col_el.set_attr("max", one_based);
-        col_el.set_attr("width", width.to_string());
-        col_el.set_attr("customWidth", "1");
+        if let Some(&width) = widths.get(&col_idx) {
+            col_el.set_attr("width", width.to_string());
+            col_el.set_attr("customWidth", "1");
+        }
+        if hidden_cols.contains(&col_idx) {
+            col_el.set_attr("hidden", "1");
+        }
         cols_el.children.push(XmlNode::Element(col_el));
     }
     ws_root.insert_child_in_schema_order(cols_el, WORKSHEET_SCHEMA_ORDER);
@@ -607,6 +767,7 @@ fn patch_sheet_data(
     sheet: &Sheet,
     changed_cells: &[(usize, usize, Option<&CellSnapshot>)],
     changed_heights: &[(usize, Option<f64>)],
+    changed_hidden_rows: &[(usize, bool)],
     sst: &mut SharedStringsPatcher,
     styles: &mut StylesPatcher,
 ) {
@@ -624,6 +785,16 @@ fn patch_sheet_data(
                 row_el.remove_attr("ht");
                 row_el.remove_attr("customHeight");
             }
+        }
+    }
+
+    for &(row_idx, hidden) in changed_hidden_rows {
+        let row_1based = row_idx + 1;
+        let row_el = ensure_row_element(sheet_data, row_1based);
+        if hidden {
+            row_el.set_attr("hidden", "1");
+        } else {
+            row_el.remove_attr("hidden");
         }
     }
 

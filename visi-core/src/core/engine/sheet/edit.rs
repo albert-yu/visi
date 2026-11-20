@@ -438,16 +438,65 @@ impl Sheet {
         self.row_heights[row] = height.filter(|value| value.is_finite() && *value >= 0.0);
     }
 
+    #[doc = "Returns whether the zero-based column is hidden."]
+    pub fn is_column_hidden(&self, col: usize) -> bool {
+        self.columns.get(col).is_some_and(|c| c.hidden)
+    }
+
+    #[doc = "Sets whether an existing zero-based column is hidden."]
+    pub fn set_column_hidden(&mut self, col: usize, hidden: bool) {
+        if let Some(column) = self.columns.get_mut(col) {
+            column.hidden = hidden;
+        }
+    }
+
+    #[doc = "Returns whether the zero-based row is hidden."]
+    pub fn is_row_hidden(&self, row: usize) -> bool {
+        self.hidden_rows.get(row).copied().unwrap_or(false)
+    }
+
+    #[doc = "Sets whether an existing zero-based row is hidden."]
+    pub fn set_row_hidden(&mut self, row: usize, hidden: bool) {
+        if row >= self.row_count() {
+            return;
+        }
+        let row_count = self.row_count();
+        self.hidden_rows.resize(row_count, false);
+        self.hidden_rows[row] = hidden;
+    }
+
+    #[doc = "Adds a merged cell range if not already present."]
+    pub fn add_merged_cells(&mut self, range: super::MergedCellRange) {
+        let normalized = super::MergedCellRange {
+            start_row: range.start_row.min(range.end_row),
+            start_col: range.start_col.min(range.end_col),
+            end_row: range.start_row.max(range.end_row),
+            end_col: range.start_col.max(range.end_col),
+        };
+        if !self.merged_cells.contains(&normalized) {
+            self.merged_cells.push(normalized);
+        }
+    }
+
+    #[doc = "Removes a merged cell range, returning true if it existed."]
+    pub fn remove_merged_cells(&mut self, range: super::MergedCellRange) -> bool {
+        let before = self.merged_cells.len();
+        self.merged_cells.retain(|r| *r != range);
+        self.merged_cells.len() != before
+    }
+
     /// Insert a new empty row at the specified index.
     /// If index is >= row_count, appends at the end
     pub fn insert_row(&mut self, index: usize) {
         let row_count = self.row_count();
         self.row_heights.resize(row_count, None);
+        self.hidden_rows.resize(row_count, false);
         if index >= row_count {
             for column in &mut self.columns {
                 column.push_row();
             }
             self.row_heights.push(None);
+            self.hidden_rows.push(false);
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
                     sheet_name: self.name.clone(),
@@ -458,6 +507,15 @@ impl Sheet {
                 column.insert_row(index);
             }
             self.row_heights.insert(index, None);
+            self.hidden_rows.insert(index, false);
+            for m in &mut self.merged_cells {
+                if index <= m.start_row {
+                    m.start_row += 1;
+                    m.end_row += 1;
+                } else if index <= m.end_row {
+                    m.end_row += 1;
+                }
+            }
             self.uncommitted_actions
                 .push(crate::core::SheetAction::InsertRow {
                     sheet_name: self.name.clone(),
@@ -476,6 +534,25 @@ impl Sheet {
             if index < self.row_heights.len() {
                 self.row_heights.remove(index);
             }
+            if index < self.hidden_rows.len() {
+                self.hidden_rows.remove(index);
+            }
+            self.merged_cells.retain_mut(|m| {
+                if index < m.start_row {
+                    m.start_row -= 1;
+                    m.end_row -= 1;
+                    true
+                } else if index <= m.end_row {
+                    if m.start_row == m.end_row {
+                        false
+                    } else {
+                        m.end_row -= 1;
+                        !(m.start_row == m.end_row && m.start_col == m.end_col)
+                    }
+                } else {
+                    true
+                }
+            });
             self.uncommitted_actions
                 .push(crate::core::SheetAction::DeleteRow {
                     sheet_name: self.name.clone(),

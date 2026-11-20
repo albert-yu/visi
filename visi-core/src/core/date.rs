@@ -376,6 +376,24 @@ pub fn is_date_code(code: &str) -> bool {
     (has_year_or_day || has_month) && !has_time_token && !has_number_placeholder
 }
 
+pub const EXCEL_1904_EPOCH_OFFSET: f64 = 1462.0;
+
+pub fn excel_serial_to_date_with_epoch(serial: f64, date1904: bool) -> SimpleDate {
+    if date1904 {
+        excel_serial_to_date(serial + EXCEL_1904_EPOCH_OFFSET)
+    } else {
+        excel_serial_to_date(serial)
+    }
+}
+
+pub fn date_to_excel_serial_with_epoch(date: SimpleDate, date1904: bool) -> f64 {
+    if date1904 {
+        date_to_excel_serial(date) - EXCEL_1904_EPOCH_OFFSET
+    } else {
+        date_to_excel_serial(date)
+    }
+}
+
 /// The inverse of [`date_to_excel_serial`], for rendering a computed serial.
 pub fn excel_serial_to_date(serial: f64) -> SimpleDate {
     let (year, month, day) = crate::core::date_fn::serial_to_ymd(serial);

@@ -77,6 +77,8 @@ pub struct WorkbookManager {
 
     pub locale: Locale,
 
+    pub date1904: bool,
+
     pub(crate) source_package: Option<crate::core::xlsx::patch::OoxmlSourceState>,
 }
 
@@ -220,6 +222,7 @@ impl WorkbookManager {
 
         let locale = Locale::default();
         let mut sheets: Vec<Sheet> = imported_sheets.into_iter().map(|it| it.sheet).collect();
+        let date1904 = sheets.first().is_some_and(|s| s.date1904);
         for sheet in &mut sheets {
             sheet.locale = locale.clone();
         }
@@ -229,6 +232,7 @@ impl WorkbookManager {
             pivot_tables,
             vba_project,
             locale,
+            date1904,
             source_package,
         })
     }
@@ -292,6 +296,7 @@ impl WorkbookManager {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale,
+            date1904: false,
             source_package: None,
         })
     }
@@ -339,6 +344,7 @@ impl WorkbookManager {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale,
+            date1904: false,
             source_package: None,
         };
         wb.add_sheet("Sheet1")?;
@@ -953,6 +959,11 @@ impl WorkbookManager {
             name: name.to_string(),
             columns,
             row_heights: vec![None; 10],
+            hidden_rows: vec![false; 10],
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: self.date1904,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),

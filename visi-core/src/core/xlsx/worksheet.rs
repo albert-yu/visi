@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use quick_xml::events::Event;
 
-use crate::core::engine::{CellType, ResultData};
+use crate::core::engine::{CellType, FreezePane, MergedCellRange, ResultData};
 use crate::core::parser::{col_idx_to_letters, col_letters_to_idx};
 use crate::core::xlsx::styles::ParsedStyles;
 use crate::core::xlsx::xml_util::decode_xstring;
@@ -55,7 +55,11 @@ pub(crate) struct ParsedCell {
 pub(crate) struct ParsedWorksheet {
     pub(crate) cells: Vec<ParsedCell>,
     pub(crate) column_widths: HashMap<usize, f64>,
+    pub(crate) hidden_cols: HashSet<usize>,
     pub(crate) row_heights: HashMap<usize, f64>,
+    pub(crate) hidden_rows: HashSet<usize>,
+    pub(crate) merged_cells: Vec<MergedCellRange>,
+    pub(crate) freeze_pane: Option<FreezePane>,
     pub(crate) rows: usize,
     pub(crate) cols: usize,
 }
@@ -106,8 +110,14 @@ pub(crate) fn parse_worksheet(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
+                b"pane" => {
+                    parse_freeze_pane(e, &mut out.freeze_pane);
+                }
+                b"mergeCell" => {
+                    parse_merge_cell(e, &mut out.merged_cells);
+                }
                 b"col" => {
-                    parse_col_width(e, &mut out.column_widths);
+                    parse_col_props(e, &mut out.column_widths, &mut out.hidden_cols);
                 }
                 b"row" => {
                     let row_1based = super::get_attr(e, b"r")
@@ -124,6 +134,9 @@ pub(crate) fn parse_worksheet(
                         && height >= 0.0
                     {
                         out.row_heights.insert(current_row, height);
+                    }
+                    if row_1based <= 1_048_576 && is_xml_truthy(super::get_attr(e, b"hidden")) {
+                        out.hidden_rows.insert(current_row);
                     }
                 }
                 b"c" => {
@@ -171,8 +184,14 @@ pub(crate) fn parse_worksheet(
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
+                b"pane" => {
+                    parse_freeze_pane(e, &mut out.freeze_pane);
+                }
+                b"mergeCell" => {
+                    parse_merge_cell(e, &mut out.merged_cells);
+                }
                 b"col" => {
-                    parse_col_width(e, &mut out.column_widths);
+                    parse_col_props(e, &mut out.column_widths, &mut out.hidden_cols);
                 }
                 b"row" => {
                     let row_1based = super::get_attr(e, b"r")
@@ -189,6 +208,9 @@ pub(crate) fn parse_worksheet(
                         && height >= 0.0
                     {
                         out.row_heights.insert(current_row, height);
+                    }
+                    if row_1based <= 1_048_576 && is_xml_truthy(super::get_attr(e, b"hidden")) {
+                        out.hidden_rows.insert(current_row);
                     }
                 }
                 b"c" => {
@@ -364,8 +386,18 @@ pub(crate) fn parse_worksheet(
     if let Some(&max_w_col) = out.column_widths.keys().max() {
         out.cols = out.cols.max(max_w_col + 1);
     }
+    if let Some(&max_h_col) = out.hidden_cols.iter().max() {
+        out.cols = out.cols.max(max_h_col + 1);
+    }
     if let Some(&max_h_row) = out.row_heights.keys().max() {
         out.rows = out.rows.max(max_h_row + 1);
+    }
+    if let Some(&max_hid_row) = out.hidden_rows.iter().max() {
+        out.rows = out.rows.max(max_hid_row + 1);
+    }
+    for m in &out.merged_cells {
+        out.rows = out.rows.max(m.end_row + 1);
+        out.cols = out.cols.max(m.end_col + 1);
     }
 
     Ok(out)
@@ -535,10 +567,15 @@ pub(crate) fn write_worksheet_xml(
             }
         }
 
-        if !row_cells_xml.is_empty() || row_height.is_some() {
+        let row_hidden = sheet.hidden_rows.get(row_idx).copied().unwrap_or(false);
+
+        if !row_cells_xml.is_empty() || row_height.is_some() || row_hidden {
             sheet_data_xml.push_str(&format!("<row r=\"{}\"", row_idx + 1));
             if let Some(h) = row_height {
                 sheet_data_xml.push_str(&format!(" ht=\"{h}\" customHeight=\"1\""));
+            }
+            if row_hidden {
+                sheet_data_xml.push_str(" hidden=\"1\"");
             }
             if row_cells_xml.is_empty() {
                 sheet_data_xml.push_str("/>");
@@ -557,26 +594,44 @@ pub(crate) fn write_worksheet_xml(
     };
 
     let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"{ns}\" xmlns:r=\"{ns_r}\"><dimension ref=\"{dim_ref}\"/><sheetViews><sheetView workbookViewId=\"0\"/></sheetViews><sheetFormatPr defaultRowHeight=\"15\"/>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"{ns}\" xmlns:r=\"{ns_r}\"><dimension ref=\"{dim_ref}\"/><sheetViews><sheetView workbookViewId=\"0\""
     );
+    if let Some(pane) = sheet.freeze_pane
+        && (pane.rows > 0 || pane.cols > 0)
+    {
+        xml.push('>');
+        xml.push_str(&format_freeze_pane_xml(pane));
+        xml.push_str("</sheetView>");
+    } else {
+        xml.push_str("/>");
+    }
+    xml.push_str("</sheetViews><sheetFormatPr defaultRowHeight=\"15\"/>");
 
-    let explicit_widths: Vec<(usize, f64)> = sheet
+    let explicit_cols: Vec<(usize, Option<f64>, bool)> = sheet
         .columns
         .iter()
         .enumerate()
         .filter_map(|(idx, col)| {
-            col.width
-                .filter(|w| w.is_finite() && *w >= 0.0)
-                .map(|w| (idx, w))
+            let width = col.width.filter(|w| w.is_finite() && *w >= 0.0);
+            if width.is_some() || col.hidden {
+                Some((idx, width, col.hidden))
+            } else {
+                None
+            }
         })
         .collect();
-    if !explicit_widths.is_empty() {
+    if !explicit_cols.is_empty() {
         xml.push_str("<cols>");
-        for (col_idx, width) in explicit_widths {
+        for (col_idx, width, hidden) in explicit_cols {
             let one_based = col_idx + 1;
-            xml.push_str(&format!(
-                "<col min=\"{one_based}\" max=\"{one_based}\" width=\"{width}\" customWidth=\"1\"/>"
-            ));
+            xml.push_str(&format!("<col min=\"{one_based}\" max=\"{one_based}\""));
+            if let Some(w) = width {
+                xml.push_str(&format!(" width=\"{w}\" customWidth=\"1\""));
+            }
+            if hidden {
+                xml.push_str(" hidden=\"1\"");
+            }
+            xml.push_str("/>");
         }
         xml.push_str("</cols>");
     }
@@ -587,6 +642,24 @@ pub(crate) fn write_worksheet_xml(
         xml.push_str("<sheetData>");
         xml.push_str(&sheet_data_xml);
         xml.push_str("</sheetData>");
+    }
+
+    if !sheet.merged_cells.is_empty() {
+        xml.push_str(&format!(
+            "<mergeCells count=\"{}\">",
+            sheet.merged_cells.len()
+        ));
+        for m in &sheet.merged_cells {
+            let range_ref = format!(
+                "{}{}:{}{}",
+                col_idx_to_letters(m.start_col),
+                m.start_row + 1,
+                col_idx_to_letters(m.end_col),
+                m.end_row + 1
+            );
+            xml.push_str(&format!("<mergeCell ref=\"{range_ref}\"/>"));
+        }
+        xml.push_str("</mergeCells>");
     }
 
     if let Some(r_id) = drawing_rid {
@@ -608,24 +681,96 @@ pub(crate) fn write_worksheet_xml(
     xml
 }
 
-fn parse_col_width(e: &quick_xml::events::BytesStart, out: &mut HashMap<usize, f64>) {
+fn is_xml_truthy(val: Option<String>) -> bool {
+    val.is_some_and(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+}
+
+fn parse_col_props(
+    e: &quick_xml::events::BytesStart,
+    widths: &mut HashMap<usize, f64>,
+    hidden_cols: &mut HashSet<usize>,
+) {
+    let min = super::get_attr(e, b"min")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let max = super::get_attr(e, b"max")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(min)
+        .max(min)
+        .min(16_384);
+
     if let Some(width) = super::get_attr(e, b"width").and_then(|s| s.parse::<f64>().ok())
         && width.is_finite()
         && width >= 0.0
     {
-        let min = super::get_attr(e, b"min")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(1)
-            .max(1);
-        let max = super::get_attr(e, b"max")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(min)
-            .max(min)
-            .min(16_384);
         for one_based_col in min..=max {
-            out.insert(one_based_col - 1, width);
+            widths.insert(one_based_col - 1, width);
         }
     }
+    if is_xml_truthy(super::get_attr(e, b"hidden")) {
+        for one_based_col in min..=max {
+            hidden_cols.insert(one_based_col - 1);
+        }
+    }
+}
+
+fn parse_merge_cell(e: &quick_xml::events::BytesStart, out: &mut Vec<MergedCellRange>) {
+    if let Some(ref_str) = super::get_attr(e, b"ref")
+        && let Some((start_row, start_col, end_row, end_col)) =
+            crate::core::pivot_xlsx::parse_a1_range(&ref_str)
+    {
+        let range = MergedCellRange {
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+        };
+        if !out.contains(&range) {
+            out.push(range);
+        }
+    }
+}
+
+fn parse_freeze_pane(e: &quick_xml::events::BytesStart, out: &mut Option<FreezePane>) {
+    let state = super::get_attr(e, b"state");
+    if state
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("frozen") || s.eq_ignore_ascii_case("frozenSplit"))
+    {
+        let cols = super::get_attr(e, b"xSplit")
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v.max(0.0).round() as usize)
+            .unwrap_or(0);
+        let rows = super::get_attr(e, b"ySplit")
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v.max(0.0).round() as usize)
+            .unwrap_or(0);
+        if rows > 0 || cols > 0 {
+            *out = Some(FreezePane { rows, cols });
+        }
+    }
+}
+
+pub(crate) fn format_freeze_pane_xml(pane: FreezePane) -> String {
+    let top_left = format!("{}{}", col_idx_to_letters(pane.cols), pane.rows + 1);
+    let active_pane = match (pane.rows > 0, pane.cols > 0) {
+        (true, true) => "bottomRight",
+        (true, false) => "bottomLeft",
+        (false, true) => "topRight",
+        (false, false) => "topLeft",
+    };
+    let mut xml = String::from("<pane");
+    if pane.cols > 0 {
+        xml.push_str(&format!(" xSplit=\"{}\"", pane.cols));
+    }
+    if pane.rows > 0 {
+        xml.push_str(&format!(" ySplit=\"{}\"", pane.rows));
+    }
+    xml.push_str(&format!(
+        " topLeftCell=\"{top_left}\" activePane=\"{active_pane}\" state=\"frozen\"/>"
+    ));
+    xml
 }
 
 #[allow(clippy::too_many_arguments)]

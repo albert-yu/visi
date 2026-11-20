@@ -117,6 +117,9 @@ fn import_xlsx_from_parsed(
                 if let Some(&width) = parsed_ws.column_widths.get(&col_idx) {
                     col.width = Some(width);
                 }
+                if parsed_ws.hidden_cols.contains(&col_idx) {
+                    col.hidden = true;
+                }
                 col
             })
             .collect::<Vec<_>>();
@@ -158,6 +161,12 @@ fn import_xlsx_from_parsed(
                 sheet_row_heights[row_idx] = Some(height);
             }
         }
+        let mut sheet_hidden_rows = vec![false; rows];
+        for &row_idx in &parsed_ws.hidden_rows {
+            if row_idx < sheet_hidden_rows.len() {
+                sheet_hidden_rows[row_idx] = true;
+            }
+        }
 
         orig_to_assigned_name.insert(orig_sheet_name.clone(), sheet_name.clone());
         let new_sheet = Sheet {
@@ -165,6 +174,11 @@ fn import_xlsx_from_parsed(
             name: sheet_name,
             columns,
             row_heights: sheet_row_heights,
+            hidden_rows: sheet_hidden_rows,
+            merged_cells: parsed_ws.merged_cells,
+            visibility: workbook::parse_sheet_visibility(sheet_meta.state.as_deref()),
+            freeze_pane: parsed_ws.freeze_pane,
+            date1904: wb.date1904,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -447,7 +461,8 @@ pub(crate) fn export_xlsx_data_raw(
     let mut sst = shared_strings::SharedStringTable::default();
     let mut style_reg = styles::StyleRegistry::default();
     let mut wb_rels: Vec<Relationship> = Vec::new();
-    let mut wb_sheets: Vec<(String, String)> = Vec::new();
+    let mut wb_sheets: Vec<(String, String, crate::core::SheetVisibility)> = Vec::new();
+    let date1904 = sheets.iter().any(|s| s.date1904);
 
     let mut next_table_id = 1usize;
     let mut next_drawing_id = 1usize;
@@ -458,7 +473,7 @@ pub(crate) fn export_xlsx_data_raw(
         let ws_name = &ws_names[idx];
         let sheet_part = format!("xl/worksheets/sheet{sheet_num}.xml");
         let wb_rid = format!("rId{sheet_num}");
-        wb_sheets.push((ws_name.clone(), wb_rid.clone()));
+        wb_sheets.push((ws_name.clone(), wb_rid.clone(), sheet.visibility));
         wb_rels.push(Relationship {
             id: wb_rid,
             rel_type: REL_WORKSHEET.to_string(),
@@ -569,7 +584,7 @@ pub(crate) fn export_xlsx_data_raw(
 
     pkg.set_part(
         "xl/workbook.xml",
-        workbook::write_workbook_xml(&wb_sheets, flavor).into_bytes(),
+        workbook::write_workbook_xml(&wb_sheets, date1904, flavor).into_bytes(),
     );
     ct.set_override("xl/workbook.xml", CT_WORKBOOK);
     pkg.write_relationships("xl/workbook.xml", &wb_rels);
@@ -1904,6 +1919,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns,
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2176,6 +2196,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns: vec![col],
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2320,6 +2345,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns: vec![col_a, col_b, col_c],
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2622,6 +2652,11 @@ mod tests {
             name: "EmptyTable".to_string(),
             columns,
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2667,6 +2702,11 @@ mod tests {
                 name: "Sheet1".to_string(),
                 columns,
                 row_heights: Vec::new(),
+                hidden_rows: Vec::new(),
+                merged_cells: Vec::new(),
+                visibility: crate::core::SheetVisibility::Visible,
+                freeze_pane: None,
+                date1904: false,
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -2781,6 +2821,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns,
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2812,6 +2857,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns,
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2845,6 +2895,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns,
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2874,6 +2929,11 @@ mod tests {
             name: "Sheet1".to_string(),
             columns,
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3215,6 +3275,11 @@ mod tests {
             name: long_name.clone(),
             columns: Vec::new(),
             row_heights: Vec::new(),
+            hidden_rows: Vec::new(),
+            merged_cells: Vec::new(),
+            visibility: crate::core::SheetVisibility::Visible,
+            freeze_pane: None,
+            date1904: false,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3397,5 +3462,171 @@ mod tests {
                 .to_string(),
             "50"
         );
+    }
+
+    #[test]
+    fn test_phase5_core_sheet_structure_round_trip_and_surgical_patch() {
+        use crate::core::{FreezePane, MergedCellRange, SheetVisibility};
+
+        let mut sheet1 = Sheet::new(crate::core::SheetInit {
+            name: Some("Main".to_string()),
+            rows: 5,
+            cols: 5,
+            ..Default::default()
+        });
+        sheet1.set_cell_src(0, 0, "Title".to_string());
+        sheet1.add_merged_cells(MergedCellRange {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 2,
+        });
+        sheet1.set_column_hidden(1, true);
+        sheet1.set_row_hidden(2, true);
+        sheet1.freeze_pane = Some(FreezePane { rows: 1, cols: 2 });
+        sheet1.date1904 = true;
+        sheet1.commit(None).unwrap();
+
+        let mut sheet2 = Sheet::new(crate::core::SheetInit {
+            name: Some("HiddenSheet".to_string()),
+            rows: 2,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet2.visibility = SheetVisibility::Hidden;
+        sheet2.date1904 = true;
+
+        let mut sheet3 = Sheet::new(crate::core::SheetInit {
+            name: Some("VeryHiddenSheet".to_string()),
+            rows: 2,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet3.visibility = SheetVisibility::VeryHidden;
+        sheet3.date1904 = true;
+
+        let bytes = export_xlsx_data(&[sheet1, sheet2, sheet3], &[], &[], None).unwrap();
+        let pkg = OpcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(pkg.validate_opc(), Ok(()));
+
+        let wb_doc = dom::XmlDocument::parse(&pkg.get_str("xl/workbook.xml").unwrap()).unwrap();
+        assert_eq!(
+            wb_doc.validate_child_sequence(dom::WORKBOOK_SCHEMA_ORDER),
+            Ok(())
+        );
+        let ws_doc =
+            dom::XmlDocument::parse(&pkg.get_str("xl/worksheets/sheet1.xml").unwrap()).unwrap();
+        assert_eq!(
+            ws_doc.validate_child_sequence(dom::WORKSHEET_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let mut wb = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        assert!(wb.date1904);
+        assert!(wb.sheets[0].date1904);
+        assert_eq!(
+            wb.sheets[0].merged_cells,
+            vec![MergedCellRange {
+                start_row: 0,
+                start_col: 0,
+                end_row: 1,
+                end_col: 2,
+            }]
+        );
+        assert!(wb.sheets[0].is_column_hidden(1));
+        assert!(!wb.sheets[0].is_column_hidden(0));
+        assert!(wb.sheets[0].is_row_hidden(2));
+        assert!(!wb.sheets[0].is_row_hidden(0));
+        assert_eq!(
+            wb.sheets[0].freeze_pane,
+            Some(FreezePane { rows: 1, cols: 2 })
+        );
+        assert_eq!(wb.sheets[0].visibility, SheetVisibility::Visible);
+        assert_eq!(wb.sheets[1].visibility, SheetVisibility::Hidden);
+        assert_eq!(wb.sheets[2].visibility, SheetVisibility::VeryHidden);
+
+        wb.sheets[0].ensure_capacity(4, 4);
+        wb.sheets[0].add_merged_cells(MergedCellRange {
+            start_row: 3,
+            start_col: 3,
+            end_row: 4,
+            end_col: 4,
+        });
+        wb.sheets[0].set_column_hidden(3, true);
+        wb.sheets[0].set_row_hidden(4, true);
+        wb.sheets[0].freeze_pane = Some(FreezePane { rows: 2, cols: 0 });
+        wb.sheets[1].visibility = SheetVisibility::Visible;
+
+        let patched_bytes = wb.save_bytes().unwrap();
+        let patched_pkg = OpcPackage::from_bytes(&patched_bytes).unwrap();
+        assert_eq!(patched_pkg.validate_opc(), Ok(()));
+        let patched_ws_doc =
+            dom::XmlDocument::parse(&patched_pkg.get_str("xl/worksheets/sheet1.xml").unwrap())
+                .unwrap();
+        assert_eq!(
+            patched_ws_doc.validate_child_sequence(dom::WORKSHEET_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched_bytes).unwrap();
+        assert_eq!(reloaded.sheets[0].merged_cells.len(), 2);
+        assert!(reloaded.sheets[0].is_column_hidden(3));
+        assert!(reloaded.sheets[0].is_row_hidden(4));
+        assert_eq!(
+            reloaded.sheets[0].freeze_pane,
+            Some(FreezePane { rows: 2, cols: 0 })
+        );
+        assert_eq!(reloaded.sheets[1].visibility, SheetVisibility::Visible);
+
+        let d1904 = crate::core::date::excel_serial_to_date_with_epoch(0.0, true);
+        assert_eq!((d1904.year, d1904.month, d1904.day), (1904, 1, 1));
+        assert_eq!(
+            crate::core::date::date_to_excel_serial_with_epoch(d1904, true),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_row_insert_and_delete_adjusts_merged_cells_and_hidden_rows() {
+        use crate::core::MergedCellRange;
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Sheet1".to_string()),
+            rows: 5,
+            cols: 3,
+            ..Default::default()
+        });
+        sheet.add_merged_cells(MergedCellRange {
+            start_row: 1,
+            start_col: 0,
+            end_row: 2,
+            end_col: 1,
+        });
+        sheet.set_row_hidden(2, true);
+
+        sheet.insert_row(0);
+        assert_eq!(
+            sheet.merged_cells,
+            vec![MergedCellRange {
+                start_row: 2,
+                start_col: 0,
+                end_row: 3,
+                end_col: 1,
+            }]
+        );
+        assert!(sheet.is_row_hidden(3));
+        assert!(!sheet.is_row_hidden(2));
+
+        sheet.delete_row(0);
+        assert_eq!(
+            sheet.merged_cells,
+            vec![MergedCellRange {
+                start_row: 1,
+                start_col: 0,
+                end_row: 2,
+                end_col: 1,
+            }]
+        );
+        assert!(sheet.is_row_hidden(2));
     }
 }

@@ -119,19 +119,49 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
     })
 }
 
-pub(crate) fn write_workbook_xml(sheets: &[(String, String)], flavor: NamespaceFlavor) -> String {
+pub(crate) fn parse_sheet_visibility(state: Option<&str>) -> crate::core::SheetVisibility {
+    match state {
+        Some(s) if s.eq_ignore_ascii_case("hidden") => crate::core::SheetVisibility::Hidden,
+        Some(s) if s.eq_ignore_ascii_case("veryHidden") => crate::core::SheetVisibility::VeryHidden,
+        _ => crate::core::SheetVisibility::Visible,
+    }
+}
+
+pub(crate) fn sheet_visibility_attr(
+    visibility: crate::core::SheetVisibility,
+) -> Option<&'static str> {
+    match visibility {
+        crate::core::SheetVisibility::Visible => None,
+        crate::core::SheetVisibility::Hidden => Some("hidden"),
+        crate::core::SheetVisibility::VeryHidden => Some("veryHidden"),
+    }
+}
+
+pub(crate) fn write_workbook_xml(
+    sheets: &[(String, String, crate::core::SheetVisibility)],
+    date1904: bool,
+    flavor: NamespaceFlavor,
+) -> String {
     let ns = flavor.spreadsheetml();
     let ns_r = flavor.office_rels();
     let mut xml = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"{ns}\" xmlns:r=\"{ns_r}\"><bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"24000\" windowHeight=\"15000\"/></bookViews><sheets>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"{ns}\" xmlns:r=\"{ns_r}\">"
     );
-    for (idx, (name, r_id)) in sheets.iter().enumerate() {
+    if date1904 {
+        xml.push_str("<workbookPr date1904=\"1\"/>");
+    }
+    xml.push_str("<bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"24000\" windowHeight=\"15000\"/></bookViews><sheets>");
+    for (idx, (name, r_id, visibility)) in sheets.iter().enumerate() {
         xml.push_str(&format!(
-            "<sheet name=\"{}\" sheetId=\"{}\" r:id=\"{}\"/>",
+            "<sheet name=\"{}\" sheetId=\"{}\" r:id=\"{}\"",
             super::escape_xml(name),
             idx + 1,
             super::escape_xml(r_id)
         ));
+        if let Some(state) = sheet_visibility_attr(*visibility) {
+            xml.push_str(&format!(" state=\"{state}\""));
+        }
+        xml.push_str("/>");
     }
     xml.push_str("</sheets><calcPr calcId=\"191029\"/></workbook>");
     xml
