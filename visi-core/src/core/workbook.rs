@@ -1015,6 +1015,7 @@ impl WorkbookManager {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: self.date1904,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),

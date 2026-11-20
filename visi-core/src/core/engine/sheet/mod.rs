@@ -142,6 +142,30 @@ pub enum SheetVisibility {
     VeryHidden,
 }
 
+#[doc = "Array formula evaluation mode per ECMA-376 §18.3.1.40 and MS-XLSX."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArrayFormulaKind {
+    #[doc = "Legacy Ctrl+Shift+Enter (CSE) array formula (`t=\"array\"`)."]
+    LegacyCse,
+    #[doc = "Modern Excel 365 dynamic array / spill formula (`t=\"array\"` + `cm` + `XLDAPR`)."]
+    DynamicArray,
+}
+
+#[doc = "An array formula region anchored at `(start_row, start_col)`."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ArrayFormulaEntry {
+    #[doc = "Anchor row, 0-based."]
+    pub start_row: usize,
+    #[doc = "Anchor column, 0-based."]
+    pub start_col: usize,
+    #[doc = "Bottommost row of the array range, 0-based inclusive."]
+    pub end_row: usize,
+    #[doc = "Rightmost column of the array range, 0-based inclusive."]
+    pub end_col: usize,
+    #[doc = "Whether this is a legacy CSE or modern dynamic array formula."]
+    pub kind: ArrayFormulaKind,
+}
+
 #[doc = "Frozen pane configuration specifying how many top rows and left columns stay fixed."]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FreezePane {
@@ -181,6 +205,9 @@ pub struct Sheet {
     #[doc = "Whether this worksheet uses the 1904 date system."]
     #[serde(default)]
     pub date1904: bool,
+    #[doc = "Legacy CSE and dynamic array formula metadata anchored on this worksheet."]
+    #[serde(default)]
+    pub array_formulas: Vec<ArrayFormulaEntry>,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
@@ -276,6 +303,7 @@ impl Sheet {
             visibility: SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),

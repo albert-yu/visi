@@ -23,6 +23,7 @@ pub(crate) struct ParsedWorkbook {
     pub(crate) shared_strings_part: Option<String>,
     pub(crate) styles_part: Option<String>,
     pub(crate) theme_part: Option<String>,
+    pub(crate) metadata_part: Option<String>,
 }
 
 pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> {
@@ -39,6 +40,7 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
     let mut shared_strings_part = None;
     let mut styles_part = None;
     let mut theme_part = None;
+    let mut metadata_part = None;
 
     for rel in &rels {
         if rel.is_external() {
@@ -51,6 +53,8 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
             styles_part = Some(target.clone());
         } else if rel_type_matches(&rel.rel_type, "theme") && theme_part.is_none() {
             theme_part = Some(target.clone());
+        } else if rel_type_matches(&rel.rel_type, "sheetMetadata") && metadata_part.is_none() {
+            metadata_part = Some(target.clone());
         }
         rel_targets.insert(rel.id.clone(), (rel.rel_type.clone(), target));
     }
@@ -63,6 +67,9 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
     }
     if theme_part.is_none() && pkg.has_part("xl/theme/theme1.xml") {
         theme_part = Some("xl/theme/theme1.xml".to_string());
+    }
+    if metadata_part.is_none() && pkg.has_part("xl/metadata.xml") {
+        metadata_part = Some("xl/metadata.xml".to_string());
     }
 
     let mut flavor = NamespaceFlavor::Transitional;
@@ -201,6 +208,7 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
         shared_strings_part,
         styles_part,
         theme_part,
+        metadata_part,
     })
 }
 

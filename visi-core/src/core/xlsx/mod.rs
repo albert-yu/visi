@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 pub(crate) mod chart;
 pub(crate) mod dom;
+pub(crate) mod formula;
+pub(crate) mod metadata;
 pub(crate) mod patch;
 pub(crate) mod shared_strings;
 pub(crate) mod styles;
@@ -85,6 +87,13 @@ fn import_xlsx_from_parsed(
         .map(|xml| styles::parse_styles_with_theme(&xml, &theme_colors))
         .unwrap_or_default();
 
+    let parsed_metadata = wb
+        .metadata_part
+        .as_deref()
+        .and_then(|part| pkg.get_str(part))
+        .map(|xml| metadata::parse_metadata_xml(&xml))
+        .unwrap_or_default();
+
     let total_sheets = wb.sheets.len();
     let mut imported_sheets = Vec::new();
     let mut orig_to_assigned_name: std::collections::HashMap<String, String> =
@@ -103,7 +112,12 @@ fn import_xlsx_from_parsed(
             continue;
         };
 
-        let parsed_ws = worksheet::parse_worksheet(&sheet_xml, &shared_strings, &parsed_styles)?;
+        let parsed_ws = worksheet::parse_worksheet_with_metadata(
+            &sheet_xml,
+            &shared_strings,
+            &parsed_styles,
+            &parsed_metadata,
+        )?;
         let (rows, cols) = if parsed_ws.rows == 0 || parsed_ws.cols == 0 {
             (10, 5)
         } else {
@@ -191,6 +205,7 @@ fn import_xlsx_from_parsed(
             visibility: workbook::parse_sheet_visibility(sheet_meta.state.as_deref()),
             freeze_pane: parsed_ws.freeze_pane,
             date1904: wb.date1904,
+            array_formulas: parsed_ws.array_formulas,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -421,10 +436,11 @@ pub(crate) fn export_xlsx_data_raw(
     defined_names: &[crate::core::DefinedName],
 ) -> Result<Vec<u8>, String> {
     use crate::core::opc::{
-        CT_CHART, CT_CORE_PROPERTIES, CT_DRAWING, CT_EXTENDED_PROPERTIES, CT_RELS,
+        CT_CHART, CT_CORE_PROPERTIES, CT_DRAWING, CT_EXTENDED_PROPERTIES, CT_METADATA, CT_RELS,
         CT_SHARED_STRINGS, CT_STYLES, CT_TABLE, CT_WORKBOOK, CT_WORKSHEET, CT_XML, ContentTypes,
-        REL_CHART, REL_CORE_PROPERTIES, REL_DRAWING, REL_EXTENDED_PROPERTIES, REL_OFFICE_DOCUMENT,
-        REL_SHARED_STRINGS, REL_STYLES, REL_TABLE, REL_WORKSHEET, Relationship,
+        REL_CHART, REL_CORE_PROPERTIES, REL_DRAWING, REL_EXTENDED_PROPERTIES, REL_METADATA,
+        REL_OFFICE_DOCUMENT, REL_SHARED_STRINGS, REL_STYLES, REL_TABLE, REL_WORKSHEET,
+        Relationship,
     };
     use crate::core::xlsx::xml_util::NamespaceFlavor;
 
@@ -603,6 +619,26 @@ pub(crate) fn export_xlsx_data_raw(
         });
         pkg.set_part("xl/sharedStrings.xml", sst.to_xml(flavor).into_bytes());
         ct.set_override("xl/sharedStrings.xml", CT_SHARED_STRINGS);
+    }
+
+    let has_dynamic_arrays = sheets.iter().any(|s| {
+        s.array_formulas
+            .iter()
+            .any(|af| af.kind == crate::core::ArrayFormulaKind::DynamicArray)
+    });
+    if has_dynamic_arrays {
+        let meta_rid = format!("rId{}", wb_rels.len() + 1);
+        wb_rels.push(Relationship {
+            id: meta_rid,
+            rel_type: REL_METADATA.to_string(),
+            target: "metadata.xml".to_string(),
+            target_mode: None,
+        });
+        pkg.set_part(
+            "xl/metadata.xml",
+            metadata::write_dynamic_array_metadata_xml(flavor).into_bytes(),
+        );
+        ct.set_override("xl/metadata.xml", CT_METADATA);
     }
 
     pkg.set_part(
@@ -1947,6 +1983,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2224,6 +2261,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2373,6 +2411,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2680,6 +2719,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2730,6 +2770,7 @@ mod tests {
                 visibility: crate::core::SheetVisibility::Visible,
                 freeze_pane: None,
                 date1904: false,
+                array_formulas: Vec::new(),
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -2849,6 +2890,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2885,6 +2927,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2923,6 +2966,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2957,6 +3001,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3303,6 +3348,7 @@ mod tests {
             visibility: crate::core::SheetVisibility::Visible,
             freeze_pane: None,
             date1904: false,
+            array_formulas: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3939,5 +3985,88 @@ mod tests {
                 .to_string(),
             "12"
         );
+    }
+
+    #[test]
+    fn test_phase8_array_formulas_metadata_xlfn_and_shared_formula_patching() {
+        use crate::core::{ArrayFormulaEntry, ArrayFormulaKind};
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Formulas".to_string()),
+            rows: 4,
+            cols: 4,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "=SEQUENCE(3)".to_string());
+        sheet.set_cell_src(0, 1, "=SUM(A1:A3*2)".to_string());
+        sheet.set_cell_src(0, 2, "=SORT(A1:A3)".to_string());
+        sheet.array_formulas.push(ArrayFormulaEntry {
+            start_row: 0,
+            start_col: 0,
+            end_row: 2,
+            end_col: 0,
+            kind: ArrayFormulaKind::DynamicArray,
+        });
+        sheet.array_formulas.push(ArrayFormulaEntry {
+            start_row: 0,
+            start_col: 1,
+            end_row: 0,
+            end_col: 1,
+            kind: ArrayFormulaKind::LegacyCse,
+        });
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let pkg = OpcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(pkg.validate_opc(), Ok(()));
+        assert!(pkg.has_part("xl/metadata.xml"));
+
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(ws_xml.contains("cm=\"1\""));
+        assert!(ws_xml.contains("_xlfn.SEQUENCE(3)"));
+        assert!(ws_xml.contains("_xlfn._xlws.SORT(A1:A3)"));
+        assert!(ws_xml.contains("t=\"array\" ref=\"A1:A3\""));
+        assert!(ws_xml.contains("t=\"array\" ref=\"B1:B1\""));
+
+        let loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        assert_eq!(loaded.sheets[0].array_formulas.len(), 2);
+        assert_eq!(
+            loaded.sheets[0].array_formulas[0],
+            ArrayFormulaEntry {
+                start_row: 0,
+                start_col: 0,
+                end_row: 2,
+                end_col: 0,
+                kind: ArrayFormulaKind::DynamicArray,
+            }
+        );
+        assert_eq!(
+            loaded.sheets[0].array_formulas[1],
+            ArrayFormulaEntry {
+                start_row: 0,
+                start_col: 1,
+                end_row: 0,
+                end_col: 1,
+                kind: ArrayFormulaKind::LegacyCse,
+            }
+        );
+
+        let mut shared_pkg = OpcPackage::from_bytes(&bytes).unwrap();
+        let shared_ws = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>10</v></c><c r="B1"><f t="shared" ref="B1:B3" si="0">A1*2</f><v>20</v></c></row><row r="2"><c r="A2"><v>20</v></c><c r="B2"><f t="shared" si="0"/><v>40</v></c></row><row r="3"><c r="A3"><v>30</v></c><c r="B3"><f t="shared" si="0"/><v>60</v></c></row></sheetData></worksheet>"#;
+        shared_pkg.set_part("xl/worksheets/sheet1.xml", shared_ws.as_bytes().to_vec());
+        let shared_bytes = shared_pkg.to_bytes().unwrap();
+
+        let mut wb = crate::core::WorkbookManager::load_bytes(&shared_bytes).unwrap();
+        assert_eq!(wb.sheets[0].columns[1].src[1], "=A2*2");
+        assert_eq!(wb.sheets[0].columns[1].src[2], "=A3*2");
+
+        wb.sheets[0].set_cell_src(0, 1, "=A1*10".to_string());
+        wb.evaluate().unwrap();
+        let patched_bytes = wb.save_bytes().unwrap();
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched_bytes).unwrap();
+        assert_eq!(reloaded.sheets[0].columns[1].src[0], "=A1*10");
+        assert_eq!(reloaded.sheets[0].columns[1].src[1], "=A2*2");
+        assert_eq!(reloaded.sheets[0].columns[1].src[2], "=A3*2");
     }
 }

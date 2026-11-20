@@ -893,6 +893,8 @@ fn patch_sheet_data(
 ) {
     let sheet_data = ws_root.ensure_child_in_schema_order("sheetData", WORKSHEET_SCHEMA_ORDER);
 
+    materialize_affected_shared_formulas(sheet_data, changed_cells);
+
     for &(row_idx, height_opt) in changed_heights {
         let row_1based = row_idx + 1;
         let row_el = ensure_row_element(sheet_data, row_1based);
@@ -936,6 +938,95 @@ fn patch_sheet_data(
                 let new_c =
                     build_patched_cell_element(row_el, &cell_ref, cell, col, row_idx, sst, styles);
                 upsert_cell_element(row_el, col_idx, new_c);
+            }
+        }
+    }
+}
+
+fn materialize_affected_shared_formulas(
+    sheet_data: &mut XmlElement,
+    changed_cells: &[(usize, usize, Option<&CellSnapshot>)],
+) {
+    if changed_cells.is_empty() {
+        return;
+    }
+    let changed_set: HashSet<(usize, usize)> =
+        changed_cells.iter().map(|&(r, c, _)| (r, c)).collect();
+
+    let mut masters: HashMap<String, (usize, usize, String)> = HashMap::new();
+    let mut affected_sis: HashSet<String> = HashSet::new();
+
+    for row_node in &sheet_data.children {
+        let XmlNode::Element(row_el) = row_node else {
+            continue;
+        };
+        if row_el.local_name() != "row" {
+            continue;
+        }
+        for cell_node in &row_el.children {
+            let XmlNode::Element(c_el) = cell_node else {
+                continue;
+            };
+            if c_el.local_name() != "c" {
+                continue;
+            }
+            let Some((r, c)) = c_el.attr("r").and_then(super::parse_a1_cell) else {
+                continue;
+            };
+            if let Some(f_el) = c_el.child("f")
+                && f_el.attr("t") == Some("shared")
+                && let Some(si) = f_el.attr("si")
+            {
+                let body = f_el.text_content();
+                if !body.is_empty() {
+                    masters.insert(si.to_string(), (r, c, body));
+                }
+                if changed_set.contains(&(r, c)) {
+                    affected_sis.insert(si.to_string());
+                }
+            }
+        }
+    }
+
+    if affected_sis.is_empty() {
+        return;
+    }
+
+    for row_node in &mut sheet_data.children {
+        let XmlNode::Element(row_el) = row_node else {
+            continue;
+        };
+        if row_el.local_name() != "row" {
+            continue;
+        }
+        for cell_node in &mut row_el.children {
+            let XmlNode::Element(c_el) = cell_node else {
+                continue;
+            };
+            if c_el.local_name() != "c" {
+                continue;
+            }
+            let Some((r, c)) = c_el.attr("r").and_then(super::parse_a1_cell) else {
+                continue;
+            };
+            if changed_set.contains(&(r, c)) {
+                continue;
+            }
+            if let Some(f_el) = c_el.child_mut("f")
+                && f_el.attr("t") == Some("shared")
+                && let Some(si) = f_el.attr("si").map(str::to_string)
+                && affected_sis.contains(&si)
+                && let Some((mr, mc, master_formula)) = masters.get(&si)
+            {
+                let d_row = r as isize - *mr as isize;
+                let d_col = c as isize - *mc as isize;
+                let expanded =
+                    crate::core::xlsx::worksheet::shift_formula_refs(master_formula, d_row, d_col);
+                f_el.remove_attr("t");
+                f_el.remove_attr("ref");
+                f_el.remove_attr("si");
+                f_el.children.clear();
+                f_el.children.push(XmlNode::Text(expanded));
             }
         }
     }
@@ -1025,7 +1116,7 @@ fn build_patched_cell_element(
     }
 
     if let Some(formula_src) = cell.src.strip_prefix('=') {
-        let encoded = crate::core::parser::encode_xlsx_spill_references(formula_src);
+        let encoded = crate::core::xlsx::formula::encode_xlsx_formula(formula_src);
         let mut f_el = XmlElement::new(c_el.qualified_child_name("f"));
         f_el.children.push(XmlNode::Text(encoded));
         c_el.children.push(XmlNode::Element(f_el));

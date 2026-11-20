@@ -2,8 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use quick_xml::events::Event;
 
-use crate::core::engine::{CellType, FreezePane, MergedCellRange, ResultData};
+use crate::core::engine::{
+    ArrayFormulaEntry, ArrayFormulaKind, CellType, FreezePane, MergedCellRange, ResultData,
+};
 use crate::core::parser::{col_idx_to_letters, col_letters_to_idx};
+use crate::core::xlsx::metadata::ParsedMetadata;
 use crate::core::xlsx::styles::ParsedStyles;
 use crate::core::xlsx::xml_util::decode_xstring;
 
@@ -60,6 +63,7 @@ pub(crate) struct ParsedWorksheet {
     pub(crate) hidden_rows: HashSet<usize>,
     pub(crate) merged_cells: Vec<MergedCellRange>,
     pub(crate) freeze_pane: Option<FreezePane>,
+    pub(crate) array_formulas: Vec<ArrayFormulaEntry>,
     pub(crate) rows: usize,
     pub(crate) cols: usize,
 }
@@ -76,6 +80,15 @@ pub(crate) fn parse_worksheet(
     shared_strings: &[String],
     styles: &ParsedStyles,
 ) -> Result<ParsedWorksheet, String> {
+    parse_worksheet_with_metadata(xml, shared_strings, styles, &ParsedMetadata::default())
+}
+
+pub(crate) fn parse_worksheet_with_metadata(
+    xml: &str,
+    shared_strings: &[String],
+    styles: &ParsedStyles,
+    metadata: &ParsedMetadata,
+) -> Result<ParsedWorksheet, String> {
     let mut out = ParsedWorksheet::default();
     let mut shared_formulas: HashMap<u32, SharedFormulaMaster> = HashMap::new();
 
@@ -91,6 +104,7 @@ pub(crate) fn parse_worksheet(
     let mut cell_col = 0usize;
     let mut cell_type: Option<String> = None;
     let mut cell_style: Option<u32> = None;
+    let mut cell_cm: Option<u32> = None;
     let mut cell_val_text = String::new();
     let mut cell_has_v = false;
     let mut cell_inline_text = String::new();
@@ -100,6 +114,7 @@ pub(crate) fn parse_worksheet(
     let mut in_v = false;
     let mut in_f = false;
     let mut f_type: Option<String> = None;
+    let mut f_ref: Option<String> = None;
     let mut f_si: Option<u32> = None;
     let mut f_text = String::new();
 
@@ -153,6 +168,7 @@ pub(crate) fn parse_worksheet(
                     next_col = cell_col + 1;
                     cell_type = super::get_attr(e, b"t");
                     cell_style = super::get_attr(e, b"s").and_then(|s| s.parse::<u32>().ok());
+                    cell_cm = super::get_attr(e, b"cm").and_then(|s| s.parse::<u32>().ok());
                     cell_val_text.clear();
                     cell_has_v = false;
                     cell_inline_text.clear();
@@ -167,6 +183,7 @@ pub(crate) fn parse_worksheet(
                 b"f" if in_cell => {
                     in_f = true;
                     f_type = super::get_attr(e, b"t");
+                    f_ref = super::get_attr(e, b"ref");
                     f_si = super::get_attr(e, b"si").and_then(|s| s.parse::<u32>().ok());
                     f_text.clear();
                 }
@@ -329,10 +346,31 @@ pub(crate) fn parse_worksheet(
                                     Some(shift_formula_refs(&master.formula, d_row, d_col));
                             }
                         }
+                    } else if f_type.as_deref() == Some("array") {
+                        if !formula_body.is_empty() {
+                            cell_formula = Some(formula_body);
+                        }
+                        let (start_row, start_col, end_row, end_col) = f_ref
+                            .as_deref()
+                            .and_then(crate::core::pivot_xlsx::parse_a1_range)
+                            .unwrap_or((cell_row, cell_col, cell_row, cell_col));
+                        let kind = if cell_cm.is_some_and(|cm| metadata.is_dynamic_array_cm(cm)) {
+                            ArrayFormulaKind::DynamicArray
+                        } else {
+                            ArrayFormulaKind::LegacyCse
+                        };
+                        out.array_formulas.push(ArrayFormulaEntry {
+                            start_row,
+                            start_col,
+                            end_row,
+                            end_col,
+                            kind,
+                        });
                     } else if !formula_body.is_empty() {
                         cell_formula = Some(formula_body);
                     }
                     f_type = None;
+                    f_ref = None;
                     f_si = None;
                     f_text.clear();
                 }
@@ -449,8 +487,29 @@ pub(crate) fn write_worksheet_xml(
             };
 
             if let Some(formula_src) = cell_src.strip_prefix('=') {
-                let encoded_formula =
-                    crate::core::parser::encode_xlsx_spill_references(formula_src);
+                let encoded_formula = crate::core::xlsx::formula::encode_xlsx_formula(formula_src);
+                let array_meta = sheet
+                    .array_formulas
+                    .iter()
+                    .find(|entry| entry.start_row == row_idx && entry.start_col == col_idx);
+                let cm_attr =
+                    if array_meta.is_some_and(|m| m.kind == ArrayFormulaKind::DynamicArray) {
+                        " cm=\"1\""
+                    } else {
+                        ""
+                    };
+                let f_attrs = if let Some(m) = array_meta {
+                    let range_ref = format!(
+                        "{}{}:{}{}",
+                        col_idx_to_letters(m.start_col),
+                        m.start_row + 1,
+                        col_idx_to_letters(m.end_col),
+                        m.end_row + 1
+                    );
+                    format!(" t=\"array\" ref=\"{range_ref}\"")
+                } else {
+                    String::new()
+                };
                 let res_opt = col.data.get(row_idx);
                 let (t_attr, v_xml) = match res_opt {
                     Some(ResultData::String(s)) => (
@@ -489,7 +548,7 @@ pub(crate) fn write_worksheet_xml(
                     }
                 };
                 row_cells_xml.push_str(&format!(
-                    "<c r=\"{cell_ref}\"{style_attr}{t_attr}><f>{}</f>{v_xml}</c>",
+                    "<c r=\"{cell_ref}\"{style_attr}{t_attr}{cm_attr}><f{f_attrs}>{}</f>{v_xml}</c>",
                     super::escape_xml_text(&encoded_formula)
                 ));
                 has_any_cell = true;
