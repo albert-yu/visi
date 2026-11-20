@@ -12,12 +12,7 @@
 
 ### Goals
 
-- Match Excel's execution behavior 100%, including pivot tables and macros (VBA).
-  - In some cases, `visi` even produces more numerically accurate results
-  - Excludes some functionality that require Microsoft web services
-  - `visi` aims to match the classes of errors that Excel produces,
-    but not the error message itself (`visi` may be able to improve upon Excel here)
-  - [Documented discrepancies](./docs/excel-discrepancies.md)
+- OOXML compliance
 - Prioritize performance
   - Written in Rust to maximize potential performance capacity
   - Fast startup time
