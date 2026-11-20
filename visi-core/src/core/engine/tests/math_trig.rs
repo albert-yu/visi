@@ -949,19 +949,31 @@ fn num_of(r: &ResultData) -> f64 {
 }
 
 #[test]
-fn test_serial_zero_is_excels_phantom_january_zero() {
-    assert_eq!(num("=DAY(0)"), 0.0);
-    assert_eq!(num("=MONTH(0)"), 1.0);
-    assert_eq!(num("=YEAR(0)"), 1900.0);
-    assert_eq!(num("=DAY(0.6299)"), 0.0);
+fn test_1899_12_30_epoch_without_lotus_leap_year_bug() {
+    assert_eq!(num("=DAY(0)"), 30.0);
+    assert_eq!(num("=MONTH(0)"), 12.0);
+    assert_eq!(num("=YEAR(0)"), 1899.0);
+    assert_eq!(num("=DAY(0.6299)"), 30.0);
     match eval_one("=TEXT(0.6299, \"yyyy-mm-dd\")") {
-        ResultData::String(s) => assert_eq!(s, "1900-01-00"),
-        other => panic!("expected 1900-01-00, got {other:?}"),
+        ResultData::String(s) => assert_eq!(s, "1899-12-30"),
+        other => panic!("expected 1899-12-30, got {other:?}"),
     }
-    assert_eq!(num("=DAY(1)"), 1.0);
+    assert_eq!(num("=DAY(1)"), 31.0);
+    assert_eq!(num("=DAY(2)"), 1.0);
+    assert_eq!(num("=DATE(1900, 1, 1)"), 2.0);
+    assert_eq!(num("=DATE(1900, 2, 28)"), 60.0);
+    assert_eq!(num("=DATE(1900, 2, 29)"), 61.0);
+    assert_eq!(num("=DATE(1900, 3, 1)"), 61.0);
+    assert_eq!(num("=WEEKDAY(0)"), 7.0);
+    assert_eq!(num("=WEEKDAY(DATE(1900, 1, 1))"), 2.0);
+    assert_eq!(num("=WEEKDAY(DATE(1900, 2, 28))"), 4.0);
+    assert_eq!(num("=WEEKDAY(DATE(1900, 3, 1))"), 5.0);
     for (serial, want) in [
-        (59.0, "1900-02-28"),
-        (60.0, "1900-02-29"),
+        (0.0, "1899-12-30"),
+        (1.0, "1899-12-31"),
+        (2.0, "1900-01-01"),
+        (59.0, "1900-02-27"),
+        (60.0, "1900-02-28"),
         (61.0, "1900-03-01"),
     ] {
         match eval_one(&format!("=TEXT({serial}, \"yyyy-mm-dd\")")) {
