@@ -73,6 +73,7 @@ pub(crate) struct OoxmlSourceState {
     workbook_part: String,
     flavor: NamespaceFlavor,
     date1904: bool,
+    defined_names: Vec<crate::core::DefinedName>,
     shared_strings_part: Option<String>,
     styles_part: Option<String>,
     sheet_snapshots: Vec<SheetSnapshot>,
@@ -112,6 +113,7 @@ impl OoxmlSourceState {
             workbook_part: wb.workbook_part.clone(),
             flavor: wb.flavor,
             date1904: wb.date1904,
+            defined_names: wb.defined_names.clone(),
             shared_strings_part: wb.shared_strings_part.clone(),
             styles_part: wb.styles_part.clone(),
             sheet_snapshots,
@@ -145,11 +147,17 @@ impl OoxmlSourceState {
         true
     }
 
-    pub(crate) fn patch_to_bytes(&self, sheets: &[Sheet]) -> Result<Vec<u8>, String> {
+    pub(crate) fn patch_to_bytes(
+        &self,
+        sheets: &[Sheet],
+        defined_names: &[crate::core::DefinedName],
+    ) -> Result<Vec<u8>, String> {
         let mut pkg = self.package.clone();
 
         let cur_date1904 = sheets.iter().any(|s| s.date1904);
+        let defined_names_changed = defined_names != self.defined_names.as_slice();
         let workbook_meta_changed = cur_date1904 != self.date1904
+            || defined_names_changed
             || sheets
                 .iter()
                 .zip(self.sheet_snapshots.iter())
@@ -166,6 +174,31 @@ impl OoxmlSourceState {
                     wb_pr.set_attr("date1904", "1");
                 } else if let Some(wb_pr) = doc.root.child_mut("workbookPr") {
                     wb_pr.remove_attr("date1904");
+                }
+            }
+            if defined_names_changed {
+                doc.root.remove_children_by_local("definedNames");
+                if !defined_names.is_empty() {
+                    let mut dns_el = XmlElement::new(doc.root.qualified_child_name("definedNames"));
+                    for dn in defined_names {
+                        let mut dn_el = XmlElement::new(dns_el.qualified_child_name("definedName"));
+                        dn_el.set_attr("name", dn.name.clone());
+                        if let Some(local_id) = dn.local_sheet_id {
+                            dn_el.set_attr("localSheetId", local_id.to_string());
+                        }
+                        if dn.hidden {
+                            dn_el.set_attr("hidden", "1");
+                        }
+                        if let Some(ref comment) = dn.comment {
+                            dn_el.set_attr("comment", comment.clone());
+                        }
+                        if !dn.formula.is_empty() {
+                            dn_el.children.push(XmlNode::Text(dn.formula.clone()));
+                        }
+                        dns_el.children.push(XmlNode::Element(dn_el));
+                    }
+                    doc.root
+                        .insert_child_in_schema_order(dns_el, WORKBOOK_SCHEMA_ORDER);
                 }
             }
             if let Some(sheets_el) = doc.root.child_mut("sheets") {

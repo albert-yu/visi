@@ -26,16 +26,21 @@ pub fn import_xlsx_data(
 
 pub(crate) fn import_xlsx_with_source(
     buffer: &[u8],
-) -> crate::Result<(ImportedXlsxData, patch::OoxmlSourceState)> {
+) -> crate::Result<(
+    ImportedXlsxData,
+    Vec<crate::core::DefinedName>,
+    patch::OoxmlSourceState,
+)> {
     let pkg = OpcPackage::from_bytes(buffer)
         .map_err(|e| crate::Error::Xlsx(format!("Failed to open Excel file: {e}")))?;
     let wb = workbook::read_workbook(&pkg).map_err(crate::Error::Xlsx)?;
     let data = import_xlsx_from_parsed(buffer, &pkg, &wb, &[], |_, _, _| {})
         .map_err(crate::Error::Xlsx)?;
     let sheets: Vec<Sheet> = data.0.iter().map(|s| s.sheet.clone()).collect();
+    let defined_names = wb.defined_names.clone();
     let source =
         patch::OoxmlSourceState::capture(pkg, &wb, &sheets, &data.1, &data.2, data.3.as_ref());
-    Ok((data, source))
+    Ok((data, defined_names, source))
 }
 
 pub(crate) fn import_xlsx_data_raw(
@@ -395,7 +400,17 @@ pub fn export_xlsx_data(
     pivots: &[crate::core::pivot::PivotTable],
     vba: Option<&crate::core::vba::VbaProject>,
 ) -> crate::Result<Vec<u8>> {
-    export_xlsx_data_raw(sheets, charts, pivots, vba).map_err(crate::Error::Xlsx)
+    export_xlsx_data_with_defined_names(sheets, charts, pivots, vba, &[])
+}
+
+pub(crate) fn export_xlsx_data_with_defined_names(
+    sheets: &[Sheet],
+    charts: &[crate::core::chart::Chart],
+    pivots: &[crate::core::pivot::PivotTable],
+    vba: Option<&crate::core::vba::VbaProject>,
+    defined_names: &[crate::core::DefinedName],
+) -> crate::Result<Vec<u8>> {
+    export_xlsx_data_raw(sheets, charts, pivots, vba, defined_names).map_err(crate::Error::Xlsx)
 }
 
 pub(crate) fn export_xlsx_data_raw(
@@ -403,6 +418,7 @@ pub(crate) fn export_xlsx_data_raw(
     charts: &[crate::core::chart::Chart],
     pivots: &[crate::core::pivot::PivotTable],
     vba: Option<&crate::core::vba::VbaProject>,
+    defined_names: &[crate::core::DefinedName],
 ) -> Result<Vec<u8>, String> {
     use crate::core::opc::{
         CT_CHART, CT_CORE_PROPERTIES, CT_DRAWING, CT_EXTENDED_PROPERTIES, CT_RELS,
@@ -591,7 +607,7 @@ pub(crate) fn export_xlsx_data_raw(
 
     pkg.set_part(
         "xl/workbook.xml",
-        workbook::write_workbook_xml(&wb_sheets, date1904, flavor).into_bytes(),
+        workbook::write_workbook_xml(&wb_sheets, defined_names, date1904, flavor).into_bytes(),
     );
     ct.set_override("xl/workbook.xml", CT_WORKBOOK);
     pkg.write_relationships("xl/workbook.xml", &wb_rels);
@@ -3800,6 +3816,128 @@ mod tests {
                 .get(&1)
                 .and_then(|s| s.font_color.as_deref()),
             Some("#204080")
+        );
+    }
+
+    #[test]
+    fn test_phase7_defined_names_eval_round_trip_and_surgical_patch() {
+        use crate::core::DefinedName;
+
+        let mut wb = crate::core::WorkbookManager::default();
+        wb.add_sheet("Sheet1").unwrap();
+        wb.add_sheet("Sheet2").unwrap();
+
+        wb.sheets[0].set_cell_src(0, 0, "10".to_string());
+        wb.sheets[0].set_cell_src(1, 0, "20".to_string());
+        wb.sheets[0].set_cell_src(2, 0, "30".to_string());
+        wb.sheets[0].set_cell_src(0, 1, "=SUM(Sales) * TaxRate".to_string());
+        wb.sheets[0].set_cell_src(1, 1, "=Rate * 10".to_string());
+        wb.sheets[0].set_cell_src(2, 1, "=LET(TaxRate, 0.5, TaxRate * 10)".to_string());
+        wb.sheets[1].set_cell_src(0, 0, "=Rate * 10".to_string());
+
+        wb.add_defined_name(DefinedName {
+            name: "TaxRate".to_string(),
+            formula: "0.1".to_string(),
+            local_sheet_id: None,
+            hidden: false,
+            comment: Some("Sales tax".to_string()),
+        });
+        wb.add_defined_name(DefinedName {
+            name: "Sales".to_string(),
+            formula: "Sheet1!$A$1:$A$3".to_string(),
+            local_sheet_id: None,
+            hidden: false,
+            comment: None,
+        });
+        wb.add_defined_name(DefinedName {
+            name: "Rate".to_string(),
+            formula: "2".to_string(),
+            local_sheet_id: Some(0),
+            hidden: false,
+            comment: None,
+        });
+        wb.add_defined_name(DefinedName {
+            name: "Rate".to_string(),
+            formula: "5".to_string(),
+            local_sheet_id: Some(1),
+            hidden: true,
+            comment: None,
+        });
+
+        wb.evaluate().unwrap();
+        assert_eq!(
+            wb.sheets[0]
+                .get_result_data(&crate::core::CellRef::new(0, 1))
+                .to_string(),
+            "6"
+        );
+        assert_eq!(
+            wb.sheets[0]
+                .get_result_data(&crate::core::CellRef::new(1, 1))
+                .to_string(),
+            "20"
+        );
+        assert_eq!(
+            wb.sheets[0]
+                .get_result_data(&crate::core::CellRef::new(2, 1))
+                .to_string(),
+            "5"
+        );
+        assert_eq!(
+            wb.sheets[1]
+                .get_result_data(&crate::core::CellRef::new(0, 0))
+                .to_string(),
+            "50"
+        );
+
+        let bytes = wb.save_bytes().unwrap();
+        let pkg = OpcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(pkg.validate_opc(), Ok(()));
+        let wb_doc = dom::XmlDocument::parse(&pkg.get_str("xl/workbook.xml").unwrap()).unwrap();
+        assert_eq!(
+            wb_doc.validate_child_sequence(dom::WORKBOOK_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        assert_eq!(loaded.defined_names.len(), 4);
+        assert_eq!(
+            loaded.defined_names[0].comment.as_deref(),
+            Some("Sales tax")
+        );
+        assert!(loaded.defined_names[3].hidden);
+
+        loaded.add_defined_name(DefinedName {
+            name: "TaxRate".to_string(),
+            formula: "0.2".to_string(),
+            local_sheet_id: None,
+            hidden: false,
+            comment: None,
+        });
+        loaded.evaluate().unwrap();
+        assert_eq!(
+            loaded.sheets[0]
+                .get_result_data(&crate::core::CellRef::new(0, 1))
+                .to_string(),
+            "12"
+        );
+
+        let patched_bytes = loaded.save_bytes().unwrap();
+        let patched_pkg = OpcPackage::from_bytes(&patched_bytes).unwrap();
+        let patched_wb_doc =
+            dom::XmlDocument::parse(&patched_pkg.get_str("xl/workbook.xml").unwrap()).unwrap();
+        assert_eq!(
+            patched_wb_doc.validate_child_sequence(dom::WORKBOOK_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let mut reloaded = crate::core::WorkbookManager::load_bytes(&patched_bytes).unwrap();
+        reloaded.evaluate().unwrap();
+        assert_eq!(
+            reloaded.sheets[0]
+                .get_result_data(&crate::core::CellRef::new(0, 1))
+                .to_string(),
+            "12"
         );
     }
 }

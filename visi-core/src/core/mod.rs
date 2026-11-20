@@ -77,4 +77,4 @@ pub use vba::{
     ModuleSyntax, RunOutcome, VbaModule, VbaModuleKind, VbaProject, check_syntax,
     check_syntax_partial, run_macro, validate_vba_module_name,
 };
-pub use workbook::{SheetSummary, WorkbookManager, WorkbookSummary};
+pub use workbook::{DefinedName, SheetSummary, WorkbookManager, WorkbookSummary};

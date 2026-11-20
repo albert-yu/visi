@@ -6,7 +6,7 @@ use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;
 use crate::core::parser::col_idx_to_letters;
 use crate::core::xlsb::{export_xlsb_data, import_xlsb_data};
-use crate::core::xlsx::{export_xlsx_data, import_xlsx_with_source};
+use crate::core::xlsx::import_xlsx_with_source;
 use crate::core::{
     ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
     PivotTable, PivotValueField, VbaModule, VbaModuleKind, VbaProject,
@@ -65,6 +65,24 @@ pub struct WorkbookSummary {
     pub sheets: Vec<SheetSummary>,
 }
 
+#[doc = "A workbook- or sheet-scoped defined name per ECMA-376 §18.2.5."]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DefinedName {
+    #[doc = "Name identifier (matched case-insensitively in formulas)."]
+    pub name: String,
+    #[doc = "Formula or reference expression without a leading `=`."]
+    pub formula: String,
+    #[doc = "Zero-based sheet index for sheet-scoped names, or `None` for workbook scope."]
+    #[serde(default)]
+    pub local_sheet_id: Option<usize>,
+    #[doc = "Whether this defined name is hidden in Excel's Name Manager."]
+    #[serde(default)]
+    pub hidden: bool,
+    #[doc = "Optional comment attached to the defined name."]
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
 #[derive(Default)]
 pub struct WorkbookManager {
     pub sheets: Vec<Sheet>,
@@ -74,6 +92,8 @@ pub struct WorkbookManager {
     pub pivot_tables: Vec<PivotTable>,
 
     pub vba_project: Option<VbaProject>,
+
+    pub defined_names: Vec<DefinedName>,
 
     pub locale: Locale,
 
@@ -211,13 +231,17 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 
 impl WorkbookManager {
     pub fn load_bytes(buffer: &[u8]) -> crate::Result<Self> {
-        let ((imported_sheets, charts, pivot_tables, vba_project), source_package) =
+        let ((imported_sheets, charts, pivot_tables, vba_project), defined_names, source_package) =
             match detect_workbook_format(buffer)? {
                 WorkbookFormat::Xlsx => {
-                    let (data, source) = import_xlsx_with_source(buffer)?;
-                    (data, Some(source))
+                    let (data, defined_names, source) = import_xlsx_with_source(buffer)?;
+                    (data, defined_names, Some(source))
                 }
-                WorkbookFormat::Xlsb => (import_xlsb_data(buffer, &[], |_, _, _| {})?, None),
+                WorkbookFormat::Xlsb => (
+                    import_xlsb_data(buffer, &[], |_, _, _| {})?,
+                    Vec::new(),
+                    None,
+                ),
             };
 
         let locale = Locale::default();
@@ -231,10 +255,29 @@ impl WorkbookManager {
             charts,
             pivot_tables,
             vba_project,
+            defined_names,
             locale,
             date1904,
             source_package,
         })
+    }
+
+    pub fn add_defined_name(&mut self, defined_name: DefinedName) {
+        if let Some(existing) = self.defined_names.iter_mut().find(|d| {
+            d.name.eq_ignore_ascii_case(&defined_name.name)
+                && d.local_sheet_id == defined_name.local_sheet_id
+        }) {
+            *existing = defined_name;
+        } else {
+            self.defined_names.push(defined_name);
+        }
+    }
+
+    pub fn remove_defined_name(&mut self, name: &str, local_sheet_id: Option<usize>) -> bool {
+        let before = self.defined_names.len();
+        self.defined_names
+            .retain(|d| !(d.name.eq_ignore_ascii_case(name) && d.local_sheet_id == local_sheet_id));
+        self.defined_names.len() != before
     }
 
     pub fn save_bytes(&self) -> crate::Result<Vec<u8>> {
@@ -252,13 +295,16 @@ impl WorkbookManager {
                         self.vba_project.as_ref(),
                     )
                 {
-                    return source.patch_to_bytes(&self.sheets).map_err(Error::Xlsx);
+                    return source
+                        .patch_to_bytes(&self.sheets, &self.defined_names)
+                        .map_err(Error::Xlsx);
                 }
-                export_xlsx_data(
+                crate::core::xlsx::export_xlsx_data_with_defined_names(
                     &self.sheets,
                     &self.charts,
                     &self.pivot_tables,
                     self.vba_project.as_ref(),
+                    &self.defined_names,
                 )
             }
             WorkbookFormat::Xlsb => {
@@ -295,6 +341,7 @@ impl WorkbookManager {
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            defined_names: Vec::new(),
             locale,
             date1904: false,
             source_package: None,
@@ -343,6 +390,7 @@ impl WorkbookManager {
             charts: Vec::new(),
             pivot_tables: Vec::new(),
             vba_project: None,
+            defined_names: Vec::new(),
             locale,
             date1904: false,
             source_package: None,
@@ -477,6 +525,7 @@ impl WorkbookManager {
             }
         }
         context.pivot_tables = &self.pivot_tables;
+        context.defined_names = &self.defined_names;
         context.sheet_order = self.sheets.iter().map(|sheet| sheet.name.clone()).collect();
 
         let sheets_for_compilation = sheet.get_all_sheets_for_compilation(Some(&context));
@@ -525,6 +574,7 @@ impl WorkbookManager {
                     context.add_table(s.name.clone(), s);
                 }
                 context.pivot_tables = &self.pivot_tables;
+                context.defined_names = &self.defined_names;
                 context.sheet_order = sheet_order.clone();
 
                 let _ = target_sheet.commit(Some(&context));
@@ -549,6 +599,7 @@ impl WorkbookManager {
             context.add_table(s.name.clone(), s);
         }
         context.pivot_tables = &self.pivot_tables;
+        context.defined_names = &self.defined_names;
         context.sheet_order = self.sheets.iter().map(|s| s.name.clone()).collect();
         host.call_worksheet_function(name, args, Some(&context))
     }

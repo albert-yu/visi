@@ -20,6 +20,8 @@ pub struct Context<'a> {
     /// Every pivot table in the workbook, so `GETPIVOTDATA` can resolve a
     /// rendered pivot's destination cell back to its definition
     pub pivot_tables: &'a [crate::core::pivot::PivotTable],
+    #[doc = "Workbook- and sheet-scoped defined names available during formula evaluation."]
+    pub defined_names: &'a [crate::core::DefinedName],
     /// Store sheet order, so `SHEET()` works.
     /// `sheets` is a HashMap, so this is needed
     pub sheet_order: Vec<String>,
@@ -31,8 +33,31 @@ impl<'a> Context<'a> {
         Self {
             sheets: HashMap::new(),
             pivot_tables: &[],
+            defined_names: &[],
             sheet_order: Vec::new(),
         }
+    }
+
+    pub(crate) fn resolve_defined_name(
+        &self,
+        name: &str,
+        current_sheet_name: &str,
+    ) -> Option<&crate::core::DefinedName> {
+        let current_sheet_idx = self
+            .sheet_order
+            .iter()
+            .position(|s| s.eq_ignore_ascii_case(current_sheet_name));
+        if let Some(sheet_idx) = current_sheet_idx
+            && let Some(local) = self
+                .defined_names
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(name) && d.local_sheet_id == Some(sheet_idx))
+        {
+            return Some(local);
+        }
+        self.defined_names
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(name) && d.local_sheet_id.is_none())
     }
 
     /// Add a sheet to the context for lookup during evaluation
@@ -977,7 +1002,22 @@ impl Sheet {
             Expr::Error(code) => Ok(ResultData::Error(code.to_string())),
             Expr::Identifier(name) => match scope.get(name) {
                 Some(val) => Ok(val.clone()),
-                None => Ok(ResultData::Error("#NAME?".to_string())),
+                None => {
+                    if let Some(dn) =
+                        context.and_then(|ctx| ctx.resolve_defined_name(name, &self.name))
+                    {
+                        let expr_src = dn.formula.strip_prefix('=').unwrap_or(&dn.formula);
+                        if let Ok(parsed) = crate::core::parser::parse_excel_formula(expr_src) {
+                            let guard = LetScope::Bound {
+                                name,
+                                value: &ResultData::Error("#NAME?".to_string()),
+                                parent: scope,
+                            };
+                            return self.evaluate_ast(&parsed, context, row, col, deps, &guard);
+                        }
+                    }
+                    Ok(ResultData::Error("#NAME?".to_string()))
+                }
             },
             Expr::StructuredRef {
                 sheet,
