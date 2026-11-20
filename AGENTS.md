@@ -110,7 +110,7 @@ Never add comments to source code.
 
 ## Documentation/Prose
 
-When writing documentation or other prose, prefix
+When writing documentation, PR descriptions, or review comments, prefix
 with the standalone line:
 
 _The following content is LLM-generated._
