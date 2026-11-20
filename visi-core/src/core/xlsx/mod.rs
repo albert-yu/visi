@@ -363,6 +363,31 @@ fn import_xlsx_from_parsed(
     ))
 }
 
+pub(crate) fn normalize_ooxml_error_literal(e: &str) -> &'static str {
+    let upper = e.to_uppercase();
+    if upper.contains("#DIV/0!") || upper.contains("DIVISION BY ZERO") || upper.contains("DIV/0") {
+        "#DIV/0!"
+    } else if upper.contains("#N/A") {
+        "#N/A"
+    } else if upper.contains("#REF!") {
+        "#REF!"
+    } else if upper.contains("#NUM!") {
+        "#NUM!"
+    } else if upper.contains("#NAME?") || upper.contains("UNKNOWN FUNCTION") {
+        "#NAME?"
+    } else if upper.contains("#NULL!") {
+        "#NULL!"
+    } else if upper.contains("#GETTING_DATA") {
+        "#GETTING_DATA"
+    } else if upper.contains("#CALC!") {
+        "#CALC!"
+    } else if upper.contains("#SPILL!") {
+        "#SPILL!"
+    } else {
+        "#VALUE!"
+    }
+}
+
 fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String {
     match res_data {
         crate::core::engine::ResultData::Integer(i) => i.to_string(),
@@ -381,33 +406,7 @@ fn format_result_for_xlsx(res_data: &crate::core::engine::ResultData) -> String 
             }
         }
         crate::core::engine::ResultData::String(s) => s.clone(),
-        crate::core::engine::ResultData::Error(e) => {
-            let upper = e.to_uppercase();
-            if upper.contains("#DIV/0!")
-                || upper.contains("DIVISION BY ZERO")
-                || upper.contains("DIV/0")
-            {
-                "#DIV/0!".to_string()
-            } else if upper.contains("#N/A") {
-                "#N/A".to_string()
-            } else if upper.contains("#REF!") {
-                "#REF!".to_string()
-            } else if upper.contains("#NUM!") {
-                "#NUM!".to_string()
-            } else if upper.contains("#NAME?") {
-                "#NAME?".to_string()
-            } else if upper.contains("#NULL!") {
-                "#NULL!".to_string()
-            } else if upper.contains("#CALC!") {
-                "#CALC!".to_string()
-            } else if upper.contains("#SPILL!") {
-                "#SPILL!".to_string()
-            } else if upper.starts_with('#') {
-                e.clone()
-            } else {
-                "#VALUE!".to_string()
-            }
-        }
+        crate::core::engine::ResultData::Error(e) => normalize_ooxml_error_literal(e).to_string(),
         crate::core::engine::ResultData::None => "".to_string(),
         crate::core::engine::ResultData::List(l) => {
             if let Some(first) = l.first() {

@@ -646,9 +646,10 @@ pub(crate) fn write_worksheet_xml(
                     Some(ResultData::Boolean(b)) => {
                         (" t=\"b\"", format!("<v>{}</v>", if b { "1" } else { "0" }))
                     }
-                    Some(ResultData::Error(e)) => {
-                        (" t=\"e\"", format!("<v>{}</v>", super::escape_xml_text(&e)))
-                    }
+                    Some(ResultData::Error(e)) => (
+                        " t=\"e\"",
+                        format!("<v>{}</v>", super::normalize_ooxml_error_literal(&e)),
+                    ),
                     Some(ResultData::Integer(i)) => ("", format!("<v>{i}</v>")),
                     Some(ResultData::Float(f)) if f.is_finite() => ("", format!("<v>{f}</v>")),
                     Some(ResultData::None) | None => ("", String::new()),

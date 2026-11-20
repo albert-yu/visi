@@ -97,6 +97,12 @@ jobs:
           python -c "import visi_core; visi_core.Workbook()"
           test -x target/release/visi
 
+      - name: Cache ECMA-376 XSDs
+        uses: actions/cache@v4
+        with:
+          path: tools/ooxml-validate/.xsds
+          key: ecma376-xsds-v1
+
       - name: pytest (bindings, CLI parity, OOXML conformance)
         run: pytest visi-python/tests/ tools/ooxml-validate/
 

@@ -16,6 +16,8 @@ const VALID_ERRORS: &[&str] = &[
     "#NUM!",
     "#N/A",
     "#GETTING_DATA",
+    "#SPILL!",
+    "#CALC!",
 ];
 
 const COMMENTS_SCHEMA_ORDER: &[&str] = &["authors", "commentList", "extLst"];
@@ -631,9 +633,31 @@ pub(crate) fn assert_valid_ooxml(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::chart::ChartType;
     use crate::core::{
-        CellStyle, DefinedName, FreezePane, MergedCellRange, SheetVisibility, WorkbookManager,
+        ArrayFormulaEntry, ArrayFormulaKind, BorderSide, BorderStyle, CellAlignment, CellBorders,
+        CellComment, CellHyperlink, CellStyle, ConditionalFormatRule, DataValidationKind,
+        DataValidationOperator, DataValidationRule, DefinedName, FillPattern, FreezePane,
+        HorizontalAlignment, MergedCellRange, PivotAggregation, PivotArea, SheetVisibility,
+        VbaModuleKind, VerticalAlignment, WorkbookManager,
     };
+    use std::io::Write;
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    fn build_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut cursor);
+            let opts = SimpleFileOptions::default();
+            for (name, body) in entries {
+                zw.start_file(*name, opts).unwrap();
+                zw.write_all(body.as_bytes()).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
 
     #[test]
     fn test_fresh_and_patched_workbook_passes_ooxml_spec_validation() {
@@ -643,7 +667,7 @@ mod tests {
         mgr.set_cell(0, 0, 1, "20".to_string());
         mgr.set_cell(0, 0, 2, "=SUM(A1:B1)".to_string());
         mgr.set_cell(0, 1, 0, "  padded  ".to_string());
-        mgr.set_cell(0, 1, 1, "TRUE".to_string());
+        mgr.set_cell(0, 1, 1, "=TRUE()".to_string());
         mgr.set_cell(0, 1, 2, "=1/0".to_string());
         mgr.set_cell(0, 2, 0, "=XLOOKUP(10, A1:A1, B1:B1)".to_string());
         mgr.sheets[0].merged_cells.push(MergedCellRange {
@@ -664,6 +688,23 @@ mod tests {
         let style = CellStyle {
             bold: Some(true),
             italic: Some(true),
+            underline: Some(true),
+            strikethrough: Some(true),
+            bg_color: Some("#FFFF00".to_string()),
+            fill_pattern: Some(FillPattern::Solid),
+            borders: Some(CellBorders {
+                top: Some(BorderSide {
+                    style: BorderStyle::Thin,
+                    color: Some("#000000".to_string()),
+                }),
+                ..Default::default()
+            }),
+            alignment: Some(CellAlignment {
+                horizontal: Some(HorizontalAlignment::Center),
+                vertical: Some(VerticalAlignment::Center),
+                wrap_text: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         mgr.sheets[0].set_cell_style(0, 0, style);
@@ -679,5 +720,144 @@ mod tests {
 
         let patched_bytes = loaded.save_bytes().unwrap();
         assert_valid_ooxml(&patched_bytes);
+    }
+
+    #[test]
+    fn test_rich_features_round_trip_passes_ooxml_spec_validation() {
+        let mut mgr = WorkbookManager::new_empty().unwrap();
+        mgr.add_sheet("Second").unwrap();
+        mgr.set_cell(0, 0, 0, "Region".to_string());
+        mgr.set_cell(0, 0, 1, "Sales".to_string());
+        mgr.set_cell(0, 1, 0, "East".to_string());
+        mgr.set_cell(0, 1, 1, "120".to_string());
+        mgr.set_cell(0, 2, 0, "West".to_string());
+        mgr.set_cell(0, 2, 1, "200".to_string());
+        mgr.set_cell(0, 0, 3, "=SEQUENCE(2, 1, 1, 1)".to_string());
+        mgr.sheets[0].array_formulas.push(ArrayFormulaEntry {
+            start_row: 0,
+            start_col: 3,
+            end_row: 1,
+            end_col: 3,
+            kind: ArrayFormulaKind::DynamicArray,
+        });
+        mgr.sheets[0].comments.push(CellComment {
+            row: 1,
+            col: 1,
+            author: "Reviewer".to_string(),
+            text: "Check Q1 figure".to_string(),
+        });
+        mgr.sheets[0].hyperlinks.push(CellHyperlink {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 0,
+            target: Some("https://example.com".to_string()),
+            location: None,
+            display: Some("Region".to_string()),
+            tooltip: Some("Docs".to_string()),
+        });
+        mgr.sheets[0].data_validations.push(DataValidationRule {
+            sqref: "B2:B3".to_string(),
+            kind: DataValidationKind::Whole,
+            operator: Some(DataValidationOperator::GreaterThan),
+            allow_blank: true,
+            formula1: Some("0".to_string()),
+            ..Default::default()
+        });
+        mgr.sheets[0]
+            .conditional_formats
+            .push(ConditionalFormatRule {
+                sqref: "B2:B3".to_string(),
+                rule_type: "cellIs".to_string(),
+                operator: Some("greaterThan".to_string()),
+                priority: 1,
+                stop_if_true: true,
+                formulas: vec!["150".to_string()],
+                style: Some(CellStyle {
+                    bold: Some(true),
+                    bg_color: Some("#C6EFCE".to_string()),
+                    ..Default::default()
+                }),
+            });
+        mgr.add_table(None, "SalesTbl", 0, 0, 2, 1, true, false)
+            .unwrap();
+        mgr.add_pivot_table_from_range("SalesPiv", None, 0, 0, 2, 1, None, 0, 6, true, true)
+            .unwrap();
+        mgr.add_pivot_field("SalesPiv", PivotArea::Row, "Region", None)
+            .unwrap();
+        mgr.add_pivot_field(
+            "SalesPiv",
+            PivotArea::Value,
+            "Sales",
+            Some(PivotAggregation::Sum),
+        )
+        .unwrap();
+        mgr.refresh_pivot_table("SalesPiv").unwrap();
+        mgr.add_chart(
+            "Sheet1",
+            ChartType::Column,
+            "Sheet1!A1:B3".to_string(),
+            Some("Sales".to_string()),
+            Some((10, 0)),
+        )
+        .unwrap();
+        mgr.add_vba_module(
+            "Mod1".to_string(),
+            VbaModuleKind::Standard,
+            "Attribute VB_Name = \"Mod1\"\nPublic Sub Hi()\nEnd Sub\n".to_string(),
+            None,
+        )
+        .unwrap();
+        mgr.evaluate().unwrap();
+
+        let fresh = mgr.save_bytes().unwrap();
+        assert_valid_ooxml(&fresh);
+
+        let mut loaded = WorkbookManager::load_bytes(&fresh).unwrap();
+        loaded.set_cell(0, 1, 1, "180".to_string());
+        loaded.evaluate().unwrap();
+        let patched = loaded.save_bytes().unwrap();
+        assert_valid_ooxml(&patched);
+    }
+
+    #[test]
+    fn test_validator_rejects_malformed_ooxml_packages() {
+        let missing_opc = build_zip(&[("xl/workbook.xml", "<workbook/>")]);
+        let errs = validate_ooxml_package(&missing_opc).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("[Content_Types].xml")));
+        assert!(errs.iter().any(|e| e.contains("_rels/.rels")));
+
+        let bad_seq_and_semantics = build_zip(&[
+            (
+                "[Content_Types].xml",
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com"/></Relationships>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/missing.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/><sheet name="sheet1" sheetId="1" r:id="rId99"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="2"><c r="B2" t="b"><v>yes</v></c><c r="A2" t="e"><v>#BOGUS!</v></c></row><row r="1"/></sheetData><cols/><mergeCells count="2"><mergeCell ref="A1:B2"/><mergeCell ref="B2:C3"/></mergeCells></worksheet>"#,
+            ),
+        ]);
+        let errs = validate_ooxml_package(&bad_seq_and_semantics).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("TargetMode='External'")));
+        assert!(errs.iter().any(|e| e.contains("dangling relationship")));
+        assert!(errs.iter().any(|e| e.contains("duplicate sheet name")));
+        assert!(errs.iter().any(|e| e.contains("duplicate sheetId")));
+        assert!(errs.iter().any(|e| e.contains("violates XSD sequence")));
+        assert!(errs.iter().any(|e| e.contains("not strictly ascending")));
+        assert!(errs.iter().any(|e| e.contains("must be '0' or '1'")));
+        assert!(errs.iter().any(|e| e.contains("invalid error literal")));
+        assert!(errs.iter().any(|e| e.contains("overlapping mergeCells")));
     }
 }

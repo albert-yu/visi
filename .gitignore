@@ -25,6 +25,7 @@ Thumbs.db
 .venv
 venv
 __pycache__
+tools/ooxml-validate/.xsds/
 
 # Python extension module built from visi-python by `maturin develop`.
 # `maturin develop` installs into the active venv (already ignored), but an

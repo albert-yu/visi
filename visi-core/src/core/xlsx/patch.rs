@@ -1152,7 +1152,9 @@ fn build_patched_cell_element(
             ResultData::Error(e) => {
                 c_el.set_attr("t", "e");
                 let mut v_el = XmlElement::new(c_el.qualified_child_name("v"));
-                v_el.children.push(XmlNode::Text(e.clone()));
+                v_el.children.push(XmlNode::Text(
+                    super::normalize_ooxml_error_literal(e).to_string(),
+                ));
                 c_el.children.push(XmlNode::Element(v_el));
             }
             ResultData::Integer(i) => {

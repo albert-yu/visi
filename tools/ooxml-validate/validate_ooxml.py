@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import functools
 import io
 import os
 import posixpath
@@ -10,6 +12,8 @@ import zipfile
 from pathlib import Path
 
 from lxml import etree
+
+from fetch_xsds import ensure_xsds
 
 WORKBOOK_ORDER = [
     "fileVersion",
@@ -170,6 +174,8 @@ VALID_ERROR_LITERALS = {
     "#NUM!",
     "#N/A",
     "#GETTING_DATA",
+    "#SPILL!",
+    "#CALC!",
 }
 
 CELL_REF_RE = re.compile(r"^([A-Za-z]+)([0-9]+)$")
@@ -280,16 +286,42 @@ def check_count_attr(elem: etree._Element, part_name: str) -> list[str]:
     return []
 
 
+XML_SPACE_ATTR = "{http://www.w3.org/XML/1998/namespace}space"
+
+
+@functools.lru_cache(maxsize=8)
 def load_xsd_cache(xsd_dir: Path | None) -> dict[str, etree.XMLSchema]:
     cache: dict[str, etree.XMLSchema] = {}
     if xsd_dir is None or not xsd_dir.is_dir():
         return cache
+
+    class LocalXsdResolver(etree.Resolver):
+        def resolve(self, url, id, context):
+            candidate = xsd_dir / Path(url).name
+            if candidate.is_file():
+                return self.resolve_filename(str(candidate), context)
+            return None
+
+    parser = etree.XMLParser()
+    parser.resolvers.add(LocalXsdResolver())
+
     for xsd_name in sorted(set(ROOT_XSD_MAP.values())):
         xsd_path = xsd_dir / xsd_name
         if xsd_path.is_file():
-            doc = etree.parse(str(xsd_path))
+            doc = etree.parse(str(xsd_path), parser)
             cache[xsd_name] = etree.XMLSchema(doc)
     return cache
+
+
+def prepare_for_xsd_validation(root: etree._Element, xsd_name: str) -> etree._Element:
+    if xsd_name != "sml.xsd":
+        return root
+    cloned = copy.deepcopy(root)
+    for elem in cloned.iter():
+        if isinstance(elem.tag, str) and local_name(elem.tag) == "t":
+            if elem.attrib.get(XML_SPACE_ATTR) == "preserve":
+                del elem.attrib[XML_SPACE_ATTR]
+    return cloned
 
 
 def validate_ooxml_bytes(
@@ -388,11 +420,13 @@ def validate_ooxml_bytes(
             if root_lname in ROOT_XSD_MAP:
                 xsd_name = ROOT_XSD_MAP[root_lname]
                 schema = xsd_cache.get(xsd_name)
-                if schema is not None and not schema.validate(root):
-                    for log_entry in schema.error_log:
-                        errors.append(
-                            f"{orig_name} ({xsd_name}:{log_entry.line}): {log_entry.message}"
-                        )
+                if schema is not None:
+                    target_root = prepare_for_xsd_validation(root, xsd_name)
+                    if not schema.validate(target_root):
+                        for log_entry in schema.error_log:
+                            errors.append(
+                                f"{orig_name} ({xsd_name}:{log_entry.line}): {log_entry.message}"
+                            )
 
             if norm_lower.endswith(".rels"):
                 src = source_part_for_rels(orig_name).lower()
@@ -626,13 +660,17 @@ def main() -> int:
         if os.environ.get("OOXML_XSD_DIR")
         else None,
     )
+    parser.add_argument("--no-xsd", action="store_true")
     parser.add_argument("--require-xsd", action="store_true")
     args = parser.parse_args()
+
+    xsd_dir = None if args.no_xsd else ensure_xsds(args.xsd_dir)
+    require_xsd = not args.no_xsd or args.require_xsd
 
     failed = False
     for file_path in args.files:
         errs = validate_ooxml_file(
-            file_path, xsd_dir=args.xsd_dir, require_xsd=args.require_xsd
+            file_path, xsd_dir=xsd_dir, require_xsd=require_xsd
         )
         if errs:
             failed = True
