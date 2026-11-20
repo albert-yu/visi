@@ -152,13 +152,9 @@ impl OoxmlSourceState {
                 return false;
             }
         }
-        if charts != self.charts.as_slice()
-            || pivots != self.pivots.as_slice()
-            || vba != self.vba.as_ref()
-        {
-            return false;
-        }
-        true
+        charts == self.charts.as_slice()
+            && pivots == self.pivots.as_slice()
+            && vba == self.vba.as_ref()
     }
 
     pub(crate) fn patch_to_bytes(
