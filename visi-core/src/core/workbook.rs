@@ -6,7 +6,7 @@ use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;
 use crate::core::parser::col_idx_to_letters;
 use crate::core::xlsb::{export_xlsb_data, import_xlsb_data};
-use crate::core::xlsx::{export_xlsx_data, import_xlsx_data};
+use crate::core::xlsx::{export_xlsx_data, import_xlsx_with_source};
 use crate::core::{
     ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
     PivotTable, PivotValueField, VbaModule, VbaModuleKind, VbaProject,
@@ -65,6 +65,7 @@ pub struct WorkbookSummary {
     pub sheets: Vec<SheetSummary>,
 }
 
+#[derive(Default)]
 pub struct WorkbookManager {
     pub sheets: Vec<Sheet>,
 
@@ -75,6 +76,8 @@ pub struct WorkbookManager {
     pub vba_project: Option<VbaProject>,
 
     pub locale: Locale,
+
+    pub(crate) source_package: Option<crate::core::xlsx::patch::OoxmlSourceState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -206,10 +209,13 @@ fn remove_pivot_field(fields: &mut Vec<PivotField>, column: &str) -> bool {
 
 impl WorkbookManager {
     pub fn load_bytes(buffer: &[u8]) -> crate::Result<Self> {
-        let (imported_sheets, charts, pivot_tables, vba_project) =
+        let ((imported_sheets, charts, pivot_tables, vba_project), source_package) =
             match detect_workbook_format(buffer)? {
-                WorkbookFormat::Xlsx => import_xlsx_data(buffer, &[], |_, _, _| {})?,
-                WorkbookFormat::Xlsb => import_xlsb_data(buffer, &[], |_, _, _| {})?,
+                WorkbookFormat::Xlsx => {
+                    let (data, source) = import_xlsx_with_source(buffer)?;
+                    (data, Some(source))
+                }
+                WorkbookFormat::Xlsb => (import_xlsb_data(buffer, &[], |_, _, _| {})?, None),
             };
 
         let locale = Locale::default();
@@ -223,6 +229,7 @@ impl WorkbookManager {
             pivot_tables,
             vba_project,
             locale,
+            source_package,
         })
     }
 
@@ -232,12 +239,24 @@ impl WorkbookManager {
 
     pub fn save_bytes_as(&self, format: WorkbookFormat) -> crate::Result<Vec<u8>> {
         match format {
-            WorkbookFormat::Xlsx => export_xlsx_data(
-                &self.sheets,
-                &self.charts,
-                &self.pivot_tables,
-                self.vba_project.as_ref(),
-            ),
+            WorkbookFormat::Xlsx => {
+                if let Some(ref source) = self.source_package
+                    && source.can_patch_surgically(
+                        &self.sheets,
+                        &self.charts,
+                        &self.pivot_tables,
+                        self.vba_project.as_ref(),
+                    )
+                {
+                    return source.patch_to_bytes(&self.sheets).map_err(Error::Xlsx);
+                }
+                export_xlsx_data(
+                    &self.sheets,
+                    &self.charts,
+                    &self.pivot_tables,
+                    self.vba_project.as_ref(),
+                )
+            }
             WorkbookFormat::Xlsb => {
                 if !self.charts.is_empty() {
                     return Err(Error::Xlsb(
@@ -273,6 +292,7 @@ impl WorkbookManager {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale,
+            source_package: None,
         })
     }
 
@@ -319,6 +339,7 @@ impl WorkbookManager {
             pivot_tables: Vec::new(),
             vba_project: None,
             locale,
+            source_package: None,
         };
         wb.add_sheet("Sheet1")?;
         Ok(wb)
@@ -1674,13 +1695,7 @@ mod tests {
     }
 
     fn workbook_with_sheets(names: &[&str]) -> WorkbookManager {
-        let mut wb = WorkbookManager {
-            sheets: Vec::new(),
-            charts: Vec::new(),
-            pivot_tables: Vec::new(),
-            vba_project: None,
-            locale: Locale::default(),
-        };
+        let mut wb = WorkbookManager::default();
         for name in names {
             wb.add_sheet(name).unwrap();
         }

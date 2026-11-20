@@ -18,6 +18,7 @@ pub(crate) mod grid_edit;
 #[doc = "Locale settings used for date parsing and formatting."]
 pub mod locale;
 pub(crate) mod math_trig;
+pub(crate) mod opc;
 #[doc(hidden)]
 pub mod ovba;
 pub(crate) mod parser;
