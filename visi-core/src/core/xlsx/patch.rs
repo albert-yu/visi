@@ -572,6 +572,7 @@ impl StylesPatcher {
         let has_font = style.bold.unwrap_or(false)
             || style.italic.unwrap_or(false)
             || style.underline.unwrap_or(false)
+            || style.strikethrough.unwrap_or(false)
             || style.font_color.is_some()
             || style.font_family.is_some()
             || style.font_size.is_some();
@@ -591,6 +592,11 @@ impl StylesPatcher {
             if style.italic.unwrap_or(false) {
                 font_el.children.push(XmlNode::Element(XmlElement::new(
                     font_el.qualified_child_name("i"),
+                )));
+            }
+            if style.strikethrough.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("strike"),
                 )));
             }
             if style.underline.unwrap_or(false) {
@@ -618,25 +624,78 @@ impl StylesPatcher {
             0
         };
 
-        let fill_id = match style.bg_color.as_deref().and_then(parse_color_argb) {
-            Some(argb) => {
-                let fills = self
-                    .doc
-                    .root
-                    .ensure_child_in_schema_order("fills", STYLESHEET_SCHEMA_ORDER);
-                let id = fills.children_by_local("fill").count();
-                let mut fill_el = XmlElement::new(fills.qualified_child_name("fill"));
-                let mut pat = XmlElement::new(fill_el.qualified_child_name("patternFill"));
-                pat.set_attr("patternType", "solid");
+        let fg_argb = style.bg_color.as_deref().and_then(parse_color_argb);
+        let fill_id = if fg_argb.is_some()
+            || style
+                .fill_pattern
+                .is_some_and(|p| p != crate::core::FillPattern::None)
+        {
+            let fills = self
+                .doc
+                .root
+                .ensure_child_in_schema_order("fills", STYLESHEET_SCHEMA_ORDER);
+            let id = fills.children_by_local("fill").count();
+            let mut fill_el = XmlElement::new(fills.qualified_child_name("fill"));
+            let mut pat = XmlElement::new(fill_el.qualified_child_name("patternFill"));
+            pat.set_attr(
+                "patternType",
+                style
+                    .fill_pattern
+                    .unwrap_or(crate::core::FillPattern::Solid)
+                    .as_ooxml(),
+            );
+            if let Some(argb) = fg_argb {
                 let mut fg = XmlElement::new(pat.qualified_child_name("fgColor"));
                 fg.set_attr("rgb", argb);
                 let mut bg = XmlElement::new(pat.qualified_child_name("bgColor"));
                 bg.set_attr("indexed", "64");
                 pat.children.push(XmlNode::Element(fg));
                 pat.children.push(XmlNode::Element(bg));
-                fill_el.children.push(XmlNode::Element(pat));
-                fills.children.push(XmlNode::Element(fill_el));
-                fills.set_attr("count", (id + 1).to_string());
+            }
+            fill_el.children.push(XmlNode::Element(pat));
+            fills.children.push(XmlNode::Element(fill_el));
+            fills.set_attr("count", (id + 1).to_string());
+            id
+        } else {
+            0
+        };
+
+        let border_id = match style.borders.as_ref().filter(|b| !b.is_empty()) {
+            Some(b) => {
+                let borders = self
+                    .doc
+                    .root
+                    .ensure_child_in_schema_order("borders", STYLESHEET_SCHEMA_ORDER);
+                let id = borders.children_by_local("border").count();
+                let mut border_el = XmlElement::new(borders.qualified_child_name("border"));
+                if b.diagonal_up {
+                    border_el.set_attr("diagonalUp", "1");
+                }
+                if b.diagonal_down {
+                    border_el.set_attr("diagonalDown", "1");
+                }
+                for (tag, side) in [
+                    ("left", b.left.as_ref()),
+                    ("right", b.right.as_ref()),
+                    ("top", b.top.as_ref()),
+                    ("bottom", b.bottom.as_ref()),
+                    ("diagonal", b.diagonal.as_ref()),
+                ] {
+                    let mut side_el = XmlElement::new(border_el.qualified_child_name(tag));
+                    if let Some(s) = side
+                        && s.style != crate::core::BorderStyle::None
+                    {
+                        side_el.set_attr("style", s.style.as_ooxml());
+                        if let Some(argb) = s.color.as_deref().and_then(parse_color_argb) {
+                            let mut c_el = XmlElement::new(side_el.qualified_child_name("color"));
+                            c_el.set_attr("rgb", argb);
+                            side_el.children.push(XmlNode::Element(c_el));
+                        }
+                    }
+                    border_el.children.push(XmlNode::Element(side_el));
+                }
+                borders.children.push(XmlNode::Element(border_el));
+                borders.set_attr("count", (id + 1).to_string());
                 id
             }
             None => 0,
@@ -651,7 +710,7 @@ impl StylesPatcher {
         xf.set_attr("numFmtId", num_fmt_id.to_string());
         xf.set_attr("fontId", font_id.to_string());
         xf.set_attr("fillId", fill_id.to_string());
-        xf.set_attr("borderId", "0");
+        xf.set_attr("borderId", border_id.to_string());
         xf.set_attr("xfId", "0");
         if num_fmt_id != 0 {
             xf.set_attr("applyNumberFormat", "1");
@@ -661,6 +720,34 @@ impl StylesPatcher {
         }
         if fill_id != 0 {
             xf.set_attr("applyFill", "1");
+        }
+        if border_id != 0 {
+            xf.set_attr("applyBorder", "1");
+        }
+        if let Some(ref align) = style.alignment
+            && !align.is_empty()
+        {
+            xf.set_attr("applyAlignment", "1");
+            let mut a_el = XmlElement::new(xf.qualified_child_name("alignment"));
+            if let Some(h) = align.horizontal {
+                a_el.set_attr("horizontal", h.as_ooxml());
+            }
+            if let Some(v) = align.vertical {
+                a_el.set_attr("vertical", v.as_ooxml());
+            }
+            if let Some(rot) = align.text_rotation {
+                a_el.set_attr("textRotation", rot.to_string());
+            }
+            if let Some(true) = align.wrap_text {
+                a_el.set_attr("wrapText", "1");
+            }
+            if let Some(indent) = align.indent {
+                a_el.set_attr("indent", indent.to_string());
+            }
+            if let Some(true) = align.shrink_to_fit {
+                a_el.set_attr("shrinkToFit", "1");
+            }
+            xf.children.push(XmlNode::Element(a_el));
         }
         cell_xfs.children.push(XmlNode::Element(xf));
         cell_xfs.set_attr("count", (xf_idx + 1).to_string());

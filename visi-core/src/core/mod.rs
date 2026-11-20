@@ -68,7 +68,10 @@ pub use pivot::{
     PivotSource, PivotTable, PivotValueField, compute_pivot, value_field_labels,
 };
 pub use shared_vec::SharedVec;
-pub use style::CellStyle;
+pub use style::{
+    BorderSide, BorderStyle, CellAlignment, CellBorders, CellStyle, FillPattern,
+    HorizontalAlignment, VerticalAlignment,
+};
 pub use table::ExcelTable;
 pub use vba::{
     ModuleSyntax, RunOutcome, VbaModule, VbaModuleKind, VbaProject, check_syntax,

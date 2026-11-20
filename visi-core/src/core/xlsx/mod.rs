@@ -66,11 +66,18 @@ fn import_xlsx_from_parsed(
         .transpose()?
         .unwrap_or_default();
 
+    let theme_colors = wb
+        .theme_part
+        .as_deref()
+        .and_then(|part| pkg.get_str(part))
+        .map(|xml| styles::ThemeColors::parse_theme_xml(&xml))
+        .unwrap_or_default();
+
     let parsed_styles = wb
         .styles_part
         .as_deref()
         .and_then(|part| pkg.get_str(part))
-        .map(|xml| styles::parse_styles(&xml))
+        .map(|xml| styles::parse_styles_with_theme(&xml, &theme_colors))
         .unwrap_or_default();
 
     let total_sheets = wb.sheets.len();
@@ -3628,5 +3635,171 @@ mod tests {
             }]
         );
         assert!(sheet.is_row_hidden(2));
+    }
+
+    #[test]
+    fn test_phase6_richer_cell_style_round_trip_and_surgical_patch() {
+        use crate::core::{
+            BorderSide, BorderStyle, CellAlignment, CellBorders, FillPattern, HorizontalAlignment,
+            VerticalAlignment,
+        };
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Styled".to_string()),
+            rows: 3,
+            cols: 2,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "Header".to_string());
+        sheet.columns[0].styles[0] = Some(CellStyle {
+            bold: Some(true),
+            strikethrough: Some(true),
+            bg_color: Some("#DDEEFF".to_string()),
+            fill_pattern: Some(FillPattern::LightGray),
+            borders: Some(CellBorders {
+                top: Some(BorderSide {
+                    style: BorderStyle::Medium,
+                    color: Some("#112233".to_string()),
+                }),
+                bottom: Some(BorderSide {
+                    style: BorderStyle::Double,
+                    color: Some("#445566".to_string()),
+                }),
+                ..Default::default()
+            }),
+            alignment: Some(CellAlignment {
+                horizontal: Some(HorizontalAlignment::Center),
+                vertical: Some(VerticalAlignment::Top),
+                wrap_text: Some(true),
+                text_rotation: Some(45),
+                indent: Some(2),
+                shrink_to_fit: None,
+            }),
+            ..Default::default()
+        });
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let pkg = OpcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(pkg.validate_opc(), Ok(()));
+        let st_doc = dom::XmlDocument::parse(&pkg.get_str("xl/styles.xml").unwrap()).unwrap();
+        assert_eq!(
+            st_doc.validate_child_sequence(dom::STYLESHEET_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let mut wb = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        let s0 = wb.sheets[0].columns[0].styles[0].as_ref().unwrap();
+        assert_eq!(s0.strikethrough, Some(true));
+        assert_eq!(s0.bg_color.as_deref(), Some("#DDEEFF"));
+        assert_eq!(s0.fill_pattern, Some(FillPattern::LightGray));
+        let b = s0.borders.as_ref().unwrap();
+        assert_eq!(
+            b.top,
+            Some(BorderSide {
+                style: BorderStyle::Medium,
+                color: Some("#112233".to_string()),
+            })
+        );
+        assert_eq!(
+            b.bottom,
+            Some(BorderSide {
+                style: BorderStyle::Double,
+                color: Some("#445566".to_string()),
+            })
+        );
+        let a = s0.alignment.as_ref().unwrap();
+        assert_eq!(a.horizontal, Some(HorizontalAlignment::Center));
+        assert_eq!(a.vertical, Some(VerticalAlignment::Top));
+        assert_eq!(a.wrap_text, Some(true));
+        assert_eq!(a.text_rotation, Some(45));
+        assert_eq!(a.indent, Some(2));
+
+        wb.sheets[0].ensure_capacity(2, 2);
+        wb.sheets[0].set_cell_src(1, 1, "Patched".to_string());
+        wb.sheets[0].columns[1].styles[1] = Some(CellStyle {
+            strikethrough: Some(true),
+            borders: Some(CellBorders {
+                left: Some(BorderSide {
+                    style: BorderStyle::Dashed,
+                    color: Some("#AA0000".to_string()),
+                }),
+                ..Default::default()
+            }),
+            alignment: Some(CellAlignment {
+                horizontal: Some(HorizontalAlignment::Right),
+                shrink_to_fit: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let patched_bytes = wb.save_bytes().unwrap();
+        let patched_pkg = OpcPackage::from_bytes(&patched_bytes).unwrap();
+        let patched_st =
+            dom::XmlDocument::parse(&patched_pkg.get_str("xl/styles.xml").unwrap()).unwrap();
+        assert_eq!(
+            patched_st.validate_child_sequence(dom::STYLESHEET_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched_bytes).unwrap();
+        let s1 = reloaded.sheets[0].columns[1].styles[1].as_ref().unwrap();
+        assert_eq!(s1.strikethrough, Some(true));
+        assert_eq!(
+            s1.borders.as_ref().unwrap().left,
+            Some(BorderSide {
+                style: BorderStyle::Dashed,
+                color: Some("#AA0000".to_string()),
+            })
+        );
+        assert_eq!(
+            s1.alignment.as_ref().unwrap().horizontal,
+            Some(HorizontalAlignment::Right)
+        );
+        assert_eq!(s1.alignment.as_ref().unwrap().shrink_to_fit, Some(true));
+    }
+
+    #[test]
+    fn test_theme_color_and_tint_resolution_from_theme_xml() {
+        let theme_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+            <a:themeElements>
+                <a:clrScheme name="Custom">
+                    <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+                    <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+                    <a:accent1><a:srgbClr val="204080"/></a:accent1>
+                </a:clrScheme>
+            </a:themeElements>
+        </a:theme>"#;
+        let theme = styles::ThemeColors::parse_theme_xml(theme_xml);
+        assert_eq!(theme.resolve(4, None).as_deref(), Some("#204080"));
+        let lighter = theme.resolve(4, Some(0.5)).unwrap();
+        assert_ne!(lighter, "#204080");
+        assert!(lighter.starts_with('#') && lighter.len() == 7);
+
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+            <fonts count="2">
+                <font><sz val="11"/><name val="Calibri"/></font>
+                <font><color theme="4"/><sz val="11"/><name val="Calibri"/></font>
+            </fonts>
+            <fills count="2">
+                <fill><patternFill patternType="none"/></fill>
+                <fill><patternFill patternType="gray125"/></fill>
+            </fills>
+            <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+            <cellXfs count="2">
+                <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
+                <xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyFont="1"/>
+            </cellXfs>
+        </styleSheet>"#;
+        let parsed = styles::parse_styles_with_theme(styles_xml, &theme);
+        assert_eq!(
+            parsed
+                .xf_styles
+                .get(&1)
+                .and_then(|s| s.font_color.as_deref()),
+            Some("#204080")
+        );
     }
 }
