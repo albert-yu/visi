@@ -72,6 +72,8 @@ pub(crate) const CT_PIVOT_CACHE_RECORDS: &str =
 pub(crate) const CT_VBA_PROJECT: &str = "application/vnd.ms-office.vbaProject";
 pub(crate) const CT_METADATA: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml";
+pub(crate) const CT_COMMENTS: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
 pub(crate) const CT_CORE_PROPERTIES: &str =
     "application/vnd.openxmlformats-package.core-properties+xml";
 pub(crate) const CT_EXTENDED_PROPERTIES: &str =

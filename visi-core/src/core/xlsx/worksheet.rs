@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use quick_xml::events::Event;
 
 use crate::core::engine::{
-    ArrayFormulaEntry, ArrayFormulaKind, CellType, FreezePane, MergedCellRange, ResultData,
+    ArrayFormulaEntry, ArrayFormulaKind, CellHyperlink, CellType, ConditionalFormatRule,
+    DataValidationKind, DataValidationOperator, DataValidationRule, FreezePane, MergedCellRange,
+    ResultData,
 };
 use crate::core::parser::{col_idx_to_letters, col_letters_to_idx};
 use crate::core::xlsx::metadata::ParsedMetadata;
@@ -64,6 +66,9 @@ pub(crate) struct ParsedWorksheet {
     pub(crate) merged_cells: Vec<MergedCellRange>,
     pub(crate) freeze_pane: Option<FreezePane>,
     pub(crate) array_formulas: Vec<ArrayFormulaEntry>,
+    pub(crate) hyperlinks: Vec<CellHyperlink>,
+    pub(crate) data_validations: Vec<DataValidationRule>,
+    pub(crate) conditional_formats: Vec<ConditionalFormatRule>,
     pub(crate) rows: usize,
     pub(crate) cols: usize,
 }
@@ -88,6 +93,16 @@ pub(crate) fn parse_worksheet_with_metadata(
     shared_strings: &[String],
     styles: &ParsedStyles,
     metadata: &ParsedMetadata,
+) -> Result<ParsedWorksheet, String> {
+    parse_worksheet_full(xml, shared_strings, styles, metadata, &HashMap::new())
+}
+
+pub(crate) fn parse_worksheet_full(
+    xml: &str,
+    shared_strings: &[String],
+    styles: &ParsedStyles,
+    metadata: &ParsedMetadata,
+    hyperlink_rels: &HashMap<String, String>,
 ) -> Result<ParsedWorksheet, String> {
     let mut out = ParsedWorksheet::default();
     let mut shared_formulas: HashMap<u32, SharedFormulaMaster> = HashMap::new();
@@ -121,6 +136,16 @@ pub(crate) fn parse_worksheet_with_metadata(
     let mut in_is = false;
     let mut in_is_t = false;
     let mut phonetic_depth = 0usize;
+
+    let mut active_dv: Option<DataValidationRule> = None;
+    let mut in_dv_f1 = false;
+    let mut in_dv_f2 = false;
+    let mut dv_buf = String::new();
+
+    let mut current_cf_sqref: Option<String> = None;
+    let mut active_cf: Option<ConditionalFormatRule> = None;
+    let mut in_cf_formula = false;
+    let mut cf_buf = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -198,6 +223,34 @@ pub(crate) fn parse_worksheet_with_metadata(
                 b"t" if in_is && phonetic_depth == 0 => {
                     in_is_t = true;
                 }
+                b"hyperlink" => {
+                    parse_hyperlink_element(e, hyperlink_rels, &mut out.hyperlinks);
+                }
+                b"dataValidation" => {
+                    active_dv = Some(parse_data_validation_start(e));
+                }
+                b"formula1" if active_dv.is_some() => {
+                    in_dv_f1 = true;
+                    dv_buf.clear();
+                }
+                b"formula2" if active_dv.is_some() => {
+                    in_dv_f2 = true;
+                    dv_buf.clear();
+                }
+                b"conditionalFormatting" => {
+                    current_cf_sqref = super::get_attr(e, b"sqref");
+                }
+                b"cfRule" if current_cf_sqref.is_some() => {
+                    active_cf = Some(parse_cf_rule_start(
+                        e,
+                        current_cf_sqref.as_deref().unwrap_or(""),
+                        styles,
+                    ));
+                }
+                b"formula" if active_cf.is_some() => {
+                    in_cf_formula = true;
+                    cf_buf.clear();
+                }
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
@@ -272,10 +325,29 @@ pub(crate) fn parse_worksheet_with_metadata(
                     cell_has_is = true;
                     cell_inline_text.clear();
                 }
+                b"hyperlink" => {
+                    parse_hyperlink_element(e, hyperlink_rels, &mut out.hyperlinks);
+                }
+                b"dataValidation" => {
+                    out.data_validations.push(parse_data_validation_start(e));
+                }
+                b"cfRule" if current_cf_sqref.is_some() => {
+                    out.conditional_formats.push(parse_cf_rule_start(
+                        e,
+                        current_cf_sqref.as_deref().unwrap_or(""),
+                        styles,
+                    ));
+                }
                 _ => {}
             },
             Ok(Event::Text(e)) => {
-                if in_v || in_f || (in_is_t && phonetic_depth == 0) {
+                if in_v
+                    || in_f
+                    || (in_is_t && phonetic_depth == 0)
+                    || in_dv_f1
+                    || in_dv_f2
+                    || in_cf_formula
+                {
                     let decoded = e
                         .decode()
                         .map_err(|err| format!("worksheet XML text decode error: {err}"))?;
@@ -287,11 +359,21 @@ pub(crate) fn parse_worksheet_with_metadata(
                         f_text.push_str(&unescaped);
                     } else if in_is_t {
                         cell_inline_text.push_str(&unescaped);
+                    } else if in_dv_f1 || in_dv_f2 {
+                        dv_buf.push_str(&unescaped);
+                    } else if in_cf_formula {
+                        cf_buf.push_str(&unescaped);
                     }
                 }
             }
             Ok(Event::GeneralRef(e)) => {
-                if in_v || in_f || (in_is_t && phonetic_depth == 0) {
+                if in_v
+                    || in_f
+                    || (in_is_t && phonetic_depth == 0)
+                    || in_dv_f1
+                    || in_dv_f2
+                    || in_cf_formula
+                {
                     let raw = e
                         .decode()
                         .map_err(|err| format!("worksheet XML entity decode error: {err}"))?;
@@ -305,6 +387,10 @@ pub(crate) fn parse_worksheet_with_metadata(
                         f_text.push_str(&resolved);
                     } else if in_is_t {
                         cell_inline_text.push_str(&resolved);
+                    } else if in_dv_f1 || in_dv_f2 {
+                        dv_buf.push_str(&resolved);
+                    } else if in_cf_formula {
+                        cf_buf.push_str(&resolved);
                     }
                 }
             }
@@ -385,6 +471,43 @@ pub(crate) fn parse_worksheet_with_metadata(
                     in_is_t = false;
                     phonetic_depth = 0;
                 }
+                b"formula1" if in_dv_f1 => {
+                    in_dv_f1 = false;
+                    if let Some(ref mut dv) = active_dv {
+                        dv.formula1 = Some(dv_buf.clone());
+                    }
+                    dv_buf.clear();
+                }
+                b"formula2" if in_dv_f2 => {
+                    in_dv_f2 = false;
+                    if let Some(ref mut dv) = active_dv {
+                        dv.formula2 = Some(dv_buf.clone());
+                    }
+                    dv_buf.clear();
+                }
+                b"dataValidation" => {
+                    in_dv_f1 = false;
+                    in_dv_f2 = false;
+                    if let Some(dv) = active_dv.take() {
+                        out.data_validations.push(dv);
+                    }
+                }
+                b"formula" if in_cf_formula => {
+                    in_cf_formula = false;
+                    if let Some(ref mut cf) = active_cf {
+                        cf.formulas.push(cf_buf.clone());
+                    }
+                    cf_buf.clear();
+                }
+                b"cfRule" => {
+                    in_cf_formula = false;
+                    if let Some(cf) = active_cf.take() {
+                        out.conditional_formats.push(cf);
+                    }
+                }
+                b"conditionalFormatting" => {
+                    current_cf_sqref = None;
+                }
                 b"c" => {
                     in_cell = false;
                     let value = decode_cell_value(
@@ -447,6 +570,7 @@ pub(crate) fn write_worksheet_xml(
     styles: &mut crate::core::xlsx::styles::StyleRegistry,
     table_rids: &[String],
     drawing_rid: Option<&str>,
+    hyperlink_rids: &[Option<String>],
     flavor: crate::core::xlsx::xml_util::NamespaceFlavor,
 ) -> String {
     let ns = flavor.spreadsheetml();
@@ -721,6 +845,125 @@ pub(crate) fn write_worksheet_xml(
         xml.push_str("</mergeCells>");
     }
 
+    for cf in &sheet.conditional_formats {
+        xml.push_str(&format!(
+            "<conditionalFormatting sqref=\"{}\"><cfRule type=\"{}\" priority=\"{}\"",
+            super::escape_xml(&cf.sqref),
+            super::escape_xml(&cf.rule_type),
+            cf.priority
+        ));
+        if let Some(ref op) = cf.operator {
+            xml.push_str(&format!(" operator=\"{}\"", super::escape_xml(op)));
+        }
+        if let Some(ref style) = cf.style
+            && !style.is_empty()
+        {
+            let dxf_id = styles.register_dxf(style);
+            xml.push_str(&format!(" dxfId=\"{dxf_id}\""));
+        }
+        if cf.stop_if_true {
+            xml.push_str(" stopIfTrue=\"1\"");
+        }
+        if cf.formulas.is_empty() {
+            xml.push_str("/></conditionalFormatting>");
+        } else {
+            xml.push('>');
+            for f in &cf.formulas {
+                xml.push_str(&format!("<formula>{}</formula>", super::escape_xml_text(f)));
+            }
+            xml.push_str("</cfRule></conditionalFormatting>");
+        }
+    }
+
+    if !sheet.data_validations.is_empty() {
+        xml.push_str(&format!(
+            "<dataValidations count=\"{}\">",
+            sheet.data_validations.len()
+        ));
+        for dv in &sheet.data_validations {
+            xml.push_str(&format!(
+                "<dataValidation type=\"{}\" sqref=\"{}\"",
+                dv.kind.as_ooxml(),
+                super::escape_xml(&dv.sqref)
+            ));
+            if let Some(op) = dv.operator {
+                xml.push_str(&format!(" operator=\"{}\"", op.as_ooxml()));
+            }
+            if dv.allow_blank {
+                xml.push_str(" allowBlank=\"1\"");
+            }
+            if dv.show_input_message {
+                xml.push_str(" showInputMessage=\"1\"");
+            }
+            if dv.show_error_message {
+                xml.push_str(" showErrorMessage=\"1\"");
+            }
+            if let Some(ref t) = dv.prompt_title {
+                xml.push_str(&format!(" promptTitle=\"{}\"", super::escape_xml(t)));
+            }
+            if let Some(ref p) = dv.prompt {
+                xml.push_str(&format!(" prompt=\"{}\"", super::escape_xml(p)));
+            }
+            if let Some(ref t) = dv.error_title {
+                xml.push_str(&format!(" errorTitle=\"{}\"", super::escape_xml(t)));
+            }
+            if let Some(ref e) = dv.error {
+                xml.push_str(&format!(" error=\"{}\"", super::escape_xml(e)));
+            }
+            if dv.formula1.is_none() && dv.formula2.is_none() {
+                xml.push_str("/>");
+            } else {
+                xml.push('>');
+                if let Some(ref f1) = dv.formula1 {
+                    xml.push_str(&format!(
+                        "<formula1>{}</formula1>",
+                        super::escape_xml_text(f1)
+                    ));
+                }
+                if let Some(ref f2) = dv.formula2 {
+                    xml.push_str(&format!(
+                        "<formula2>{}</formula2>",
+                        super::escape_xml_text(f2)
+                    ));
+                }
+                xml.push_str("</dataValidation>");
+            }
+        }
+        xml.push_str("</dataValidations>");
+    }
+
+    if !sheet.hyperlinks.is_empty() {
+        xml.push_str("<hyperlinks>");
+        for (idx, hl) in sheet.hyperlinks.iter().enumerate() {
+            let range_ref = if hl.start_row == hl.end_row && hl.start_col == hl.end_col {
+                format!("{}{}", col_idx_to_letters(hl.start_col), hl.start_row + 1)
+            } else {
+                format!(
+                    "{}{}:{}{}",
+                    col_idx_to_letters(hl.start_col),
+                    hl.start_row + 1,
+                    col_idx_to_letters(hl.end_col),
+                    hl.end_row + 1
+                )
+            };
+            xml.push_str(&format!("<hyperlink ref=\"{range_ref}\""));
+            if let Some(Some(rid)) = hyperlink_rids.get(idx) {
+                xml.push_str(&format!(" r:id=\"{}\"", super::escape_xml(rid)));
+            }
+            if let Some(ref loc) = hl.location {
+                xml.push_str(&format!(" location=\"{}\"", super::escape_xml(loc)));
+            }
+            if let Some(ref disp) = hl.display {
+                xml.push_str(&format!(" display=\"{}\"", super::escape_xml(disp)));
+            }
+            if let Some(ref tip) = hl.tooltip {
+                xml.push_str(&format!(" tooltip=\"{}\"", super::escape_xml(tip)));
+            }
+            xml.push_str("/>");
+        }
+        xml.push_str("</hyperlinks>");
+    }
+
     if let Some(r_id) = drawing_rid {
         xml.push_str(&format!("<drawing r:id=\"{}\"/>", super::escape_xml(r_id)));
     }
@@ -742,6 +985,77 @@ pub(crate) fn write_worksheet_xml(
 
 fn is_xml_truthy(val: Option<String>) -> bool {
     val.is_some_and(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+}
+
+fn parse_hyperlink_element(
+    e: &quick_xml::events::BytesStart,
+    hyperlink_rels: &HashMap<String, String>,
+    out: &mut Vec<CellHyperlink>,
+) {
+    let Some(ref_str) = super::get_attr(e, b"ref") else {
+        return;
+    };
+    let bounds = crate::core::pivot_xlsx::parse_a1_range(&ref_str)
+        .or_else(|| super::parse_a1_cell(&ref_str).map(|(r, c)| (r, c, r, c)));
+    let Some((start_row, start_col, end_row, end_col)) = bounds else {
+        return;
+    };
+    let target = super::get_attr(e, b"id").and_then(|rid| hyperlink_rels.get(&rid).cloned());
+    out.push(CellHyperlink {
+        start_row,
+        start_col,
+        end_row,
+        end_col,
+        target,
+        location: super::get_attr(e, b"location"),
+        display: super::get_attr(e, b"display"),
+        tooltip: super::get_attr(e, b"tooltip"),
+    });
+}
+
+fn parse_data_validation_start(e: &quick_xml::events::BytesStart) -> DataValidationRule {
+    DataValidationRule {
+        sqref: super::get_attr(e, b"sqref").unwrap_or_default(),
+        kind: super::get_attr(e, b"type")
+            .as_deref()
+            .and_then(DataValidationKind::from_ooxml)
+            .unwrap_or(DataValidationKind::None),
+        operator: super::get_attr(e, b"operator")
+            .as_deref()
+            .and_then(DataValidationOperator::from_ooxml),
+        allow_blank: is_xml_truthy(super::get_attr(e, b"allowBlank")),
+        formula1: None,
+        formula2: None,
+        prompt_title: super::get_attr(e, b"promptTitle"),
+        prompt: super::get_attr(e, b"prompt"),
+        error_title: super::get_attr(e, b"errorTitle"),
+        error: super::get_attr(e, b"error"),
+        show_input_message: is_xml_truthy(super::get_attr(e, b"showInputMessage")),
+        show_error_message: is_xml_truthy(super::get_attr(e, b"showErrorMessage")),
+    }
+}
+
+fn parse_cf_rule_start(
+    e: &quick_xml::events::BytesStart,
+    sqref: &str,
+    styles: &ParsedStyles,
+) -> ConditionalFormatRule {
+    let style = super::get_attr(e, b"dxfId")
+        .and_then(|s| s.parse::<usize>().ok())
+        .and_then(|id| styles.dxfs.get(id))
+        .filter(|s| !s.is_empty())
+        .cloned();
+    ConditionalFormatRule {
+        sqref: sqref.to_string(),
+        rule_type: super::get_attr(e, b"type").unwrap_or_default(),
+        operator: super::get_attr(e, b"operator"),
+        priority: super::get_attr(e, b"priority")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1),
+        stop_if_true: is_xml_truthy(super::get_attr(e, b"stopIfTrue")),
+        formulas: Vec::new(),
+        style,
+    }
 }
 
 fn parse_col_props(

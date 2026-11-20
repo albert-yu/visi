@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 pub(crate) mod chart;
+pub(crate) mod comments;
 pub(crate) mod dom;
 pub(crate) mod formula;
 pub(crate) mod metadata;
@@ -112,11 +113,31 @@ fn import_xlsx_from_parsed(
             continue;
         };
 
-        let parsed_ws = worksheet::parse_worksheet_with_metadata(
+        let sheet_rels = pkg.read_relationships(&sheet_meta.part_path);
+        let mut hyperlink_rels = std::collections::HashMap::new();
+        let mut comments_part: Option<String> = None;
+        for rel in &sheet_rels {
+            if crate::core::opc::rel_type_matches(&rel.rel_type, "hyperlink") {
+                hyperlink_rels.insert(rel.id.clone(), rel.target.clone());
+            } else if !rel.is_external()
+                && crate::core::opc::rel_type_matches(&rel.rel_type, "comments")
+                && comments_part.is_none()
+            {
+                comments_part = Some(rel.resolved_target(&sheet_meta.part_path));
+            }
+        }
+        let sheet_comments = comments_part
+            .as_deref()
+            .and_then(|p| pkg.get_str(p))
+            .map(|xml| comments::parse_comments_xml(&xml))
+            .unwrap_or_default();
+
+        let parsed_ws = worksheet::parse_worksheet_full(
             &sheet_xml,
             &shared_strings,
             &parsed_styles,
             &parsed_metadata,
+            &hyperlink_rels,
         )?;
         let (rows, cols) = if parsed_ws.rows == 0 || parsed_ws.cols == 0 {
             (10, 5)
@@ -206,6 +227,10 @@ fn import_xlsx_from_parsed(
             freeze_pane: parsed_ws.freeze_pane,
             date1904: wb.date1904,
             array_formulas: parsed_ws.array_formulas,
+            comments: sheet_comments,
+            hyperlinks: parsed_ws.hyperlinks,
+            data_validations: parsed_ws.data_validations,
+            conditional_formats: parsed_ws.conditional_formats,
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -436,11 +461,11 @@ pub(crate) fn export_xlsx_data_raw(
     defined_names: &[crate::core::DefinedName],
 ) -> Result<Vec<u8>, String> {
     use crate::core::opc::{
-        CT_CHART, CT_CORE_PROPERTIES, CT_DRAWING, CT_EXTENDED_PROPERTIES, CT_METADATA, CT_RELS,
-        CT_SHARED_STRINGS, CT_STYLES, CT_TABLE, CT_WORKBOOK, CT_WORKSHEET, CT_XML, ContentTypes,
-        REL_CHART, REL_CORE_PROPERTIES, REL_DRAWING, REL_EXTENDED_PROPERTIES, REL_METADATA,
-        REL_OFFICE_DOCUMENT, REL_SHARED_STRINGS, REL_STYLES, REL_TABLE, REL_WORKSHEET,
-        Relationship,
+        CT_CHART, CT_COMMENTS, CT_CORE_PROPERTIES, CT_DRAWING, CT_EXTENDED_PROPERTIES, CT_METADATA,
+        CT_RELS, CT_SHARED_STRINGS, CT_STYLES, CT_TABLE, CT_WORKBOOK, CT_WORKSHEET, CT_XML,
+        ContentTypes, REL_CHART, REL_COMMENTS, REL_CORE_PROPERTIES, REL_DRAWING,
+        REL_EXTENDED_PROPERTIES, REL_HYPERLINK, REL_METADATA, REL_OFFICE_DOCUMENT,
+        REL_SHARED_STRINGS, REL_STYLES, REL_TABLE, REL_WORKSHEET, Relationship,
     };
     use crate::core::xlsx::xml_util::NamespaceFlavor;
 
@@ -506,6 +531,7 @@ pub(crate) fn export_xlsx_data_raw(
     let mut next_table_id = 1usize;
     let mut next_drawing_id = 1usize;
     let mut next_chart_id = 1usize;
+    let mut next_comments_id = 1usize;
 
     for (idx, sheet) in sheets.iter().enumerate() {
         let sheet_num = idx + 1;
@@ -584,12 +610,46 @@ pub(crate) fn export_xlsx_data_raw(
             drawing_rid = Some(d_rid);
         }
 
+        let mut hyperlink_rids: Vec<Option<String>> = Vec::with_capacity(sheet.hyperlinks.len());
+        for hl in &sheet.hyperlinks {
+            if let Some(ref target) = hl.target {
+                let h_rid = format!("rId{}", sheet_rels.len() + 1);
+                sheet_rels.push(Relationship {
+                    id: h_rid.clone(),
+                    rel_type: REL_HYPERLINK.to_string(),
+                    target: target.clone(),
+                    target_mode: Some("External".to_string()),
+                });
+                hyperlink_rids.push(Some(h_rid));
+            } else {
+                hyperlink_rids.push(None);
+            }
+        }
+
+        if !sheet.comments.is_empty() {
+            let cid = next_comments_id;
+            next_comments_id += 1;
+            let comments_part = format!("xl/comments{cid}.xml");
+            let comments_xml = comments::write_comments_xml(&sheet.comments, flavor);
+            pkg.set_part(&comments_part, comments_xml.into_bytes());
+            ct.set_override(&comments_part, CT_COMMENTS);
+
+            let c_rid = format!("rId{}", sheet_rels.len() + 1);
+            sheet_rels.push(Relationship {
+                id: c_rid,
+                rel_type: REL_COMMENTS.to_string(),
+                target: format!("../comments{cid}.xml"),
+                target_mode: None,
+            });
+        }
+
         let ws_xml = worksheet::write_worksheet_xml(
             sheet,
             &mut sst,
             &mut style_reg,
             &table_rids,
             drawing_rid.as_deref(),
+            &hyperlink_rids,
             flavor,
         );
         pkg.set_part(&sheet_part, ws_xml.into_bytes());
@@ -1984,6 +2044,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2262,6 +2326,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2412,6 +2480,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2720,6 +2792,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2771,6 +2847,10 @@ mod tests {
                 freeze_pane: None,
                 date1904: false,
                 array_formulas: Vec::new(),
+                comments: Vec::new(),
+                hyperlinks: Vec::new(),
+                data_validations: Vec::new(),
+                conditional_formats: Vec::new(),
                 tables: Vec::new(),
                 dependencies: std::collections::HashMap::new(),
                 dependencies_rev: std::collections::HashMap::new(),
@@ -2891,6 +2971,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2928,6 +3012,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -2967,6 +3055,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3002,6 +3094,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -3349,6 +3445,10 @@ mod tests {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: std::collections::HashMap::new(),
             dependencies_rev: std::collections::HashMap::new(),
@@ -4068,5 +4168,130 @@ mod tests {
         assert_eq!(reloaded.sheets[0].columns[1].src[0], "=A1*10");
         assert_eq!(reloaded.sheets[0].columns[1].src[1], "=A2*2");
         assert_eq!(reloaded.sheets[0].columns[1].src[2], "=A3*2");
+    }
+
+    #[test]
+    fn test_phase9_annotations_and_rules_round_trip() {
+        use crate::core::{
+            CellComment, CellHyperlink, ConditionalFormatRule, DataValidationKind,
+            DataValidationOperator, DataValidationRule,
+        };
+
+        let mut sheet = Sheet::new(crate::core::SheetInit {
+            name: Some("Rules".to_string()),
+            rows: 5,
+            cols: 3,
+            ..Default::default()
+        });
+        sheet.set_cell_src(0, 0, "100".to_string());
+        sheet.set_cell_src(1, 0, "Visit".to_string());
+        sheet.comments.push(CellComment {
+            row: 0,
+            col: 0,
+            author: "Reviewer".to_string(),
+            text: "Verify threshold".to_string(),
+        });
+        sheet.hyperlinks.push(CellHyperlink {
+            start_row: 1,
+            start_col: 0,
+            end_row: 1,
+            end_col: 0,
+            target: Some("https://example.com/docs".to_string()),
+            location: None,
+            display: Some("Example Docs".to_string()),
+            tooltip: Some("Open docs".to_string()),
+        });
+        sheet.hyperlinks.push(CellHyperlink {
+            start_row: 2,
+            start_col: 0,
+            end_row: 2,
+            end_col: 0,
+            target: None,
+            location: Some("Rules!A1".to_string()),
+            display: None,
+            tooltip: None,
+        });
+        sheet.data_validations.push(DataValidationRule {
+            sqref: "A1:A5".to_string(),
+            kind: DataValidationKind::Whole,
+            operator: Some(DataValidationOperator::Between),
+            allow_blank: true,
+            formula1: Some("1".to_string()),
+            formula2: Some("1000".to_string()),
+            prompt_title: Some("Range".to_string()),
+            prompt: Some("Enter 1..1000".to_string()),
+            error_title: Some("Invalid".to_string()),
+            error: Some("Out of range".to_string()),
+            show_input_message: true,
+            show_error_message: true,
+        });
+        sheet.conditional_formats.push(ConditionalFormatRule {
+            sqref: "A1:A5".to_string(),
+            rule_type: "cellIs".to_string(),
+            operator: Some("greaterThan".to_string()),
+            priority: 1,
+            stop_if_true: true,
+            formulas: vec!["50".to_string()],
+            style: Some(CellStyle {
+                bold: Some(true),
+                font_color: Some("#9C0006".to_string()),
+                bg_color: Some("#FFC7CE".to_string()),
+                ..Default::default()
+            }),
+        });
+        sheet.commit(None).unwrap();
+
+        let bytes = export_xlsx_data(&[sheet], &[], &[], None).unwrap();
+        let pkg = OpcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(pkg.validate_opc(), Ok(()));
+        assert!(pkg.has_part("xl/comments1.xml"));
+
+        let ws_doc =
+            dom::XmlDocument::parse(&pkg.get_str("xl/worksheets/sheet1.xml").unwrap()).unwrap();
+        assert_eq!(
+            ws_doc.validate_child_sequence(dom::WORKSHEET_SCHEMA_ORDER),
+            Ok(())
+        );
+        let st_doc = dom::XmlDocument::parse(&pkg.get_str("xl/styles.xml").unwrap()).unwrap();
+        assert_eq!(
+            st_doc.validate_child_sequence(dom::STYLESHEET_SCHEMA_ORDER),
+            Ok(())
+        );
+
+        let loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        let s = &loaded.sheets[0];
+        assert_eq!(s.comments.len(), 1);
+        assert_eq!(s.comments[0].author, "Reviewer");
+        assert_eq!(s.comments[0].text, "Verify threshold");
+
+        assert_eq!(s.hyperlinks.len(), 2);
+        assert_eq!(
+            s.hyperlinks[0].target.as_deref(),
+            Some("https://example.com/docs")
+        );
+        assert_eq!(s.hyperlinks[0].tooltip.as_deref(), Some("Open docs"));
+        assert_eq!(s.hyperlinks[1].location.as_deref(), Some("Rules!A1"));
+
+        assert_eq!(s.data_validations.len(), 1);
+        assert_eq!(s.data_validations[0].kind, DataValidationKind::Whole);
+        assert_eq!(
+            s.data_validations[0].operator,
+            Some(DataValidationOperator::Between)
+        );
+        assert_eq!(s.data_validations[0].formula1.as_deref(), Some("1"));
+        assert_eq!(s.data_validations[0].formula2.as_deref(), Some("1000"));
+        assert!(s.data_validations[0].allow_blank);
+
+        assert_eq!(s.conditional_formats.len(), 1);
+        assert_eq!(s.conditional_formats[0].rule_type, "cellIs");
+        assert_eq!(
+            s.conditional_formats[0].operator.as_deref(),
+            Some("greaterThan")
+        );
+        assert_eq!(s.conditional_formats[0].formulas, vec!["50".to_string()]);
+        let cf_style = s.conditional_formats[0].style.as_ref().unwrap();
+        assert_eq!(cf_style.bold, Some(true));
+        assert_eq!(cf_style.font_color.as_deref(), Some("#9C0006"));
+        assert_eq!(cf_style.bg_color.as_deref(), Some("#FFC7CE"));
     }
 }

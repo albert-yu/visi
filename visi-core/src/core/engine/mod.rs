@@ -19,6 +19,7 @@ pub use cell::{
 pub use column::{ColumnData, DataColumn};
 pub use result_data::ResultData;
 pub use sheet::{
-    ArrayFormulaEntry, ArrayFormulaKind, Context, Direction, FreezePane, MergedCellRange, Sheet,
-    SheetInit, SheetVisibility, get_word_boundaries_from_str,
+    ArrayFormulaEntry, ArrayFormulaKind, CellComment, CellHyperlink, ConditionalFormatRule,
+    Context, DataValidationKind, DataValidationOperator, DataValidationRule, Direction, FreezePane,
+    MergedCellRange, Sheet, SheetInit, SheetVisibility, get_word_boundaries_from_str,
 };

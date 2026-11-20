@@ -166,6 +166,212 @@ pub struct ArrayFormulaEntry {
     pub kind: ArrayFormulaKind,
 }
 
+#[doc = "A cell comment/note per ECMA-376 §18.7."]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CellComment {
+    #[doc = "Zero-based row index."]
+    pub row: usize,
+    #[doc = "Zero-based column index."]
+    pub col: usize,
+    #[doc = "Comment author name."]
+    #[serde(default)]
+    pub author: String,
+    #[doc = "Plain text body of the comment."]
+    pub text: String,
+}
+
+#[doc = "A worksheet hyperlink per ECMA-376 §18.3.1.48."]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CellHyperlink {
+    #[doc = "Topmost row of the hyperlink range, 0-based."]
+    pub start_row: usize,
+    #[doc = "Leftmost column of the hyperlink range, 0-based."]
+    pub start_col: usize,
+    #[doc = "Bottommost row of the hyperlink range, 0-based inclusive."]
+    pub end_row: usize,
+    #[doc = "Rightmost column of the hyperlink range, 0-based inclusive."]
+    pub end_col: usize,
+    #[doc = "External URI target (stored in worksheet `.rels`), if external."]
+    #[serde(default)]
+    pub target: Option<String>,
+    #[doc = "Internal workbook location (e.g. `Sheet2!A1`), if any."]
+    #[serde(default)]
+    pub location: Option<String>,
+    #[doc = "Optional display text override."]
+    #[serde(default)]
+    pub display: Option<String>,
+    #[doc = "Optional hover tooltip."]
+    #[serde(default)]
+    pub tooltip: Option<String>,
+}
+
+#[doc = "Data validation type per ECMA-376 §18.18.21 ST_DataValidationType."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DataValidationKind {
+    #[doc = "No validation."]
+    #[default]
+    None,
+    #[doc = "Whole number validation."]
+    Whole,
+    #[doc = "Decimal number validation."]
+    Decimal,
+    #[doc = "Dropdown list validation."]
+    List,
+    #[doc = "Date validation."]
+    Date,
+    #[doc = "Time validation."]
+    Time,
+    #[doc = "Text length validation."]
+    TextLength,
+    #[doc = "Custom formula validation."]
+    Custom,
+}
+
+impl DataValidationKind {
+    #[doc = "Returns the ECMA-376 ST_DataValidationType token."]
+    pub fn as_ooxml(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Whole => "whole",
+            Self::Decimal => "decimal",
+            Self::List => "list",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::TextLength => "textLength",
+            Self::Custom => "custom",
+        }
+    }
+
+    #[doc = "Parses an ECMA-376 ST_DataValidationType token."]
+    pub fn from_ooxml(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "whole" => Some(Self::Whole),
+            "decimal" => Some(Self::Decimal),
+            "list" => Some(Self::List),
+            "date" => Some(Self::Date),
+            "time" => Some(Self::Time),
+            "textLength" => Some(Self::TextLength),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+#[doc = "Data validation comparison operator per ECMA-376 §18.18.20 ST_DataValidationOperator."]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DataValidationOperator {
+    #[doc = "Between formula1 and formula2."]
+    Between,
+    #[doc = "Not between formula1 and formula2."]
+    NotBetween,
+    #[doc = "Equal to formula1."]
+    Equal,
+    #[doc = "Not equal to formula1."]
+    NotEqual,
+    #[doc = "Less than formula1."]
+    LessThan,
+    #[doc = "Less than or equal to formula1."]
+    LessThanOrEqual,
+    #[doc = "Greater than formula1."]
+    GreaterThan,
+    #[doc = "Greater than or equal to formula1."]
+    GreaterThanOrEqual,
+}
+
+impl DataValidationOperator {
+    #[doc = "Returns the ECMA-376 ST_DataValidationOperator token."]
+    pub fn as_ooxml(self) -> &'static str {
+        match self {
+            Self::Between => "between",
+            Self::NotBetween => "notBetween",
+            Self::Equal => "equal",
+            Self::NotEqual => "notEqual",
+            Self::LessThan => "lessThan",
+            Self::LessThanOrEqual => "lessThanOrEqual",
+            Self::GreaterThan => "greaterThan",
+            Self::GreaterThanOrEqual => "greaterThanOrEqual",
+        }
+    }
+
+    #[doc = "Parses an ECMA-376 ST_DataValidationOperator token."]
+    pub fn from_ooxml(s: &str) -> Option<Self> {
+        match s {
+            "between" => Some(Self::Between),
+            "notBetween" => Some(Self::NotBetween),
+            "equal" => Some(Self::Equal),
+            "notEqual" => Some(Self::NotEqual),
+            "lessThan" => Some(Self::LessThan),
+            "lessThanOrEqual" => Some(Self::LessThanOrEqual),
+            "greaterThan" => Some(Self::GreaterThan),
+            "greaterThanOrEqual" => Some(Self::GreaterThanOrEqual),
+            _ => None,
+        }
+    }
+}
+
+#[doc = "A worksheet data validation rule per ECMA-376 §18.3.1.32."]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct DataValidationRule {
+    #[doc = "Space-separated A1 cell/range references (sqref)."]
+    pub sqref: String,
+    #[doc = "Validation kind."]
+    pub kind: DataValidationKind,
+    #[doc = "Optional comparison operator."]
+    #[serde(default)]
+    pub operator: Option<DataValidationOperator>,
+    #[doc = "Whether blank values are permitted."]
+    #[serde(default)]
+    pub allow_blank: bool,
+    #[doc = "First constraint formula or list."]
+    #[serde(default)]
+    pub formula1: Option<String>,
+    #[doc = "Second constraint formula (for between/notBetween)."]
+    #[serde(default)]
+    pub formula2: Option<String>,
+    #[doc = "Input prompt title."]
+    #[serde(default)]
+    pub prompt_title: Option<String>,
+    #[doc = "Input prompt body."]
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[doc = "Error alert title."]
+    #[serde(default)]
+    pub error_title: Option<String>,
+    #[doc = "Error alert body."]
+    #[serde(default)]
+    pub error: Option<String>,
+    #[doc = "Whether to show the input message."]
+    #[serde(default)]
+    pub show_input_message: bool,
+    #[doc = "Whether to show the error alert."]
+    #[serde(default)]
+    pub show_error_message: bool,
+}
+
+#[doc = "A worksheet conditional formatting rule per ECMA-376 §18.3.1.18."]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionalFormatRule {
+    #[doc = "Space-separated A1 cell/range references (sqref)."]
+    pub sqref: String,
+    #[doc = "ECMA-376 ST_CfType token (e.g. `cellIs`, `expression`, `containsText`)."]
+    pub rule_type: String,
+    #[doc = "Optional ST_ConditionalFormattingOperator token (e.g. `greaterThan`)."]
+    #[serde(default)]
+    pub operator: Option<String>,
+    #[doc = "Rule evaluation priority (1-based)."]
+    pub priority: u32,
+    #[doc = "Whether to stop evaluating lower-priority rules when matched."]
+    #[serde(default)]
+    pub stop_if_true: bool,
+    #[doc = "Rule formulas."]
+    #[serde(default)]
+    pub formulas: Vec<String>,
+    #[doc = "Differential formatting style applied when the rule matches (`<dxf>`)."]
+    #[serde(default)]
+    pub style: Option<crate::core::CellStyle>,
+}
+
 #[doc = "Frozen pane configuration specifying how many top rows and left columns stay fixed."]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FreezePane {
@@ -208,6 +414,18 @@ pub struct Sheet {
     #[doc = "Legacy CSE and dynamic array formula metadata anchored on this worksheet."]
     #[serde(default)]
     pub array_formulas: Vec<ArrayFormulaEntry>,
+    #[doc = "Cell comments/notes attached to cells on this worksheet."]
+    #[serde(default)]
+    pub comments: Vec<CellComment>,
+    #[doc = "Hyperlinks attached to cells or ranges on this worksheet."]
+    #[serde(default)]
+    pub hyperlinks: Vec<CellHyperlink>,
+    #[doc = "Data validation rules defined on this worksheet."]
+    #[serde(default)]
+    pub data_validations: Vec<DataValidationRule>,
+    #[doc = "Conditional formatting rules defined on this worksheet."]
+    #[serde(default)]
+    pub conditional_formats: Vec<ConditionalFormatRule>,
     /// Excel Tables (ListObjects) defined on this sheet.
     #[serde(default)]
     pub tables: Vec<crate::core::table::ExcelTable>,
@@ -304,6 +522,10 @@ impl Sheet {
             freeze_pane: None,
             date1904: false,
             array_formulas: Vec::new(),
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
             tables: Vec::new(),
             dependencies: HashMap::new(),
             dependencies_rev: HashMap::new(),

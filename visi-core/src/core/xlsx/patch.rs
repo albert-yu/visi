@@ -64,6 +64,10 @@ struct SheetSnapshot {
     hidden_rows: HashSet<usize>,
     merged_cells: Vec<MergedCellRange>,
     freeze_pane: Option<FreezePane>,
+    comments: Vec<crate::core::CellComment>,
+    hyperlinks: Vec<crate::core::CellHyperlink>,
+    data_validations: Vec<crate::core::DataValidationRule>,
+    conditional_formats: Vec<crate::core::ConditionalFormatRule>,
     tables: Vec<ExcelTable>,
 }
 
@@ -105,6 +109,10 @@ impl OoxmlSourceState {
                 hidden_rows: snapshot_hidden_rows(sheet),
                 merged_cells: sheet.merged_cells.clone(),
                 freeze_pane: sheet.freeze_pane,
+                comments: sheet.comments.clone(),
+                hyperlinks: sheet.hyperlinks.clone(),
+                data_validations: sheet.data_validations.clone(),
+                conditional_formats: sheet.conditional_formats.clone(),
                 tables: sheet.tables.clone(),
             });
         }
@@ -134,7 +142,13 @@ impl OoxmlSourceState {
             return false;
         }
         for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
-            if sheet.id != snap.sheet_id || sheet.tables != snap.tables {
+            if sheet.id != snap.sheet_id
+                || sheet.tables != snap.tables
+                || sheet.comments != snap.comments
+                || sheet.hyperlinks != snap.hyperlinks
+                || sheet.data_validations != snap.data_validations
+                || sheet.conditional_formats != snap.conditional_formats
+            {
                 return false;
             }
         }

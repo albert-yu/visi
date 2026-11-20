@@ -261,6 +261,7 @@ fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
 pub(crate) struct ParsedStyles {
     pub(crate) xf_styles: HashMap<u32, CellStyle>,
     pub(crate) xf_is_date: Vec<bool>,
+    pub(crate) dxfs: Vec<CellStyle>,
 }
 
 impl ParsedStyles {
@@ -298,6 +299,7 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
     let mut borders: Vec<CellBorders> = Vec::new();
     let mut xf_styles: HashMap<u32, CellStyle> = HashMap::new();
     let mut xf_is_date: Vec<bool> = Vec::new();
+    let mut dxfs: Vec<CellStyle> = Vec::new();
 
     let mut in_fonts = false;
     let mut in_font = false;
@@ -318,6 +320,10 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
     let mut current_xf_is_date = false;
     let mut xf_idx = 0u32;
 
+    let mut in_dxfs = false;
+    let mut in_dxf = false;
+    let mut current_dxf = CellStyle::default();
+
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut buf = Vec::new();
     loop {
@@ -332,7 +338,7 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
                     }
                 }
                 b"fonts" => in_fonts = true,
-                b"font" if in_fonts => {
+                b"font" if in_fonts || in_dxf => {
                     in_font = true;
                     current_font = CellStyle::default();
                 }
@@ -363,7 +369,7 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
                         super::get_attr(e, b"val").and_then(|s| s.parse().ok());
                 }
                 b"fills" => in_fills = true,
-                b"fill" if in_fills => {
+                b"fill" if in_fills || in_dxf => {
                     in_fill = true;
                     current_fill = ParsedFill::default();
                 }
@@ -446,11 +452,23 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
                         current_xf_style.alignment = Some(align);
                     }
                 }
+                b"dxfs" => in_dxfs = true,
+                b"dxf" if in_dxfs => {
+                    in_dxf = true;
+                    current_dxf = CellStyle::default();
+                }
                 _ => {}
             },
             Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
+                b"dxf" if in_dxfs => {
+                    dxfs.push(CellStyle::default());
+                }
                 b"numFmt" => {
-                    if let Some(id) =
+                    if in_dxf {
+                        if let Some(code) = super::get_attr(e, b"formatCode") {
+                            current_dxf.num_format = Some(code);
+                        }
+                    } else if let Some(id) =
                         super::get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
                         && let Some(code) = super::get_attr(e, b"formatCode")
                     {
@@ -557,13 +575,29 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
             Ok(Event::End(ref e)) => match e.local_name().as_ref() {
                 b"fonts" => in_fonts = false,
                 b"font" if in_font => {
-                    fonts.push(current_font.clone());
+                    if in_dxf {
+                        current_dxf.merge(&current_font);
+                    } else {
+                        fonts.push(current_font.clone());
+                    }
                     current_font = CellStyle::default();
                     in_font = false;
                 }
                 b"fills" => in_fills = false,
                 b"fill" if in_fill => {
-                    fills.push(current_fill.clone());
+                    if in_dxf {
+                        if let Some(ref c) = current_fill.color {
+                            current_dxf.bg_color = Some(c.clone());
+                        }
+                        if let Some(pat) = current_fill.pattern
+                            && pat != FillPattern::None
+                            && (pat != FillPattern::Solid || current_fill.color.is_none())
+                        {
+                            current_dxf.fill_pattern = Some(pat);
+                        }
+                    } else {
+                        fills.push(current_fill.clone());
+                    }
                     current_fill = ParsedFill::default();
                     in_fill = false;
                 }
@@ -588,6 +622,12 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
                     in_xf = false;
                 }
                 b"cellXfs" => in_cell_xfs = false,
+                b"dxf" if in_dxf => {
+                    dxfs.push(current_dxf.clone());
+                    current_dxf = CellStyle::default();
+                    in_dxf = false;
+                }
+                b"dxfs" => in_dxfs = false,
                 _ => {}
             },
             Ok(Event::Eof) | Err(_) => break,
@@ -599,6 +639,7 @@ pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedS
     ParsedStyles {
         xf_styles,
         xf_is_date,
+        dxfs,
     }
 }
 
@@ -830,6 +871,7 @@ pub(crate) struct StyleRegistry {
     border_map: HashMap<CellBorders, usize>,
     xfs: Vec<XfKey>,
     xf_map: HashMap<XfKey, u32>,
+    dxfs: Vec<CellStyle>,
 }
 
 impl Default for StyleRegistry {
@@ -885,11 +927,20 @@ impl Default for StyleRegistry {
             border_map,
             xfs: vec![default_xf],
             xf_map,
+            dxfs: Vec::new(),
         }
     }
 }
 
 impl StyleRegistry {
+    pub(crate) fn register_dxf(&mut self, style: &CellStyle) -> u32 {
+        if let Some(pos) = self.dxfs.iter().position(|existing| existing == style) {
+            return pos as u32;
+        }
+        let idx = self.dxfs.len() as u32;
+        self.dxfs.push(style.clone());
+        idx
+    }
     pub(crate) fn register_style(&mut self, style: &CellStyle) -> u32 {
         if style.is_empty() {
             return 0;
@@ -1102,7 +1153,46 @@ impl StyleRegistry {
         }
         xml.push_str("</cellXfs>");
         xml.push_str("<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>");
-        xml.push_str("<dxfs count=\"0\"/>");
+        if self.dxfs.is_empty() {
+            xml.push_str("<dxfs count=\"0\"/>");
+        } else {
+            xml.push_str(&format!("<dxfs count=\"{}\">", self.dxfs.len()));
+            for dxf in &self.dxfs {
+                xml.push_str("<dxf>");
+                let has_font = dxf.bold.unwrap_or(false)
+                    || dxf.italic.unwrap_or(false)
+                    || dxf.underline.unwrap_or(false)
+                    || dxf.strikethrough.unwrap_or(false)
+                    || dxf.font_color.is_some();
+                if has_font {
+                    xml.push_str("<font>");
+                    if dxf.bold.unwrap_or(false) {
+                        xml.push_str("<b/>");
+                    }
+                    if dxf.italic.unwrap_or(false) {
+                        xml.push_str("<i/>");
+                    }
+                    if dxf.strikethrough.unwrap_or(false) {
+                        xml.push_str("<strike/>");
+                    }
+                    if dxf.underline.unwrap_or(false) {
+                        xml.push_str("<u/>");
+                    }
+                    if let Some(argb) = dxf.font_color.as_deref().and_then(parse_color_argb) {
+                        xml.push_str(&format!("<color rgb=\"{argb}\"/>"));
+                    }
+                    xml.push_str("</font>");
+                }
+                if let Some(argb) = dxf.bg_color.as_deref().and_then(parse_color_argb) {
+                    let pat = dxf.fill_pattern.unwrap_or(FillPattern::Solid).as_ooxml();
+                    xml.push_str(&format!(
+                        "<fill><patternFill patternType=\"{pat}\"><bgColor rgb=\"{argb}\"/></patternFill></fill>"
+                    ));
+                }
+                xml.push_str("</dxf>");
+            }
+            xml.push_str("</dxfs>");
+        }
         xml.push_str("<tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/>");
         xml.push_str("</styleSheet>");
         xml

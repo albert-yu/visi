@@ -53,10 +53,11 @@ pub use date::{
     is_date_code, parse_date, parse_date_with_locale, render_date_code,
 };
 pub use engine::{
-    ArrayFormulaEntry, ArrayFormulaKind, Bitmask, CellRef, CellType, ColumnData, Context,
-    DataColumn, Dependency, Direction, EngineError, EvalError, FreezePane, MergedCellRange,
-    RefType, ResultData, Sheet, SheetInit, SheetVisibility, TextCellRef, generate_unique_id,
-    get_word_boundaries_from_str,
+    ArrayFormulaEntry, ArrayFormulaKind, Bitmask, CellComment, CellHyperlink, CellRef, CellType,
+    ColumnData, ConditionalFormatRule, Context, DataColumn, DataValidationKind,
+    DataValidationOperator, DataValidationRule, Dependency, Direction, EngineError, EvalError,
+    FreezePane, MergedCellRange, RefType, ResultData, Sheet, SheetInit, SheetVisibility,
+    TextCellRef, generate_unique_id, get_word_boundaries_from_str,
 };
 pub use excel::{WorkbookFormat, detect_workbook_format};
 pub use formula::{CompiledFormula, FormulaPart, SheetSection};
