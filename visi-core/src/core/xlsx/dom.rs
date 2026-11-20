@@ -78,6 +78,7 @@ pub(crate) const STYLESHEET_SCHEMA_ORDER: &[&str] = &[
     "extLst",
 ];
 
+#[cfg(test)]
 pub(crate) const TABLE_SCHEMA_ORDER: &[&str] = &[
     "autoFilter",
     "sortState",
@@ -142,16 +143,6 @@ impl XmlElement {
             .map(|(_, v)| v.as_str())
     }
 
-    pub(crate) fn attr_local(&self, local: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| match k.find(':') {
-                Some(pos) => &k[pos + 1..] == local,
-                None => k == local,
-            })
-            .map(|(_, v)| v.as_str())
-    }
-
     pub(crate) fn set_attr(&mut self, name: impl Into<String>, value: impl Into<String>) {
         let name = name.into();
         let value = value.into();
@@ -192,6 +183,7 @@ impl XmlElement {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn child_elements(&self) -> impl Iterator<Item = &XmlElement> {
         self.children.iter().filter_map(|node| match node {
             XmlNode::Element(el) => Some(el),
@@ -416,6 +408,7 @@ impl XmlDocument {
         out
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_child_sequence(&self, schema_order: &[&str]) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         let mut last_rank: Option<(usize, &str)> = None;

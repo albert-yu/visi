@@ -13,7 +13,7 @@ pub(crate) mod worksheet;
 pub(crate) mod xml_util;
 
 use crate::core::opc::OpcPackage;
-use crate::core::{CellStyle, CellType, DataColumn, Sheet};
+use crate::core::{DataColumn, Sheet};
 use web_time::Instant;
 
 pub use crate::core::excel::ImportedSheet;
@@ -784,6 +784,7 @@ struct ParsedChartData {
     info: ParsedChartInfo,
 }
 
+#[cfg(test)]
 fn get_filename(path: &str) -> String {
     path.split('/').next_back().unwrap_or("").to_string()
 }
@@ -938,86 +939,6 @@ pub(crate) fn parse_workbook_rels(xml: &str) -> std::collections::HashMap<String
                         (get_attr(&e, b"Id"), get_attr(&e, b"Target"))
                 {
                     map.insert(r_id, target);
-                }
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-    map
-}
-
-#[allow(dead_code)]
-fn parse_sheet_drawing_rels(xml: &str) -> Option<String> {
-    let mut reader = quick_xml::reader::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    let mut drawing_target = None;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
-                let local = e.name().local_name().into_inner();
-                if local == b"Relationship"
-                    && let Some(ty) = get_attr(&e, b"Type")
-                    && ty.contains("relationships/drawing")
-                    && let Some(target) = get_attr(&e, b"Target")
-                {
-                    drawing_target = Some(get_filename(&target));
-                    break;
-                }
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-    drawing_target
-}
-
-#[allow(dead_code)]
-fn parse_sheet_table_rels(xml: &str) -> Vec<String> {
-    let mut targets = Vec::new();
-    let mut reader = quick_xml::reader::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
-                let local = e.name().local_name().into_inner();
-                if local == b"Relationship"
-                    && let Some(ty) = get_attr(&e, b"Type")
-                    && ty.ends_with("relationships/table")
-                    && let Some(target) = get_attr(&e, b"Target")
-                {
-                    let filename = get_filename(&target);
-                    if !filename.is_empty() {
-                        targets.push(filename);
-                    }
-                }
-            }
-            _ => {}
-        }
-        buf.clear();
-    }
-    targets
-}
-
-#[allow(dead_code)]
-fn parse_drawing_chart_rels(xml: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let mut reader = quick_xml::reader::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(quick_xml::events::Event::Empty(e)) | Ok(quick_xml::events::Event::Start(e)) => {
-                let local = e.name().local_name().into_inner();
-                if local == b"Relationship"
-                    && let Some(ty) = get_attr(&e, b"Type")
-                    && ty.contains("relationships/chart")
-                    && let (Some(r_id), Some(target)) =
-                        (get_attr(&e, b"Id"), get_attr(&e, b"Target"))
-                {
-                    map.insert(r_id, get_filename(&target));
                 }
             }
             _ => {}
@@ -1395,401 +1316,11 @@ fn import_tables_from_opc(pkg: &OpcPackage) -> Result<Vec<(String, ParsedTablePa
     Ok(tables)
 }
 
-const BUILTIN_NUM_FMTS: &[(u32, &str)] = &[
-    (0, "General"),
-    (1, "0"),
-    (2, "0.00"),
-    (3, "#,##0"),
-    (4, "#,##0.00"),
-    (5, "\"$\"#,##0_);(\"$\"#,##0)"),
-    (6, "\"$\"#,##0_);[Red](\"$\"#,##0)"),
-    (7, "\"$\"#,##0.00_);(\"$\"#,##0.00)"),
-    (8, "\"$\"#,##0.00_);[Red](\"$\"#,##0.00)"),
-    (9, "0%"),
-    (10, "0.00%"),
-    (11, "0.00E+00"),
-    (12, "# ?/?"),
-    (13, "# ??/??"),
-    (14, "m/d/yy"),
-    (15, "d-mmm-yy"),
-    (16, "d-mmm"),
-    (17, "mmm-yy"),
-    (18, "h:mm AM/PM"),
-    (19, "h:mm:ss AM/PM"),
-    (20, "h:mm"),
-    (21, "h:mm:ss"),
-    (22, "m/d/yy h:mm"),
-    (37, "#,##0;(#,##0)"),
-    (38, "#,##0;[Red](#,##0)"),
-    (39, "#,##0.00;(#,##0.00)"),
-    (40, "#,##0.00;[Red](#,##0.00)"),
-    (41, r#"_(* #,##0_);_(* (#,##0);_(* "-"_);_(@_)"#),
-    (42, r#"_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)"#),
-    (43, r#"_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)"#),
-    (
-        44,
-        r#"_("$"* #,##0.00_);_("$"* (#,##0.00);_("$"* "-"??_);_(@_)"#,
-    ),
-    (45, "mm:ss"),
-    (46, "[h]:mm:ss"),
-    (47, "mm:ss.0"),
-    (48, "##0.0E+0"),
-    (49, "@"),
-];
-
-fn builtin_num_fmt_code(id: u32) -> Option<&'static str> {
-    BUILTIN_NUM_FMTS
-        .iter()
-        .find(|(builtin_id, _)| *builtin_id == id)
-        .map(|(_, code)| *code)
-}
-
+#[cfg(test)]
 type SheetCellNumberFormats =
     std::collections::HashMap<String, std::collections::HashMap<(usize, usize), String>>;
 
-type SheetCellStyles =
-    std::collections::HashMap<String, std::collections::HashMap<(usize, usize), CellStyle>>;
-
-type SheetColumnWidths = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
-
-type SheetRowHeights = std::collections::HashMap<String, std::collections::HashMap<usize, f64>>;
-
-fn import_column_widths(pkg: &OpcPackage) -> Result<SheetColumnWidths, String> {
-    use std::collections::HashMap;
-
-    let sheet_part_to_name = build_sheet_part_to_name(pkg)?;
-    let mut sheet_parts: Vec<String> = sheet_part_to_name.keys().cloned().collect();
-    sheet_parts.sort();
-
-    let mut out: SheetColumnWidths = HashMap::new();
-    for sheet_part in sheet_parts {
-        let Some(sheet_name) = sheet_part_to_name.get(&sheet_part).cloned() else {
-            continue;
-        };
-        let Some(sheet_xml) = pkg.get_str(&sheet_part) else {
-            continue;
-        };
-        let widths = parse_sheet_column_widths(&sheet_xml);
-        if !widths.is_empty() {
-            out.insert(sheet_name, widths);
-        }
-    }
-    Ok(out)
-}
-
-fn parse_sheet_column_widths(xml: &str) -> std::collections::HashMap<usize, f64> {
-    let mut out = std::collections::HashMap::new();
-    let mut reader = quick_xml::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e))
-            | Ok(quick_xml::events::Event::Empty(ref e)) => {
-                if e.local_name().as_ref() == b"col"
-                    && let Some(width) = get_attr(e, b"width").and_then(|s| s.parse::<f64>().ok())
-                    && width.is_finite()
-                    && width >= 0.0
-                {
-                    let min = get_attr(e, b"min")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(1)
-                        .max(1);
-                    let max = get_attr(e, b"max")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(min)
-                        .max(min)
-                        .min(16_384);
-                    for one_based_col in min..=max {
-                        out.insert(one_based_col - 1, width);
-                    }
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    out
-}
-
-fn import_row_heights(pkg: &OpcPackage) -> Result<SheetRowHeights, String> {
-    use std::collections::HashMap;
-
-    let sheet_part_to_name = build_sheet_part_to_name(pkg)?;
-    let mut sheet_parts: Vec<String> = sheet_part_to_name.keys().cloned().collect();
-    sheet_parts.sort();
-
-    let mut out: SheetRowHeights = HashMap::new();
-    for sheet_part in sheet_parts {
-        let Some(sheet_name) = sheet_part_to_name.get(&sheet_part).cloned() else {
-            continue;
-        };
-        let Some(sheet_xml) = pkg.get_str(&sheet_part) else {
-            continue;
-        };
-        let heights = parse_sheet_row_heights(&sheet_xml);
-        if !heights.is_empty() {
-            out.insert(sheet_name, heights);
-        }
-    }
-    Ok(out)
-}
-
-fn parse_sheet_row_heights(xml: &str) -> std::collections::HashMap<usize, f64> {
-    let mut out = std::collections::HashMap::new();
-    let mut reader = quick_xml::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    let mut next_row = 1usize;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e))
-            | Ok(quick_xml::events::Event::Empty(ref e)) => {
-                if e.local_name().as_ref() == b"row" {
-                    let row = get_attr(e, b"r")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(next_row)
-                        .max(1);
-                    next_row = row + 1;
-                    if let Some(height) = get_attr(e, b"ht").and_then(|s| s.parse::<f64>().ok())
-                        && row <= 1_048_576
-                        && height.is_finite()
-                        && height >= 0.0
-                    {
-                        out.insert(row - 1, height);
-                    }
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    out
-}
-
-fn import_cell_styles(pkg: &OpcPackage) -> Result<SheetCellStyles, String> {
-    use std::collections::HashMap;
-
-    let Some(styles_xml) = pkg.get_str("xl/styles.xml") else {
-        return Ok(HashMap::new());
-    };
-    let xf_to_style = parse_styles_cell_styles(&styles_xml);
-    if xf_to_style.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let sheet_part_to_name = build_sheet_part_to_name(pkg)?;
-    let mut sheet_parts: Vec<String> = sheet_part_to_name.keys().cloned().collect();
-    sheet_parts.sort();
-
-    let mut out: HashMap<String, HashMap<(usize, usize), CellStyle>> = HashMap::new();
-    for sheet_part in sheet_parts {
-        let Some(sheet_name) = sheet_part_to_name.get(&sheet_part).cloned() else {
-            continue;
-        };
-        let Some(sheet_xml) = pkg.get_str(&sheet_part) else {
-            continue;
-        };
-        let cells = parse_sheet_cell_styles(&sheet_xml, &xf_to_style);
-        if !cells.is_empty() {
-            out.insert(sheet_name, cells);
-        }
-    }
-    Ok(out)
-}
-
-fn parse_styles_cell_styles(xml: &str) -> std::collections::HashMap<u32, CellStyle> {
-    use std::collections::HashMap;
-
-    let mut custom_num_formats: HashMap<u32, String> = HashMap::new();
-    let mut fonts: Vec<CellStyle> = Vec::new();
-    let mut fills: Vec<Option<String>> = Vec::new();
-    let mut out: HashMap<u32, CellStyle> = HashMap::new();
-    let mut in_fonts = false;
-    let mut in_font = false;
-    let mut current_font = CellStyle::default();
-    let mut in_fills = false;
-    let mut in_fill = false;
-    let mut current_fill: Option<String> = None;
-    let mut in_cell_xfs = false;
-    let mut xf_idx = 0u32;
-
-    let mut reader = quick_xml::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e))
-            | Ok(quick_xml::events::Event::Empty(ref e)) => match e.local_name().as_ref() {
-                b"numFmt" => {
-                    if let Some(id) = get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
-                        && let Some(code) = get_attr(e, b"formatCode")
-                    {
-                        custom_num_formats.insert(id, code);
-                    }
-                }
-                b"fonts" => in_fonts = true,
-                b"font" if in_fonts => {
-                    in_font = true;
-                    current_font = CellStyle::default();
-                }
-                b"b" if in_font => {
-                    if style_bool_enabled(e) {
-                        current_font.bold = Some(true);
-                    }
-                }
-                b"i" if in_font => {
-                    if style_bool_enabled(e) {
-                        current_font.italic = Some(true);
-                    }
-                }
-                b"u" if in_font => {
-                    if style_bool_enabled(e) {
-                        current_font.underline = Some(true);
-                    }
-                }
-                b"color" if in_font => current_font.font_color = style_color_hex(e),
-                b"name" if in_font => current_font.font_family = get_attr(e, b"val"),
-                b"sz" if in_font => {
-                    current_font.font_size = get_attr(e, b"val").and_then(|s| s.parse().ok());
-                }
-                b"fills" => in_fills = true,
-                b"fill" if in_fills => {
-                    in_fill = true;
-                    current_fill = None;
-                }
-                b"fgColor" if in_fill => {
-                    if let Some(color) = style_color_hex(e) {
-                        current_fill = Some(color);
-                    }
-                }
-                b"bgColor" if in_fill => {
-                    if current_fill.is_none() {
-                        current_fill = style_color_hex(e);
-                    }
-                }
-                b"cellXfs" => in_cell_xfs = true,
-                b"xf" if in_cell_xfs => {
-                    let mut style = CellStyle::default();
-                    if let Some(font_id) =
-                        get_attr(e, b"fontId").and_then(|s| s.parse::<usize>().ok())
-                        && font_id != 0
-                        && let Some(font) = fonts.get(font_id)
-                    {
-                        style.merge(font);
-                    }
-                    if let Some(fill_id) =
-                        get_attr(e, b"fillId").and_then(|s| s.parse::<usize>().ok())
-                        && fill_id > 1
-                        && let Some(Some(bg_color)) = fills.get(fill_id)
-                    {
-                        style.bg_color = Some(bg_color.clone());
-                    }
-                    if let Some(num_fmt_id) =
-                        get_attr(e, b"numFmtId").and_then(|s| s.parse::<u32>().ok())
-                    {
-                        style.num_format = custom_num_formats
-                            .get(&num_fmt_id)
-                            .cloned()
-                            .or_else(|| builtin_num_fmt_code(num_fmt_id).map(str::to_string))
-                            .filter(|code| !code.eq_ignore_ascii_case("General"));
-                    }
-                    if !style.is_empty() {
-                        out.insert(xf_idx, style);
-                    }
-                    xf_idx += 1;
-                }
-                _ => {}
-            },
-            Ok(quick_xml::events::Event::End(ref e)) => match e.local_name().as_ref() {
-                b"fonts" => in_fonts = false,
-                b"font" if in_font => {
-                    fonts.push(current_font.clone());
-                    current_font = CellStyle::default();
-                    in_font = false;
-                }
-                b"fills" => in_fills = false,
-                b"fill" if in_fill => {
-                    fills.push(current_fill.clone());
-                    current_fill = None;
-                    in_fill = false;
-                }
-                b"cellXfs" => in_cell_xfs = false,
-                _ => {}
-            },
-            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    out
-}
-
-fn style_bool_enabled(e: &quick_xml::events::BytesStart) -> bool {
-    get_attr(e, b"val").is_none_or(|value| {
-        value != "0" && !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("none")
-    })
-}
-
-fn style_color_hex(e: &quick_xml::events::BytesStart) -> Option<String> {
-    if let Some(rgb) = get_attr(e, b"rgb") {
-        let trimmed = rgb.trim().trim_start_matches('#');
-        let hex = match trimmed.len() {
-            8 => &trimmed[2..],
-            6 => trimmed,
-            _ => return None,
-        };
-        return Some(format!("#{}", hex.to_ascii_uppercase()));
-    }
-    get_attr(e, b"indexed")
-        .and_then(|idx| idx.parse::<u32>().ok())
-        .and_then(indexed_color_hex)
-}
-
-fn indexed_color_hex(index: u32) -> Option<String> {
-    let hex = match index {
-        0 | 8 => "#000000",
-        1 | 9 => "#FFFFFF",
-        2 | 10 => "#FF0000",
-        3 | 11 => "#00FF00",
-        4 | 12 => "#0000FF",
-        5 | 13 => "#FFFF00",
-        6 | 14 => "#FF00FF",
-        7 | 15 => "#00FFFF",
-        _ => return None,
-    };
-    Some(hex.to_string())
-}
-
-fn parse_sheet_cell_styles(
-    xml: &str,
-    xf_to_style: &std::collections::HashMap<u32, CellStyle>,
-) -> std::collections::HashMap<(usize, usize), CellStyle> {
-    let mut out = std::collections::HashMap::new();
-    let mut reader = quick_xml::Reader::from_str(xml);
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e))
-            | Ok(quick_xml::events::Event::Empty(ref e)) => {
-                if e.local_name().as_ref() == b"c"
-                    && let Some(style_idx) = get_attr(e, b"s").and_then(|s| s.parse::<u32>().ok())
-                    && let Some(style) = xf_to_style.get(&style_idx)
-                    && let Some(reference) = get_attr(e, b"r")
-                    && let Some(rc) = parse_a1_cell(&reference)
-                {
-                    out.insert(rc, style.clone());
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
-            _ => {}
-        }
-        buf.clear();
-    }
-    out
-}
-
-#[allow(dead_code)]
+#[cfg(test)]
 fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, String> {
     use std::collections::HashMap;
 
@@ -1825,6 +1356,7 @@ fn import_cell_number_formats(buffer: &[u8]) -> Result<SheetCellNumberFormats, S
     Ok(out)
 }
 
+#[cfg(test)]
 fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String> {
     use std::collections::HashMap;
 
@@ -1871,7 +1403,7 @@ fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String>
         let code = custom
             .get(&num_fmt_id)
             .cloned()
-            .or_else(|| builtin_num_fmt_code(num_fmt_id).map(str::to_string));
+            .or_else(|| styles::builtin_num_fmt_code(num_fmt_id).map(str::to_string));
         if let Some(code) = code
             && crate::core::date::is_date_code(&code)
         {
@@ -1881,6 +1413,7 @@ fn parse_styles_num_formats(xml: &str) -> std::collections::HashMap<u32, String>
     out
 }
 
+#[cfg(test)]
 fn parse_sheet_cell_formats(
     xml: &str,
     xf_to_code: &std::collections::HashMap<u32, String>,
@@ -1935,6 +1468,7 @@ fn deterministic_chart_id(sheet_name: &str, index_in_sheet: usize) -> u64 {
     hasher.finish() & 0x001F_FFFF_FFFF_FFFF
 }
 
+#[cfg(test)]
 fn build_sheet_file_to_name(
     archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
@@ -2023,6 +1557,7 @@ fn import_charts_from_opc(pkg: &OpcPackage) -> Result<Vec<ParsedChartData>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{CellStyle, CellType};
 
     #[test]
     fn test_xlsx_import_export_cycle() {
@@ -2245,7 +1780,8 @@ mod tests {
               </cellXfs>
             </styleSheet>
         "#;
-        let styles = parse_styles_cell_styles(styles);
+        let styles =
+            styles::parse_styles_with_theme(styles, &styles::ThemeColors::default()).xf_styles;
         assert!(!styles.contains_key(&0));
         assert_eq!(
             styles.get(&1).and_then(|s| s.num_format.as_deref()),

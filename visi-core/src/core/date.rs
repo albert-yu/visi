@@ -376,8 +376,10 @@ pub fn is_date_code(code: &str) -> bool {
     (has_year_or_day || has_month) && !has_time_token && !has_number_placeholder
 }
 
+#[doc = "Day offset between Excel's 1900 and 1904 date systems."]
 pub const EXCEL_1904_EPOCH_OFFSET: f64 = 1462.0;
 
+#[doc = "Converts an Excel date serial to a calendar date using either the 1900 or 1904 epoch."]
 pub fn excel_serial_to_date_with_epoch(serial: f64, date1904: bool) -> SimpleDate {
     if date1904 {
         excel_serial_to_date(serial + EXCEL_1904_EPOCH_OFFSET)
@@ -386,6 +388,7 @@ pub fn excel_serial_to_date_with_epoch(serial: f64, date1904: bool) -> SimpleDat
     }
 }
 
+#[doc = "Converts a calendar date to an Excel date serial using either the 1900 or 1904 epoch."]
 pub fn date_to_excel_serial_with_epoch(date: SimpleDate, date1904: bool) -> f64 {
     if date1904 {
         date_to_excel_serial(date) - EXCEL_1904_EPOCH_OFFSET

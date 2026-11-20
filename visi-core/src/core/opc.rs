@@ -11,8 +11,6 @@ pub(crate) const NS_RELATIONSHIPS: &str =
 
 pub(crate) const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
-pub(crate) const REL_STRICT_OFFICE_DOCUMENT: &str =
-    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument";
 
 pub(crate) const REL_WORKSHEET: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet";
@@ -20,28 +18,18 @@ pub(crate) const REL_SHARED_STRINGS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings";
 pub(crate) const REL_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
-pub(crate) const REL_THEME: &str =
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme";
 pub(crate) const REL_TABLE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/table";
 pub(crate) const REL_DRAWING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
 pub(crate) const REL_CHART: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
-pub(crate) const REL_PIVOT_TABLE: &str =
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable";
-pub(crate) const REL_PIVOT_CACHE_DEF: &str =
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition";
-pub(crate) const REL_PIVOT_CACHE_RECORDS: &str =
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords";
 pub(crate) const REL_COMMENTS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 pub(crate) const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 pub(crate) const REL_METADATA: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata";
-pub(crate) const REL_VBA_PROJECT: &str =
-    "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 pub(crate) const REL_CORE_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
 pub(crate) const REL_EXTENDED_PROPERTIES: &str =
@@ -51,7 +39,6 @@ pub(crate) const CT_RELS: &str = "application/vnd.openxmlformats-package.relatio
 pub(crate) const CT_XML: &str = "application/xml";
 pub(crate) const CT_WORKBOOK: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
-pub(crate) const CT_WORKBOOK_MACRO: &str = "application/vnd.ms-excel.sheet.macroEnabled.main+xml";
 pub(crate) const CT_WORKSHEET: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
 pub(crate) const CT_SHARED_STRINGS: &str =
@@ -63,13 +50,6 @@ pub(crate) const CT_TABLE: &str =
 pub(crate) const CT_DRAWING: &str = "application/vnd.openxmlformats-officedocument.drawing+xml";
 pub(crate) const CT_CHART: &str =
     "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
-pub(crate) const CT_PIVOT_TABLE: &str =
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml";
-pub(crate) const CT_PIVOT_CACHE_DEF: &str =
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml";
-pub(crate) const CT_PIVOT_CACHE_RECORDS: &str =
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml";
-pub(crate) const CT_VBA_PROJECT: &str = "application/vnd.ms-office.vbaProject";
 pub(crate) const CT_METADATA: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml";
 pub(crate) const CT_COMMENTS: &str =
@@ -169,12 +149,7 @@ impl ContentTypes {
         }
     }
 
-    pub(crate) fn remove_override(&mut self, part_name: &str) {
-        let normalized = format!("/{}", normalize_part_name(part_name));
-        self.overrides
-            .retain(|(p, _)| !p.eq_ignore_ascii_case(&normalized));
-    }
-
+    #[cfg(test)]
     pub(crate) fn content_type_for(&self, part_name: &str) -> Option<&str> {
         let normalized = format!("/{}", normalize_part_name(part_name));
         if let Some((_, ct)) = self
@@ -277,16 +252,6 @@ impl OpcPackage {
         }
     }
 
-    pub(crate) fn remove_part(&mut self, part_name: &str) -> bool {
-        let key = normalize_part_name(part_name).to_ascii_lowercase();
-        let Some(idx) = self.index_by_lower.remove(&key) else {
-            return false;
-        };
-        self.parts.remove(idx);
-        self.rebuild_index();
-        true
-    }
-
     pub(crate) fn has_part(&self, part_name: &str) -> bool {
         let key = normalize_part_name(part_name).to_ascii_lowercase();
         self.index_by_lower.contains_key(&key)
@@ -306,10 +271,6 @@ impl OpcPackage {
         } else {
             Some(text)
         }
-    }
-
-    pub(crate) fn part_names(&self) -> impl Iterator<Item = &str> {
-        self.parts.iter().map(|(name, _)| name.as_str())
     }
 
     pub(crate) fn read_relationships(&self, source_part: &str) -> Vec<Relationship> {
@@ -348,6 +309,7 @@ impl OpcPackage {
         None
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_opc(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if !self.has_part("[Content_Types].xml") {
@@ -387,13 +349,6 @@ impl OpcPackage {
             Ok(())
         } else {
             Err(errors)
-        }
-    }
-
-    fn rebuild_index(&mut self) {
-        self.index_by_lower.clear();
-        for (idx, (name, _)) in self.parts.iter().enumerate() {
-            self.index_by_lower.insert(name.to_ascii_lowercase(), idx);
         }
     }
 }
@@ -446,6 +401,7 @@ pub(crate) fn rels_path_for(part_name: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn source_part_for_rels(rels_part: &str) -> String {
     let normalized = normalize_part_name(rels_part);
     if normalized.eq_ignore_ascii_case("_rels/.rels") {
@@ -613,7 +569,7 @@ mod tests {
     fn matches_both_transitional_and_strict_rel_types() {
         assert!(rel_type_matches(REL_OFFICE_DOCUMENT, "officeDocument"));
         assert!(rel_type_matches(
-            REL_STRICT_OFFICE_DOCUMENT,
+            "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument",
             "officeDocument"
         ));
         assert!(rel_type_matches(

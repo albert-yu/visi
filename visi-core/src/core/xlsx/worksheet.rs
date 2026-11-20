@@ -80,21 +80,19 @@ struct SharedFormulaMaster {
     formula: String,
 }
 
+#[cfg(test)]
 pub(crate) fn parse_worksheet(
     xml: &str,
     shared_strings: &[String],
     styles: &ParsedStyles,
 ) -> Result<ParsedWorksheet, String> {
-    parse_worksheet_with_metadata(xml, shared_strings, styles, &ParsedMetadata::default())
-}
-
-pub(crate) fn parse_worksheet_with_metadata(
-    xml: &str,
-    shared_strings: &[String],
-    styles: &ParsedStyles,
-    metadata: &ParsedMetadata,
-) -> Result<ParsedWorksheet, String> {
-    parse_worksheet_full(xml, shared_strings, styles, metadata, &HashMap::new())
+    parse_worksheet_full(
+        xml,
+        shared_strings,
+        styles,
+        &ParsedMetadata::default(),
+        &HashMap::new(),
+    )
 }
 
 pub(crate) fn parse_worksheet_full(

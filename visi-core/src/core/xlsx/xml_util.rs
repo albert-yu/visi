@@ -70,19 +70,6 @@ impl NamespaceFlavor {
             Self::Strict => NS_DRAWINGML_SPREADSHEET_STRICT,
         }
     }
-
-    pub(crate) fn rel_type(self, suffix: &str) -> String {
-        match self {
-            Self::Transitional => {
-                format!(
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/{suffix}"
-                )
-            }
-            Self::Strict => {
-                format!("http://purl.oclc.org/ooxml/officeDocument/relationships/{suffix}")
-            }
-        }
-    }
 }
 
 pub(crate) fn needs_xml_space_preserve(s: &str) -> bool {

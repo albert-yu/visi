@@ -49,8 +49,9 @@ pub(crate) mod xml;
 
 pub use actions::SheetAction;
 pub use date::{
-    DateFormat, SimpleDate, StringCase, date_to_excel_serial, excel_serial_to_date, format_date,
-    is_date_code, parse_date, parse_date_with_locale, render_date_code,
+    DateFormat, EXCEL_1904_EPOCH_OFFSET, SimpleDate, StringCase, date_to_excel_serial,
+    date_to_excel_serial_with_epoch, excel_serial_to_date, excel_serial_to_date_with_epoch,
+    format_date, is_date_code, parse_date, parse_date_with_locale, render_date_code,
 };
 pub use engine::{
     ArrayFormulaEntry, ArrayFormulaKind, Bitmask, CellComment, CellHyperlink, CellRef, CellType,

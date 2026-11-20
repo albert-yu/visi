@@ -7,8 +7,6 @@ use crate::core::xlsx::xml_util::{NamespaceFlavor, decode_xstring};
 #[derive(Debug, Clone)]
 pub(crate) struct WorkbookSheetMeta {
     pub(crate) name: String,
-    pub(crate) sheet_id: u32,
-    pub(crate) r_id: String,
     pub(crate) state: Option<String>,
     pub(crate) part_path: String,
 }
@@ -101,17 +99,12 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
                     if let (Some(name), Some(r_id)) =
                         (super::get_attr(e, b"name"), super::get_attr(e, b"id"))
                     {
-                        let sheet_id = super::get_attr(e, b"sheetId")
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .unwrap_or((sheets.len() + 1) as u32);
                         let state = super::get_attr(e, b"state");
                         if let Some((rel_type, part_path)) = rel_targets.get(&r_id)
                             && rel_type_matches(rel_type, "worksheet")
                         {
                             sheets.push(WorkbookSheetMeta {
                                 name: decode_xstring(&name),
-                                sheet_id,
-                                r_id,
                                 state,
                                 part_path: part_path.clone(),
                             });
@@ -146,17 +139,12 @@ pub(crate) fn read_workbook(pkg: &OpcPackage) -> Result<ParsedWorkbook, String> 
                     if let (Some(name), Some(r_id)) =
                         (super::get_attr(e, b"name"), super::get_attr(e, b"id"))
                     {
-                        let sheet_id = super::get_attr(e, b"sheetId")
-                            .and_then(|s| s.parse::<u32>().ok())
-                            .unwrap_or((sheets.len() + 1) as u32);
                         let state = super::get_attr(e, b"state");
                         if let Some((rel_type, part_path)) = rel_targets.get(&r_id)
                             && rel_type_matches(rel_type, "worksheet")
                         {
                             sheets.push(WorkbookSheetMeta {
                                 name: decode_xstring(&name),
-                                sheet_id,
-                                r_id,
                                 state,
                                 part_path: part_path.clone(),
                             });

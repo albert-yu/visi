@@ -288,10 +288,6 @@ enum BorderSideTag {
     Diagonal,
 }
 
-pub(crate) fn parse_styles(xml: &str) -> ParsedStyles {
-    parse_styles_with_theme(xml, &ThemeColors::default())
-}
-
 pub(crate) fn parse_styles_with_theme(xml: &str, theme: &ThemeColors) -> ParsedStyles {
     let mut custom_num_formats: HashMap<u32, String> = HashMap::new();
     let mut fonts: Vec<CellStyle> = Vec::new();
