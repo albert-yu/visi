@@ -15,7 +15,7 @@ fn build_skeleton_dir() -> Vec<u8> {
     write_record(&mut dir, 0x004A, &0x0002_0000u32.to_le_bytes());
     write_record(&mut dir, 0x0002, &0x0409u32.to_le_bytes());
     write_record(&mut dir, 0x0014, &0x0409u32.to_le_bytes());
-    write_record(&mut dir, 0x0003, &0x2710u16.to_le_bytes());
+    write_record(&mut dir, 0x0003, &0x04E4u16.to_le_bytes());
     write_record(&mut dir, 0x0004, b"VBAProject");
     write_record(&mut dir, 0x0005, &[]);
     write_record(&mut dir, 0x0040, &[]);
