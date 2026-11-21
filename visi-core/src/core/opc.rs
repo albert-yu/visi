@@ -34,11 +34,21 @@ pub(crate) const REL_CORE_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
 pub(crate) const REL_EXTENDED_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties";
+pub(crate) const REL_PIVOT_CACHE_DEF: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition";
+pub(crate) const REL_PIVOT_CACHE_RECORDS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords";
+pub(crate) const REL_PIVOT_TABLE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable";
+pub(crate) const REL_VBA_PROJECT: &str =
+    "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
 pub(crate) const CT_RELS: &str = "application/vnd.openxmlformats-package.relationships+xml";
 pub(crate) const CT_XML: &str = "application/xml";
 pub(crate) const CT_WORKBOOK: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
+pub(crate) const CT_WORKBOOK_MACRO_ENABLED: &str =
+    "application/vnd.ms-excel.sheet.macroEnabled.main+xml";
 pub(crate) const CT_WORKSHEET: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
 pub(crate) const CT_SHARED_STRINGS: &str =
@@ -58,6 +68,13 @@ pub(crate) const CT_CORE_PROPERTIES: &str =
     "application/vnd.openxmlformats-package.core-properties+xml";
 pub(crate) const CT_EXTENDED_PROPERTIES: &str =
     "application/vnd.openxmlformats-officedocument.extended-properties+xml";
+pub(crate) const CT_PIVOT_CACHE_DEF: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml";
+pub(crate) const CT_PIVOT_CACHE_RECORDS: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml";
+pub(crate) const CT_PIVOT_TABLE: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml";
+pub(crate) const CT_VBA_PROJECT: &str = "application/vnd.ms-office.vbaProject";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relationship {

@@ -288,14 +288,16 @@ impl WorkbookManager {
         match format {
             WorkbookFormat::Xlsx => {
                 if let Some(ref source) = self.source_package
-                    && source.can_patch_surgically(
-                        &self.sheets,
-                        &self.pivot_tables,
-                        self.vba_project.as_ref(),
-                    )
+                    && source.can_patch_surgically(&self.sheets)
                 {
                     return source
-                        .patch_to_bytes(&self.sheets, &self.charts, &self.defined_names)
+                        .patch_to_bytes(
+                            &self.sheets,
+                            &self.charts,
+                            &self.pivot_tables,
+                            self.vba_project.as_ref(),
+                            &self.defined_names,
+                        )
                         .map_err(Error::Xlsx);
                 }
                 crate::core::xlsx::export_xlsx_data_with_defined_names(

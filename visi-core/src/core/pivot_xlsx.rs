@@ -10,8 +10,6 @@ use crate::core::xlsx::{
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
-const NS_MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-const NS_R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const REL_PIVOT_CACHE_DEF: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition";
 const REL_PIVOT_CACHE_RECORDS: &str =
@@ -27,11 +25,11 @@ fn a1_range(r0: usize, c0: usize, r1: usize, c1: usize) -> String {
     format!("{}:{}", a1_cell(r0, c0), a1_cell(r1, c1))
 }
 
-struct PivotXmlUnit {
-    cache_definition_xml: String,
-    cache_records_xml: String,
-    pivot_table_xml: String,
-    dest_sheet_id: u64,
+pub(crate) struct PivotXmlUnit {
+    pub(crate) cache_definition_xml: String,
+    pub(crate) cache_records_xml: String,
+    pub(crate) pivot_table_xml: String,
+    pub(crate) dest_sheet_id: u64,
 }
 
 use crate::core::pivot::field_is_numeric as is_all_numeric;
@@ -200,11 +198,14 @@ fn subtotal_token(agg: PivotAggregation) -> &'static str {
     }
 }
 
-fn build_pivot_xml_unit(
+pub(crate) fn build_pivot_xml_unit(
     sheets: &[&Sheet],
     pivot: &PivotTable,
     cache_id: usize,
+    flavor: crate::core::xlsx::xml_util::NamespaceFlavor,
 ) -> Result<PivotXmlUnit, String> {
+    let ns_main = flavor.spreadsheetml();
+    let ns_r = flavor.office_rels();
     let (src_sheet, col_names, sheet_cols, data_rows) =
         pivot::resolve_source(sheets, &pivot.source)?;
 
@@ -370,8 +371,8 @@ fn build_pivot_xml_unit(
 <cacheSource type=\"worksheet\"><worksheetSource ref=\"{src_ref}\" sheet=\"{src_sheet}\"/></cacheSource>\
 <cacheFields count=\"{field_count}\">{cache_fields_xml}</cacheFields>\
 </pivotCacheDefinition>",
-        ns = NS_MAIN,
-        ns_r = NS_R,
+        ns = ns_main,
+        ns_r = ns_r,
         count = records.len(),
         src_ref = escape_xml(&src_ref),
         src_sheet = escape_xml(&src_sheet_name),
@@ -381,7 +382,7 @@ fn build_pivot_xml_unit(
     let cache_records_xml_doc = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
 <pivotCacheRecords xmlns=\"{ns}\" count=\"{count}\">{records}</pivotCacheRecords>",
-        ns = NS_MAIN,
+        ns = ns_main,
         count = records.len(),
         records = cache_records_xml,
     );
@@ -551,7 +552,7 @@ outlineData=\"1\" multipleFieldFilters=\"0\" rowGrandTotals=\"{row_grand}\" colG
 {row_fields}{row_items}{col_fields}{col_items}{page_fields}{data_fields}\
 <pivotTableStyleInfo name=\"PivotStyleLight16\" showRowHeaders=\"1\" showColHeaders=\"1\" showLastColumn=\"1\"/>\
 </pivotTableDefinition>",
-        ns = NS_MAIN,
+        ns = ns_main,
         name = escape_xml(&pivot.name),
         cache_id = cache_id,
         row_grand = if pivot.grand_totals_row { "1" } else { "0" },
@@ -648,7 +649,12 @@ pub fn inject_pivot_tables(
     let mut units: Vec<PivotXmlUnit> = Vec::new();
     for pivot in pivots {
         if sheets.iter().any(|s| s.id == pivot.dest_sheet_id) {
-            units.push(build_pivot_xml_unit(&sheet_refs, pivot, units.len())?);
+            units.push(build_pivot_xml_unit(
+                &sheet_refs,
+                pivot,
+                units.len(),
+                crate::core::xlsx::xml_util::NamespaceFlavor::Transitional,
+            )?);
         }
     }
     if units.is_empty() {
