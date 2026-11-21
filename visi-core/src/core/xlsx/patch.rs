@@ -5,7 +5,8 @@ use crate::core::engine::{
     CellType, FreezePane, MergedCellRange, ResultData, Sheet, SheetVisibility,
 };
 use crate::core::opc::{
-    CT_SHARED_STRINGS, OpcPackage, REL_SHARED_STRINGS, Relationship, next_rid, rel_type_matches,
+    CT_COMMENTS, CT_SHARED_STRINGS, OpcPackage, REL_COMMENTS, REL_HYPERLINK, REL_SHARED_STRINGS,
+    Relationship, next_rid, rel_type_matches,
 };
 use crate::core::parser::col_idx_to_letters;
 use crate::core::pivot::PivotTable;
@@ -142,13 +143,7 @@ impl OoxmlSourceState {
             return false;
         }
         for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
-            if sheet.id != snap.sheet_id
-                || sheet.tables != snap.tables
-                || sheet.comments != snap.comments
-                || sheet.hyperlinks != snap.hyperlinks
-                || sheet.data_validations != snap.data_validations
-                || sheet.conditional_formats != snap.conditional_formats
-            {
+            if sheet.id != snap.sheet_id || sheet.tables != snap.tables {
                 return false;
             }
         }
@@ -253,6 +248,10 @@ impl OoxmlSourceState {
             let hidden_rows_changed = cur_hidden_rows != snap.hidden_rows;
             let merges_changed = sheet.merged_cells != snap.merged_cells;
             let freeze_changed = sheet.freeze_pane != snap.freeze_pane;
+            let comments_changed = sheet.comments != snap.comments;
+            let hyperlinks_changed = sheet.hyperlinks != snap.hyperlinks;
+            let validations_changed = sheet.data_validations != snap.data_validations;
+            let cf_changed = sheet.conditional_formats != snap.conditional_formats;
 
             if !cells_changed
                 && !cols_changed
@@ -260,7 +259,29 @@ impl OoxmlSourceState {
                 && !hidden_rows_changed
                 && !merges_changed
                 && !freeze_changed
+                && !comments_changed
+                && !hyperlinks_changed
+                && !validations_changed
+                && !cf_changed
             {
+                continue;
+            }
+
+            if comments_changed {
+                patch_comments(&mut pkg, &snap.part_path, &sheet.comments, self.flavor);
+            }
+
+            let ws_xml_changed = cells_changed
+                || cols_changed
+                || heights_changed
+                || hidden_rows_changed
+                || merges_changed
+                || freeze_changed
+                || hyperlinks_changed
+                || validations_changed
+                || cf_changed;
+
+            if !ws_xml_changed {
                 continue;
             }
 
@@ -279,6 +300,35 @@ impl OoxmlSourceState {
 
             if merges_changed {
                 patch_merge_cells(&mut doc.root, &sheet.merged_cells);
+            }
+
+            if cf_changed {
+                if styles_patcher.is_none() {
+                    styles_patcher = Some(StylesPatcher::load(
+                        &pkg,
+                        self.styles_part.as_deref(),
+                        self.flavor,
+                    ));
+                }
+                patch_conditional_formats(
+                    &mut doc.root,
+                    &sheet.conditional_formats,
+                    styles_patcher.as_mut().unwrap(),
+                );
+            }
+
+            if validations_changed {
+                patch_data_validations(&mut doc.root, &sheet.data_validations);
+            }
+
+            if hyperlinks_changed {
+                patch_hyperlinks(
+                    &mut doc.root,
+                    &mut pkg,
+                    &snap.part_path,
+                    &sheet.hyperlinks,
+                    self.flavor,
+                );
             }
 
             if cells_changed || heights_changed || hidden_rows_changed {
@@ -847,6 +897,273 @@ impl StylesPatcher {
         self.dirty = true;
         xf_idx
     }
+
+    fn register_dxf(&mut self, style: &CellStyle) -> u32 {
+        let dxfs = self
+            .doc
+            .root
+            .ensure_child_in_schema_order("dxfs", STYLESHEET_SCHEMA_ORDER);
+        let dxf_idx = dxfs.children_by_local("dxf").count() as u32;
+        let mut dxf_el = XmlElement::new(dxfs.qualified_child_name("dxf"));
+        let has_font = style.bold.unwrap_or(false)
+            || style.italic.unwrap_or(false)
+            || style.underline.unwrap_or(false)
+            || style.strikethrough.unwrap_or(false)
+            || style.font_color.is_some();
+        if has_font {
+            let mut font_el = XmlElement::new(dxf_el.qualified_child_name("font"));
+            if style.bold.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("b"),
+                )));
+            }
+            if style.italic.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("i"),
+                )));
+            }
+            if style.strikethrough.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("strike"),
+                )));
+            }
+            if style.underline.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("u"),
+                )));
+            }
+            if let Some(argb) = style.font_color.as_deref().and_then(parse_color_argb) {
+                let mut color_el = XmlElement::new(font_el.qualified_child_name("color"));
+                color_el.set_attr("rgb", argb);
+                font_el.children.push(XmlNode::Element(color_el));
+            }
+            dxf_el.children.push(XmlNode::Element(font_el));
+        }
+        if let Some(argb) = style.bg_color.as_deref().and_then(parse_color_argb) {
+            let mut fill_el = XmlElement::new(dxf_el.qualified_child_name("fill"));
+            let mut pf_el = XmlElement::new(fill_el.qualified_child_name("patternFill"));
+            let pat = style
+                .fill_pattern
+                .unwrap_or(crate::core::style::FillPattern::Solid)
+                .as_ooxml();
+            pf_el.set_attr("patternType", pat);
+            let mut bg_el = XmlElement::new(pf_el.qualified_child_name("bgColor"));
+            bg_el.set_attr("rgb", argb);
+            pf_el.children.push(XmlNode::Element(bg_el));
+            fill_el.children.push(XmlNode::Element(pf_el));
+            dxf_el.children.push(XmlNode::Element(fill_el));
+        }
+        dxfs.children.push(XmlNode::Element(dxf_el));
+        dxfs.set_attr("count", (dxf_idx + 1).to_string());
+        self.dirty = true;
+        dxf_idx
+    }
+}
+
+fn patch_conditional_formats(
+    ws_root: &mut XmlElement,
+    rules: &[crate::core::ConditionalFormatRule],
+    styles: &mut StylesPatcher,
+) {
+    ws_root.remove_children_by_local("conditionalFormatting");
+    for cf in rules {
+        let mut cf_el = XmlElement::new(ws_root.qualified_child_name("conditionalFormatting"));
+        cf_el.set_attr("sqref", cf.sqref.clone());
+        let mut rule_el = XmlElement::new(cf_el.qualified_child_name("cfRule"));
+        rule_el.set_attr("type", cf.rule_type.clone());
+        rule_el.set_attr("priority", cf.priority.to_string());
+        if let Some(ref op) = cf.operator {
+            rule_el.set_attr("operator", op.clone());
+        }
+        if let Some(ref style) = cf.style
+            && !style.is_empty()
+        {
+            let dxf_id = styles.register_dxf(style);
+            rule_el.set_attr("dxfId", dxf_id.to_string());
+        }
+        if cf.stop_if_true {
+            rule_el.set_attr("stopIfTrue", "1");
+        }
+        for formula in &cf.formulas {
+            let mut f_el = XmlElement::new(rule_el.qualified_child_name("formula"));
+            f_el.children.push(XmlNode::Text(formula.clone()));
+            rule_el.children.push(XmlNode::Element(f_el));
+        }
+        cf_el.children.push(XmlNode::Element(rule_el));
+        ws_root.insert_child_in_schema_order(cf_el, WORKSHEET_SCHEMA_ORDER);
+    }
+}
+
+fn patch_data_validations(ws_root: &mut XmlElement, rules: &[crate::core::DataValidationRule]) {
+    ws_root.remove_children_by_local("dataValidations");
+    if rules.is_empty() {
+        return;
+    }
+    let mut dvs_el = XmlElement::new(ws_root.qualified_child_name("dataValidations"));
+    dvs_el.set_attr("count", rules.len().to_string());
+    for dv in rules {
+        let mut dv_el = XmlElement::new(dvs_el.qualified_child_name("dataValidation"));
+        dv_el.set_attr("type", dv.kind.as_ooxml());
+        dv_el.set_attr("sqref", dv.sqref.clone());
+        if let Some(op) = dv.operator {
+            dv_el.set_attr("operator", op.as_ooxml());
+        }
+        if dv.allow_blank {
+            dv_el.set_attr("allowBlank", "1");
+        }
+        if dv.show_input_message {
+            dv_el.set_attr("showInputMessage", "1");
+        }
+        if dv.show_error_message {
+            dv_el.set_attr("showErrorMessage", "1");
+        }
+        if let Some(ref t) = dv.prompt_title {
+            dv_el.set_attr("promptTitle", t.clone());
+        }
+        if let Some(ref p) = dv.prompt {
+            dv_el.set_attr("prompt", p.clone());
+        }
+        if let Some(ref t) = dv.error_title {
+            dv_el.set_attr("errorTitle", t.clone());
+        }
+        if let Some(ref e) = dv.error {
+            dv_el.set_attr("error", e.clone());
+        }
+        if let Some(ref f1) = dv.formula1 {
+            let mut f1_el = XmlElement::new(dv_el.qualified_child_name("formula1"));
+            f1_el.children.push(XmlNode::Text(f1.clone()));
+            dv_el.children.push(XmlNode::Element(f1_el));
+        }
+        if let Some(ref f2) = dv.formula2 {
+            let mut f2_el = XmlElement::new(dv_el.qualified_child_name("formula2"));
+            f2_el.children.push(XmlNode::Text(f2.clone()));
+            dv_el.children.push(XmlNode::Element(f2_el));
+        }
+        dvs_el.children.push(XmlNode::Element(dv_el));
+    }
+    ws_root.insert_child_in_schema_order(dvs_el, WORKSHEET_SCHEMA_ORDER);
+}
+
+fn patch_hyperlinks(
+    ws_root: &mut XmlElement,
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    hyperlinks: &[crate::core::CellHyperlink],
+    flavor: NamespaceFlavor,
+) {
+    ws_root.remove_children_by_local("hyperlinks");
+    let mut rels = pkg.read_relationships(ws_part);
+    let before_rels = rels.len();
+    rels.retain(|r| !rel_type_matches(&r.rel_type, "hyperlink"));
+    let mut rels_changed = rels.len() != before_rels;
+
+    if !hyperlinks.is_empty() {
+        let mut hls_el = XmlElement::new(ws_root.qualified_child_name("hyperlinks"));
+        let mut needs_rel_ns = false;
+        for hl in hyperlinks {
+            let range_ref = if hl.start_row == hl.end_row && hl.start_col == hl.end_col {
+                format!("{}{}", col_idx_to_letters(hl.start_col), hl.start_row + 1)
+            } else {
+                format!(
+                    "{}{}:{}{}",
+                    col_idx_to_letters(hl.start_col),
+                    hl.start_row + 1,
+                    col_idx_to_letters(hl.end_col),
+                    hl.end_row + 1
+                )
+            };
+            let mut hl_el = XmlElement::new(hls_el.qualified_child_name("hyperlink"));
+            hl_el.set_attr("ref", range_ref);
+            if let Some(ref target) = hl.target {
+                let rid = next_rid(&rels);
+                rels.push(Relationship {
+                    id: rid.clone(),
+                    rel_type: REL_HYPERLINK.to_string(),
+                    target: target.clone(),
+                    target_mode: Some("External".to_string()),
+                });
+                rels_changed = true;
+                needs_rel_ns = true;
+                hl_el.set_attr("r:id", rid);
+            }
+            if let Some(ref loc) = hl.location {
+                hl_el.set_attr("location", loc.clone());
+            }
+            if let Some(ref disp) = hl.display {
+                hl_el.set_attr("display", disp.clone());
+            }
+            if let Some(ref tip) = hl.tooltip {
+                hl_el.set_attr("tooltip", tip.clone());
+            }
+            hls_el.children.push(XmlNode::Element(hl_el));
+        }
+        if needs_rel_ns && ws_root.attr("xmlns:r").is_none() {
+            ws_root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        ws_root.insert_child_in_schema_order(hls_el, WORKSHEET_SCHEMA_ORDER);
+    }
+
+    if rels_changed {
+        pkg.write_relationships(ws_part, &rels);
+    }
+}
+
+fn patch_comments(
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    comments: &[crate::core::CellComment],
+    flavor: NamespaceFlavor,
+) {
+    let mut rels = pkg.read_relationships(ws_part);
+    let existing_part = rels
+        .iter()
+        .find(|r| rel_type_matches(&r.rel_type, "comments") && !r.is_external())
+        .map(|r| r.resolved_target(ws_part));
+
+    if comments.is_empty() {
+        let before = rels.len();
+        rels.retain(|r| !rel_type_matches(&r.rel_type, "comments"));
+        if rels.len() != before {
+            pkg.write_relationships(ws_part, &rels);
+        }
+        if let Some(part) = existing_part {
+            pkg.remove_part(&part);
+            let mut ct = pkg.read_content_types();
+            if ct.remove_override(&part) {
+                pkg.write_content_types(&ct);
+            }
+        }
+        return;
+    }
+
+    let target_part = if let Some(part) = existing_part {
+        part
+    } else {
+        let mut idx = 1usize;
+        let candidate = loop {
+            let p = format!("xl/comments{idx}.xml");
+            if !pkg.has_part(&p) {
+                break p;
+            }
+            idx += 1;
+        };
+        let rid = next_rid(&rels);
+        let rel_target = format!("../{}", candidate.trim_start_matches("xl/"));
+        rels.push(Relationship {
+            id: rid,
+            rel_type: REL_COMMENTS.to_string(),
+            target: rel_target,
+            target_mode: None,
+        });
+        pkg.write_relationships(ws_part, &rels);
+        let mut ct = pkg.read_content_types();
+        ct.set_override(&candidate, CT_COMMENTS);
+        pkg.write_content_types(&ct);
+        candidate
+    };
+
+    let xml = crate::core::xlsx::comments::write_comments_xml(comments, flavor);
+    pkg.set_part(target_part, xml.into_bytes());
 }
 
 fn patch_freeze_pane(ws_root: &mut XmlElement, freeze: Option<FreezePane>) {

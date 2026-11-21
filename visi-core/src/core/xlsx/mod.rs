@@ -3941,4 +3941,96 @@ mod tests {
             Some("360".to_string())
         );
     }
+
+    #[test]
+    fn test_surgical_patch_annotations_preserves_unmodeled_parts_and_ext_lst() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "50".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-ME}\"><customMarker/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet1.xml", ws_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded.sheets[0].comments.push(crate::core::CellComment {
+            row: 0,
+            col: 0,
+            author: "Alice".to_string(),
+            text: "Surgical note".to_string(),
+        });
+        loaded.sheets[0]
+            .hyperlinks
+            .push(crate::core::CellHyperlink {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 0,
+                target: Some("https://example.com".to_string()),
+                location: None,
+                display: Some("Link".to_string()),
+                tooltip: None,
+            });
+        loaded.sheets[0]
+            .data_validations
+            .push(crate::core::DataValidationRule {
+                sqref: "A1".to_string(),
+                kind: crate::core::DataValidationKind::Whole,
+                operator: Some(crate::core::DataValidationOperator::Between),
+                allow_blank: true,
+                formula1: Some("1".to_string()),
+                formula2: Some("100".to_string()),
+                ..Default::default()
+            });
+        loaded.sheets[0]
+            .conditional_formats
+            .push(crate::core::ConditionalFormatRule {
+                sqref: "A1".to_string(),
+                rule_type: "cellIs".to_string(),
+                operator: Some("greaterThan".to_string()),
+                priority: 1,
+                stop_if_true: false,
+                formulas: vec!["10".to_string()],
+                style: Some(crate::core::CellStyle {
+                    bold: Some(true),
+                    bg_color: Some("#FFEEAA".to_string()),
+                    ..Default::default()
+                }),
+            });
+
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        let patched_ws = patched_pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(patched_ws.contains("KEEP-ME"), "{patched_ws}");
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        assert_eq!(reloaded.sheets[0].comments.len(), 1);
+        assert_eq!(reloaded.sheets[0].comments[0].text, "Surgical note");
+        assert_eq!(reloaded.sheets[0].hyperlinks.len(), 1);
+        assert_eq!(
+            reloaded.sheets[0].hyperlinks[0].target.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(reloaded.sheets[0].data_validations.len(), 1);
+        assert_eq!(reloaded.sheets[0].conditional_formats.len(), 1);
+    }
 }
