@@ -117,6 +117,7 @@ pub enum OnErrorKind {
     GoTo(String),
     ResumeNext,
     Disable,
+    ClearError,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +301,11 @@ pub enum Stmt {
     Attribute {
         name: String,
         values: Vec<Expr>,
+        pos: Pos,
+    },
+    Conditional {
+        branches: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
         pos: Pos,
     },
 }

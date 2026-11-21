@@ -1,7 +1,11 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
 use super::host::ObjRef;
+
+const MAX_ARRAY_ELEMENTS: usize = 4_000_000;
+const DECIMAL_MAX_MANTISSA: i128 = 79_228_162_514_264_337_593_543_950_335;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VbaError {
@@ -52,39 +56,212 @@ pub type VResult<T> = Result<T, VbaError>;
 pub enum Variant {
     Empty,
     Null,
+    Missing,
     Boolean(bool),
+    Byte(u8),
     Integer(i16),
     Long(i32),
+    LongLong(i64),
     Single(f32),
     Double(f64),
     Currency(i64),
+    Decimal(Box<(i128, u8)>),
     Date(f64),
     Str(String),
     ErrValue(i32),
     Object(ObjRef),
     Array(Rc<VarArray>),
+    Udt(Rc<VarUdt>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarUdt {
+    pub type_name: String,
+    pub fields: HashMap<String, Variant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarArray {
-    pub rows: usize,
-    pub cols: usize,
+    pub dims: Vec<(i32, i32)>,
     pub values: Vec<Variant>,
+    pub is_fixed: bool,
+    pub elem_type: Option<String>,
 }
 
 impl VarArray {
-    pub fn get(&self, row: usize, col: usize) -> VResult<Variant> {
-        if row < 1 || col < 1 || row > self.rows || col > self.cols {
-            return Err(VbaError::subscript());
+    pub fn new_2d_1based(rows: usize, cols: usize, values: Vec<Variant>) -> Self {
+        Self {
+            dims: vec![(1, rows as i32), (1, cols as i32)],
+            values,
+            is_fixed: false,
+            elem_type: None,
         }
-        Ok(self.values[(row - 1) * self.cols + (col - 1)].clone())
     }
 
-    pub fn ubound(&self, dim: usize) -> VResult<usize> {
-        match dim {
-            1 => Ok(self.rows),
-            2 => Ok(self.cols),
-            _ => Err(VbaError::subscript()),
+    pub fn new_1d(lower: i32, values: Vec<Variant>) -> Self {
+        let upper = lower.saturating_add(values.len() as i32).saturating_sub(1);
+        Self {
+            dims: vec![(lower, upper)],
+            values,
+            is_fixed: false,
+            elem_type: None,
+        }
+    }
+
+    pub fn unallocated(elem_type: Option<String>) -> Self {
+        Self {
+            dims: Vec::new(),
+            values: Vec::new(),
+            is_fixed: false,
+            elem_type,
+        }
+    }
+
+    pub fn new(
+        dims: Vec<(i32, i32)>,
+        default: Variant,
+        is_fixed: bool,
+        elem_type: Option<String>,
+    ) -> VResult<Self> {
+        let total = Self::checked_len(&dims)?;
+        Ok(Self {
+            dims,
+            values: vec![default; total],
+            is_fixed,
+            elem_type,
+        })
+    }
+
+    fn checked_len(dims: &[(i32, i32)]) -> VResult<usize> {
+        if dims.is_empty() {
+            return Ok(0);
+        }
+        let mut total: usize = 1;
+        for &(lo, hi) in dims {
+            if hi < lo {
+                if dims.len() == 1 && hi == lo - 1 {
+                    return Ok(0);
+                }
+                return Err(VbaError::subscript());
+            }
+            let span = (i64::from(hi) - i64::from(lo) + 1) as usize;
+            total = total
+                .checked_mul(span)
+                .ok_or_else(|| VbaError::new(7, "Out of memory"))?;
+            if total > MAX_ARRAY_ELEMENTS {
+                return Err(VbaError::new(7, "Out of memory"));
+            }
+        }
+        Ok(total)
+    }
+
+    pub fn flat_index(&self, indices: &[i32]) -> VResult<usize> {
+        if self.dims.is_empty() || indices.len() != self.dims.len() {
+            return Err(VbaError::subscript());
+        }
+        let mut flat = 0usize;
+        for (&idx, &(lo, hi)) in indices.iter().zip(self.dims.iter()) {
+            if idx < lo || idx > hi {
+                return Err(VbaError::subscript());
+            }
+            let span = (i64::from(hi) - i64::from(lo) + 1) as usize;
+            let offset = (i64::from(idx) - i64::from(lo)) as usize;
+            flat = flat * span + offset;
+        }
+        Ok(flat)
+    }
+
+    pub fn get_nd(&self, indices: &[i32]) -> VResult<Variant> {
+        let idx = self.flat_index(indices)?;
+        self.values
+            .get(idx)
+            .cloned()
+            .ok_or_else(VbaError::subscript)
+    }
+
+    pub fn set_nd(&mut self, indices: &[i32], val: Variant) -> VResult<()> {
+        let idx = self.flat_index(indices)?;
+        let slot = self.values.get_mut(idx).ok_or_else(VbaError::subscript)?;
+        *slot = val;
+        Ok(())
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> VResult<Variant> {
+        self.get_nd(&[row as i32, col as i32])
+    }
+
+    pub fn lbound(&self, dim: usize) -> VResult<i32> {
+        if dim == 0 || dim > self.dims.len() {
+            return Err(VbaError::subscript());
+        }
+        Ok(self.dims[dim - 1].0)
+    }
+
+    pub fn ubound(&self, dim: usize) -> VResult<i32> {
+        if dim == 0 || dim > self.dims.len() {
+            return Err(VbaError::subscript());
+        }
+        Ok(self.dims[dim - 1].1)
+    }
+
+    pub fn redim(
+        &mut self,
+        new_dims: Vec<(i32, i32)>,
+        preserve: bool,
+        default: Variant,
+    ) -> VResult<()> {
+        if self.is_fixed {
+            return Err(VbaError::new(
+                10,
+                "This array is fixed or temporarily locked",
+            ));
+        }
+        let new_total = Self::checked_len(&new_dims)?;
+        if !preserve || self.dims.is_empty() {
+            self.dims = new_dims;
+            self.values = vec![default; new_total];
+            return Ok(());
+        }
+        if new_dims.len() != self.dims.len() {
+            return Err(VbaError::subscript());
+        }
+        let last = new_dims.len() - 1;
+        if new_dims[..last] != self.dims[..last] {
+            return Err(VbaError::subscript());
+        }
+        if new_dims[last].0 != self.dims[last].0 {
+            return Err(VbaError::subscript());
+        }
+        let old_last_span =
+            (i64::from(self.dims[last].1) - i64::from(self.dims[last].0) + 1).max(0) as usize;
+        let new_last_span =
+            (i64::from(new_dims[last].1) - i64::from(new_dims[last].0) + 1).max(0) as usize;
+        let outer_count = self
+            .values
+            .len()
+            .checked_div(old_last_span)
+            .unwrap_or_else(|| new_total.checked_div(new_last_span).unwrap_or(0));
+        let copy_span = old_last_span.min(new_last_span);
+        let mut new_values = vec![default; new_total];
+        for outer in 0..outer_count {
+            let old_base = outer * old_last_span;
+            let new_base = outer * new_last_span;
+            new_values[new_base..new_base + copy_span]
+                .clone_from_slice(&self.values[old_base..old_base + copy_span]);
+        }
+        self.dims = new_dims;
+        self.values = new_values;
+        Ok(())
+    }
+
+    pub fn erase(&mut self, default: Variant) {
+        if self.is_fixed {
+            for slot in &mut self.values {
+                *slot = default.clone();
+            }
+        } else {
+            self.dims.clear();
+            self.values.clear();
         }
     }
 }
@@ -110,23 +287,29 @@ impl Variant {
         match self {
             Variant::Empty => "Empty",
             Variant::Null => "Null",
+            Variant::Missing => "Error",
             Variant::Boolean(_) => "Boolean",
+            Variant::Byte(_) => "Byte",
             Variant::Integer(_) => "Integer",
             Variant::Long(_) => "Long",
+            Variant::LongLong(_) => "LongLong",
             Variant::Single(_) => "Single",
             Variant::Double(_) => "Double",
             Variant::Currency(_) => "Currency",
+            Variant::Decimal(_) => "Decimal",
             Variant::Date(_) => "Date",
             Variant::Str(_) => "String",
             Variant::ErrValue(_) => "Error",
             Variant::Object(o) => o.type_name(),
             Variant::Array(_) => "Variant()",
+            Variant::Udt(_) => "Object",
         }
     }
 
     pub fn error_number(&self) -> Option<i32> {
         match self {
             Variant::ErrValue(n) => Some(*n),
+            Variant::Missing => Some(448),
             _ => None,
         }
     }
@@ -148,13 +331,23 @@ impl Variant {
 
     fn num_class(&self) -> Option<NumClass> {
         Some(match self {
-            Variant::Empty | Variant::Boolean(_) | Variant::Integer(_) => NumClass::Integer,
+            Variant::Empty | Variant::Boolean(_) | Variant::Byte(_) | Variant::Integer(_) => {
+                NumClass::Integer
+            }
             Variant::Long(_) => NumClass::Long,
             Variant::Currency(_) => NumClass::Currency,
             Variant::Single(_) => NumClass::Single,
-            Variant::Double(_) | Variant::Date(_) | Variant::Str(_) => NumClass::Double,
+            Variant::LongLong(_)
+            | Variant::Double(_)
+            | Variant::Decimal(_)
+            | Variant::Date(_)
+            | Variant::Str(_) => NumClass::Double,
             Variant::Null => return None,
-            Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => NumClass::Double,
+            Variant::Missing
+            | Variant::ErrValue(_)
+            | Variant::Object(_)
+            | Variant::Array(_)
+            | Variant::Udt(_) => NumClass::Double,
         })
     }
 
@@ -168,14 +361,21 @@ impl Variant {
                     0.0
                 }
             }
+            Variant::Byte(v) => *v as f64,
             Variant::Integer(v) => *v as f64,
             Variant::Long(v) => *v as f64,
+            Variant::LongLong(v) => *v as f64,
             Variant::Single(v) => *v as f64,
             Variant::Double(v) | Variant::Date(v) => *v,
             Variant::Currency(v) => *v as f64 / 10_000.0,
+            Variant::Decimal(d) => (d.0 as f64) / 10f64.powi(d.1 as i32),
             Variant::Str(s) => parse_vba_number(s)?,
             Variant::Null => return Err(VbaError::invalid_null()),
-            Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => {
+            Variant::Missing
+            | Variant::ErrValue(_)
+            | Variant::Object(_)
+            | Variant::Array(_)
+            | Variant::Udt(_) => {
                 return Err(VbaError::type_mismatch());
             }
         })
@@ -186,15 +386,21 @@ impl Variant {
             Variant::Empty => String::new(),
             Variant::Null => return Err(VbaError::invalid_null()),
             Variant::Boolean(b) => if *b { "True" } else { "False" }.to_string(),
+            Variant::Byte(v) => v.to_string(),
             Variant::Integer(v) => v.to_string(),
             Variant::Long(v) => v.to_string(),
+            Variant::LongLong(v) => v.to_string(),
             Variant::Single(v) => format_number(*v as f64),
             Variant::Double(v) => format_number(*v),
             Variant::Currency(v) => format_currency(*v),
+            Variant::Decimal(d) => format_decimal(d.0, d.1),
             Variant::Date(v) => format_vba_date(*v),
             Variant::Str(s) => s.clone(),
             Variant::ErrValue(n) => format!("Error {n}"),
-            Variant::Object(_) | Variant::Array(_) => return Err(VbaError::type_mismatch()),
+            Variant::Missing => "Error 448".to_string(),
+            Variant::Object(_) | Variant::Array(_) | Variant::Udt(_) => {
+                return Err(VbaError::type_mismatch());
+            }
         })
     }
 
@@ -435,6 +641,107 @@ pub fn format_number(v: f64) -> String {
     format!("{mantissa}E{sign}{:02}", exp.abs())
 }
 
+pub fn to_decimal(v: &Variant) -> VResult<Variant> {
+    match v {
+        Variant::Decimal(d) => Ok(Variant::Decimal(d.clone())),
+        Variant::Str(s) => parse_decimal_str(s),
+        Variant::Empty => Ok(Variant::Decimal(Box::new((0, 0)))),
+        Variant::Boolean(b) => Ok(Variant::Decimal(Box::new((if *b { -1 } else { 0 }, 0)))),
+        Variant::Byte(n) => Ok(Variant::Decimal(Box::new((i128::from(*n), 0)))),
+        Variant::Integer(n) => Ok(Variant::Decimal(Box::new((i128::from(*n), 0)))),
+        Variant::Long(n) => Ok(Variant::Decimal(Box::new((i128::from(*n), 0)))),
+        Variant::LongLong(n) => Ok(Variant::Decimal(Box::new((i128::from(*n), 0)))),
+        Variant::Currency(c) => Ok(Variant::Decimal(Box::new((i128::from(*c), 4)))),
+        Variant::Single(f) => parse_decimal_str(&format_number(*f as f64)),
+        Variant::Double(f) | Variant::Date(f) => parse_decimal_str(&format_number(*f)),
+        Variant::Null => Err(VbaError::invalid_null()),
+        Variant::Missing
+        | Variant::ErrValue(_)
+        | Variant::Object(_)
+        | Variant::Array(_)
+        | Variant::Udt(_) => Err(VbaError::type_mismatch()),
+    }
+}
+
+fn parse_decimal_str(s: &str) -> VResult<Variant> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Err(VbaError::type_mismatch());
+    }
+    let (neg, rest) = if let Some(r) = t.strip_prefix('-') {
+        (true, r)
+    } else if let Some(r) = t.strip_prefix('+') {
+        (false, r)
+    } else {
+        (false, t)
+    };
+    let (mantissa_part, exp_val): (&str, i32) = if let Some(idx) = rest.find(['e', 'E', 'd', 'D']) {
+        let e = rest[idx + 1..]
+            .parse::<i32>()
+            .map_err(|_| VbaError::type_mismatch())?;
+        (&rest[..idx], e)
+    } else {
+        (rest, 0)
+    };
+    let mut digits = String::new();
+    let mut frac_digits: i32 = 0;
+    let mut seen_dot = false;
+    for ch in mantissa_part.chars() {
+        if ch == '.' && !seen_dot {
+            seen_dot = true;
+        } else if ch.is_ascii_digit() {
+            digits.push(ch);
+            if seen_dot {
+                frac_digits += 1;
+            }
+        } else {
+            return Err(VbaError::type_mismatch());
+        }
+    }
+    if digits.is_empty() {
+        return Err(VbaError::type_mismatch());
+    }
+    let mut scale = frac_digits - exp_val;
+    let mut m: i128 = digits.parse().map_err(|_| VbaError::overflow())?;
+    while scale < 0 {
+        m = m.checked_mul(10).ok_or_else(VbaError::overflow)?;
+        scale += 1;
+    }
+    while scale > 28 {
+        m /= 10;
+        scale -= 1;
+    }
+    if m > DECIMAL_MAX_MANTISSA {
+        return Err(VbaError::overflow());
+    }
+    if neg {
+        m = -m;
+    }
+    Ok(Variant::Decimal(Box::new((m, scale as u8))))
+}
+
+fn format_decimal(m: i128, scale: u8) -> String {
+    if scale == 0 {
+        return m.to_string();
+    }
+    let neg = m < 0;
+    let abs = m.unsigned_abs();
+    let div = 10u128.pow(u32::from(scale));
+    let whole = abs / div;
+    let frac = abs % div;
+    if frac == 0 {
+        return if neg && whole > 0 {
+            format!("-{whole}")
+        } else {
+            whole.to_string()
+        };
+    }
+    let frac_str = format!("{:0width$}", frac, width = scale as usize);
+    let frac_str = frac_str.trim_end_matches('0');
+    let sign = if neg { "-" } else { "" };
+    format!("{sign}{whole}.{frac_str}")
+}
+
 fn format_currency(scaled: i64) -> String {
     let whole = scaled / 10_000;
     let frac = (scaled % 10_000).abs();
@@ -481,8 +788,8 @@ fn keep_date(lhs: &Variant, rhs: &Variant, result: Variant) -> VResult<Variant> 
 }
 
 pub fn format_vba_date(serial: f64) -> String {
-    let days = serial.floor();
-    let frac = serial - days;
+    let days = serial.trunc();
+    let frac = serial.fract().abs();
     let date_part = if days == 0.0 {
         None
     } else {
@@ -820,10 +1127,28 @@ pub fn compare_ctx(
     lhs_kind: Operand,
     rhs_kind: Operand,
 ) -> VResult<Option<std::cmp::Ordering>> {
+    compare_ctx_opt(lhs, rhs, lhs_kind, rhs_kind, false)
+}
+
+pub fn compare_ctx_opt(
+    lhs: &Variant,
+    rhs: &Variant,
+    lhs_kind: Operand,
+    rhs_kind: Operand,
+    text_compare: bool,
+) -> VResult<Option<std::cmp::Ordering>> {
     use std::cmp::Ordering;
     if lhs.is_null() || rhs.is_null() {
         return Ok(None);
     }
+
+    let cmp_str = |a: &str, b: &str| -> Ordering {
+        if text_compare {
+            a.to_lowercase().cmp(&b.to_lowercase())
+        } else {
+            a.cmp(b)
+        }
+    };
 
     let both_stringy = matches!(
         (lhs, rhs),
@@ -832,7 +1157,7 @@ pub fn compare_ctx(
             | (Variant::Empty, Variant::Str(_))
     );
     if both_stringy {
-        return Ok(Some(lhs.to_vba_string()?.cmp(&rhs.to_vba_string()?)));
+        return Ok(Some(cmp_str(&lhs.to_vba_string()?, &rhs.to_vba_string()?)));
     }
 
     let numeric = |v: &Variant| -> VResult<f64> { v.to_f64() };
@@ -860,7 +1185,7 @@ pub fn compare_ctx(
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
                 if str_kind != Operand::Runtime {
-                    let ord = text.as_str().cmp(other.to_vba_string()?.as_str());
+                    let ord = cmp_str(text.as_str(), other.to_vba_string()?.as_str());
                     return Ok(Some(if str_on_left { ord } else { ord.reverse() }));
                 }
             }
@@ -902,7 +1227,7 @@ pub fn compare_ctx(
                     Err(_) => Ordering::Greater,
                 }
             } else if str_typed {
-                text.as_str().cmp(other.to_vba_string()?.as_str())
+                cmp_str(text.as_str(), other.to_vba_string()?.as_str())
             } else {
                 Ordering::Greater
             };
@@ -922,6 +1247,122 @@ fn cmp_f64(a: f64, b: f64) -> std::cmp::Ordering {
 
 pub fn compare(lhs: &Variant, rhs: &Variant) -> VResult<Option<std::cmp::Ordering>> {
     compare_ctx(lhs, rhs, Operand::Runtime, Operand::Runtime)
+}
+
+#[derive(Debug, Clone)]
+enum LikeToken {
+    AnyZeroOrMore,
+    AnyChar,
+    AnyDigit,
+    Literal(char),
+    CharClass {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+    },
+}
+
+fn parse_like_pattern(pattern: &str, text_compare: bool) -> VResult<Vec<LikeToken>> {
+    let chars: Vec<char> = if text_compare {
+        pattern.to_lowercase().chars().collect()
+    } else {
+        pattern.chars().collect()
+    };
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => {
+                tokens.push(LikeToken::AnyZeroOrMore);
+                i += 1;
+            }
+            '?' => {
+                tokens.push(LikeToken::AnyChar);
+                i += 1;
+            }
+            '#' => {
+                tokens.push(LikeToken::AnyDigit);
+                i += 1;
+            }
+            '[' => {
+                i += 1;
+                let mut negated = false;
+                if i < chars.len() && chars[i] == '!' {
+                    negated = true;
+                    i += 1;
+                }
+                let mut ranges = Vec::new();
+                let mut closed = false;
+                while i < chars.len() {
+                    if chars[i] == ']' {
+                        closed = true;
+                        i += 1;
+                        break;
+                    }
+                    let start = chars[i];
+                    if i + 2 < chars.len() && chars[i + 1] == '-' && chars[i + 2] != ']' {
+                        let end = chars[i + 2];
+                        if start > end {
+                            return Err(VbaError::new(93, "Invalid pattern string"));
+                        }
+                        ranges.push((start, end));
+                        i += 3;
+                    } else {
+                        ranges.push((start, start));
+                        i += 1;
+                    }
+                }
+                if !closed {
+                    return Err(VbaError::new(93, "Invalid pattern string"));
+                }
+                if !ranges.is_empty() {
+                    tokens.push(LikeToken::CharClass { negated, ranges });
+                } else if !negated {
+                    continue;
+                } else {
+                    tokens.push(LikeToken::Literal('!'));
+                }
+            }
+            c => {
+                tokens.push(LikeToken::Literal(c));
+                i += 1;
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+pub fn vba_like(text: &str, pattern: &str, text_compare: bool) -> VResult<bool> {
+    let tokens = parse_like_pattern(pattern, text_compare)?;
+    let s: Vec<char> = if text_compare {
+        text.to_lowercase().chars().collect()
+    } else {
+        text.chars().collect()
+    };
+    let n = s.len();
+    let m = tokens.len();
+    let mut dp = vec![vec![false; m + 1]; n + 1];
+    dp[0][0] = true;
+    for j in 1..=m {
+        if matches!(tokens[j - 1], LikeToken::AnyZeroOrMore) {
+            dp[0][j] = dp[0][j - 1];
+        }
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            dp[i][j] = match &tokens[j - 1] {
+                LikeToken::AnyZeroOrMore => dp[i][j - 1] || dp[i - 1][j],
+                LikeToken::AnyChar => dp[i - 1][j - 1],
+                LikeToken::AnyDigit => s[i - 1].is_ascii_digit() && dp[i - 1][j - 1],
+                LikeToken::Literal(c) => s[i - 1] == *c && dp[i - 1][j - 1],
+                LikeToken::CharClass { negated, ranges } => {
+                    let ch = s[i - 1];
+                    let in_set = ranges.iter().any(|&(lo, hi)| ch >= lo && ch <= hi);
+                    (in_set != *negated) && dp[i - 1][j - 1]
+                }
+            };
+        }
+    }
+    Ok(dp[n][m])
 }
 
 #[cfg(test)]

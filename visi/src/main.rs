@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::io::IsTerminal;
 use visi::cli::{
     CellTypeArg, ChartArgs, ChartSubcommands, ChartTypeArg, CheckArgs, Cli, ColArgs,
     ColSubcommands, Commands, EvalArgs, ExportArgs, ExportFormat, ImportArgs, InfoArgs, MacroArgs,
@@ -554,6 +555,13 @@ fn handle_eval(args: EvalArgs, quiet: bool, locale: Option<visi_core::core::Loca
         wb.set_locale(loc);
     }
 
+    if args.enable_macros && args.no_macros {
+        exit_with_error(
+            "Cannot specify both --enable-macros and --no-macros",
+            EXIT_USAGE_ERROR,
+        );
+    }
+
     if args.detect_cycles {
         let cycles = wb.detect_circular_references();
         if !cycles.is_empty() {
@@ -561,7 +569,37 @@ fn handle_eval(args: EvalArgs, quiet: bool, locale: Option<visi_core::core::Loca
         }
     }
 
-    wb.evaluate().unwrap_or_else(|e| {
+    let mut run_macros = args.enable_macros;
+    if !args.enable_macros && !args.no_macros {
+        let udfs = wb.referenced_vba_udfs();
+        if !udfs.is_empty() {
+            let names = udfs.join(", ");
+            if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() && !quiet {
+                eprint!(
+                    "Workbook calls VBA UDF(s) ({names}). Enable macro execution for this run? [y/N] "
+                );
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                let mut answer = String::new();
+                if std::io::stdin().read_line(&mut answer).is_ok() {
+                    let trimmed = answer.trim();
+                    if trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes") {
+                        run_macros = true;
+                    }
+                }
+            } else if !quiet {
+                eprintln!(
+                    "Note: Workbook calls VBA UDF(s) ({names}); pass --enable-macros to evaluate them."
+                );
+            }
+        }
+    }
+
+    let eval_res = if run_macros {
+        wb.evaluate_with_macros()
+    } else {
+        wb.evaluate()
+    };
+    eval_res.unwrap_or_else(|e| {
         exit_with_error(
             format!("Formula evaluation failed: {}", e),
             EXIT_ENGINE_ERROR,
