@@ -5,9 +5,9 @@ use crate::core::engine::{
     CellType, FreezePane, MergedCellRange, ResultData, Sheet, SheetVisibility,
 };
 use crate::core::opc::{
-    CT_CHART, CT_COMMENTS, CT_DRAWING, CT_SHARED_STRINGS, CT_TABLE, OpcPackage, REL_CHART,
-    REL_COMMENTS, REL_DRAWING, REL_HYPERLINK, REL_SHARED_STRINGS, REL_TABLE, Relationship,
-    next_rid, rel_type_matches, rels_path_for,
+    CT_CHART, CT_COMMENTS, CT_DRAWING, CT_SHARED_STRINGS, CT_TABLE, CT_WORKSHEET, OpcPackage,
+    REL_CHART, REL_COMMENTS, REL_DRAWING, REL_HYPERLINK, REL_SHARED_STRINGS, REL_TABLE,
+    REL_WORKSHEET, Relationship, next_rid, rel_type_matches, rels_path_for,
 };
 use crate::core::parser::col_idx_to_letters;
 use crate::core::pivot::PivotTable;
@@ -139,13 +139,16 @@ impl OoxmlSourceState {
         pivots: &[PivotTable],
         vba: Option<&VbaProject>,
     ) -> bool {
-        if sheets.len() != self.sheet_snapshots.len() {
+        if sheets.is_empty() {
             return false;
         }
-        for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
-            if sheet.id != snap.sheet_id {
-                return false;
-            }
+        let topology_changed = sheets.len() != self.sheet_snapshots.len()
+            || sheets
+                .iter()
+                .zip(self.sheet_snapshots.iter())
+                .any(|(sheet, snap)| sheet.id != snap.sheet_id);
+        if topology_changed && !self.pivots.is_empty() {
+            return false;
         }
         pivots == self.pivots.as_slice() && vba == self.vba.as_ref()
     }
@@ -158,14 +161,86 @@ impl OoxmlSourceState {
     ) -> Result<Vec<u8>, String> {
         let mut pkg = self.package.clone();
 
-        let cur_date1904 = sheets.iter().any(|s| s.date1904);
-        let defined_names_changed = defined_names != self.defined_names.as_slice();
-        let workbook_meta_changed = cur_date1904 != self.date1904
-            || defined_names_changed
+        let snap_by_id: HashMap<u64, (usize, &SheetSnapshot)> = self
+            .sheet_snapshots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.sheet_id, (i, s)))
+            .collect();
+        let active_ids: HashSet<u64> = sheets.iter().map(|s| s.id).collect();
+        let topology_changed = sheets.len() != self.sheet_snapshots.len()
             || sheets
                 .iter()
                 .zip(self.sheet_snapshots.iter())
-                .any(|(s, snap)| s.name != snap.name || s.visibility != snap.visibility);
+                .any(|(s, snap)| s.id != snap.sheet_id);
+
+        let mut added_sheet_info: HashMap<u64, (String, String)> = HashMap::new();
+        if topology_changed {
+            let mut wb_rels = pkg.read_relationships(&self.workbook_part);
+            let mut wb_rels_changed = false;
+            let mut ct = pkg.read_content_types();
+            let mut ct_changed = false;
+
+            for snap in &self.sheet_snapshots {
+                if !active_ids.contains(&snap.sheet_id) {
+                    remove_sheet_part_and_children(&mut pkg, &mut ct, &snap.part_path);
+                    ct_changed = true;
+                    let before = wb_rels.len();
+                    wb_rels.retain(|r| {
+                        !(rel_type_matches(&r.rel_type, "worksheet")
+                            && !r.is_external()
+                            && r.resolved_target(&self.workbook_part)
+                                .eq_ignore_ascii_case(&snap.part_path))
+                    });
+                    if wb_rels.len() != before {
+                        wb_rels_changed = true;
+                    }
+                }
+            }
+
+            for sheet in sheets {
+                if !snap_by_id.contains_key(&sheet.id) {
+                    let (_, new_part) =
+                        allocate_free_numbered_part(&pkg, "xl/worksheets/sheet", ".xml");
+                    let base_xml = format!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"{}\"><sheetData/></worksheet>",
+                        self.flavor.spreadsheetml()
+                    );
+                    pkg.set_part(&new_part, base_xml.into_bytes());
+                    ct.set_override(&new_part, CT_WORKSHEET);
+                    ct_changed = true;
+
+                    let rid = next_rid(&wb_rels);
+                    let target = new_part.trim_start_matches("xl/").to_string();
+                    wb_rels.push(Relationship {
+                        id: rid.clone(),
+                        rel_type: REL_WORKSHEET.to_string(),
+                        target,
+                        target_mode: None,
+                    });
+                    wb_rels_changed = true;
+                    added_sheet_info.insert(sheet.id, (rid, new_part));
+                }
+            }
+
+            if wb_rels_changed {
+                pkg.write_relationships(&self.workbook_part, &wb_rels);
+            }
+            if ct_changed {
+                pkg.write_content_types(&ct);
+            }
+        }
+
+        let cur_date1904 = sheets.iter().any(|s| s.date1904);
+        let defined_names_changed = defined_names != self.defined_names.as_slice();
+        let workbook_meta_changed = topology_changed
+            || cur_date1904 != self.date1904
+            || defined_names_changed
+            || sheets.iter().any(|s| {
+                snap_by_id
+                    .get(&s.id)
+                    .is_some_and(|(_, snap)| s.name != snap.name || s.visibility != snap.visibility)
+            });
         if workbook_meta_changed
             && let Some(wb_xml) = pkg.get_str(&self.workbook_part)
             && let Ok(mut doc) = XmlDocument::parse(&wb_xml)
@@ -206,24 +281,44 @@ impl OoxmlSourceState {
                 }
             }
             if let Some(sheets_el) = doc.root.child_mut("sheets") {
-                let mut sheet_idx = 0usize;
-                for node in &mut sheets_el.children {
+                let mut existing_sheet_els: Vec<XmlElement> = Vec::new();
+                for node in std::mem::take(&mut sheets_el.children) {
                     if let XmlNode::Element(el) = node
                         && el.local_name() == "sheet"
                     {
-                        if let Some(sheet) = sheets.get(sheet_idx) {
-                            el.set_attr("name", sheet.name.clone());
-                            match crate::core::xlsx::workbook::sheet_visibility_attr(
-                                sheet.visibility,
-                            ) {
-                                Some(state) => el.set_attr("state", state),
-                                None => {
-                                    el.remove_attr("state");
-                                }
-                            }
-                        }
-                        sheet_idx += 1;
+                        existing_sheet_els.push(el);
                     }
+                }
+                let mut max_sheet_id: u32 = existing_sheet_els
+                    .iter()
+                    .filter_map(|el| el.attr("sheetId").and_then(|v| v.parse::<u32>().ok()))
+                    .max()
+                    .unwrap_or(0);
+                let mut by_snap_idx: HashMap<usize, XmlElement> =
+                    existing_sheet_els.into_iter().enumerate().collect();
+
+                for sheet in sheets {
+                    let mut el = if let Some(&(snap_idx, _)) = snap_by_id.get(&sheet.id)
+                        && let Some(orig) = by_snap_idx.remove(&snap_idx)
+                    {
+                        orig
+                    } else {
+                        max_sheet_id += 1;
+                        let mut new_el = XmlElement::new(sheets_el.qualified_child_name("sheet"));
+                        new_el.set_attr("sheetId", max_sheet_id.to_string());
+                        if let Some((rid, _)) = added_sheet_info.get(&sheet.id) {
+                            new_el.set_attr("r:id", rid.clone());
+                        }
+                        new_el
+                    };
+                    el.set_attr("name", sheet.name.clone());
+                    match crate::core::xlsx::workbook::sheet_visibility_attr(sheet.visibility) {
+                        Some(state) => el.set_attr("state", state),
+                        None => {
+                            el.remove_attr("state");
+                        }
+                    }
+                    sheets_el.children.push(XmlNode::Element(el));
                 }
             }
             pkg.set_part(&self.workbook_part, doc.to_xml_string().into_bytes());
@@ -231,9 +326,37 @@ impl OoxmlSourceState {
 
         let mut sst_patcher: Option<SharedStringsPatcher> = None;
         let mut styles_patcher: Option<StylesPatcher> = None;
-        let mut any_formula_changed = defined_names_changed;
+        let mut any_formula_changed = defined_names_changed || topology_changed;
 
-        for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
+        let empty_snap_template = |sheet: &Sheet, part_path: String| SheetSnapshot {
+            sheet_id: sheet.id,
+            name: sheet.name.clone(),
+            visibility: sheet.visibility,
+            part_path,
+            cells: HashMap::new(),
+            column_widths: HashMap::new(),
+            hidden_cols: HashSet::new(),
+            row_heights: HashMap::new(),
+            hidden_rows: HashSet::new(),
+            merged_cells: Vec::new(),
+            freeze_pane: None,
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
+            tables: Vec::new(),
+        };
+
+        for sheet in sheets {
+            let owned_empty;
+            let snap: &SheetSnapshot = if let Some(&(_, existing)) = snap_by_id.get(&sheet.id) {
+                existing
+            } else if let Some((_, new_part)) = added_sheet_info.get(&sheet.id) {
+                owned_empty = empty_snap_template(sheet, new_part.clone());
+                &owned_empty
+            } else {
+                continue;
+            };
             let cur_cells = snapshot_cells(sheet);
             let cur_widths = snapshot_col_widths(sheet);
             let cur_hidden_cols = snapshot_hidden_cols(sheet);
@@ -1206,6 +1329,38 @@ fn patch_comments(
 
     let xml = crate::core::xlsx::comments::write_comments_xml(comments, flavor);
     pkg.set_part(target_part, xml.into_bytes());
+}
+
+fn remove_sheet_part_and_children(
+    pkg: &mut OpcPackage,
+    ct: &mut crate::core::opc::ContentTypes,
+    ws_part: &str,
+) {
+    let rels = pkg.read_relationships(ws_part);
+    for r in rels {
+        if r.is_external() {
+            continue;
+        }
+        let target = r.resolved_target(ws_part);
+        if rel_type_matches(&r.rel_type, "comments") || rel_type_matches(&r.rel_type, "table") {
+            pkg.remove_part(&target);
+            ct.remove_override(&target);
+        } else if rel_type_matches(&r.rel_type, "drawing") {
+            for drel in pkg.read_relationships(&target) {
+                if rel_type_matches(&drel.rel_type, "chart") && !drel.is_external() {
+                    let chart_part = drel.resolved_target(&target);
+                    pkg.remove_part(&chart_part);
+                    ct.remove_override(&chart_part);
+                }
+            }
+            pkg.remove_part(&rels_path_for(&target));
+            pkg.remove_part(&target);
+            ct.remove_override(&target);
+        }
+    }
+    pkg.remove_part(&rels_path_for(ws_part));
+    pkg.remove_part(ws_part);
+    ct.remove_override(ws_part);
 }
 
 fn chart_target_sheet_name<'a>(ch: &'a Chart, default_sheet: &'a str) -> &'a str {

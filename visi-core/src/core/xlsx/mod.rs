@@ -4160,4 +4160,61 @@ mod tests {
         assert_eq!(reloaded.charts.len(), 1);
         assert_eq!(reloaded.charts[0].title.as_deref(), Some("Order Qty"));
     }
+
+    #[test]
+    fn test_surgical_patch_sheet_add_and_delete_preserves_unmodeled_parts() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.add_sheet("Keep").unwrap();
+        base_mgr.add_sheet("DropMe").unwrap();
+        base_mgr.set_cell(0, 0, 0, "Root".to_string());
+        base_mgr.set_cell(1, 0, 0, "42".to_string());
+        base_mgr.set_cell(2, 0, 0, "Gone".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws2_xml = pkg.get_str("xl/worksheets/sheet2.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-SHEET-EXT}\"><tag/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet2.xml", ws2_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded.delete_sheet("DropMe").unwrap();
+        loaded.add_sheet("Added").unwrap();
+        let new_idx = loaded.sheets.len() - 1;
+        loaded.set_cell(new_idx, 0, 0, "=Keep!A1*2".to_string());
+        loaded.evaluate().unwrap();
+
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        let keep_ws = patched_pkg.get_str("xl/worksheets/sheet2.xml").unwrap();
+        assert!(keep_ws.contains("KEEP-SHEET-EXT"), "{keep_ws}");
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        let names: Vec<&str> = reloaded.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Sheet1", "Keep", "Added"]);
+        assert_eq!(
+            reloaded.sheets[2].columns[0]
+                .data
+                .get(0)
+                .map(|v| v.to_string()),
+            Some("84".to_string())
+        );
+    }
 }

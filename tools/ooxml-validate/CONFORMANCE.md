@@ -109,14 +109,14 @@ VBA macro conformance (`[MS-OVBA]` / `[MS-VBAL]`) is tracked separately in [tool
 Surgical patching (`OoxmlSourceState::patch_to_bytes`) preserves unmodeled parts, relationships, content types, `<extLst>`, and sibling XML elements **only when `can_patch_surgically` returns `true`**.
 
 Currently, mutating any of the following forces a **full-export fallback** (which drops unmodeled parts/extensions from the source workbook):
-- Adding, removing, or reordering sheets (`sheets.len()` or `sheet.id` mismatch)
-- Modifying pivot tables or VBA modules
+- Modifying pivot tables (or adding/deleting sheets in a workbook that contains pivot tables)
+- Modifying VBA modules
 
-Comments, hyperlinks, data validations, conditional formatting, tables, and charts now patch **surgically** in-place (preserving unmodeled parts, relationships, and `<extLst>`).
+Cells, styles, merges, freeze panes, defined names, comments, hyperlinks, data validations, conditional formatting, tables, charts, and sheet add/delete/rename/reorder all patch **surgically** in-place (preserving unmodeled parts, relationships, and `<extLst>`).
 
 ---
 
 ## Priority Backlog to Reach Full Compatibility
 
-1. **Narrow remaining full-export fallbacks in `patch.rs`** (pivot tables, sheet add/delete).
+1. **Surgical patching for pivot tables** in `patch.rs`.
 2. **Add `OpenXmlValidator` (`S`) and Excel/LibreOffice oracle (`O`)** verification stages to CI/release workflows.
