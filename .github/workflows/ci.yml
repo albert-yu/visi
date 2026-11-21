@@ -78,6 +78,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Create a virtualenv
         run: |
           python -m venv .venv
@@ -104,6 +108,8 @@ jobs:
           key: ecma376-xsds-v1
 
       - name: pytest (bindings, CLI parity, OOXML conformance)
+        env:
+          REQUIRE_OPENXML_SDK: "1"
         run: pytest visi-python/tests/ tools/ooxml-validate/
 
   wasm:

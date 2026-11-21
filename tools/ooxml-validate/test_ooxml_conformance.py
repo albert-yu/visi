@@ -11,6 +11,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_xsds import ensure_xsds
+from sdk_validator import (
+    is_dotnet_available,
+    is_sdk_required,
+    validate_bytes_with_openxml_sdk,
+    validate_files_with_openxml_sdk,
+)
 from validate_ooxml import validate_ooxml_bytes, validate_ooxml_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +69,16 @@ def emitted_fixture_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out_dir
 
 
+@pytest.fixture(scope="session")
+def openxml_sdk_fixture_results(emitted_fixture_dir: Path) -> dict[str, list[str]]:
+    if not is_dotnet_available():
+        if is_sdk_required():
+            pytest.fail("REQUIRE_OPENXML_SDK is set, but `dotnet` is not installed")
+        pytest.skip("`dotnet` SDK is not installed; skipping OpenXmlValidator checks")
+    paths = [emitted_fixture_dir / name for name in EXPECTED_FIXTURES]
+    return validate_files_with_openxml_sdk(paths)
+
+
 @pytest.mark.parametrize("fixture_name", EXPECTED_FIXTURES)
 def test_emitted_fixture_passes_ecma376_xsd_and_invariants(
     emitted_fixture_dir: Path, fixture_name: str
@@ -71,6 +87,18 @@ def test_emitted_fixture_passes_ecma376_xsd_and_invariants(
     assert path.is_file(), f"Missing fixture {fixture_name}"
     errors = validate_ooxml_file(path, xsd_dir=XSD_DIR, require_xsd=True)
     assert not errors, f"OOXML validation failed for {fixture_name}:\n" + "\n".join(errors)
+
+
+@pytest.mark.parametrize("fixture_name", EXPECTED_FIXTURES)
+def test_emitted_fixture_passes_openxml_sdk_validator(
+    emitted_fixture_dir: Path,
+    openxml_sdk_fixture_results: dict[str, list[str]],
+    fixture_name: str,
+) -> None:
+    path = str(emitted_fixture_dir / fixture_name)
+    assert path in openxml_sdk_fixture_results, f"Missing SDK validation result for {fixture_name}"
+    errors = openxml_sdk_fixture_results[path]
+    assert not errors, f"OpenXmlValidator failed for {fixture_name}:\n" + "\n".join(errors)
 
 
 def _zip_bytes(entries: dict[str, str]) -> bytes:
@@ -126,3 +154,48 @@ def test_validator_rejects_xsd_and_opc_violations() -> None:
     assert "violates XSD sequence" in joined
     assert "sml.xsd" in joined
     assert "overlapping mergeCells" in joined
+
+
+def test_openxml_sdk_validator_rejects_invalid_workbook() -> None:
+    if not is_dotnet_available():
+        if is_sdk_required():
+            pytest.fail("REQUIRE_OPENXML_SDK is set, but `dotnet` is not installed")
+        pytest.skip("`dotnet` SDK is not installed; skipping OpenXmlValidator checks")
+
+    bad_pkg = _zip_bytes(
+        {
+            "[Content_Types].xml": (
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                "</Types>"
+            ),
+            "_rels/.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                "</Relationships>"
+            ),
+            "xl/_rels/workbook.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                "</Relationships>"
+            ),
+            "xl/workbook.xml": (
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'
+                "</workbook>"
+            ),
+            "xl/worksheets/sheet1.xml": (
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                '<sheetData><row r="1"><c r="A1" t="b"><v>yes</v></c></row></sheetData>'
+                "<cols/>"
+                "</worksheet>"
+            ),
+        }
+    )
+    errors = validate_bytes_with_openxml_sdk(bad_pkg)
+    assert errors, "Expected OpenXmlValidator to report schema errors for out-of-order <cols/>"
+    joined = "\n".join(errors)
+    assert "cols" in joined or "Schema" in joined
