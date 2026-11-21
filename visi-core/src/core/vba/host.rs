@@ -1558,11 +1558,11 @@ impl<'w> Host<'w> {
                 values.push(cell_value(sheet, r.row + dr, r.col + dc, value2));
             }
         }
-        Ok(Variant::Array(std::rc::Rc::new(VarArray {
-            rows: r.height as usize,
-            cols: r.width as usize,
+        Ok(Variant::Array(std::rc::Rc::new(VarArray::new_2d_1based(
+            r.height as usize,
+            r.width as usize,
             values,
-        })))
+        ))))
     }
 
     fn read_formula(&mut self, r: RangeRef) -> VResult<Variant> {
@@ -1580,11 +1580,11 @@ impl<'w> Host<'w> {
                 values.push(Variant::Str(cell_formula(sheet, r.row + dr, r.col + dc)));
             }
         }
-        Ok(Variant::Array(std::rc::Rc::new(VarArray {
-            rows: r.height as usize,
-            cols: r.width as usize,
+        Ok(Variant::Array(std::rc::Rc::new(VarArray::new_2d_1based(
+            r.height as usize,
+            r.width as usize,
             values,
-        })))
+        ))))
     }
 
     fn write_range(&mut self, r: RangeRef, value: &Variant) -> VResult<()> {
@@ -1916,7 +1916,9 @@ fn cell_src(v: &Variant) -> VResult<String> {
             _ => s.clone(),
         },
         Variant::ErrValue(n) => error_text(*n).to_string(),
-        Variant::Object(_) | Variant::Array(_) => return Err(VbaError::type_mismatch()),
+        Variant::Object(_) | Variant::Array(_) | Variant::Udt(_) | Variant::Missing => {
+            return Err(VbaError::type_mismatch());
+        }
         other => {
             let f = other.to_f64()?;
             if !f.is_finite() {

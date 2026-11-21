@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::ast::*;
 use super::builtins;
 use super::host::{Host, ObjRef};
-use super::value::{self, ArithMode, Operand, VResult, Variant, VbaError};
+use super::value::{self, ArithMode, Operand, VResult, VarArray, VarUdt, Variant, VbaError};
 use super::{VbaModule, VbaModuleKind, VbaProject};
 
 const DEFAULT_MAX_OPS: u64 = 5_000_000;
@@ -37,6 +37,12 @@ enum Flow {
     ExitDo,
 
     Goto(String),
+
+    GoSub(String),
+
+    Return,
+
+    EndAll,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,9 +90,17 @@ pub struct ModuleEnv {
     pub procs: HashMap<String, MemberProcs>,
     pub events: HashMap<String, Rc<Stmt>>,
     pub globals: HashMap<String, Variant>,
+    pub global_types: HashMap<String, TypeRef>,
+    pub enums: HashMap<String, HashMap<String, i32>>,
+    pub types: HashMap<String, Vec<VarDecl>>,
+    pub implements: Vec<String>,
     pub auto_new_vars: HashMap<String, String>,
     pub with_events_vars: HashMap<String, String>,
     pub default_member: Option<String>,
+    pub option_base: i32,
+    pub option_compare_text: bool,
+    pub option_explicit: bool,
+    pub option_private: bool,
     pub ast: Module,
 }
 
@@ -97,15 +111,53 @@ impl ModuleEnv {
         bound_sheet_id: Option<u64>,
         ast: Module,
     ) -> Self {
-        let mut procs: HashMap<String, MemberProcs> = HashMap::new();
-        let mut events: HashMap<String, Rc<Stmt>> = HashMap::new();
-        let mut globals: HashMap<String, Variant> = HashMap::new();
-        let mut auto_new_vars: HashMap<String, String> = HashMap::new();
-        let mut with_events_vars: HashMap<String, String> = HashMap::new();
-        let mut default_member: Option<String> = None;
+        let mut env = Self {
+            name,
+            kind,
+            bound_sheet_id,
+            procs: HashMap::new(),
+            events: HashMap::new(),
+            globals: HashMap::new(),
+            global_types: HashMap::new(),
+            enums: HashMap::new(),
+            types: HashMap::new(),
+            implements: Vec::new(),
+            auto_new_vars: HashMap::new(),
+            with_events_vars: HashMap::new(),
+            default_member: None,
+            option_base: 0,
+            option_compare_text: false,
+            option_explicit: false,
+            option_private: false,
+            ast: ast.clone(),
+        };
+        let mut cond_consts: HashMap<String, i64> = HashMap::new();
+        cond_consts.insert("vba7".to_string(), -1);
+        cond_consts.insert("vba6".to_string(), -1);
+        cond_consts.insert("win64".to_string(), -1);
+        cond_consts.insert("win32".to_string(), -1);
+        cond_consts.insert("mac".to_string(), 0);
+        env.load_items(&ast.items, &mut cond_consts);
+        env
+    }
 
-        for item in &ast.items {
+    fn load_items(&mut self, items: &[ModuleItem], cond_consts: &mut HashMap<String, i64>) {
+        for item in items {
             match item {
+                ModuleItem::Option { words, .. } => {
+                    let lower: Vec<String> = words.iter().map(|w| w.to_ascii_lowercase()).collect();
+                    match lower.as_slice() {
+                        [a, b] if a == "base" && b == "1" => self.option_base = 1,
+                        [a, b] if a == "base" && b == "0" => self.option_base = 0,
+                        [a, b] if a == "compare" && b == "text" => self.option_compare_text = true,
+                        [a, b] if a == "compare" && b == "binary" => {
+                            self.option_compare_text = false
+                        }
+                        [a] if a == "explicit" => self.option_explicit = true,
+                        [a, b] if a == "private" && b == "module" => self.option_private = true,
+                        _ => {}
+                    }
+                }
                 ModuleItem::Attribute {
                     name: attr_name,
                     values,
@@ -116,7 +168,7 @@ impl ModuleEnv {
                         && is_zero_expr(val_expr)
                         && let Some((member, _)) = attr_name.split_once('.')
                     {
-                        default_member = Some(member.to_ascii_lowercase());
+                        self.default_member = Some(member.to_ascii_lowercase());
                     }
                 }
                 ModuleItem::Declaration(stmt) => match stmt {
@@ -125,14 +177,17 @@ impl ModuleEnv {
                     } => {
                         for v in vars {
                             let key = v.name.to_ascii_lowercase();
+                            if let Some(ty) = &v.ty {
+                                self.global_types.insert(key.clone(), ty.clone());
+                            }
                             if *with_events {
                                 let ty_name =
                                     v.ty.as_ref()
                                         .and_then(|t| t.path.last())
                                         .cloned()
                                         .unwrap_or_default();
-                                with_events_vars.insert(key.clone(), ty_name);
-                                globals.insert(key, Variant::Object(ObjRef::Nothing));
+                                self.with_events_vars.insert(key.clone(), ty_name);
+                                self.globals.insert(key, Variant::Object(ObjRef::Nothing));
                             } else if v.ty.as_ref().is_some_and(|t| t.is_new) {
                                 let cls_name =
                                     v.ty.as_ref()
@@ -141,23 +196,55 @@ impl ModuleEnv {
                                         .last()
                                         .cloned()
                                         .unwrap_or_default();
-                                auto_new_vars.insert(key.clone(), cls_name);
-                                globals.insert(key, Variant::Object(ObjRef::Nothing));
+                                self.auto_new_vars.insert(key.clone(), cls_name);
+                                self.globals.insert(key, Variant::Object(ObjRef::Nothing));
+                            } else if v.bounds.is_some() {
+                                let elem_ty = v.ty.as_ref().and_then(|t| t.path.last()).cloned();
+                                self.globals.insert(
+                                    key,
+                                    Variant::Array(Rc::new(VarArray::unallocated(elem_ty))),
+                                );
                             } else {
-                                globals.insert(key, default_for(v.ty.as_ref()));
+                                self.globals.insert(key, default_for(v.ty.as_ref()));
                             }
                         }
                     }
                     Stmt::Const { vars, .. } => {
                         for v in vars {
                             let key = v.name.to_ascii_lowercase();
-                            globals.insert(key, default_for(v.ty.as_ref()));
+                            if let Some(ty) = &v.ty {
+                                self.global_types.insert(key.clone(), ty.clone());
+                            }
+                            self.globals.insert(key, default_for(v.ty.as_ref()));
                         }
+                    }
+                    Stmt::EnumDef { name, members, .. } => {
+                        let mut next_val: i32 = 0;
+                        let mut enum_map = HashMap::new();
+                        for m in members {
+                            let val = if let Some(expr) = &m.value {
+                                eval_const_i32(expr, &self.globals).unwrap_or(next_val)
+                            } else {
+                                next_val
+                            };
+                            next_val = val.wrapping_add(1);
+                            let m_key = m.name.to_ascii_lowercase();
+                            enum_map.insert(m_key.clone(), val);
+                            self.globals.insert(m_key, Variant::Long(val));
+                        }
+                        self.enums.insert(name.to_ascii_lowercase(), enum_map);
+                    }
+                    Stmt::TypeDef { name, fields, .. } => {
+                        self.types.insert(name.to_ascii_lowercase(), fields.clone());
+                    }
+                    Stmt::Implements { name, .. } => {
+                        self.implements.push(name.to_ascii_lowercase());
                     }
                     Stmt::EventDef {
                         name: event_name, ..
                     } => {
-                        events.insert(event_name.to_ascii_lowercase(), Rc::new(stmt.clone()));
+                        self.events
+                            .insert(event_name.to_ascii_lowercase(), Rc::new(stmt.clone()));
                     }
                     _ => {}
                 },
@@ -174,53 +261,148 @@ impl ModuleEnv {
                             && let Some(val_expr) = values.first()
                             && is_zero_expr(val_expr)
                         {
-                            default_member = Some(key.clone());
+                            self.default_member = Some(key.clone());
                         }
                     }
-                    procs.entry(key).or_default().insert(Rc::new(p.clone()));
+                    self.procs
+                        .entry(key)
+                        .or_default()
+                        .insert(Rc::new(p.clone()));
                 }
                 ModuleItem::Conditional {
                     branches,
                     else_items,
                     ..
                 } => {
-                    for (_, b_items) in branches {
-                        for b_item in b_items {
-                            if let ModuleItem::Procedure(p) = b_item {
-                                procs
-                                    .entry(p.name.to_ascii_lowercase())
-                                    .or_default()
-                                    .insert(Rc::new(p.clone()));
-                            }
+                    let mut matched = false;
+                    for (cond, b_items) in branches {
+                        if eval_cond_expr(cond, cond_consts) != 0 {
+                            self.load_items(b_items, cond_consts);
+                            matched = true;
+                            break;
                         }
                     }
-                    if let Some(e_items) = else_items {
-                        for e_item in e_items {
-                            if let ModuleItem::Procedure(p) = e_item {
-                                procs
-                                    .entry(p.name.to_ascii_lowercase())
-                                    .or_default()
-                                    .insert(Rc::new(p.clone()));
-                            }
-                        }
+                    if !matched && let Some(e_items) = else_items {
+                        self.load_items(e_items, cond_consts);
                     }
                 }
-                _ => {}
             }
         }
+    }
+}
 
-        Self {
-            name,
-            kind,
-            bound_sheet_id,
-            procs,
-            events,
-            globals,
-            auto_new_vars,
-            with_events_vars,
-            default_member,
-            ast,
+fn eval_const_i32(expr: &Expr, globals: &HashMap<String, Variant>) -> Option<i32> {
+    match expr {
+        Expr::Literal(Literal::Number { value, .. }) => Some(*value as i32),
+        Expr::Literal(Literal::Bool(b)) => Some(if *b { -1 } else { 0 }),
+        Expr::Ident { name, .. } => globals
+            .get(&name.to_ascii_lowercase())
+            .and_then(|v| v.to_f64().ok())
+            .map(|n| n as i32),
+        Expr::Unary { op, expr, .. } => {
+            let v = eval_const_i32(expr, globals)?;
+            match op {
+                UnOp::Neg => Some(v.wrapping_neg()),
+                UnOp::Pos => Some(v),
+                UnOp::Not => Some(!v),
+            }
         }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let l = eval_const_i32(lhs, globals)?;
+            let r = eval_const_i32(rhs, globals)?;
+            match op {
+                BinOp::Add => Some(l.wrapping_add(r)),
+                BinOp::Sub => Some(l.wrapping_sub(r)),
+                BinOp::Mul => Some(l.wrapping_mul(r)),
+                BinOp::IntDiv | BinOp::Div if r != 0 => Some(l / r),
+                BinOp::Mod if r != 0 => Some(l % r),
+                BinOp::And => Some(l & r),
+                BinOp::Or => Some(l | r),
+                BinOp::Xor => Some(l ^ r),
+                _ => None,
+            }
+        }
+        Expr::Paren { expr, .. } => eval_const_i32(expr, globals),
+        _ => None,
+    }
+}
+
+fn eval_cond_expr(expr: &Expr, consts: &HashMap<String, i64>) -> i64 {
+    match expr {
+        Expr::Literal(Literal::Bool(b)) => {
+            if *b {
+                -1
+            } else {
+                0
+            }
+        }
+        Expr::Literal(Literal::Number { value, .. }) => *value as i64,
+        Expr::Ident { name, .. } => consts.get(&name.to_ascii_lowercase()).copied().unwrap_or(0),
+        Expr::Paren { expr, .. } => eval_cond_expr(expr, consts),
+        Expr::Unary { op, expr, .. } => {
+            let v = eval_cond_expr(expr, consts);
+            match op {
+                UnOp::Neg => -v,
+                UnOp::Pos => v,
+                UnOp::Not => !v,
+            }
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let l = eval_cond_expr(lhs, consts);
+            let r = eval_cond_expr(rhs, consts);
+            match op {
+                BinOp::And => l & r,
+                BinOp::Or => l | r,
+                BinOp::Xor => l ^ r,
+                BinOp::Eq => {
+                    if l == r {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                BinOp::Ne => {
+                    if l != r {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                BinOp::Lt => {
+                    if l < r {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                BinOp::Gt => {
+                    if l > r {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                BinOp::Le => {
+                    if l <= r {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                BinOp::Ge => {
+                    if l >= r {
+                        -1
+                    } else {
+                        0
+                    }
+                }
+                BinOp::Add => l.wrapping_add(r),
+                BinOp::Sub => l.wrapping_sub(r),
+                BinOp::Mul => l.wrapping_mul(r),
+                _ => 0,
+            }
+        }
+        _ => 0,
     }
 }
 
@@ -254,6 +436,8 @@ pub struct UserClassInstance {
 
 struct Frame {
     locals: HashMap<String, Variant>,
+    local_types: HashMap<String, TypeRef>,
+    static_vars: HashSet<String>,
     auto_new_locals: HashMap<String, String>,
     with_events_locals: HashMap<String, String>,
     handler: Handler,
@@ -262,12 +446,16 @@ struct Frame {
     with_stack: Vec<Variant>,
     me: Option<ObjRef>,
     module_name: String,
+    proc_name: String,
+    is_static_proc: bool,
 }
 
 impl Frame {
     fn new() -> Self {
         Self {
             locals: HashMap::new(),
+            local_types: HashMap::new(),
+            static_vars: HashSet::new(),
             auto_new_locals: HashMap::new(),
             with_events_locals: HashMap::new(),
             handler: Handler::None,
@@ -276,6 +464,8 @@ impl Frame {
             with_stack: Vec::new(),
             me: None,
             module_name: String::new(),
+            proc_name: String::new(),
+            is_static_proc: false,
         }
     }
 }
@@ -284,11 +474,24 @@ impl Frame {
 struct ErrState {
     number: i32,
     description: String,
+    source: String,
+    help_file: String,
+    help_context: i32,
 }
+
+#[derive(Debug, Clone)]
+enum ByRefTarget {
+    Ident(String),
+    ArrayElem(String, Vec<i32>),
+    UdtField(String, String),
+}
+
+type PreparedArgs = (Vec<Variant>, Vec<(usize, Option<ByRefTarget>)>);
 
 pub struct Interpreter<'w> {
     modules: HashMap<String, ModuleEnv>,
     instances: HashMap<u64, UserClassInstance>,
+    static_locals: HashMap<(String, String), HashMap<String, Variant>>,
     next_instance_id: u64,
     active_module: String,
     err: ErrState,
@@ -298,6 +501,7 @@ pub struct Interpreter<'w> {
     max_depth: usize,
     host: Option<Host<'w>>,
     event_depth: usize,
+    ended: bool,
 }
 
 impl<'w> Interpreter<'w> {
@@ -321,6 +525,7 @@ impl<'w> Interpreter<'w> {
         Self {
             modules,
             instances: HashMap::new(),
+            static_locals: HashMap::new(),
             next_instance_id: 1,
             active_module: name.to_ascii_lowercase(),
             err: ErrState::default(),
@@ -330,6 +535,7 @@ impl<'w> Interpreter<'w> {
             max_depth: DEFAULT_MAX_DEPTH,
             host: None,
             event_depth: 0,
+            ended: false,
         }
     }
 
@@ -355,6 +561,7 @@ impl<'w> Interpreter<'w> {
         Self {
             modules,
             instances: HashMap::new(),
+            static_locals: HashMap::new(),
             next_instance_id: 1,
             active_module,
             err: ErrState::default(),
@@ -364,6 +571,7 @@ impl<'w> Interpreter<'w> {
             max_depth: DEFAULT_MAX_DEPTH,
             host: None,
             event_depth: 0,
+            ended: false,
         }
     }
 
@@ -399,6 +607,7 @@ impl<'w> Interpreter<'w> {
         Ok(Self {
             modules,
             instances: HashMap::new(),
+            static_locals: HashMap::new(),
             next_instance_id: 1,
             active_module,
             err: ErrState::default(),
@@ -408,6 +617,7 @@ impl<'w> Interpreter<'w> {
             max_depth: DEFAULT_MAX_DEPTH,
             host: None,
             event_depth: 0,
+            ended: false,
         })
     }
 
@@ -482,14 +692,18 @@ impl<'w> Interpreter<'w> {
 
     pub fn run(&mut self, name: &str, args: Vec<Variant>) -> VResult<Variant> {
         self.ops = 0;
+        self.ended = false;
         self.init_all_modules()?;
         let res = self.call_procedure(name, args)?;
-        self.drain_and_fire_events()?;
+        if !self.ended {
+            self.drain_and_fire_events()?;
+        }
         Ok(res)
     }
 
     pub fn run_open_events(&mut self) -> VResult<()> {
         self.ops = 0;
+        self.ended = false;
         self.init_all_modules()?;
 
         if let Some(m_env) = self.modules.get("thisworkbook")
@@ -961,6 +1175,7 @@ impl<'w> Interpreter<'w> {
                 && *m_name != self.active_module
                 && let Some(mp) = m_env.procs.get(&lower)
                 && let Some(p) = mp.first()
+                && p.visibility != Some(Visibility::Private)
             {
                 return Some((m_name.clone(), p));
             }
@@ -1017,7 +1232,7 @@ impl<'w> Interpreter<'w> {
             }
         };
 
-        let mut frame = Frame::new();
+        let mut frame = Box::new(Frame::new());
         frame.module_name = mod_name.clone();
         if let Some(m_env) = self.modules.get(&mod_name)
             && m_env.kind == VbaModuleKind::Document
@@ -1036,11 +1251,178 @@ impl<'w> Interpreter<'w> {
         result
     }
 
+    fn active_option_base(&self) -> i32 {
+        self.modules
+            .get(&self.active_module)
+            .map(|m| m.option_base)
+            .unwrap_or(0)
+    }
+
+    fn active_compare_text(&self) -> bool {
+        self.modules
+            .get(&self.active_module)
+            .is_some_and(|m| m.option_compare_text)
+    }
+
+    fn find_type_def(&self, name: &str) -> Option<Vec<VarDecl>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(m) = self.modules.get(&self.active_module)
+            && let Some(fields) = m.types.get(&key)
+        {
+            return Some(fields.clone());
+        }
+        for m in self.modules.values() {
+            if let Some(fields) = m.types.get(&key) {
+                return Some(fields.clone());
+            }
+        }
+        None
+    }
+
+    fn default_for_in_scope(&self, ty: Option<&TypeRef>) -> Variant {
+        let Some(ty) = ty else {
+            return Variant::Empty;
+        };
+        if ty.is_new {
+            return Variant::Object(ObjRef::Nothing);
+        }
+        let Some(last) = ty.path.last() else {
+            return Variant::Empty;
+        };
+        if let Some(fields_decl) = self.find_type_def(last) {
+            let mut fields = HashMap::new();
+            for f in &fields_decl {
+                fields.insert(
+                    f.name.to_ascii_lowercase(),
+                    self.default_for_in_scope(f.ty.as_ref()),
+                );
+            }
+            return Variant::Udt(Rc::new(VarUdt {
+                type_name: last.clone(),
+                fields,
+            }));
+        }
+        default_for(Some(ty))
+    }
+
+    fn coerce_to_type(&mut self, v: Variant, ty: &TypeRef, frame: &mut Frame) -> VResult<Variant> {
+        let Some(last) = ty.path.last() else {
+            return Ok(v);
+        };
+        match last.to_ascii_lowercase().as_str() {
+            "variant" => Ok(v),
+            "byte" => {
+                let r = value::bankers_round(v.to_f64()?);
+                if !r.is_finite() || !(0.0..=255.0).contains(&r) {
+                    return Err(VbaError::overflow());
+                }
+                Ok(Variant::Byte(r as u8))
+            }
+            "integer" => {
+                let r = value::bankers_round(v.to_f64()?);
+                if !r.is_finite() || r < i16::MIN as f64 || r > i16::MAX as f64 {
+                    return Err(VbaError::overflow());
+                }
+                Ok(Variant::Integer(r as i16))
+            }
+            "long" => {
+                let r = value::bankers_round(v.to_f64()?);
+                if !r.is_finite() || r < i32::MIN as f64 || r > i32::MAX as f64 {
+                    return Err(VbaError::overflow());
+                }
+                Ok(Variant::Long(r as i32))
+            }
+            "longlong" | "longptr" => {
+                let r = value::bankers_round(v.to_f64()?);
+                if !r.is_finite() || r < i64::MIN as f64 || r > i64::MAX as f64 {
+                    return Err(VbaError::overflow());
+                }
+                Ok(Variant::LongLong(r as i64))
+            }
+            "single" => {
+                let f = v.to_f64()? as f32;
+                if !f.is_finite() {
+                    return Err(VbaError::overflow());
+                }
+                Ok(Variant::Single(f))
+            }
+            "double" => Ok(Variant::Double(v.to_f64()?)),
+            "currency" => {
+                let scaled = value::bankers_round(v.to_f64()? * 10_000.0);
+                if !scaled.is_finite() || scaled.abs() > i64::MAX as f64 {
+                    return Err(VbaError::overflow());
+                }
+                Ok(Variant::Currency(scaled as i64))
+            }
+            "decimal" => value::to_decimal(&v),
+            "boolean" => Ok(Variant::Boolean(v.to_bool()?)),
+            "date" => match v {
+                Variant::Date(d) => Ok(Variant::Date(d)),
+                Variant::Str(ref s) => {
+                    if let Some((d, _)) = crate::core::date::parse_date(s) {
+                        Ok(Variant::Date(crate::core::date::date_to_excel_serial(d)))
+                    } else {
+                        Ok(Variant::Date(v.to_f64()?))
+                    }
+                }
+                other => Ok(Variant::Date(other.to_f64()?)),
+            },
+            "string" => {
+                let mut s = v.to_vba_string()?;
+                if let Some(len_expr) = &ty.string_length {
+                    let n = value::bankers_round(self.eval(len_expr, frame)?.to_f64()?).max(0.0)
+                        as usize;
+                    let chars: Vec<char> = s.chars().collect();
+                    if chars.len() > n {
+                        s = chars[..n].iter().collect();
+                    } else if chars.len() < n {
+                        s.extend(std::iter::repeat_n(' ', n - chars.len()));
+                    }
+                }
+                Ok(Variant::Str(s))
+            }
+            _ => Ok(v),
+        }
+    }
+
+    fn eval_array_bounds(
+        &mut self,
+        bounds: &[ArrayBound],
+        frame: &mut Frame,
+    ) -> VResult<Vec<(i32, i32)>> {
+        let base = self.active_option_base();
+        let mut dims = Vec::with_capacity(bounds.len());
+        for b in bounds {
+            let lo = match &b.lower {
+                Some(e) => value::bankers_round(self.eval(e, frame)?.to_f64()?) as i32,
+                None => base,
+            };
+            let hi = value::bankers_round(self.eval(&b.upper, frame)?.to_f64()?) as i32;
+            dims.push((lo, hi));
+        }
+        Ok(dims)
+    }
+
     fn call_body_with_frame(
         &mut self,
         proc: &Procedure,
         args: Vec<Variant>,
         frame: &mut Frame,
+    ) -> VResult<Variant> {
+        let res = self.call_body_with_frame_raw(proc, args, frame, false);
+        let locals = std::mem::take(&mut frame.locals);
+        for (_, val) in locals {
+            self.dec_ref(&val);
+        }
+        res
+    }
+
+    fn call_body_with_frame_raw(
+        &mut self,
+        proc: &Procedure,
+        args: Vec<Variant>,
+        frame: &mut Frame,
+        already_bound: bool,
     ) -> VResult<Variant> {
         self.depth += 1;
         if self.depth > self.max_depth {
@@ -1048,9 +1430,48 @@ impl<'w> Interpreter<'w> {
             return Err(VbaError::new(28, "Out of stack space"));
         }
 
+        frame.proc_name = proc.name.to_ascii_lowercase();
+        frame.is_static_proc = proc.is_static;
+
         for (i, param) in proc.params.iter().enumerate() {
-            let value = args.get(i).cloned().unwrap_or(Variant::Empty);
+            let mut value = if param.param_array && !already_bound {
+                let rest = if i < args.len() {
+                    args[i..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                Variant::Array(Rc::new(VarArray::new_1d(0, rest)))
+            } else if let Some(v) = args.get(i).cloned() {
+                v
+            } else if param.optional {
+                if let Some(def_expr) = &param.default {
+                    self.eval(def_expr, frame)?
+                } else if param.ty.is_none()
+                    || param
+                        .ty
+                        .as_ref()
+                        .and_then(|t| t.path.last())
+                        .is_some_and(|n| n.eq_ignore_ascii_case("variant"))
+                {
+                    Variant::Missing
+                } else {
+                    self.default_for_in_scope(param.ty.as_ref())
+                }
+            } else {
+                Variant::Empty
+            };
+
             let key = param.name.to_ascii_lowercase();
+            if let Some(ty) = &param.ty
+                && !param.is_array
+                && !param.param_array
+                && !matches!(value, Variant::Missing)
+            {
+                frame.local_types.insert(key.clone(), ty.clone());
+                if !matches!(value, Variant::Object(_)) {
+                    value = self.coerce_to_type(value, ty, frame)?;
+                }
+            }
             self.inc_ref(&value);
             if param.ty.as_ref().is_some_and(|t| t.is_new) {
                 let cls = param
@@ -1068,10 +1489,11 @@ impl<'w> Interpreter<'w> {
 
         let ret_key = proc.name.to_ascii_lowercase();
         if proc.kind != ProcKind::Sub {
-            frame
-                .locals
-                .entry(ret_key.clone())
-                .or_insert(Variant::Empty);
+            if let Some(rt) = &proc.return_type {
+                frame.local_types.insert(ret_key.clone(), rt.clone());
+            }
+            let init_ret = self.default_for_in_scope(proc.return_type.as_ref());
+            frame.locals.entry(ret_key.clone()).or_insert(init_ret);
         }
 
         let body_res = self.exec_procedure_body(&proc.body, frame);
@@ -1079,26 +1501,263 @@ impl<'w> Interpreter<'w> {
         let ret = if proc.kind == ProcKind::Sub {
             Variant::Empty
         } else {
-            frame
+            let raw_ret = frame
                 .locals
                 .get(&ret_key)
                 .cloned()
-                .unwrap_or(Variant::Empty)
+                .unwrap_or(Variant::Empty);
+            if let Some(rt) = &proc.return_type
+                && !matches!(raw_ret, Variant::Object(_))
+            {
+                self.coerce_to_type(raw_ret, rt, frame)
+                    .unwrap_or(Variant::Empty)
+            } else {
+                raw_ret
+            }
         };
-
-        let locals = std::mem::take(&mut frame.locals);
-        for (_, val) in locals {
-            self.dec_ref(&val);
-        }
 
         self.depth -= 1;
         body_res?;
         Ok(ret)
     }
 
+    fn bind_and_call_proc(
+        &mut self,
+        mod_name: String,
+        proc: &Procedure,
+        args: &[Arg],
+        caller_frame: &mut Frame,
+        me: Option<ObjRef>,
+    ) -> VResult<Variant> {
+        let (final_args, byref_targets) = self.prepare_call_args(proc, args, caller_frame)?;
+
+        let mut call_frame = Box::new(Frame::new());
+        call_frame.module_name = mod_name.clone();
+        call_frame.me = me;
+        let old_active = self.active_module.clone();
+        self.active_module = mod_name;
+        let res = self.call_body_with_frame_raw(proc, final_args, &mut call_frame, true);
+        self.active_module = old_active;
+
+        for (param_idx, target_opt) in byref_targets {
+            if let Some(target) = target_opt {
+                let param_key = proc.params[param_idx].name.to_ascii_lowercase();
+                if let Some(updated) = call_frame.locals.get(&param_key).cloned() {
+                    let _ = self.write_byref_target(&target, updated, caller_frame);
+                }
+            }
+        }
+
+        let locals = std::mem::take(&mut call_frame.locals);
+        for (_, val) in locals {
+            self.dec_ref(&val);
+        }
+
+        res
+    }
+
+    #[inline(never)]
+    fn prepare_call_args(
+        &mut self,
+        proc: &Procedure,
+        args: &[Arg],
+        caller_frame: &mut Frame,
+    ) -> VResult<PreparedArgs> {
+        let mut bound: Vec<Option<Variant>> = vec![None; proc.params.len()];
+        let mut byref_targets: Vec<(usize, Option<ByRefTarget>)> = Vec::new();
+        let mut param_array_vals: Vec<Variant> = Vec::new();
+        let param_array_idx = proc.params.iter().position(|p| p.param_array);
+        let mut seen_named = false;
+        let mut pos_idx = 0usize;
+
+        for arg in args {
+            if let Some(arg_name) = &arg.name {
+                seen_named = true;
+                let idx = proc
+                    .params
+                    .iter()
+                    .position(|p| p.name.eq_ignore_ascii_case(arg_name))
+                    .ok_or_else(|| {
+                        VbaError::new(448, format!("Named argument not found: {arg_name}"))
+                    })?;
+                if bound[idx].is_some() {
+                    return Err(VbaError::new(450, "Wrong number of arguments"));
+                }
+                if let Some(expr) = &arg.value {
+                    let target =
+                        self.extract_byref_target(expr, &proc.params[idx], caller_frame)?;
+                    let val = self.eval(expr, caller_frame)?;
+                    bound[idx] = Some(val);
+                    byref_targets.push((idx, target));
+                }
+            } else {
+                if seen_named {
+                    return Err(VbaError::new(
+                        448,
+                        "Positional argument cannot follow named argument",
+                    ));
+                }
+                if let Some(pa_idx) = param_array_idx
+                    && pos_idx >= pa_idx
+                {
+                    let val = match &arg.value {
+                        Some(e) => self.eval(e, caller_frame)?,
+                        None => Variant::Missing,
+                    };
+                    param_array_vals.push(val);
+                    pos_idx += 1;
+                    continue;
+                }
+                if pos_idx >= proc.params.len() {
+                    return Err(VbaError::new(450, "Wrong number of arguments"));
+                }
+                if let Some(expr) = &arg.value {
+                    let target =
+                        self.extract_byref_target(expr, &proc.params[pos_idx], caller_frame)?;
+                    let val = self.eval(expr, caller_frame)?;
+                    bound[pos_idx] = Some(val);
+                    byref_targets.push((pos_idx, target));
+                }
+                pos_idx += 1;
+            }
+        }
+
+        let mut final_args: Vec<Variant> = Vec::with_capacity(proc.params.len());
+        for (i, param) in proc.params.iter().enumerate() {
+            if param.param_array {
+                final_args.push(Variant::Array(Rc::new(VarArray::new_1d(
+                    0,
+                    param_array_vals.clone(),
+                ))));
+            } else if let Some(val) = bound[i].take() {
+                final_args.push(val);
+            } else if param.optional {
+                if let Some(def_expr) = &param.default {
+                    final_args.push(self.eval(def_expr, caller_frame)?);
+                } else if param.ty.is_none()
+                    || param
+                        .ty
+                        .as_ref()
+                        .and_then(|t| t.path.last())
+                        .is_some_and(|n| n.eq_ignore_ascii_case("variant"))
+                {
+                    final_args.push(Variant::Missing);
+                } else {
+                    final_args.push(self.default_for_in_scope(param.ty.as_ref()));
+                }
+            } else {
+                return Err(VbaError::new(449, "Argument not optional"));
+            }
+        }
+
+        Ok((final_args, byref_targets))
+    }
+
+    fn extract_byref_target(
+        &mut self,
+        expr: &Expr,
+        param: &Param,
+        caller_frame: &mut Frame,
+    ) -> VResult<Option<ByRefTarget>> {
+        if param.by == Some(PassBy::Value) || param.param_array {
+            return Ok(None);
+        }
+        match expr {
+            Expr::Paren { .. } => Ok(None),
+            Expr::Ident { name, .. } => Ok(Some(ByRefTarget::Ident(name.clone()))),
+            Expr::Call { target, args, .. } => {
+                if let Expr::Ident { name, .. } = target.as_ref()
+                    && matches!(self.lookup(name, caller_frame), Some(Variant::Array(_)))
+                {
+                    let idx_vals = self.eval_args(args, caller_frame)?;
+                    let mut indices = Vec::with_capacity(idx_vals.len());
+                    for iv in idx_vals {
+                        indices.push(value::bankers_round(iv.to_f64()?) as i32);
+                    }
+                    return Ok(Some(ByRefTarget::ArrayElem(name.clone(), indices)));
+                }
+                Ok(None)
+            }
+            Expr::Member {
+                target: Some(base),
+                name: field,
+                ..
+            } => {
+                if let Expr::Ident { name: var_name, .. } = base.as_ref()
+                    && matches!(self.lookup(var_name, caller_frame), Some(Variant::Udt(_)))
+                {
+                    return Ok(Some(ByRefTarget::UdtField(var_name.clone(), field.clone())));
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn write_byref_target(
+        &mut self,
+        target: &ByRefTarget,
+        val: Variant,
+        caller_frame: &mut Frame,
+    ) -> VResult<()> {
+        match target {
+            ByRefTarget::Ident(name) => {
+                let is_obj = matches!(val, Variant::Object(_));
+                self.assign_with(
+                    &Expr::Ident {
+                        name: name.clone(),
+                        pos: super::lexer::Pos::default(),
+                    },
+                    val,
+                    caller_frame,
+                    false,
+                    is_obj,
+                )
+            }
+            ByRefTarget::ArrayElem(name, indices) => {
+                if let Some(Variant::Array(mut arr)) = self.lookup(name, caller_frame) {
+                    Rc::make_mut(&mut arr).set_nd(indices, val)?;
+                    self.assign_with(
+                        &Expr::Ident {
+                            name: name.clone(),
+                            pos: super::lexer::Pos::default(),
+                        },
+                        Variant::Array(arr),
+                        caller_frame,
+                        false,
+                        false,
+                    )?;
+                }
+                Ok(())
+            }
+            ByRefTarget::UdtField(var_name, field) => {
+                if let Some(Variant::Udt(mut udt)) = self.lookup(var_name, caller_frame) {
+                    Rc::make_mut(&mut udt)
+                        .fields
+                        .insert(field.to_ascii_lowercase(), val);
+                    self.assign_with(
+                        &Expr::Ident {
+                            name: var_name.clone(),
+                            pos: super::lexer::Pos::default(),
+                        },
+                        Variant::Udt(udt),
+                        caller_frame,
+                        false,
+                        false,
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn exec_procedure_body(&mut self, body: &[Stmt], frame: &mut Frame) -> VResult<()> {
         let mut pc = 0usize;
+        let mut gosub_stack: Vec<usize> = Vec::new();
         while pc < body.len() {
+            if self.ended {
+                return Ok(());
+            }
             let flow = match self.exec_stmt(&body[pc], frame, false) {
                 Ok(f) => f,
                 Err(e) => {
@@ -1121,11 +1780,40 @@ impl<'w> Interpreter<'w> {
             match flow {
                 Flow::Normal => pc += 1,
                 Flow::ExitProc => return Ok(()),
+                Flow::EndAll => {
+                    self.ended = true;
+                    return Ok(());
+                }
                 Flow::ExitFor | Flow::ExitDo => pc += 1,
+                Flow::GoSub(label) => match Self::find_label(body, &label) {
+                    Some(i) => {
+                        gosub_stack.push(pc + 1);
+                        pc = i;
+                    }
+                    None => {
+                        return Err(VbaError::new(
+                            erl_label_error(),
+                            format!("Label not defined: {label}"),
+                        ));
+                    }
+                },
+                Flow::Return => match gosub_stack.pop() {
+                    Some(ret_pc) => pc = ret_pc,
+                    None => {
+                        return Err(VbaError::new(3, "Return without GoSub"));
+                    }
+                },
                 Flow::Goto(label) => {
                     if label == "\0resume-next" {
                         pc = frame.failed_at.map(|i| i + 1).unwrap_or(pc + 1);
                         frame.in_handler = false;
+                        self.err = ErrState::default();
+                        continue;
+                    }
+                    if label == "\0resume-retry" {
+                        pc = frame.failed_at.unwrap_or(pc);
+                        frame.in_handler = false;
+                        self.err = ErrState::default();
                         continue;
                     }
                     match Self::find_label(body, &label) {
@@ -1160,6 +1848,9 @@ impl<'w> Interpreter<'w> {
         self.err = ErrState {
             number: e.number,
             description: e.description.clone(),
+            source: self.err.source.clone(),
+            help_file: String::new(),
+            help_context: 0,
         };
     }
 
@@ -1202,10 +1893,46 @@ impl<'w> Interpreter<'w> {
             Stmt::Label { .. } => Ok(Flow::Normal),
 
             Stmt::Dim {
-                vars, with_events, ..
+                kind,
+                vars,
+                with_events,
+                ..
             } => {
+                let is_static_var =
+                    !module_level && (*kind == DimKind::Static || frame.is_static_proc);
                 for v in vars {
                     let key = v.name.to_ascii_lowercase();
+                    if let Some(ty) = &v.ty {
+                        frame.local_types.insert(key.clone(), ty.clone());
+                    }
+                    if is_static_var {
+                        frame.static_vars.insert(key.clone());
+                        let scope_key = (frame.module_name.clone(), frame.proc_name.clone());
+                        let already_init = self
+                            .static_locals
+                            .get(&scope_key)
+                            .is_some_and(|m| m.contains_key(&key));
+                        if already_init {
+                            continue;
+                        }
+                        let initial = if let Some(bounds) = &v.bounds {
+                            let elem_ty = v.ty.as_ref().and_then(|t| t.path.last()).cloned();
+                            if bounds.is_empty() {
+                                Variant::Array(Rc::new(VarArray::unallocated(elem_ty)))
+                            } else {
+                                let dims = self.eval_array_bounds(bounds, frame)?;
+                                let def = self.default_for_in_scope(v.ty.as_ref());
+                                Variant::Array(Rc::new(VarArray::new(dims, def, true, elem_ty)?))
+                            }
+                        } else {
+                            self.default_for_in_scope(v.ty.as_ref())
+                        };
+                        self.static_locals
+                            .entry(scope_key)
+                            .or_default()
+                            .insert(key, initial);
+                        continue;
+                    }
                     if *with_events {
                         let ty_name =
                             v.ty.as_ref()
@@ -1224,8 +1951,23 @@ impl<'w> Interpreter<'w> {
                                 .unwrap_or_default();
                         frame.auto_new_locals.insert(key.clone(), cls);
                         frame.locals.insert(key, Variant::Object(ObjRef::Nothing));
+                    } else if let Some(bounds) = &v.bounds {
+                        let elem_ty = v.ty.as_ref().and_then(|t| t.path.last()).cloned();
+                        let arr = if bounds.is_empty() {
+                            VarArray::unallocated(elem_ty)
+                        } else {
+                            let dims = self.eval_array_bounds(bounds, frame)?;
+                            let def = self.default_for_in_scope(v.ty.as_ref());
+                            VarArray::new(dims, def, true, elem_ty)?
+                        };
+                        frame.locals.insert(key, Variant::Array(Rc::new(arr)));
                     } else {
-                        let initial = default_for(v.ty.as_ref());
+                        let mut initial = self.default_for_in_scope(v.ty.as_ref());
+                        if let Some(ty) = &v.ty
+                            && ty.string_length.is_some()
+                        {
+                            initial = self.coerce_to_type(initial, ty, frame)?;
+                        }
                         frame.locals.insert(key, initial);
                     }
                 }
@@ -1336,25 +2078,39 @@ impl<'w> Interpreter<'w> {
             Stmt::GoTo { label, .. } => Ok(Flow::Goto(label.clone())),
 
             Stmt::OnError { kind, .. } => {
-                frame.handler = match kind {
-                    OnErrorKind::GoTo(label) => Handler::Goto(label.clone()),
-                    OnErrorKind::ResumeNext => Handler::ResumeNext,
-                    OnErrorKind::Disable => Handler::None,
-                };
-                frame.in_handler = false;
+                match kind {
+                    OnErrorKind::GoTo(label) => {
+                        frame.handler = Handler::Goto(label.clone());
+                        frame.in_handler = false;
+                    }
+                    OnErrorKind::ResumeNext => {
+                        frame.handler = Handler::ResumeNext;
+                        frame.in_handler = false;
+                    }
+                    OnErrorKind::Disable => {
+                        frame.handler = Handler::None;
+                        frame.in_handler = false;
+                    }
+                    OnErrorKind::ClearError => {
+                        self.err = ErrState::default();
+                        frame.in_handler = false;
+                    }
+                }
                 Ok(Flow::Normal)
             }
 
             Stmt::Resume { kind, .. } => {
                 frame.in_handler = false;
+                self.err = ErrState::default();
                 Ok(match kind {
                     ResumeKind::Label(label) => Flow::Goto(label.clone()),
                     ResumeKind::Next => Flow::Goto("\0resume-next".to_string()),
-                    ResumeKind::Retry => Flow::Goto("\0resume-next".to_string()),
+                    ResumeKind::Retry => Flow::Goto("\0resume-retry".to_string()),
                 })
             }
 
-            Stmt::Stop { .. } | Stmt::End { .. } => Ok(Flow::ExitProc),
+            Stmt::Stop { .. } => Ok(Flow::ExitProc),
+            Stmt::End { .. } => Ok(Flow::EndAll),
 
             Stmt::EventDef { .. } => Ok(Flow::Normal),
 
@@ -1430,16 +2186,109 @@ impl<'w> Interpreter<'w> {
                 Ok(Flow::Normal)
             }
 
-            Stmt::Attribute { .. } => Ok(Flow::Normal),
+            Stmt::Attribute { .. }
+            | Stmt::TypeDef { .. }
+            | Stmt::EnumDef { .. }
+            | Stmt::Implements { .. } => Ok(Flow::Normal),
 
-            Stmt::ReDim { .. } => Err(out_of_scope("ReDim")),
-            Stmt::Erase { .. } => Err(out_of_scope("Erase")),
-            Stmt::GoSub { .. } | Stmt::Return { .. } => Err(out_of_scope("GoSub")),
-            Stmt::OnGoto { .. } => Err(out_of_scope("On ... GoTo")),
-            Stmt::TypeDef { .. } => Err(out_of_scope("Type")),
-            Stmt::EnumDef { .. } => Err(out_of_scope("Enum")),
+            Stmt::Conditional {
+                branches,
+                else_body,
+                ..
+            } => {
+                let mut cond_consts: HashMap<String, i64> = HashMap::new();
+                cond_consts.insert("vba7".to_string(), -1);
+                cond_consts.insert("vba6".to_string(), -1);
+                cond_consts.insert("win64".to_string(), -1);
+                cond_consts.insert("win32".to_string(), -1);
+                cond_consts.insert("mac".to_string(), 0);
+                for (cond, body) in branches {
+                    if eval_cond_expr(cond, &cond_consts) != 0 {
+                        return self.exec_block(body, frame);
+                    }
+                }
+                if let Some(body) = else_body {
+                    return self.exec_block(body, frame);
+                }
+                Ok(Flow::Normal)
+            }
+
+            Stmt::ReDim { preserve, vars, .. } => {
+                for v in vars {
+                    let bounds = v.bounds.as_deref().unwrap_or(&[]);
+                    let dims = self.eval_array_bounds(bounds, frame)?;
+                    let elem_ty = v.ty.as_ref().and_then(|t| t.path.last()).cloned();
+                    let def = self.default_for_in_scope(v.ty.as_ref());
+                    let existing = self.lookup(&v.name, frame);
+                    let mut arr = match existing {
+                        Some(Variant::Array(a)) => a,
+                        _ => Rc::new(VarArray::unallocated(elem_ty)),
+                    };
+                    Rc::make_mut(&mut arr).redim(dims, *preserve, def)?;
+                    self.assign_with(
+                        &Expr::Ident {
+                            name: v.name.clone(),
+                            pos: v.pos,
+                        },
+                        Variant::Array(arr),
+                        frame,
+                        module_level,
+                        false,
+                    )?;
+                }
+                Ok(Flow::Normal)
+            }
+            Stmt::Erase { targets, .. } => {
+                for t in targets {
+                    if let Expr::Ident { name, pos } = t
+                        && let Some(Variant::Array(mut arr)) = self.lookup(name, frame)
+                    {
+                        let def = match arr.elem_type.as_deref() {
+                            Some(tn) => self.default_for_in_scope(Some(&TypeRef {
+                                path: vec![tn.to_string()],
+                                is_new: false,
+                                string_length: None,
+                            })),
+                            None => Variant::Empty,
+                        };
+                        Rc::make_mut(&mut arr).erase(def);
+                        self.assign_with(
+                            &Expr::Ident {
+                                name: name.clone(),
+                                pos: *pos,
+                            },
+                            Variant::Array(arr),
+                            frame,
+                            module_level,
+                            false,
+                        )?;
+                    }
+                }
+                Ok(Flow::Normal)
+            }
+            Stmt::GoSub { label, .. } => Ok(Flow::GoSub(label.clone())),
+            Stmt::Return { .. } => Ok(Flow::Return),
+            Stmt::OnGoto {
+                subject,
+                labels,
+                gosub,
+                ..
+            } => {
+                let idx = value::bankers_round(self.eval(subject, frame)?.to_f64()?) as i64;
+                if !(0..=255).contains(&idx) {
+                    return Err(VbaError::invalid_call());
+                }
+                if idx == 0 || (idx as usize) > labels.len() {
+                    return Ok(Flow::Normal);
+                }
+                let label = labels[idx as usize - 1].clone();
+                if *gosub {
+                    Ok(Flow::GoSub(label))
+                } else {
+                    Ok(Flow::Goto(label))
+                }
+            }
             Stmt::Declare { .. } => Err(out_of_scope("Declare")),
-            Stmt::Implements { .. } => Err(out_of_scope("Implements")),
             Stmt::Opaque { keyword, .. } => Err(out_of_scope(keyword)),
         }
     }
@@ -1452,12 +2301,19 @@ impl<'w> Interpreter<'w> {
         text_compare: bool,
         bool_compare: bool,
     ) -> VResult<bool> {
+        let opt_text = self.active_compare_text();
         let cmp =
             |lhs: &Variant, rhs: &Variant, kind: Operand| -> VResult<Option<std::cmp::Ordering>> {
                 if text_compare {
-                    return Ok(Some(lhs.to_vba_string()?.cmp(&rhs.to_vba_string()?)));
+                    let a = lhs.to_vba_string()?;
+                    let b = rhs.to_vba_string()?;
+                    return Ok(Some(if opt_text {
+                        a.to_lowercase().cmp(&b.to_lowercase())
+                    } else {
+                        a.cmp(&b)
+                    }));
                 }
-                value::compare_ctx(lhs, rhs, Operand::Runtime, kind)
+                value::compare_ctx_opt(lhs, rhs, Operand::Runtime, kind, opt_text)
             };
         let cast = |v: Variant| -> VResult<Variant> {
             if bool_compare {
@@ -1595,6 +2451,11 @@ impl<'w> Interpreter<'w> {
             Expr::Member {
                 target: obj, name, ..
             } => {
+                if let Some(base_expr) = obj
+                    && let Ok(Variant::Udt(_)) = self.eval(base_expr, frame)
+                {
+                    return self.assign_udt_field(base_expr, name, v, frame, module_level);
+                }
                 let owner = self.member_owner(obj.as_deref(), frame)?;
                 let Variant::Object(owner_obj) = owner else {
                     return Err(VbaError::new(
@@ -1607,6 +2468,51 @@ impl<'w> Interpreter<'w> {
             Expr::Call {
                 target: t, args, ..
             } => {
+                if let Expr::Ident { name, .. } = t.as_ref()
+                    && (name.eq_ignore_ascii_case("mid") || name.eq_ignore_ascii_case("mid$"))
+                    && !matches!(self.lookup(name, frame), Some(Variant::Array(_)))
+                    && args.len() >= 2
+                    && let Some(target_expr) = &args[0].value
+                {
+                    let orig = self.eval(target_expr, frame)?.to_vba_string()?;
+                    let start = value::bankers_round(
+                        self.eval(
+                            args[1].value.as_ref().ok_or_else(VbaError::invalid_call)?,
+                            frame,
+                        )?
+                        .to_f64()?,
+                    );
+                    if start < 1.0 {
+                        return Err(VbaError::invalid_call());
+                    }
+                    let start_idx = start as usize - 1;
+                    let repl = v.to_vba_string()?;
+                    let mut chars: Vec<char> = orig.chars().collect();
+                    let max_len = match args.get(2).and_then(|a| a.value.as_ref()) {
+                        Some(len_e) => {
+                            let n = value::bankers_round(self.eval(len_e, frame)?.to_f64()?);
+                            if n < 0.0 {
+                                return Err(VbaError::invalid_call());
+                            }
+                            n as usize
+                        }
+                        None => repl.chars().count(),
+                    };
+                    for (offset, ch) in repl.chars().take(max_len).enumerate() {
+                        if start_idx + offset >= chars.len() {
+                            break;
+                        }
+                        chars[start_idx + offset] = ch;
+                    }
+                    let updated: String = chars.into_iter().collect();
+                    return self.assign_with(
+                        target_expr,
+                        Variant::Str(updated),
+                        frame,
+                        module_level,
+                        false,
+                    );
+                }
                 if let Expr::Member {
                     target: inner_obj,
                     name: prop_name,
@@ -1622,23 +2528,64 @@ impl<'w> Interpreter<'w> {
                     }
                 }
                 if let Expr::Ident {
-                    name: ident_name, ..
+                    name: ident_name,
+                    pos,
                 } = t.as_ref()
-                    && let Some(Variant::Object(obj)) = self.lookup(ident_name, frame)
-                    && let ObjRef::UserClass(id) = obj
+                    && let Some(existing) = self.lookup(ident_name, frame)
                 {
-                    let arg_vals = self.eval_args(args, frame)?;
-                    let cls_name = self
-                        .instances
-                        .get(&id)
-                        .map(|inst| inst.class_name.clone())
-                        .unwrap_or_default();
-                    if let Some(def_member) = self
-                        .modules
-                        .get(&cls_name.to_ascii_lowercase())
-                        .and_then(|m| m.default_member.clone())
+                    if let Variant::Array(mut arr) = existing {
+                        let arg_vals = self.eval_args(args, frame)?;
+                        let mut indices = Vec::with_capacity(arg_vals.len());
+                        for iv in arg_vals {
+                            indices.push(value::bankers_round(iv.to_f64()?) as i32);
+                        }
+                        let coerced = if let Some(elem_ty) = arr.elem_type.clone() {
+                            self.coerce_to_type(
+                                v,
+                                &TypeRef {
+                                    path: vec![elem_ty],
+                                    is_new: false,
+                                    string_length: None,
+                                },
+                                frame,
+                            )?
+                        } else {
+                            v
+                        };
+                        Rc::make_mut(&mut arr).set_nd(&indices, coerced)?;
+                        return self.assign_with(
+                            &Expr::Ident {
+                                name: ident_name.clone(),
+                                pos: *pos,
+                            },
+                            Variant::Array(arr),
+                            frame,
+                            module_level,
+                            false,
+                        );
+                    }
+                    if let Variant::Object(obj) = existing
+                        && let ObjRef::UserClass(id) = obj
                     {
-                        return self.set_member_on_object(&obj, &def_member, &arg_vals, &v, set);
+                        let arg_vals = self.eval_args(args, frame)?;
+                        let cls_name = self
+                            .instances
+                            .get(&id)
+                            .map(|inst| inst.class_name.clone())
+                            .unwrap_or_default();
+                        if let Some(def_member) = self
+                            .modules
+                            .get(&cls_name.to_ascii_lowercase())
+                            .and_then(|m| m.default_member.clone())
+                        {
+                            return self.set_member_on_object(
+                                &obj,
+                                &def_member,
+                                &arg_vals,
+                                &v,
+                                set,
+                            );
+                        }
                     }
                 }
                 if !set {
@@ -1672,6 +2619,17 @@ impl<'w> Interpreter<'w> {
         match target {
             Expr::Ident { name, .. } => {
                 let key = name.to_ascii_lowercase();
+                let mut v = v;
+                if !set && !matches!(v, Variant::Array(_) | Variant::Udt(_) | Variant::Object(_)) {
+                    let declared_ty = frame.local_types.get(&key).cloned().or_else(|| {
+                        self.modules
+                            .get(&self.active_module)
+                            .and_then(|m| m.global_types.get(&key).cloned())
+                    });
+                    if let Some(ty) = declared_ty {
+                        v = self.coerce_to_type(v, &ty, frame)?;
+                    }
+                }
                 self.inc_ref(&v);
 
                 let is_with_events = frame.with_events_locals.contains_key(&key)
@@ -1692,7 +2650,17 @@ impl<'w> Interpreter<'w> {
                     }
                 }
 
-                if module_level {
+                if !module_level && frame.static_vars.contains(&key) {
+                    let scope_key = (frame.module_name.clone(), frame.proc_name.clone());
+                    let old = self
+                        .static_locals
+                        .entry(scope_key)
+                        .or_default()
+                        .insert(key, v);
+                    if let Some(old) = old {
+                        self.dec_ref(&old);
+                    }
+                } else if module_level {
                     if let Some(m) = self.modules.get_mut(&self.active_module)
                         && let Some(old) = m.globals.insert(key, v)
                     {
@@ -1729,6 +2697,38 @@ impl<'w> Interpreter<'w> {
                 format!("Cannot assign to this expression ({other:?})"),
             )),
         }
+    }
+
+    fn assign_udt_field(
+        &mut self,
+        base_expr: &Expr,
+        field: &str,
+        v: Variant,
+        frame: &mut Frame,
+        module_level: bool,
+    ) -> VResult<()> {
+        let Variant::Udt(mut udt) = self.eval(base_expr, frame)? else {
+            return Err(VbaError::new(424, "Object required"));
+        };
+        let field_key = field.to_ascii_lowercase();
+        if !udt.fields.contains_key(&field_key) {
+            return Err(VbaError::new(
+                438,
+                format!("Object doesn't support this property or method: .{field}"),
+            ));
+        }
+        let coerced = if let Some(fields_decl) = self.find_type_def(&udt.type_name)
+            && let Some(fdecl) = fields_decl
+                .iter()
+                .find(|f| f.name.eq_ignore_ascii_case(field))
+            && let Some(ty) = &fdecl.ty
+        {
+            self.coerce_to_type(v, ty, frame)?
+        } else {
+            v
+        };
+        Rc::make_mut(&mut udt).fields.insert(field_key, coerced);
+        self.assign_with(base_expr, Variant::Udt(udt), frame, module_level, false)
     }
 
     fn module_has_global(&self, mod_name: &str, key: &str) -> bool {
@@ -1883,6 +2883,13 @@ impl<'w> Interpreter<'w> {
 
     fn lookup(&mut self, name: &str, frame: &mut Frame) -> Option<Variant> {
         let key = name.to_ascii_lowercase();
+
+        if frame.static_vars.contains(&key) {
+            let scope_key = (frame.module_name.clone(), frame.proc_name.clone());
+            if let Some(v) = self.static_locals.get(&scope_key).and_then(|m| m.get(&key)) {
+                return Some(v.clone());
+            }
+        }
 
         if frame.auto_new_locals.contains_key(&key) {
             let val = frame.locals.get(&key).cloned();
@@ -2059,7 +3066,8 @@ impl<'w> Interpreter<'w> {
                     ArithMode::Promote
                 };
                 let kinds = (operand_kind(lhs), operand_kind(rhs));
-                eval_binary(*op, &a, &b, mode, kinds)
+                let text_compare = self.active_compare_text();
+                eval_binary(*op, &a, &b, mode, kinds, text_compare)
             }
 
             Expr::Call { target, args, .. } => self.eval_call(target, args, frame),
@@ -2072,33 +3080,76 @@ impl<'w> Interpreter<'w> {
                     return Ok(match name.to_ascii_lowercase().as_str() {
                         "number" => Variant::Long(self.err.number),
                         "description" => Variant::Str(self.err.description.clone()),
+                        "source" => Variant::Str(self.err.source.clone()),
+                        "helpfile" => Variant::Str(self.err.help_file.clone()),
+                        "helpcontext" => Variant::Long(self.err.help_context),
+                        "clear" => {
+                            self.err = ErrState::default();
+                            Variant::Empty
+                        }
                         other => return Err(out_of_scope(&format!("Err.{other}"))),
                     });
                 }
                 if let Some(t) = target
                     && let Expr::Ident {
-                        name: mod_ident, ..
+                        name: enum_or_mod, ..
                     } = t.as_ref()
                 {
-                    let lower_mod = mod_ident.to_ascii_lowercase();
-                    if let Some(m_env) = self.modules.get(&lower_mod)
+                    let lower_ns = enum_or_mod.to_ascii_lowercase();
+                    let lower_mem = name.to_ascii_lowercase();
+                    if lower_ns == "vba" {
+                        if let Some(c) = self.builtin_constant(name) {
+                            return Ok(c);
+                        }
+                        if let Some(v) = builtins::call(name, &[])? {
+                            return Ok(v);
+                        }
+                    }
+                    if let Some(m_env) = self.modules.get(&self.active_module)
+                        && let Some(emap) = m_env.enums.get(&lower_ns)
+                        && let Some(&val) = emap.get(&lower_mem)
+                    {
+                        return Ok(Variant::Long(val));
+                    }
+                    for m_env in self.modules.values() {
+                        if let Some(emap) = m_env.enums.get(&lower_ns)
+                            && let Some(&val) = emap.get(&lower_mem)
+                        {
+                            return Ok(Variant::Long(val));
+                        }
+                    }
+                    if let Some(m_env) = self.modules.get(&lower_ns)
                         && m_env.kind == VbaModuleKind::Standard
                     {
-                        if let Some(v) = m_env.globals.get(&name.to_ascii_lowercase()) {
+                        if let Some(v) = m_env.globals.get(&lower_mem) {
                             return Ok(v.clone());
                         }
-                        if let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
+                        if let Some(mp) = m_env.procs.get(&lower_mem)
                             && let Some(proc) = mp.first()
                         {
                             let mut call_frame = Frame::new();
-                            call_frame.module_name = lower_mod.clone();
+                            call_frame.module_name = lower_ns.clone();
                             let old_active = self.active_module.clone();
-                            self.active_module = lower_mod;
+                            self.active_module = lower_ns;
                             let res = self.call_body_with_frame(&proc, Vec::new(), &mut call_frame);
                             self.active_module = old_active;
                             return res;
                         }
                     }
+                }
+                if let Some(t) = target
+                    && let Ok(Variant::Udt(udt)) = self.eval(t, frame)
+                {
+                    return udt
+                        .fields
+                        .get(&name.to_ascii_lowercase())
+                        .cloned()
+                        .ok_or_else(|| {
+                            VbaError::new(
+                                438,
+                                format!("Object doesn't support this property or method: .{name}"),
+                            )
+                        });
                 }
                 self.member(target.as_deref(), name, &[], frame)
             }
@@ -2189,18 +3240,31 @@ impl<'w> Interpreter<'w> {
                 let lower_cls = cls_name.to_ascii_lowercase();
                 let lower_name = name.to_ascii_lowercase();
 
-                if let Some(m_env) = self.modules.get(&lower_cls)
-                    && let Some(mp) = m_env.procs.get(&lower_name)
-                    && let Some(proc) = mp.prop_get.clone().or_else(|| mp.sub_or_func.clone())
-                {
-                    let mut frame = Frame::new();
-                    frame.module_name = cls_name.clone();
-                    frame.me = Some(ObjRef::UserClass(*id));
-                    let old_active = self.active_module.clone();
-                    self.active_module = cls_name;
-                    let res = self.call_body_with_frame(&proc, args.to_vec(), &mut frame);
-                    self.active_module = old_active;
-                    return res;
+                if let Some(m_env) = self.modules.get(&lower_cls) {
+                    let direct = m_env
+                        .procs
+                        .get(&lower_name)
+                        .and_then(|mp| mp.prop_get.clone().or_else(|| mp.sub_or_func.clone()));
+                    let via_iface = if direct.is_none() {
+                        m_env.implements.iter().find_map(|iface| {
+                            let iface_key = format!("{iface}_{lower_name}");
+                            m_env.procs.get(&iface_key).and_then(|mp| {
+                                mp.prop_get.clone().or_else(|| mp.sub_or_func.clone())
+                            })
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(proc) = direct.or(via_iface) {
+                        let mut frame = Frame::new();
+                        frame.module_name = cls_name.clone();
+                        frame.me = Some(ObjRef::UserClass(*id));
+                        let old_active = self.active_module.clone();
+                        self.active_module = cls_name;
+                        let res = self.call_body_with_frame(&proc, args.to_vec(), &mut frame);
+                        self.active_module = old_active;
+                        return res;
+                    }
                 }
 
                 let auto_cls = self.instances.get(id).and_then(|inst| {
@@ -2313,8 +3377,14 @@ impl<'w> Interpreter<'w> {
             ObjRef::Nothing => false,
             ObjRef::UserClass(id) => {
                 if let Some(inst) = self.instances.get(id) {
+                    let lower_cls = inst.class_name.to_ascii_lowercase();
+                    let lower_ty = type_name.to_ascii_lowercase();
                     inst.class_name.eq_ignore_ascii_case(type_name)
-                        || type_name.eq_ignore_ascii_case("object")
+                        || lower_ty == "object"
+                        || self
+                            .modules
+                            .get(&lower_cls)
+                            .is_some_and(|m| m.implements.iter().any(|i| i == &lower_ty))
                 } else {
                     false
                 }
@@ -2406,19 +3476,29 @@ impl<'w> Interpreter<'w> {
         } = target
             && let Expr::Ident { name: o, .. } = obj.as_ref()
             && o.eq_ignore_ascii_case("err")
-            && name.eq_ignore_ascii_case("raise")
         {
-            let values = self.eval_args(args, frame)?;
-            let number = values
-                .first()
-                .map(|v| v.to_f64())
-                .transpose()?
-                .unwrap_or(0.0) as i32;
-            let description = match values.get(2) {
-                Some(v) => v.to_vba_string()?,
-                None => describe_error(number),
-            };
-            return Err(VbaError::new(number, description));
+            if name.eq_ignore_ascii_case("raise") {
+                let values = self.eval_args(args, frame)?;
+                let number = values
+                    .first()
+                    .map(|v| v.to_f64())
+                    .transpose()?
+                    .unwrap_or(0.0) as i32;
+                let source = match values.get(1) {
+                    Some(v) if !v.is_empty() => v.to_vba_string()?,
+                    _ => String::new(),
+                };
+                let description = match values.get(2) {
+                    Some(v) if !v.is_empty() => v.to_vba_string()?,
+                    _ => describe_error(number),
+                };
+                self.err.source = source;
+                return Err(VbaError::new(number, description));
+            }
+            if name.eq_ignore_ascii_case("clear") {
+                self.err = ErrState::default();
+                return Ok(Variant::Empty);
+            }
         }
 
         if let Expr::Member {
@@ -2431,19 +3511,19 @@ impl<'w> Interpreter<'w> {
                 } = t.as_ref()
             {
                 let lower_mod = mod_ident.to_ascii_lowercase();
+                if lower_mod == "vba" {
+                    let values = self.eval_args(args, frame)?;
+                    let bare = name.trim_end_matches('$');
+                    if let Some(v) = builtins::call(bare, &values)? {
+                        return Ok(v);
+                    }
+                }
                 if let Some(m_env) = self.modules.get(&lower_mod)
                     && m_env.kind == VbaModuleKind::Standard
                     && let Some(mp) = m_env.procs.get(&name.to_ascii_lowercase())
                     && let Some(proc) = mp.first()
                 {
-                    let values = self.eval_args(args, frame)?;
-                    let mut call_frame = Frame::new();
-                    call_frame.module_name = lower_mod.clone();
-                    let old_active = self.active_module.clone();
-                    self.active_module = lower_mod;
-                    let res = self.call_body_with_frame(&proc, values, &mut call_frame);
-                    self.active_module = old_active;
-                    return res;
+                    return self.bind_and_call_proc(lower_mod, &proc, args, frame, None);
                 }
             }
             let values = self.eval_args(args, frame)?;
@@ -2455,17 +3535,12 @@ impl<'w> Interpreter<'w> {
         };
 
         if let Some((proc_mod, proc)) = self.find_procedure_in_scope(name, frame) {
-            let values = self.eval_args(args, frame)?;
-            let mut call_frame = Frame::new();
-            call_frame.module_name = proc_mod.clone();
-            if proc_mod == frame.module_name {
-                call_frame.me = frame.me;
-            }
-            let old_active = self.active_module.clone();
-            self.active_module = proc_mod;
-            let res = self.call_body_with_frame(&proc, values, &mut call_frame);
-            self.active_module = old_active;
-            return res;
+            let me = if proc_mod == frame.module_name {
+                frame.me
+            } else {
+                None
+            };
+            return self.bind_and_call_proc(proc_mod, &proc, args, frame, me);
         }
 
         if let Some(val) = self.lookup(name, frame) {
@@ -2490,16 +3565,11 @@ impl<'w> Interpreter<'w> {
             }
             if let Variant::Array(a) = val {
                 let values = self.eval_args(args, frame)?;
-                let row = values
-                    .first()
-                    .map(|v| v.to_f64())
-                    .transpose()?
-                    .unwrap_or(0.0);
-                let col = match values.get(1) {
-                    Some(v) => v.to_f64()?,
-                    None => 0.0,
-                };
-                return a.get(row as usize, col as usize);
+                let mut indices = Vec::with_capacity(values.len());
+                for v in values {
+                    indices.push(value::bankers_round(v.to_f64()?) as i32);
+                }
+                return a.get_nd(&indices);
             }
         }
 
@@ -2519,7 +3589,14 @@ impl<'w> Interpreter<'w> {
                 .map(|v| self.scalar(v))
                 .collect::<VResult<Vec<_>>>()?
         };
-        if let Some(v) = builtins::call(name, &values)? {
+        let bare_name = name.trim_end_matches('$');
+        if bare_name.eq_ignore_ascii_case("array") {
+            return Ok(Variant::Array(Rc::new(VarArray::new_1d(
+                self.active_option_base(),
+                values,
+            ))));
+        }
+        if let Some(v) = builtins::call(bare_name, &values)? {
             return Ok(v);
         }
         if let Some(h) = self.host.as_mut()
@@ -2742,6 +3819,7 @@ fn eval_binary(
     b: &Variant,
     mode: ArithMode,
     kinds: (Operand, Operand),
+    text_compare: bool,
 ) -> VResult<Variant> {
     use BinOp::*;
     if constant_bool_int_op(op, a, b, mode).is_some() {
@@ -2762,21 +3840,44 @@ fn eval_binary(
         Mod => value::modulo(a, b),
         Pow => value::pow(a, b, mode),
         Concat => value::concat(a, b),
-        Eq | Ne | Lt | Gt | Le | Ge => match value::compare_ctx(a, b, kinds.0, kinds.1)? {
-            None => Ok(Variant::Null),
-            Some(ord) => Ok(Variant::Boolean(compare_with(op, ord))),
-        },
+        Eq | Ne | Lt | Gt | Le | Ge => {
+            match value::compare_ctx_opt(a, b, kinds.0, kinds.1, text_compare)? {
+                None => Ok(Variant::Null),
+                Some(ord) => Ok(Variant::Boolean(compare_with(op, ord))),
+            }
+        }
         And => null_on_the_right(a, b, kinds, value::and(a, b, kinds)),
         Or => null_on_the_right(a, b, kinds, value::or(a, b, kinds)),
         Xor => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| x ^ y)),
         Eqv => null_on_the_right(a, b, kinds, value::logical(a, b, kinds, |x, y| !(x ^ y))),
         Imp => null_on_the_right(a, b, kinds, value::imp(a, b, kinds)),
-        Like => Err(out_of_scope("Like")),
+        Like => {
+            if a.is_null() || b.is_null() {
+                return Ok(Variant::Null);
+            }
+            let text = a.to_vba_string()?;
+            let pat = b.to_vba_string()?;
+            Ok(Variant::Boolean(value::vba_like(
+                &text,
+                &pat,
+                text_compare,
+            )?))
+        }
         Is => is_comparison(a, b),
     }
 }
 
-const OBJECT_AWARE_BUILTINS: &[&str] = &["typename", "vartype", "isobject"];
+const OBJECT_AWARE_BUILTINS: &[&str] = &[
+    "typename",
+    "vartype",
+    "isobject",
+    "isarray",
+    "ismissing",
+    "iserror",
+    "lbound",
+    "ubound",
+    "array",
+];
 
 fn is_comparison(a: &Variant, b: &Variant) -> VResult<Variant> {
     match (a.as_object(), b.as_object()) {
@@ -2810,6 +3911,7 @@ fn literal_to_variant(l: &Literal) -> Variant {
         } => match suffix {
             Some(TypeSuffix::Integer) => Variant::Integer(*value as i16),
             Some(TypeSuffix::Long) => Variant::Long(*value as i32),
+            Some(TypeSuffix::LongLong) => Variant::LongLong(*value as i64),
             Some(TypeSuffix::Single) => Variant::Single(*value as f32),
             Some(TypeSuffix::Double) => Variant::Double(*value),
             Some(TypeSuffix::Currency) => Variant::Currency((value * 10_000.0).round() as i64),
@@ -2847,11 +3949,14 @@ fn default_for(ty: Option<&TypeRef>) -> Variant {
         return Variant::Empty;
     };
     match last.to_ascii_lowercase().as_str() {
+        "byte" => Variant::Byte(0),
         "integer" => Variant::Integer(0),
         "long" => Variant::Long(0),
+        "longlong" | "longptr" => Variant::LongLong(0),
         "single" => Variant::Single(0.0),
         "double" => Variant::Double(0.0),
         "currency" => Variant::Currency(0),
+        "decimal" => Variant::Decimal(Box::new((0, 0))),
         "boolean" => Variant::Boolean(false),
         "string" => Variant::Str(String::new()),
         "date" => Variant::Date(0.0),
@@ -4412,7 +5517,7 @@ mod tests {
 
         let mut interp = Interpreter::from_modules(vec![p_cls, p_main], Some("Main"));
         let res = interp.run("TestDefault", Vec::new()).unwrap();
-        assert_eq!(res, Variant::Integer(36));
+        assert_eq!(res, Variant::Long(36));
     }
 
     #[test]
@@ -4553,6 +5658,329 @@ mod tests {
         assert_eq!(
             wb.sheets[0].get_display_string(&crate::core::CellRef::new(1, 0)),
             "Auto"
+        );
+    }
+
+    #[test]
+    fn byref_default_vs_byval_and_parenthesized_arg() {
+        let src = "\
+Sub Bump(x, ByVal y)
+    x = x + 10
+    y = y + 10
+End Sub
+
+Function Main()
+    Dim a As Long, b As Long, c As Long
+    a = 1: b = 2: c = 3
+    Bump a, b
+    Bump (c), b
+    Main = a & \",\" & b & \",\" & c
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("11,2,3".to_string()));
+    }
+
+    #[test]
+    fn named_args_optional_defaults_ismissing_and_paramarray() {
+        let src = "\
+Function Combine(a As Long, Optional b As Long = 5, Optional c) As String
+    Combine = a & \":\" & b & \":\" & IsMissing(c)
+End Function
+
+Function SumAll(ParamArray vals() As Variant) As Long
+    Dim i As Long, total As Long
+    For i = LBound(vals) To UBound(vals)
+        total = total + vals(i)
+    Next i
+    SumAll = total
+End Function
+
+Function Main()
+    Dim s1 As String, s2 As String, s3 As String
+    s1 = Combine(10)
+    s2 = Combine(b:=20, a:=1, c:=99)
+    s3 = CStr(SumAll(1, 2, 3, 4))
+    Main = s1 & \"|\" & s2 & \"|\" & s3
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("10:5:True|1:20:False|10".to_string()));
+    }
+
+    #[test]
+    fn static_locals_persist_across_calls() {
+        let src = "\
+Function NextId() As Long
+    Static counter As Long
+    counter = counter + 1
+    NextId = counter
+End Function
+
+Function Main()
+    Main = NextId() & \",\" & NextId() & \",\" & NextId()
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("1,2,3".to_string()));
+    }
+
+    #[test]
+    fn arrays_option_base_redim_preserve_and_erase() {
+        let src = "\
+Option Base 1
+
+Function Main()
+    Dim a() As Long
+    ReDim a(1 To 2, 1 To 2)
+    a(1, 1) = 10
+    a(1, 2) = 20
+    a(2, 1) = 30
+    a(2, 2) = 40
+    ReDim Preserve a(1 To 2, 1 To 3)
+    a(2, 3) = 50
+    Dim f(3) As Long
+    f(1) = 7
+    Erase f
+    Dim d
+    d = Array(100, 200)
+    Main = LBound(a, 1) & \",\" & UBound(a, 2) & \",\" & a(1, 2) & \",\" & a(2, 3) & \",\" & f(1) & \",\" & LBound(d) & \",\" & d(2)
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("1,3,20,50,0,1,200".to_string()));
+    }
+
+    #[test]
+    fn redim_fixed_array_raises_error_10_and_bad_preserve_raises_9() {
+        let src_fixed = "\
+Function Main()
+    Dim a(3) As Long
+    ReDim a(5)
+End Function
+";
+        let e = Interpreter::new(parse_module(src_fixed).unwrap())
+            .run("Main", Vec::new())
+            .unwrap_err();
+        assert_eq!(e.number, 10);
+
+        let src_bad = "\
+Function Main()
+    Dim a() As Long
+    ReDim a(1 To 2, 1 To 2)
+    ReDim Preserve a(1 To 3, 1 To 2)
+End Function
+";
+        let e = Interpreter::new(parse_module(src_bad).unwrap())
+            .run("Main", Vec::new())
+            .unwrap_err();
+        assert_eq!(e.number, 9);
+    }
+
+    #[test]
+    fn udt_value_semantics_and_enum_values() {
+        let src = "\
+Enum ColorKind
+    Red = 1
+    Green
+    Blue = 10
+End Enum
+
+Type Point
+    X As Long
+    Y As Long
+End Type
+
+Function Main()
+    Dim p1 As Point, p2 As Point
+    p1.X = 3.6
+    p1.Y = ColorKind.Green
+    p2 = p1
+    p2.X = 99
+    Main = p1.X & \",\" & p1.Y & \",\" & p2.X & \",\" & Blue
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("4,2,99,10".to_string()));
+    }
+
+    #[test]
+    fn primitive_types_byte_decimal_longlong_and_fixed_string() {
+        let src = "\
+Function Main()
+    Dim b As Byte
+    b = 254.6
+    Dim s As String * 4
+    s = \"hi\"
+    Dim t As String * 3
+    t = \"abcdef\"
+    Dim d
+    d = CDec(\"12345678901234567890.125\")
+    Dim ll As LongLong
+    ll = 42^
+    Main = TypeName(b) & \":\" & b & \"|\" & Len(s) & \":\" & t & \"|\" & TypeName(d) & \":\" & CStr(d) & \"|\" & TypeName(ll) & \":\" & ll
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(
+            res,
+            Variant::Str("Byte:255|4:abc|Decimal:12345678901234567890.125|LongLong:42".to_string())
+        );
+    }
+
+    #[test]
+    fn like_operator_and_option_compare_text() {
+        let src = "\
+Option Compare Text
+
+Function Main()
+    Dim a As Boolean, b As Boolean, c As Boolean, d As Boolean
+    a = (\"Hello\" = \"hello\")
+    b = (\"AbC123\" Like \"abc###\")
+    c = (\"cat\" Like \"[a-d]*t\")
+    d = (\"9\" Like \"[!0-9]\")
+    Main = a & \",\" & b & \",\" & c & \",\" & d
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("True,True,True,False".to_string()));
+    }
+
+    #[test]
+    fn gosub_return_on_goto_and_mid_statement() {
+        let src = "\
+Function Main()
+    Dim s As String
+    s = \"Hello World\"
+    Mid(s, 7, 5) = \"Excel\"
+    Dim acc As Long
+    On 2 GoSub L1, L2
+    Main = s & \":\" & acc
+    Exit Function
+L1:
+    acc = acc + 1
+    Return
+L2:
+    acc = acc + 10
+    Return
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("Hello Excel:10".to_string()));
+    }
+
+    #[test]
+    fn resume_retry_on_error_goto_minus_one_and_end_statement() {
+        let src = "\
+Function TestResume()
+    Dim d As Long, n As Long
+    d = 0
+    On Error GoTo FixIt
+    n = 10 / d
+    TestResume = n
+    Exit Function
+FixIt:
+    d = 2
+    Resume
+End Function
+
+Function TestGotoMinusOne()
+    On Error GoTo Catcher
+    Err.Raise 500, \"MySrc\", \"boom\"
+    TestGotoMinusOne = \"unreachable\"
+    Exit Function
+Catcher:
+    Dim s As String
+    s = Err.Number & \":\" & Err.Source
+    On Error GoTo -1
+    TestGotoMinusOne = s & \":\" & Err.Number
+End Function
+
+Sub HelperEnd()
+    End
+End Sub
+
+Function TestEnd()
+    TestEnd = \"before\"
+    HelperEnd
+    TestEnd = \"after\"
+End Function
+";
+        let m = parse_module(src).unwrap();
+        assert_eq!(
+            Interpreter::new(m.clone())
+                .run("TestResume", Vec::new())
+                .unwrap(),
+            Variant::Long(5)
+        );
+        assert_eq!(
+            Interpreter::new(m.clone())
+                .run("TestGotoMinusOne", Vec::new())
+                .unwrap(),
+            Variant::Str("500:MySrc:0".to_string())
+        );
+        assert_eq!(
+            Interpreter::new(m).run("TestEnd", Vec::new()).unwrap(),
+            Variant::Str("before".to_string())
+        );
+    }
+
+    #[test]
+    fn conditional_compilation_and_implements_dispatch() {
+        let iface_src =
+            "Attribute VB_Name = \"IGreeter\"\nPublic Function Greet() As String\nEnd Function\n";
+        let impl_src = "\
+Attribute VB_Name = \"Bot\"
+Implements IGreeter
+Private Function IGreeter_Greet() As String
+#If VBA7 Then
+    IGreeter_Greet = \"vba7\"
+#Else
+    IGreeter_Greet = \"legacy\"
+#End If
+End Function
+";
+        let main_src = "\
+Attribute VB_Name = \"Main\"
+Function RunTest()
+    Dim b As New Bot
+    RunTest = TypeOf b Is IGreeter & \":\" & b.Greet() & \":\" & VBA.Left$(\"hello\", 2)
+End Function
+";
+        let mk = |name: &str, kind: VbaModuleKind, source: &str| VbaModule {
+            name: name.to_string(),
+            kind,
+            source: source.to_string(),
+            bound_sheet_id: None,
+            prefix_bytes: Vec::new(),
+            cached_compressed_source: None,
+            module_cookie: 0,
+        };
+        let mut interp = Interpreter::from_modules(
+            vec![
+                mk("IGreeter", VbaModuleKind::Class, iface_src),
+                mk("Bot", VbaModuleKind::Class, impl_src),
+                mk("Main", VbaModuleKind::Standard, main_src),
+            ],
+            Some("Main"),
+        );
+        let res = interp.run("RunTest", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("True:vba7:he".to_string()));
+    }
+
+    #[test]
+    fn negative_ole_date_serial_formats_time_away_from_zero() {
+        assert_eq!(
+            super::super::value::format_vba_date(-1.75),
+            "12/29/99 6:00:00 PM"
         );
     }
 }

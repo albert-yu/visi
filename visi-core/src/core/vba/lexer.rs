@@ -30,6 +30,8 @@ pub enum TypeSuffix {
 
     Long,
 
+    LongLong,
+
     Single,
 
     Double,
@@ -43,6 +45,7 @@ impl TypeSuffix {
             '$' => Some(Self::String),
             '%' => Some(Self::Integer),
             '&' => Some(Self::Long),
+            '^' => Some(Self::LongLong),
             '!' => Some(Self::Single),
             '#' => Some(Self::Double),
             '@' => Some(Self::Currency),
@@ -55,6 +58,7 @@ impl TypeSuffix {
             Self::String => '$',
             Self::Integer => '%',
             Self::Long => '&',
+            Self::LongLong => '^',
             Self::Single => '!',
             Self::Double => '#',
             Self::Currency => '@',
@@ -517,6 +521,21 @@ impl Lexer {
     }
 
     fn suffix_would_be_operator(&self, sigil: char) -> bool {
+        if sigil == '^' {
+            return match self.peek_at(1) {
+                Some(c) => {
+                    is_ident_start(c)
+                        || c.is_ascii_digit()
+                        || c == '('
+                        || c == '+'
+                        || c == '-'
+                        || c == '.'
+                        || c == ' '
+                        || c == '\t'
+                }
+                None => false,
+            };
+        }
         if sigil != '&' && sigil != '!' {
             return false;
         }

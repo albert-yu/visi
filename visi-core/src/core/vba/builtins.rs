@@ -7,20 +7,26 @@ const HANDLES_NULL: &[&str] = &[
     "isdate",
     "isobject",
     "iserror",
+    "ismissing",
     "isarray",
     "typename",
     "vartype",
     "iif",
+    "array",
 ];
 
 const REJECTS_NULL: &[&str] = &[
     "cstr",
+    "cbyte",
     "cint",
     "clng",
+    "clnglng",
+    "clngptr",
     "cdbl",
     "csng",
     "cbool",
     "ccur",
+    "cdec",
     "val",
     "sgn",
     "sqr",
@@ -54,12 +60,12 @@ fn any_null(args: &[Variant]) -> bool {
 #[cfg(test)]
 #[rustfmt::skip]
 pub(super) const IMPLEMENTED_NAMES: &[&str] = &[
-    "abs", "asc", "ascw", "atn", "cbool", "ccur", "cdbl", "chr", "chrw", "cint", "clng",
-    "cos", "csng", "cstr", "cvar", "cverr", "exp", "fix", "hex", "iif", "instr", "int",
-    "isarray", "isdate", "isempty", "iserror", "isnull", "isnumeric", "isobject",
-    "lbound", "lcase", "left", "len", "log", "ltrim", "mid", "oct", "replace", "rgb",
-    "right", "round", "rtrim", "sgn", "sin", "space", "sqr", "strcomp", "string",
-    "strreverse", "tan", "trim", "typename", "ubound", "ucase", "val", "vartype",
+    "abs", "array", "asc", "ascw", "atn", "cbool", "cbyte", "ccur", "cdbl", "cdec", "chr", "chrw",
+    "cint", "clng", "clnglng", "clngptr", "cos", "csng", "cstr", "cvar", "cverr", "exp", "fix",
+    "hex", "iif", "instr", "int", "isarray", "isdate", "isempty", "iserror", "ismissing",
+    "isnull", "isnumeric", "isobject", "lbound", "lcase", "left", "len", "log", "ltrim", "mid",
+    "oct", "replace", "rgb", "right", "round", "rtrim", "sgn", "sin", "space", "sqr", "strcomp",
+    "string", "strreverse", "tan", "trim", "typename", "ubound", "ucase", "val", "vartype",
 ];
 
 #[cfg(test)]
@@ -85,7 +91,11 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
         "isnumeric" => Variant::Boolean(is_numeric(&arg(args, 0))),
         "isdate" => Variant::Boolean(matches!(arg(args, 0), Variant::Date(_))),
         "isobject" => Variant::Boolean(matches!(arg(args, 0), Variant::Object(_))),
-        "iserror" => Variant::Boolean(matches!(arg(args, 0), Variant::ErrValue(_))),
+        "iserror" => Variant::Boolean(matches!(
+            arg(args, 0),
+            Variant::ErrValue(_) | Variant::Missing
+        )),
+        "ismissing" => Variant::Boolean(matches!(arg(args, 0), Variant::Missing)),
         "isarray" => Variant::Boolean(matches!(arg(args, 0), Variant::Array(_))),
         "cverr" => Variant::ErrValue(need(args, 0)?.to_f64()? as i32),
 
@@ -94,20 +104,41 @@ pub fn call(name: &str, args: &[Variant]) -> VResult<Option<Variant>> {
                 return Err(VbaError::type_mismatch());
             };
             let dim = match args.get(1) {
-                Some(d) => d.to_f64()? as usize,
+                Some(d) => {
+                    let v = value::bankers_round(d.to_f64()?);
+                    if v < 1.0 {
+                        return Err(VbaError::subscript());
+                    }
+                    v as usize
+                }
                 None => 1,
             };
             if lower == "lbound" {
-                a.ubound(dim)?;
-                Variant::Long(1)
+                Variant::Long(a.lbound(dim)?)
             } else {
-                Variant::Long(a.ubound(dim)? as i32)
+                Variant::Long(a.ubound(dim)?)
             }
         }
+        "array" => Variant::Array(std::rc::Rc::new(value::VarArray::new_1d(0, args.to_vec()))),
 
         "cstr" => Variant::Str(need(args, 0)?.to_vba_string()?),
+        "cbyte" => {
+            let r = value::bankers_round(numeric_arg(args, 0)?);
+            if !(0.0..=255.0).contains(&r) {
+                return Err(VbaError::overflow());
+            }
+            Variant::Byte(r as u8)
+        }
         "cint" => pack_int(numeric_arg(args, 0)?)?,
         "clng" => pack_long(numeric_arg(args, 0)?)?,
+        "clnglng" | "clngptr" => {
+            let r = value::bankers_round(numeric_arg(args, 0)?);
+            if !r.is_finite() || r < i64::MIN as f64 || r > i64::MAX as f64 {
+                return Err(VbaError::overflow());
+            }
+            Variant::LongLong(r as i64)
+        }
+        "cdec" => value::to_decimal(&need(args, 0)?)?,
         "cdbl" => Variant::Double(numeric_arg(args, 0)?),
         "csng" => {
             let f = need(args, 0)?.to_f64()? as f32;
@@ -270,9 +301,13 @@ fn vartype(v: &Variant) -> i16 {
         Variant::Currency(_) => 6,
         Variant::Date(_) => 7,
         Variant::Str(_) => 8,
-        Variant::Boolean(_) => 11,
         Variant::Object(_) => 9,
-        Variant::ErrValue(_) => 10,
+        Variant::ErrValue(_) | Variant::Missing => 10,
+        Variant::Boolean(_) => 11,
+        Variant::Decimal(_) => 14,
+        Variant::Byte(_) => 17,
+        Variant::LongLong(_) => 20,
+        Variant::Udt(_) => 36,
         Variant::Array(_) => 8192 + 12,
     }
 }
@@ -290,7 +325,11 @@ fn is_numeric(v: &Variant) -> bool {
         Variant::Str(s) => value::parse_vba_number(s).is_ok() && !s.trim().is_empty(),
         Variant::Empty => true,
         Variant::Null => false,
-        Variant::ErrValue(_) | Variant::Object(_) | Variant::Array(_) => false,
+        Variant::Missing
+        | Variant::ErrValue(_)
+        | Variant::Object(_)
+        | Variant::Array(_)
+        | Variant::Udt(_) => false,
         _ => true,
     }
 }
