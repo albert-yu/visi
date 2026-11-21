@@ -98,7 +98,7 @@ VBA macro conformance (`[MS-OVBA]` / `[MS-VBAL]`) is tracked separately in [tool
 | Legacy CSE array formulas (`t="array"`, `ref`) | `§18.3.1.40` | Modeled | `U, V, F, X` | Covered by `04_formulas_and_arrays.xlsx` |
 | Shared formulas (`t="shared"`, `si`, `ref`) | `§18.3.1.40` | Partial | `U` | Expanded into individual formulas on import (`worksheet.rs`); not re-compressed into shared formulas on export; untouched shared formulas in unedited cells survive surgical patch |
 | Structured table references (`Sales[Price]`, `[@Qty]`, `[#Headers]`) | `§18.17.2.5` | Modeled | `U, V, F, X` | Parsed, evaluated, and serialized (`06_tables.xlsx`) |
-| 3D sheet references (`Sheet1:Sheet3!A1`) | `§18.17.2.3` | **Gap (Unsupported)** | — | Not yet parsed/evaluated/serialized as 3D references |
+| 3D sheet references (`Sheet1:Sheet3!A1`, `'Q1 Sales:Q3 Sales'!A1:B2`) | `§18.17.2.3` | Modeled | `U, V` | Parsed in `parser.rs`, evaluated across `Context::sheet_order` (inclusive, forward or reversed) in `engine/sheet/mod.rs`, and round-tripped in `.xlsx` |
 | External workbook references (`[1]Sheet1!A1`, `xl/externalLinks/`) | `§18.14`, `§18.17.2.3` | **Gap (Pass-Through)** | — | `xl/externalLinks/` parts survive surgical patch; formula references to external workbooks are not modeled |
 | Calculation chain invalidation (`xl/calcChain.xml`) | `§18.6` | Modeled | `U, V` | `invalidate_calc_chain` in `patch.rs` strips `xl/calcChain.xml`, its `workbook.xml.rels` relationship, and its `[Content_Types].xml` override whenever any formula cell or defined name changes on surgical patch; preserves `calcChain.xml` when only non-formula cells change |
 
@@ -118,6 +118,5 @@ Comments, hyperlinks, data validations, and conditional formatting now patch **s
 
 ## Priority Backlog to Reach Full Compatibility
 
-1. **Add 3D sheet reference support** (`Sheet1:Sheet3!A1`) in parser, evaluator, and serializer.
-2. **Narrow remaining full-export fallbacks in `patch.rs`** (tables, charts, pivot tables, sheet add/delete).
-3. **Add `OpenXmlValidator` (`S`) and Excel/LibreOffice oracle (`O`)** verification stages to CI/release workflows.
+1. **Narrow remaining full-export fallbacks in `patch.rs`** (tables, charts, pivot tables, sheet add/delete).
+2. **Add `OpenXmlValidator` (`S`) and Excel/LibreOffice oracle (`O`)** verification stages to CI/release workflows.

@@ -1521,10 +1521,35 @@ impl Sheet {
             Expr::CellRef {
                 sheet,
                 row: r_val,
-                col,
+                col: c_val,
                 ..
             } => {
-                let cell_ref = CellRef::new(*r_val, *col);
+                let cell_ref = CellRef::new(*r_val, *c_val);
+                if let Some(sheet_spec) = sheet.as_deref()
+                    && let Some(resolved_3d) = self.resolve_3d_sheet_span(sheet_spec, context)
+                {
+                    let Some(sheets_3d) = resolved_3d else {
+                        return Ok(ResultData::Error("#REF!".to_string()));
+                    };
+                    let mut results = Vec::with_capacity(sheets_3d.len());
+                    for target_sheet in sheets_3d {
+                        if target_sheet.name.eq_ignore_ascii_case(&self.name) {
+                            deps.push(Dependency::Local(cell_ref));
+                            if row == Some(*r_val) && col == Some(*c_val) {
+                                results.push(ResultData::None);
+                            } else {
+                                results.push(self.get_result_data(&cell_ref));
+                            }
+                        } else {
+                            deps.push(Dependency::Remote {
+                                sheet: target_sheet.name.clone(),
+                                cell: cell_ref,
+                            });
+                            results.push(target_sheet.get_result_data(&cell_ref));
+                        }
+                    }
+                    return Ok(ResultData::List(results));
+                }
                 let is_self = match sheet {
                     Some(name) => name == &self.name,
                     None => true,
@@ -1564,6 +1589,70 @@ impl Sheet {
                 end_col,
                 ..
             } => {
+                if let Some(sheet_spec) = sheet.as_deref()
+                    && let Some(resolved_3d) = self.resolve_3d_sheet_span(sheet_spec, context)
+                {
+                    let Some(sheets_3d) = resolved_3d else {
+                        return Ok(ResultData::Error("#REF!".to_string()));
+                    };
+                    let is_col_range = *end_row == usize::MAX;
+                    let mut results = Vec::new();
+                    for target_sheet in sheets_3d {
+                        let is_target_self = target_sheet.name.eq_ignore_ascii_case(&self.name);
+                        let actual_end_row = if *end_row == usize::MAX {
+                            target_sheet.row_count().saturating_sub(1)
+                        } else {
+                            *end_row
+                        };
+                        let actual_end_col = if *end_col == usize::MAX {
+                            target_sheet.col_count().saturating_sub(1)
+                        } else {
+                            *end_col
+                        };
+                        let mut seen_col_deps: HashSet<usize> = HashSet::new();
+                        for r in *start_row..=actual_end_row {
+                            for c in *start_col..=actual_end_col {
+                                let cell_ref = CellRef::new(r, c);
+                                if is_target_self {
+                                    if is_col_range {
+                                        if seen_col_deps.insert(c) {
+                                            let col_dep = Dependency::LocalColumn(c);
+                                            if !deps.contains(&col_dep) {
+                                                deps.push(col_dep);
+                                            }
+                                        }
+                                    } else {
+                                        deps.push(Dependency::Local(cell_ref));
+                                    }
+                                    if row == Some(r) && col == Some(c) {
+                                        results.push(ResultData::None);
+                                    } else {
+                                        results.push(self.get_result_data(&cell_ref));
+                                    }
+                                } else {
+                                    if is_col_range {
+                                        if seen_col_deps.insert(c) {
+                                            let col_dep = Dependency::RemoteColumn {
+                                                sheet: target_sheet.name.clone(),
+                                                col: c,
+                                            };
+                                            if !deps.contains(&col_dep) {
+                                                deps.push(col_dep);
+                                            }
+                                        }
+                                    } else {
+                                        deps.push(Dependency::Remote {
+                                            sheet: target_sheet.name.clone(),
+                                            cell: cell_ref,
+                                        });
+                                    }
+                                    results.push(target_sheet.get_result_data(&cell_ref));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(ResultData::List(results));
+                }
                 let is_self = match sheet {
                     Some(name) => name == &self.name,
                     None => true,
@@ -3191,6 +3280,41 @@ impl Sheet {
         let year = if m <= 2 { y + 1 } else { y };
 
         ((year, m, d), (hour, minute, second))
+    }
+
+    fn resolve_3d_sheet_span<'a>(
+        &'a self,
+        sheet_spec: &str,
+        context: Option<&'a Context<'a>>,
+    ) -> Option<Option<Vec<&'a Sheet>>> {
+        let (start_name, end_name) = sheet_spec.split_once(':')?;
+        let Some(ctx) = context else {
+            return Some(None);
+        };
+        let start_idx = ctx
+            .sheet_order
+            .iter()
+            .position(|s| s.eq_ignore_ascii_case(start_name));
+        let end_idx = ctx
+            .sheet_order
+            .iter()
+            .position(|s| s.eq_ignore_ascii_case(end_name));
+        let (Some(s_idx), Some(e_idx)) = (start_idx, end_idx) else {
+            return Some(None);
+        };
+        let lo = s_idx.min(e_idx);
+        let hi = s_idx.max(e_idx);
+        let mut sheets = Vec::with_capacity(hi - lo + 1);
+        for name in &ctx.sheet_order[lo..=hi] {
+            if name.eq_ignore_ascii_case(&self.name) {
+                sheets.push(self);
+            } else if let Some(&sheet) = ctx.sheets.get(name) {
+                sheets.push(sheet);
+            } else {
+                return Some(None);
+            }
+        }
+        Some(Some(sheets))
     }
 
     fn evaluate_let(

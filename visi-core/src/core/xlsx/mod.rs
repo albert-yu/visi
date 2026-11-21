@@ -4033,4 +4033,72 @@ mod tests {
         assert_eq!(reloaded.sheets[0].data_validations.len(), 1);
         assert_eq!(reloaded.sheets[0].conditional_formats.len(), 1);
     }
+
+    #[test]
+    fn test_3d_sheet_reference_eval_and_xlsx_round_trip() {
+        let mut mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        mgr.rename_sheet("Sheet1", "Summary").unwrap();
+        mgr.add_sheet("Q1").unwrap();
+        mgr.add_sheet("Q2").unwrap();
+        mgr.add_sheet("Q3").unwrap();
+        mgr.add_sheet("Q4 Sales").unwrap();
+        mgr.add_sheet("Q5 Sales").unwrap();
+
+        mgr.set_cell(1, 0, 0, "10".to_string());
+        mgr.set_cell(1, 1, 0, "20".to_string());
+        mgr.set_cell(2, 0, 0, "30".to_string());
+        mgr.set_cell(2, 1, 0, "40".to_string());
+        mgr.set_cell(3, 0, 0, "50".to_string());
+        mgr.set_cell(3, 1, 0, "60".to_string());
+        mgr.set_cell(4, 0, 0, "100".to_string());
+        mgr.set_cell(5, 0, 0, "250".to_string());
+
+        mgr.set_cell(0, 0, 0, "=SUM(Q1:Q3!A1)".to_string());
+        mgr.set_cell(0, 1, 0, "=SUM(Q1:Q3!A1:A2)".to_string());
+        mgr.set_cell(0, 2, 0, "=AVERAGE(Q3:Q1!A1)".to_string());
+        mgr.set_cell(0, 3, 0, "=SUM('Q4 Sales:Q5 Sales'!A1)".to_string());
+        mgr.evaluate().unwrap();
+
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(0).map(|v| v.to_string()),
+            Some("90".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(1).map(|v| v.to_string()),
+            Some("210".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(2).map(|v| v.to_string()),
+            Some("30".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(3).map(|v| v.to_string()),
+            Some("350".to_string())
+        );
+
+        let bytes = mgr.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&bytes).unwrap();
+        let pkg = crate::core::opc::OpcPackage::from_bytes(&bytes).unwrap();
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(ws_xml.contains("SUM(Q1:Q3!A1)"), "{ws_xml}");
+        assert!(ws_xml.contains("SUM('Q4 Sales:Q5 Sales'!A1)"), "{ws_xml}");
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        loaded.set_cell(2, 0, 0, "130".to_string());
+        loaded.evaluate().unwrap();
+        assert_eq!(
+            loaded.sheets[0].columns[0]
+                .data
+                .get(0)
+                .map(|v| v.to_string()),
+            Some("190".to_string())
+        );
+        assert_eq!(
+            loaded.sheets[0].columns[0]
+                .data
+                .get(1)
+                .map(|v| v.to_string()),
+            Some("310".to_string())
+        );
+    }
 }
