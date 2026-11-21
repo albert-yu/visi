@@ -38,6 +38,12 @@ pub enum ObjRef {
     Font(u64),
     Range(u64),
     UserClass(u64),
+    Collection(u64),
+    Dictionary(u64),
+    RegExp(u64),
+    RegExpMatches(u64),
+    RegExpMatch(u64, usize),
+    RegExpSubMatches(u64, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +94,12 @@ impl ObjRef {
             ObjRef::PivotFields(_) => "PivotFields",
             ObjRef::PivotField(..) => "PivotField",
             ObjRef::UserClass(_) => "Object",
+            ObjRef::Collection(_) => "Collection",
+            ObjRef::Dictionary(_) => "Dictionary",
+            ObjRef::RegExp(_) => "IRegExp2",
+            ObjRef::RegExpMatches(_) => "IMatchCollection2",
+            ObjRef::RegExpMatch(..) => "IMatch2",
+            ObjRef::RegExpSubMatches(..) => "ISubMatches",
         }
     }
 
@@ -101,6 +113,12 @@ impl ObjRef {
             (ObjRef::Worksheet(a), ObjRef::Worksheet(b)) => a == b,
             (ObjRef::Range(a), ObjRef::Range(b)) => a == b,
             (ObjRef::UserClass(a), ObjRef::UserClass(b)) => a == b,
+            (ObjRef::Collection(a), ObjRef::Collection(b)) => a == b,
+            (ObjRef::Dictionary(a), ObjRef::Dictionary(b)) => a == b,
+            (ObjRef::RegExp(a), ObjRef::RegExp(b)) => a == b,
+            (ObjRef::RegExpMatches(a), ObjRef::RegExpMatches(b)) => a == b,
+            (ObjRef::RegExpMatch(a, i), ObjRef::RegExpMatch(b, j))
+            | (ObjRef::RegExpSubMatches(a, i), ObjRef::RegExpSubMatches(b, j)) => a == b && i == j,
             (ObjRef::Interior(a), ObjRef::Interior(b)) => a == b,
             (ObjRef::Font(a), ObjRef::Font(b)) => a == b,
             (ObjRef::ListObjects(a), ObjRef::ListObjects(b))
@@ -297,7 +315,13 @@ impl<'w> Host<'w> {
             ObjRef::PivotTable(id) => self.pivot_table_member(*id, name, args),
             ObjRef::PivotFields(id) => self.pivot_fields_member(*id, name, args),
             ObjRef::PivotField(id, idx) => self.pivot_field_member(*id, *idx, name),
-            ObjRef::UserClass(_) => Err(unsupported("user class member access on host")),
+            ObjRef::UserClass(_)
+            | ObjRef::Collection(_)
+            | ObjRef::Dictionary(_)
+            | ObjRef::RegExp(_)
+            | ObjRef::RegExpMatches(_)
+            | ObjRef::RegExpMatch(..)
+            | ObjRef::RegExpSubMatches(..) => Err(unsupported("non-host object member access")),
         }
     }
 

@@ -4,6 +4,7 @@ pub(crate) mod builtin_names;
 #[doc(hidden)]
 pub mod builtins;
 pub(crate) mod color;
+pub(crate) mod com;
 #[doc(hidden)]
 pub mod host;
 #[doc(hidden)]
@@ -84,6 +85,8 @@ pub struct RunOutcome {
     pub value: Option<String>,
     /// Whether the run changed the workbook
     pub mutated: bool,
+    /// Lines emitted via `Debug.Print`
+    pub debug_output: Vec<String>,
 }
 
 fn parse_args(args: &[&str]) -> Vec<value::Variant> {
@@ -102,6 +105,7 @@ fn to_outcome(result: value::Variant, mutated: bool, interp: &interp::Interprete
         type_name: interp.type_name_of(&result),
         value: result.to_vba_string().ok(),
         mutated,
+        debug_output: interp.debug_output().to_vec(),
     }
 }
 
@@ -180,6 +184,7 @@ impl crate::core::WorkbookManager {
             type_name: "Empty".to_string(),
             value: Some(String::new()),
             mutated,
+            debug_output: interp.debug_output().to_vec(),
         })
     }
 

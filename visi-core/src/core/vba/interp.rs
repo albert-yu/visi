@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use super::ast::*;
 use super::builtins;
+use super::com::ComStore;
 use super::host::{Host, ObjRef};
 use super::value::{self, ArithMode, Operand, VResult, VarArray, VarUdt, Variant, VbaError};
 use super::{VbaModule, VbaModuleKind, VbaProject};
@@ -492,6 +493,9 @@ pub struct Interpreter<'w> {
     modules: HashMap<String, ModuleEnv>,
     instances: HashMap<u64, UserClassInstance>,
     static_locals: HashMap<(String, String), HashMap<String, Variant>>,
+    com: ComStore,
+    debug_output: Vec<String>,
+    rnd_seed: u32,
     next_instance_id: u64,
     active_module: String,
     err: ErrState,
@@ -526,6 +530,9 @@ impl<'w> Interpreter<'w> {
             modules,
             instances: HashMap::new(),
             static_locals: HashMap::new(),
+            com: ComStore::default(),
+            debug_output: Vec::new(),
+            rnd_seed: 0x50000,
             next_instance_id: 1,
             active_module: name.to_ascii_lowercase(),
             err: ErrState::default(),
@@ -562,6 +569,9 @@ impl<'w> Interpreter<'w> {
             modules,
             instances: HashMap::new(),
             static_locals: HashMap::new(),
+            com: ComStore::default(),
+            debug_output: Vec::new(),
+            rnd_seed: 0x50000,
             next_instance_id: 1,
             active_module,
             err: ErrState::default(),
@@ -608,6 +618,9 @@ impl<'w> Interpreter<'w> {
             modules,
             instances: HashMap::new(),
             static_locals: HashMap::new(),
+            com: ComStore::default(),
+            debug_output: Vec::new(),
+            rnd_seed: 0x50000,
             next_instance_id: 1,
             active_module,
             err: ErrState::default(),
@@ -639,6 +652,10 @@ impl<'w> Interpreter<'w> {
 
     pub fn mutated(&self) -> bool {
         self.host.as_ref().is_some_and(|h| h.mutated())
+    }
+
+    pub fn debug_output(&self) -> &[String] {
+        &self.debug_output
     }
 
     pub fn finish(&mut self) {
@@ -858,6 +875,12 @@ impl<'w> Interpreter<'w> {
     }
 
     pub fn instantiate_class(&mut self, class_name: &str) -> VResult<Variant> {
+        match class_name.to_ascii_lowercase().as_str() {
+            "collection" => return Ok(Variant::Object(self.com.new_collection())),
+            "dictionary" => return Ok(Variant::Object(self.com.new_dictionary())),
+            "regexp" => return Ok(Variant::Object(self.com.new_regexp())),
+            _ => {}
+        }
         let module = self.find_class_module(class_name).cloned().ok_or_else(|| {
             VbaError::new(
                 424,
@@ -2521,7 +2544,13 @@ impl<'w> Interpreter<'w> {
                 {
                     let owner = self.member_owner(inner_obj.as_deref(), frame)?;
                     if let Variant::Object(owner_obj) = &owner
-                        && matches!(owner_obj, ObjRef::UserClass(_))
+                        && matches!(
+                            owner_obj,
+                            ObjRef::UserClass(_)
+                                | ObjRef::Dictionary(_)
+                                | ObjRef::Collection(_)
+                                | ObjRef::RegExp(_)
+                        )
                     {
                         let arg_vals = self.eval_args(args, frame)?;
                         return self.set_member_on_object(owner_obj, prop_name, &arg_vals, &v, set);
@@ -2564,27 +2593,31 @@ impl<'w> Interpreter<'w> {
                             false,
                         );
                     }
-                    if let Variant::Object(obj) = existing
-                        && let ObjRef::UserClass(id) = obj
-                    {
-                        let arg_vals = self.eval_args(args, frame)?;
-                        let cls_name = self
-                            .instances
-                            .get(&id)
-                            .map(|inst| inst.class_name.clone())
-                            .unwrap_or_default();
-                        if let Some(def_member) = self
-                            .modules
-                            .get(&cls_name.to_ascii_lowercase())
-                            .and_then(|m| m.default_member.clone())
-                        {
-                            return self.set_member_on_object(
-                                &obj,
-                                &def_member,
-                                &arg_vals,
-                                &v,
-                                set,
-                            );
+                    if let Variant::Object(obj) = existing {
+                        if let ObjRef::Dictionary(_) = obj {
+                            let arg_vals = self.eval_args(args, frame)?;
+                            return self.set_member_on_object(&obj, "item", &arg_vals, &v, set);
+                        }
+                        if let ObjRef::UserClass(id) = obj {
+                            let arg_vals = self.eval_args(args, frame)?;
+                            let cls_name = self
+                                .instances
+                                .get(&id)
+                                .map(|inst| inst.class_name.clone())
+                                .unwrap_or_default();
+                            if let Some(def_member) = self
+                                .modules
+                                .get(&cls_name.to_ascii_lowercase())
+                                .and_then(|m| m.default_member.clone())
+                            {
+                                return self.set_member_on_object(
+                                    &obj,
+                                    &def_member,
+                                    &arg_vals,
+                                    &v,
+                                    set,
+                                );
+                            }
                         }
                     }
                 }
@@ -2760,6 +2793,12 @@ impl<'w> Interpreter<'w> {
                 91,
                 format!("Object variable or With block variable not set: .{name}"),
             )),
+            ObjRef::Collection(_)
+            | ObjRef::Dictionary(_)
+            | ObjRef::RegExp(_)
+            | ObjRef::RegExpMatches(_)
+            | ObjRef::RegExpMatch(..)
+            | ObjRef::RegExpSubMatches(..) => self.com.set_member(obj, name, args, value),
             ObjRef::UserClass(id) => {
                 let cls_name = self
                     .instances
@@ -3231,6 +3270,12 @@ impl<'w> Interpreter<'w> {
                 91,
                 format!("Object variable or With block variable not set: .{name}"),
             )),
+            ObjRef::Collection(_)
+            | ObjRef::Dictionary(_)
+            | ObjRef::RegExp(_)
+            | ObjRef::RegExpMatches(_)
+            | ObjRef::RegExpMatch(..)
+            | ObjRef::RegExpSubMatches(..) => self.com.get_member(obj, name, args),
             ObjRef::UserClass(id) => {
                 let cls_name = self
                     .instances
@@ -3364,7 +3409,12 @@ impl<'w> Interpreter<'w> {
                     "Object doesn't support this property or method: default property not found",
                 ))
             }
-            Variant::Object(obj) => self.host("using an object as a value")?.default_value(&obj),
+            Variant::Object(obj) => {
+                if let Some(res) = self.com.default_value(&obj) {
+                    return res;
+                }
+                self.host("using an object as a value")?.default_value(&obj)
+            }
             other => Ok(other),
         }
     }
@@ -3375,6 +3425,19 @@ impl<'w> Interpreter<'w> {
         };
         match obj {
             ObjRef::Nothing => false,
+            ObjRef::Collection(_) => {
+                type_name.eq_ignore_ascii_case("collection")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::Dictionary(_) => {
+                type_name.eq_ignore_ascii_case("dictionary")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
+            ObjRef::RegExp(_) => {
+                type_name.eq_ignore_ascii_case("regexp")
+                    || type_name.eq_ignore_ascii_case("iregexp2")
+                    || type_name.eq_ignore_ascii_case("object")
+            }
             ObjRef::UserClass(id) => {
                 if let Some(inst) = self.instances.get(id) {
                     let lower_cls = inst.class_name.to_ascii_lowercase();
@@ -3444,7 +3507,13 @@ impl<'w> Interpreter<'w> {
     ) -> VResult<Flow> {
         let subject = self.eval(iterable, frame)?;
         let items = match subject {
-            Variant::Object(obj) => self.host("For Each")?.iterate(&obj)?,
+            Variant::Object(obj) => {
+                if let Some(res) = self.com.iterate(&obj) {
+                    res?
+                } else {
+                    self.host("For Each")?.iterate(&obj)?
+                }
+            }
             Variant::Array(a) => a.values.clone(),
             other => {
                 return Err(VbaError::new(
@@ -3469,6 +3538,47 @@ impl<'w> Interpreter<'w> {
     }
 
     fn eval_call(&mut self, target: &Expr, args: &[Arg], frame: &mut Frame) -> VResult<Variant> {
+        if let Expr::Ident { name, .. } = target
+            && let Some((proc_mod, proc)) = self.find_procedure_in_scope(name, frame)
+        {
+            let me = if proc_mod == frame.module_name {
+                frame.me
+            } else {
+                None
+            };
+            return self.bind_and_call_proc(proc_mod, &proc, args, frame, me);
+        }
+        self.eval_call_non_local(target, args, frame)
+    }
+
+    #[inline(never)]
+    fn eval_call_non_local(
+        &mut self,
+        target: &Expr,
+        args: &[Arg],
+        frame: &mut Frame,
+    ) -> VResult<Variant> {
+        if let Expr::Member {
+            target: Some(obj),
+            name,
+            ..
+        } = target
+            && let Expr::Ident { name: o, .. } = obj.as_ref()
+            && o.eq_ignore_ascii_case("debug")
+            && name.eq_ignore_ascii_case("print")
+        {
+            let mut parts = Vec::new();
+            for a in args {
+                if let Some(e) = &a.value {
+                    let v = self.eval(e, frame)?;
+                    let v = self.scalar(v)?;
+                    parts.push(v.to_vba_string().unwrap_or_default());
+                }
+            }
+            self.debug_output.push(parts.join(" "));
+            return Ok(Variant::Empty);
+        }
+
         if let Expr::Member {
             target: Some(obj),
             name,
@@ -3514,7 +3624,9 @@ impl<'w> Interpreter<'w> {
                 if lower_mod == "vba" {
                     let values = self.eval_args(args, frame)?;
                     let bare = name.trim_end_matches('$');
-                    if let Some(v) = builtins::call(bare, &values)? {
+                    if let Some(v) =
+                        builtins::call_with_compare(bare, &values, self.active_compare_text())?
+                    {
                         return Ok(v);
                     }
                 }
@@ -3534,34 +3646,41 @@ impl<'w> Interpreter<'w> {
             return Err(out_of_scope("this call target"));
         };
 
-        if let Some((proc_mod, proc)) = self.find_procedure_in_scope(name, frame) {
-            let me = if proc_mod == frame.module_name {
-                frame.me
-            } else {
-                None
-            };
-            return self.bind_and_call_proc(proc_mod, &proc, args, frame, me);
-        }
-
         if let Some(val) = self.lookup(name, frame) {
-            if let Variant::Object(ObjRef::UserClass(id)) = val {
-                let values = self.eval_args(args, frame)?;
-                let cls_name = self
-                    .instances
-                    .get(&id)
-                    .map(|inst| inst.class_name.clone())
-                    .unwrap_or_default();
-                if let Some(def_member) = self
-                    .modules
-                    .get(&cls_name.to_ascii_lowercase())
-                    .and_then(|m| m.default_member.clone())
-                {
-                    return self.get_member_on_object(&ObjRef::UserClass(id), &def_member, &values);
+            if let Variant::Object(obj) = val {
+                if matches!(
+                    obj,
+                    ObjRef::Collection(_)
+                        | ObjRef::Dictionary(_)
+                        | ObjRef::RegExpMatches(_)
+                        | ObjRef::RegExpSubMatches(..)
+                ) {
+                    let values = self.eval_args(args, frame)?;
+                    return self.com.get_member(&obj, "item", &values);
                 }
-                return Err(VbaError::new(
-                    438,
-                    "Object doesn't support this property or method: default member not found",
-                ));
+                if let ObjRef::UserClass(id) = obj {
+                    let values = self.eval_args(args, frame)?;
+                    let cls_name = self
+                        .instances
+                        .get(&id)
+                        .map(|inst| inst.class_name.clone())
+                        .unwrap_or_default();
+                    if let Some(def_member) = self
+                        .modules
+                        .get(&cls_name.to_ascii_lowercase())
+                        .and_then(|m| m.default_member.clone())
+                    {
+                        return self.get_member_on_object(
+                            &ObjRef::UserClass(id),
+                            &def_member,
+                            &values,
+                        );
+                    }
+                    return Err(VbaError::new(
+                        438,
+                        "Object doesn't support this property or method: default member not found",
+                    ));
+                }
             }
             if let Variant::Array(a) = val {
                 let values = self.eval_args(args, frame)?;
@@ -3590,13 +3709,53 @@ impl<'w> Interpreter<'w> {
                 .collect::<VResult<Vec<_>>>()?
         };
         let bare_name = name.trim_end_matches('$');
+        if bare_name.eq_ignore_ascii_case("createobject") {
+            let prog_id = values
+                .first()
+                .ok_or_else(VbaError::invalid_call)?
+                .to_vba_string()?;
+            return Ok(Variant::Object(self.com.create_object(&prog_id)?));
+        }
+        if bare_name.eq_ignore_ascii_case("rnd") {
+            let n = match values.first() {
+                Some(v) if !v.is_empty() && !matches!(v, Variant::Missing) => v.to_f64()?,
+                _ => 1.0,
+            };
+            if n < 0.0 {
+                let bits = (n as f32).to_bits();
+                self.rnd_seed = bits & 0x00FF_FFFF;
+            }
+            if n != 0.0 {
+                self.rnd_seed = self
+                    .rnd_seed
+                    .wrapping_mul(1_140_671_485_u32)
+                    .wrapping_add(12_820_163_u32)
+                    & 0x00FF_FFFF;
+            }
+            return Ok(Variant::Single(self.rnd_seed as f32 / 16_777_216.0));
+        }
+        if bare_name.eq_ignore_ascii_case("randomize") {
+            let seed = match values.first() {
+                Some(v) if !v.is_empty() && !matches!(v, Variant::Missing) => {
+                    (v.to_f64()?.to_bits() >> 32) as u32
+                }
+                _ => web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(1),
+            };
+            self.rnd_seed = (self.rnd_seed ^ seed) & 0x00FF_FFFF;
+            return Ok(Variant::Empty);
+        }
         if bare_name.eq_ignore_ascii_case("array") {
             return Ok(Variant::Array(Rc::new(VarArray::new_1d(
                 self.active_option_base(),
                 values,
             ))));
         }
-        if let Some(v) = builtins::call(bare_name, &values)? {
+        if let Some(v) =
+            builtins::call_with_compare(bare_name, &values, self.active_compare_text())?
+        {
             return Ok(v);
         }
         if let Some(h) = self.host.as_mut()
@@ -3627,12 +3786,83 @@ impl<'w> Interpreter<'w> {
     fn builtin_constant(&self, name: &str) -> Option<Variant> {
         Some(match name.to_ascii_lowercase().as_str() {
             "vbnullstring" => Variant::Str(String::new()),
+            "vbnullchar" => Variant::Str("\0".to_string()),
             "vbcrlf" => Variant::Str("\r\n".to_string()),
             "vbcr" => Variant::Str("\r".to_string()),
             "vblf" => Variant::Str("\n".to_string()),
             "vbtab" => Variant::Str("\t".to_string()),
+            "vbback" => Variant::Str("\x08".to_string()),
+            "vbformfeed" => Variant::Str("\x0C".to_string()),
+            "vbverticaltab" => Variant::Str("\x0B".to_string()),
             "vbnewline" => Variant::Str("\n".to_string()),
             "vbobjecterror" => Variant::Long(-2147221504),
+            "vbusecompareoption" => Variant::Integer(-1),
+            "vbbinarycompare" => Variant::Integer(0),
+            "vbtextcompare" => Variant::Integer(1),
+            "vbdatabasecompare" => Variant::Integer(2),
+            "vbempty" => Variant::Integer(0),
+            "vbnull" => Variant::Integer(1),
+            "vbinteger" => Variant::Integer(2),
+            "vblong" => Variant::Integer(3),
+            "vbsingle" => Variant::Integer(4),
+            "vbdouble" => Variant::Integer(5),
+            "vbcurrency" => Variant::Integer(6),
+            "vbdate" => Variant::Integer(7),
+            "vbstring" => Variant::Integer(8),
+            "vbobject" => Variant::Integer(9),
+            "vberror" => Variant::Integer(10),
+            "vbboolean" => Variant::Integer(11),
+            "vbvariant" => Variant::Integer(12),
+            "vbdataobject" => Variant::Integer(13),
+            "vbdecimal" => Variant::Integer(14),
+            "vbbyte" => Variant::Integer(17),
+            "vblonglong" => Variant::Integer(20),
+            "vbuserdefinedtype" => Variant::Integer(36),
+            "vbarray" => Variant::Integer(8192),
+            "vbusesystemdayofweek" => Variant::Integer(0),
+            "vbsunday" => Variant::Integer(1),
+            "vbmonday" => Variant::Integer(2),
+            "vbtuesday" => Variant::Integer(3),
+            "vbwednesday" => Variant::Integer(4),
+            "vbthursday" => Variant::Integer(5),
+            "vbfriday" => Variant::Integer(6),
+            "vbsaturday" => Variant::Integer(7),
+            "vbuppercase" => Variant::Integer(1),
+            "vblowercase" => Variant::Integer(2),
+            "vbpropercase" => Variant::Integer(3),
+            "vbgeneraldate" => Variant::Integer(0),
+            "vblongdate" => Variant::Integer(1),
+            "vbshortdate" => Variant::Integer(2),
+            "vblongtime" => Variant::Integer(3),
+            "vbshorttime" => Variant::Integer(4),
+            "vbusedefault" => Variant::Integer(-2),
+            "vbtrue" => Variant::Integer(-1),
+            "vbfalse" => Variant::Integer(0),
+            "vbblack" => Variant::Long(0x0000_0000),
+            "vbred" => Variant::Long(0x0000_00FF),
+            "vbgreen" => Variant::Long(0x0000_FF00),
+            "vbyellow" => Variant::Long(0x0000_FFFF),
+            "vbblue" => Variant::Long(0x00FF_0000),
+            "vbmagenta" => Variant::Long(0x00FF_00FF),
+            "vbcyan" => Variant::Long(0x00FF_FF00),
+            "vbwhite" => Variant::Long(0x00FF_FFFF),
+            "vbokonly" => Variant::Integer(0),
+            "vbokcancel" => Variant::Integer(1),
+            "vbabortretryignore" => Variant::Integer(2),
+            "vbyesnocancel" => Variant::Integer(3),
+            "vbyesno" => Variant::Integer(4),
+            "vbretrycancel" => Variant::Integer(5),
+            "vbcritical" => Variant::Integer(16),
+            "vbquestion" => Variant::Integer(32),
+            "vbexclamation" => Variant::Integer(48),
+            "vbinformation" => Variant::Integer(64),
+            "vbok" => Variant::Integer(1),
+            "vbcancel" => Variant::Integer(2),
+            "vbabort" => Variant::Integer(3),
+            "vbretry" => Variant::Integer(4),
+            "vbignore" => Variant::Integer(5),
+            "vbyes" => Variant::Integer(6),
+            "vbno" => Variant::Integer(7),
             _ => return None,
         })
     }
@@ -5982,5 +6212,140 @@ End Function
             super::super::value::format_vba_date(-1.75),
             "12/29/99 6:00:00 PM"
         );
+    }
+
+    #[test]
+    fn phase2_vba_collection_crud_and_for_each() {
+        let src = "\
+Function Main()
+    Dim c As New Collection
+    c.Add \"first\", \"k1\"
+    c.Add \"third\", \"k3\"
+    c.Add \"second\", \"k2\", 2
+    Dim acc As String
+    Dim item As Variant
+    For Each item In c
+        acc = acc & item & \",\"
+    Next item
+    Dim byKey As String
+    byKey = c(\"K2\")
+    c.Remove \"k1\"
+    Main = acc & \"|\" & byKey & \"|\" & c.Count & \"|\" & c(1)
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(
+            res,
+            Variant::Str("first,second,third,|second|2|second".to_string())
+        );
+    }
+
+    #[test]
+    fn phase2_scripting_dictionary_emulation() {
+        let src = "\
+Function Main()
+    Dim d As Object
+    Set d = CreateObject(\"Scripting.Dictionary\")
+    d.CompareMode = vbTextCompare
+    d.Add \"Alpha\", 10
+    d(\"Beta\") = 20
+    d(\"ALPHA\") = 15
+    Dim keys As String
+    Dim k As Variant
+    For Each k In d
+        keys = keys & k & \"=\" & d(k) & \";\"
+    Next k
+    d.Key(\"Beta\") = \"Gamma\"
+    Main = keys & \"|\" & d.Exists(\"gamma\") & \"|\" & d.Count & \"|\" & UBound(d.Keys)
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("Alpha=15;Beta=20;|True|2|1".to_string()));
+    }
+
+    #[test]
+    fn phase2_vbscript_regexp_emulation() {
+        let src = "\
+Function Main()
+    Dim re As Object
+    Set re = CreateObject(\"VBScript.RegExp\")
+    re.Pattern = \"([a-z]+)=(\\d+)\"
+    re.Global = True
+    re.IgnoreCase = True
+    Dim ok As Boolean
+    ok = re.Test(\"A=10 B=20\")
+    Dim matches As Object
+    Set matches = re.Execute(\"A=10 B=20\")
+    Dim m As Object
+    Dim out As String
+    For Each m In matches
+        out = out & m.SubMatches(0) & \":\" & m.SubMatches(1) & \",\"
+    Next m
+    Dim repl As String
+    repl = re.Replace(\"A=10 B=20\", \"$1:$2\")
+    Main = ok & \"|\" & matches.Count & \"|\" & out & \"|\" & repl
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("True|2|A:10,B:20,|A:10 B:20".to_string()));
+    }
+
+    #[test]
+    fn phase2_stdlib_dates_strings_arrays_format_financial_and_debug_print() {
+        let src = "\
+Function Main()
+    Dim parts
+    parts = Split(\"a,b,c,d\", \",\")
+    Dim joined As String
+    joined = Join(Filter(parts, \"b\", False), \"-\")
+    Dim d As Date
+    d = DateAdd(\"m\", 2, DateSerial(2024, 1, 31))
+    Dim dd As Long
+    dd = DateDiff(\"d\", DateSerial(2024, 1, 1), DateSerial(2024, 1, 11))
+    Dim fmt As String
+    fmt = Format(d, \"yyyy-mm-dd\") & \"|\" & FormatNumber(1234.567, 2) & \"|\" & FormatPercent(0.256, 1)
+    Dim sc As String
+    sc = StrConv(\"hello world\", vbProperCase)
+    Dim fin As Long
+    fin = Round(SLN(10000, 1000, 9), 0)
+    Dim ch As String
+    ch = Choose(2, \"x\", \"y\", \"z\") & Switch(False, \"no\", True, \"yes\")
+    Dim ir As Long
+    ir = InStrRev(\"ababa\", \"ba\")
+    Dim rp As String
+    rp = Replace(\"AaAa\", \"a\", \"x\", 1, 2, vbTextCompare)
+    Debug.Print \"hello\", 42
+    Main = joined & \"|\" & dd & \"|\" & fmt & \"|\" & sc & \"|\" & fin & \"|\" & ch & \"|\" & ir & \"|\" & rp
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let mut interp = Interpreter::new(m);
+        let res = interp.run("Main", Vec::new()).unwrap();
+        assert_eq!(
+            res,
+            Variant::Str(
+                "a-c-d|10|2024-03-31|1,234.57|25.6%|Hello World|1000|yyes|4|xxAa".to_string()
+            )
+        );
+        assert_eq!(interp.debug_output(), &["hello 42".to_string()]);
+    }
+
+    #[test]
+    fn phase2_rnd_deterministic_sequence_and_repeat_zero() {
+        let src = "\
+Function Main()
+    Dim a As Single, b As Single, c As Single
+    a = Rnd(-5)
+    b = Rnd(0)
+    c = Rnd()
+    Main = (a = b) & \",\" & (c <> a) & \",\" & (c >= 0 And c < 1)
+End Function
+";
+        let m = parse_module(src).unwrap();
+        let res = Interpreter::new(m).run("Main", Vec::new()).unwrap();
+        assert_eq!(res, Variant::Str("True,True,True".to_string()));
     }
 }
