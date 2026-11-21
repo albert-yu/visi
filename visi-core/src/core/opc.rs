@@ -149,6 +149,14 @@ impl ContentTypes {
         }
     }
 
+    pub(crate) fn remove_override(&mut self, part_name: &str) -> bool {
+        let normalized = format!("/{}", normalize_part_name(part_name));
+        let before = self.overrides.len();
+        self.overrides
+            .retain(|(p, _)| !p.eq_ignore_ascii_case(&normalized));
+        self.overrides.len() != before
+    }
+
     #[cfg(test)]
     pub(crate) fn content_type_for(&self, part_name: &str) -> Option<&str> {
         let normalized = format!("/{}", normalize_part_name(part_name));
@@ -255,6 +263,19 @@ impl OpcPackage {
     pub(crate) fn has_part(&self, part_name: &str) -> bool {
         let key = normalize_part_name(part_name).to_ascii_lowercase();
         self.index_by_lower.contains_key(&key)
+    }
+
+    pub(crate) fn remove_part(&mut self, part_name: &str) -> bool {
+        let key = normalize_part_name(part_name).to_ascii_lowercase();
+        let Some(idx) = self.index_by_lower.remove(&key) else {
+            return false;
+        };
+        self.parts.remove(idx);
+        self.index_by_lower.clear();
+        for (i, (name, _)) in self.parts.iter().enumerate() {
+            self.index_by_lower.insert(name.to_ascii_lowercase(), i);
+        }
+        true
     }
 
     pub(crate) fn get_bytes(&self, part_name: &str) -> Option<&[u8]> {

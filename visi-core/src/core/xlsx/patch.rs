@@ -237,6 +237,7 @@ impl OoxmlSourceState {
 
         let mut sst_patcher: Option<SharedStringsPatcher> = None;
         let mut styles_patcher: Option<StylesPatcher> = None;
+        let mut any_formula_changed = defined_names_changed;
 
         for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
             let cur_cells = snapshot_cells(sheet);
@@ -283,12 +284,20 @@ impl OoxmlSourceState {
             if cells_changed || heights_changed || hidden_rows_changed {
                 let mut changed_cells: Vec<(usize, usize, Option<&CellSnapshot>)> = Vec::new();
                 for (&rc, cur) in &cur_cells {
-                    if snap.cells.get(&rc) != Some(cur) {
+                    let prev = snap.cells.get(&rc);
+                    if prev != Some(cur) {
+                        if cur.src.starts_with('=') || prev.is_some_and(|p| p.src.starts_with('='))
+                        {
+                            any_formula_changed = true;
+                        }
                         changed_cells.push((rc.0, rc.1, Some(cur)));
                     }
                 }
-                for &rc in snap.cells.keys() {
+                for (&rc, prev) in &snap.cells {
                     if !cur_cells.contains_key(&rc) {
+                        if prev.src.starts_with('=') {
+                            any_formula_changed = true;
+                        }
                         changed_cells.push((rc.0, rc.1, None));
                     }
                 }
@@ -390,7 +399,48 @@ impl OoxmlSourceState {
             pkg.set_part(&styles_part, st.doc.to_xml_string().into_bytes());
         }
 
+        if any_formula_changed {
+            invalidate_calc_chain(&mut pkg, &self.workbook_part);
+        }
+
         pkg.to_bytes()
+    }
+}
+
+fn invalidate_calc_chain(pkg: &mut OpcPackage, workbook_part: &str) {
+    let mut calc_chain_parts: Vec<String> = Vec::new();
+    let mut rels = pkg.read_relationships(workbook_part);
+    let before_rels = rels.len();
+    rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "calcChain") {
+            if !r.is_external() {
+                calc_chain_parts.push(r.resolved_target(workbook_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    if rels.len() != before_rels {
+        pkg.write_relationships(workbook_part, &rels);
+    }
+
+    if calc_chain_parts.is_empty() && pkg.has_part("xl/calcChain.xml") {
+        calc_chain_parts.push("xl/calcChain.xml".to_string());
+    }
+
+    if !calc_chain_parts.is_empty() {
+        let mut ct = pkg.read_content_types();
+        let mut ct_changed = false;
+        for part in &calc_chain_parts {
+            pkg.remove_part(part);
+            if ct.remove_override(part) {
+                ct_changed = true;
+            }
+        }
+        if ct_changed {
+            pkg.write_content_types(&ct);
+        }
     }
 }
 

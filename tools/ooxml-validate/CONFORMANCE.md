@@ -93,14 +93,14 @@ VBA macro conformance (`[MS-OVBA]` / `[MS-VBAL]`) is tracked separately in [tool
 | Standard A1 formulas & cached values (`<f>`, `<v>`) | `§18.3.1.40`, `§18.17` | Modeled | `U, V, F, X` | Leading `=` stripped on write; cached values written alongside `<f>` |
 | Future function prefixes (`_xlfn.`, `_xlfn._xlws.`) | `[MS-XLSX] §2.2.2`, `§2.5.198.3` | Modeled | `U, V, F, X` | `ooxml_function_prefix` in `visi-core/src/core/xlsx/formula.rs` prefixes post-2007 functions (`XLOOKUP`, `SEQUENCE`, `LET`, `LAMBDA`, etc.) and `_xlfn._xlws.` (`FILTER`, `SORT`) without touching string literals or already-prefixed calls |
 | Spill range operator (`A1#` -> `_xlfn.ANCHORARRAY(A1)`) | `[MS-XLSX] §2.2.2` | Modeled | `U, V, F, X` | Encoded by `encode_xlsx_spill_references` in `visi-core/src/core/parser.rs` |
-| `LET` / `LAMBDA` parameter prefix (`_xlpm.`) | `[MS-XLSX] §2.2.2` | **Gap (Unsupported)** | — | `LET` and `LAMBDA` receive `_xlfn.`, but bound parameter names are not yet prefixed with `_xlpm.` on serialization (Excel expects `_xlfn.LET(_xlpm.x, A1*2, _xlpm.x + 1)`) |
+| `LET` / `LAMBDA` parameter prefix (`_xlpm.`) | `[MS-XLSX] §2.2.2` | Modeled | `U, V, F, X` | `prefix_xlpm_parameters` in `visi-core/src/core/xlsx/formula.rs` prefixes bound `LET`/`LAMBDA` parameters and lexical references with `_xlpm.`; evaluator strips `_xlpm.` and `_xlfn.LAMBDA` on import |
 | Dynamic array formulas (`t="array"`, `cm="1"`, `xl/metadata.xml` `XLDAPR`) | `[MS-XLSX] §2.1.7.34`, `§2.6.208` | Modeled | `U, V, F, X` | Emits `xl/metadata.xml` with `xda:dynamicArrayProperties` and links via `workbook.xml.rels` (`04_formulas_and_arrays.xlsx`) |
 | Legacy CSE array formulas (`t="array"`, `ref`) | `§18.3.1.40` | Modeled | `U, V, F, X` | Covered by `04_formulas_and_arrays.xlsx` |
 | Shared formulas (`t="shared"`, `si`, `ref`) | `§18.3.1.40` | Partial | `U` | Expanded into individual formulas on import (`worksheet.rs`); not re-compressed into shared formulas on export; untouched shared formulas in unedited cells survive surgical patch |
 | Structured table references (`Sales[Price]`, `[@Qty]`, `[#Headers]`) | `§18.17.2.5` | Modeled | `U, V, F, X` | Parsed, evaluated, and serialized (`06_tables.xlsx`) |
 | 3D sheet references (`Sheet1:Sheet3!A1`) | `§18.17.2.3` | **Gap (Unsupported)** | — | Not yet parsed/evaluated/serialized as 3D references |
 | External workbook references (`[1]Sheet1!A1`, `xl/externalLinks/`) | `§18.14`, `§18.17.2.3` | **Gap (Pass-Through)** | — | `xl/externalLinks/` parts survive surgical patch; formula references to external workbooks are not modeled |
-| Calculation chain invalidation (`xl/calcChain.xml`) | `§18.6` | **Gap (Unsupported)** | — | `patch.rs` does not strip or update `xl/calcChain.xml` (and its `[Content_Types].xml` / `workbook.xml.rels` entries) when formulas are added, edited, or removed during surgical patch — stale `calcChain.xml` entries can trigger Excel repair dialogs |
+| Calculation chain invalidation (`xl/calcChain.xml`) | `§18.6` | Modeled | `U, V` | `invalidate_calc_chain` in `patch.rs` strips `xl/calcChain.xml`, its `workbook.xml.rels` relationship, and its `[Content_Types].xml` override whenever any formula cell or defined name changes on surgical patch; preserves `calcChain.xml` when only non-formula cells change |
 
 ---
 
@@ -117,8 +117,7 @@ Currently, mutating any of the following forces a **full-export fallback** (whic
 
 ## Priority Backlog to Reach Full Compatibility
 
-1. **Invalidate `xl/calcChain.xml` on surgical patch** whenever any formula cell changes (strip `xl/calcChain.xml`, its `workbook.xml.rels` relationship, and its `[Content_Types].xml` override).
-2. **Add `_xlpm.` parameter prefixing** in `xlsx/formula.rs` for `LET` / `LAMBDA` bound parameters.
-3. **Build a wild-file interoperability corpus** (`C`) testing surgical patch preservation of `extLst`, `mc:AlternateContent`, `docProps`, themes, drawings, slicers, sparklines, and Strict OOXML files from Excel, LibreOffice, Google Sheets, and `openpyxl`.
-4. **Add `OpenXmlValidator` (`S`) and Excel/LibreOffice oracle (`O`)** verification stages to CI/release workflows.
-5. **Narrow full-export fallback in `patch.rs`** so editing comments, hyperlinks, validations, tables, charts, or pivots patches surgically instead of regenerating the whole package.
+1. **Build a wild-file interoperability corpus** (`C`) testing surgical patch preservation of `extLst`, `mc:AlternateContent`, `docProps`, themes, drawings, slicers, sparklines, and Strict OOXML files from Excel, LibreOffice, Google Sheets, and `openpyxl`.
+2. **Add `OpenXmlValidator` (`S`) and Excel/LibreOffice oracle (`O`)** verification stages to CI/release workflows.
+3. **Narrow full-export fallback in `patch.rs`** so editing comments, hyperlinks, validations, tables, charts, or pivots patches surgically instead of regenerating the whole package.
+4. **Add 3D sheet reference support** (`Sheet1:Sheet3!A1`) in parser, evaluator, and serializer.

@@ -3835,4 +3835,110 @@ mod tests {
         assert_eq!(cf_style.font_color.as_deref(), Some("#9C0006"));
         assert_eq!(cf_style.bg_color.as_deref(), Some("#FFC7CE"));
     }
+
+    #[test]
+    fn test_surgical_patch_invalidates_calc_chain_only_when_formulas_change() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "10".to_string());
+        base_mgr.set_cell(0, 0, 1, "=A1*2".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "xl/calcChain.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><calcChain xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><c r=\"B1\" i=\"1\"/></calcChain>".to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "xl/calcChain.xml",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml",
+        );
+        pkg.write_content_types(&ct);
+        let mut rels = pkg.read_relationships("xl/workbook.xml");
+        let rid = crate::core::opc::next_rid(&rels);
+        rels.push(crate::core::opc::Relationship {
+            id: rid,
+            rel_type:
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain"
+                    .to_string(),
+            target: "calcChain.xml".to_string(),
+            target_mode: None,
+        });
+        pkg.write_relationships("xl/workbook.xml", &rels);
+        let with_cc_bytes = pkg.to_bytes().unwrap();
+
+        let mut loaded_non_formula =
+            crate::core::WorkbookManager::load_bytes(&with_cc_bytes).unwrap();
+        loaded_non_formula.set_cell(0, 2, 0, "note".to_string());
+        let patched_same = loaded_non_formula.save_bytes().unwrap();
+        let pkg_same = crate::core::opc::OpcPackage::from_bytes(&patched_same).unwrap();
+        assert!(pkg_same.has_part("xl/calcChain.xml"));
+        crate::core::xlsx::validate::validate_ooxml_package(&patched_same).unwrap();
+
+        let mut loaded_formula = crate::core::WorkbookManager::load_bytes(&with_cc_bytes).unwrap();
+        loaded_formula.set_cell(0, 0, 1, "=A1*3".to_string());
+        loaded_formula.evaluate().unwrap();
+        let patched_formula = loaded_formula.save_bytes().unwrap();
+        let pkg_formula = crate::core::opc::OpcPackage::from_bytes(&patched_formula).unwrap();
+        assert!(!pkg_formula.has_part("xl/calcChain.xml"));
+        assert!(
+            !pkg_formula
+                .read_relationships("xl/workbook.xml")
+                .iter()
+                .any(|r| crate::core::opc::rel_type_matches(&r.rel_type, "calcChain"))
+        );
+        let ct_after = pkg_formula.get_str("[Content_Types].xml").unwrap();
+        assert!(!ct_after.contains("calcChain.xml"));
+        crate::core::xlsx::validate::validate_ooxml_package(&patched_formula).unwrap();
+    }
+
+    #[test]
+    fn test_let_and_lambda_xlpm_round_trip() {
+        let mut mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        mgr.set_cell(0, 0, 0, "10".to_string());
+        mgr.set_cell(0, 1, 0, "20".to_string());
+        mgr.set_cell(0, 0, 1, "=LET(x, A1*2, x + 5)".to_string());
+        mgr.set_cell(0, 1, 1, "=SUM(MAP(A1:A2, LAMBDA(v, v*3)))".to_string());
+        mgr.evaluate().unwrap();
+        assert_eq!(
+            mgr.sheets[0].columns[1].data.get(0).map(|v| v.to_string()),
+            Some("25".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[1].data.get(1).map(|v| v.to_string()),
+            Some("90".to_string())
+        );
+
+        let bytes = mgr.save_bytes().unwrap();
+        let pkg = crate::core::opc::OpcPackage::from_bytes(&bytes).unwrap();
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(
+            ws_xml.contains("_xlfn.LET(_xlpm.x, A1*2, _xlpm.x + 5)"),
+            "{ws_xml}"
+        );
+        assert!(
+            ws_xml.contains("_xlfn.MAP(A1:A2, _xlfn.LAMBDA(_xlpm.v, _xlpm.v*3))"),
+            "{ws_xml}"
+        );
+        crate::core::xlsx::validate::validate_ooxml_package(&bytes).unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        loaded.set_cell(0, 0, 0, "100".to_string());
+        loaded.evaluate().unwrap();
+        assert_eq!(
+            loaded.sheets[0].columns[1]
+                .data
+                .get(0)
+                .map(|v| v.to_string()),
+            Some("205".to_string())
+        );
+        assert_eq!(
+            loaded.sheets[0].columns[1]
+                .data
+                .get(1)
+                .map(|v| v.to_string()),
+            Some("360".to_string())
+        );
+    }
 }

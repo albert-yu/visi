@@ -85,8 +85,17 @@ struct EvalReference {
     end_col: usize,
 }
 
+fn strip_xlpm_prefix(name: &str) -> &str {
+    if name.len() >= 6 && name.as_bytes()[..6].eq_ignore_ascii_case(b"_xlpm.") {
+        &name[6..]
+    } else {
+        name
+    }
+}
+
 impl<'a> LetScope<'a> {
     fn get(&self, name: &str) -> Option<&ResultData> {
+        let target = strip_xlpm_prefix(name);
         match self {
             LetScope::Empty => None,
             LetScope::Bound {
@@ -94,7 +103,7 @@ impl<'a> LetScope<'a> {
                 value,
                 parent,
             } => {
-                if n.eq_ignore_ascii_case(name) {
+                if strip_xlpm_prefix(n).eq_ignore_ascii_case(target) {
                     Some(value)
                 } else {
                     parent.get(name)
@@ -3203,7 +3212,7 @@ impl Sheet {
         }
 
         let name = match &args[0] {
-            Expr::Identifier(n) => n.as_str(),
+            Expr::Identifier(n) => strip_xlpm_prefix(n.as_str()),
             _ => return Ok(ResultData::Error("#VALUE!".to_string())),
         };
         let remaining_pairs = args.len() / 2 - 1;
@@ -3211,7 +3220,9 @@ impl Sheet {
             .iter()
             .step_by(2)
             .take(remaining_pairs)
-            .any(|a| matches!(a, Expr::Identifier(n2) if n2.eq_ignore_ascii_case(name)));
+            .any(|a| {
+                matches!(a, Expr::Identifier(n2) if strip_xlpm_prefix(n2.as_str()).eq_ignore_ascii_case(name))
+            });
         if is_duplicate {
             return Ok(ResultData::Error("#VALUE!".to_string()));
         }
@@ -3232,14 +3243,19 @@ impl Sheet {
         let Expr::FunctionCall { name, args } = expr else {
             return None;
         };
-        if !name.eq_ignore_ascii_case("LAMBDA") || args.is_empty() {
+        let bare = if name.len() >= 6 && name.as_bytes()[..6].eq_ignore_ascii_case(b"_xlfn.") {
+            &name[6..]
+        } else {
+            name.as_str()
+        };
+        if !bare.eq_ignore_ascii_case("LAMBDA") || args.is_empty() {
             return None;
         }
         let (body, params) = args.split_last().unwrap();
         let param_names: Vec<&str> = params
             .iter()
             .filter_map(|p| match p {
-                Expr::Identifier(n) => Some(n.as_str()),
+                Expr::Identifier(n) => Some(strip_xlpm_prefix(n.as_str())),
                 _ => None,
             })
             .collect();
