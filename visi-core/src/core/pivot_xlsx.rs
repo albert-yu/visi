@@ -707,6 +707,15 @@ pub fn inject_pivot_tables(
                 REL_PIVOT_CACHE_RECORDS, n
             ),
         ));
+        new_files.push((
+            format!("xl/pivotTables/_rels/pivotTable{}.xml.rels", n),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+<Relationship Id=\"rId1\" Type=\"{}\" Target=\"../pivotCache/pivotCacheDefinition{}.xml\"/></Relationships>",
+                REL_PIVOT_CACHE_DEF, n
+            ),
+        ));
 
         let rel_entry = format!(
             "<Relationship Id=\"{}\" Type=\"{}\" Target=\"pivotCache/pivotCacheDefinition{}.xml\"/>",
