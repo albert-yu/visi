@@ -2867,6 +2867,10 @@ mod tests {
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
         assert!(zip.by_name("xl/pivotTables/pivotTable1.xml").is_ok());
         assert!(
+            zip.by_name("xl/pivotTables/_rels/pivotTable1.xml.rels")
+                .is_ok()
+        );
+        assert!(
             zip.by_name("xl/pivotCache/pivotCacheDefinition1.xml")
                 .is_ok()
         );
