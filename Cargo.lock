@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "visi"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cfb",
  "serde",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "visi-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "calamine",
  "cfb",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "visi-wasm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "js-sys",
  "serde",
