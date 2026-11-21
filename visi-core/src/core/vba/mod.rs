@@ -246,6 +246,117 @@ pub fn run_macro(source: &str, procedure: &str, args: &[&str]) -> Result<RunOutc
     Ok(to_outcome(result, false, &interp))
 }
 
+pub(crate) fn public_udf_names(project: &VbaProject) -> Vec<String> {
+    let mut names = Vec::new();
+    for m in &project.modules {
+        if m.kind != VbaModuleKind::Standard {
+            continue;
+        }
+        if let Ok(parsed) = parser::parse_module(&m.source) {
+            for proc in parsed.procedures() {
+                if proc.kind == ast::ProcKind::Function
+                    && proc.visibility != Some(ast::Visibility::Private)
+                {
+                    names.push(proc.name.clone());
+                }
+            }
+        }
+    }
+    names
+}
+
+pub(crate) fn eval_vba_udf(
+    project: &VbaProject,
+    name: &str,
+    args: &[crate::core::engine::ResultData],
+) -> Option<crate::core::engine::ResultData> {
+    let has_udf = public_udf_names(project)
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name));
+    if !has_udf {
+        return None;
+    }
+    let mut interp = match interp::Interpreter::from_project(project, None) {
+        Ok(i) => i,
+        Err(_) => {
+            return Some(crate::core::engine::ResultData::Error(
+                "#VALUE!".to_string(),
+            ));
+        }
+    };
+    let vba_args: Vec<value::Variant> = args.iter().map(result_data_to_variant).collect();
+    match interp.run(name, vba_args) {
+        Ok(v) => Some(variant_to_result_data(&v)),
+        Err(_) => Some(crate::core::engine::ResultData::Error(
+            "#VALUE!".to_string(),
+        )),
+    }
+}
+
+fn result_data_to_variant(data: &crate::core::engine::ResultData) -> value::Variant {
+    use crate::core::engine::ResultData;
+    match data {
+        ResultData::None => value::Variant::Empty,
+        ResultData::Integer(n) => value::Variant::Double(*n as f64),
+        ResultData::Float(n) => value::Variant::Double(*n),
+        ResultData::String(s) => value::Variant::Str(s.clone()),
+        ResultData::Boolean(b) => value::Variant::Boolean(*b),
+        ResultData::Error(e) => {
+            let code = match e.as_str() {
+                "#NULL!" => 2000,
+                "#DIV/0!" => 2007,
+                "#VALUE!" => 2015,
+                "#REF!" => 2023,
+                "#NAME?" => 2029,
+                "#NUM!" => 2036,
+                "#N/A" => 2042,
+                _ => 2015,
+            };
+            value::Variant::ErrValue(code)
+        }
+        ResultData::List(items) => {
+            let vals: Vec<value::Variant> = items.iter().map(result_data_to_variant).collect();
+            value::Variant::Array(std::rc::Rc::new(value::VarArray::new_1d(1, vals)))
+        }
+        ResultData::Dict(_) => value::Variant::ErrValue(2015),
+    }
+}
+
+fn variant_to_result_data(v: &value::Variant) -> crate::core::engine::ResultData {
+    use crate::core::engine::ResultData;
+    match v {
+        value::Variant::Empty => ResultData::Integer(0),
+        value::Variant::Null => ResultData::Error("#VALUE!".to_string()),
+        value::Variant::Boolean(b) => ResultData::Boolean(*b),
+        value::Variant::Byte(n) => ResultData::Integer(i64::from(*n)),
+        value::Variant::Integer(n) => ResultData::Integer(i64::from(*n)),
+        value::Variant::Long(n) => ResultData::Integer(i64::from(*n)),
+        value::Variant::LongLong(n) => ResultData::Integer(*n),
+        value::Variant::Single(f) => ResultData::Float(f64::from(*f)),
+        value::Variant::Double(f) | value::Variant::Date(f) => ResultData::Float(*f),
+        value::Variant::Currency(c) => ResultData::Float(*c as f64 / 10_000.0),
+        value::Variant::Decimal(d) => ResultData::Float((d.0 as f64) / 10f64.powi(d.1 as i32)),
+        value::Variant::Str(s) => ResultData::String(s.clone()),
+        value::Variant::ErrValue(code) => {
+            let err = match *code {
+                2000 => "#NULL!",
+                2007 => "#DIV/0!",
+                2015 => "#VALUE!",
+                2023 => "#REF!",
+                2029 => "#NAME?",
+                2036 => "#NUM!",
+                2042 => "#N/A",
+                _ => "#VALUE!",
+            };
+            ResultData::Error(err.to_string())
+        }
+        value::Variant::Array(arr) => {
+            ResultData::List(arr.values.iter().map(variant_to_result_data).collect())
+        }
+        _ => ResultData::Error("#VALUE!".to_string()),
+    }
+}
+
 impl VbaModule {
     /// Checks this module's source, naming it in any error
     pub fn check_syntax(&self) -> Result<ModuleSyntax, Error> {
