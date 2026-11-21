@@ -294,8 +294,10 @@ fn parse_codepage(dir: &[u8]) -> Option<u16> {
 
 fn decode_utf16le(data: &[u8]) -> String {
     let units: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     String::from_utf16_lossy(&units)
 }
