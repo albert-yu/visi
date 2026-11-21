@@ -14,8 +14,8 @@ enum Kind {
 }
 
 const PRIMITIVE_SCALAR_TYPES: &[&str] = &[
-    "integer", "long", "single", "double", "currency", "string", "boolean", "byte", "date",
-    "variant",
+    "integer", "long", "longlong", "longptr", "single", "double", "currency", "decimal", "string",
+    "boolean", "byte", "date", "variant",
 ];
 
 fn kind_for_decl(is_array: bool, ty: &Option<TypeRef>) -> Kind {
@@ -34,7 +34,7 @@ fn is_primitive_scalar(name: &str) -> bool {
     PRIMITIVE_SCALAR_TYPES.contains(&name.to_ascii_lowercase().as_str())
 }
 
-const TYPE_SUFFIXES: [char; 6] = ['$', '%', '&', '!', '#', '@'];
+const TYPE_SUFFIXES: [char; 7] = ['$', '%', '&', '!', '#', '@', '^'];
 
 fn norm(name: &str) -> String {
     name.strip_suffix(TYPE_SUFFIXES)
@@ -68,8 +68,19 @@ impl Scope<'_> {
 }
 
 pub(super) fn check_module(module: &Module, scope: &Scope<'_>) -> Result<(), ParseError> {
+    let option_explicit = has_option_explicit(&module.items);
     let module_syms = collect_module_symbols(module);
-    check_items(&module.items, &module_syms, scope)
+    check_items(&module.items, &module_syms, scope, option_explicit)
+}
+
+fn has_option_explicit(items: &[ModuleItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            ModuleItem::Option { words, .. }
+            if words.len() == 1 && words[0].eq_ignore_ascii_case("explicit")
+        )
+    })
 }
 
 pub(super) fn declared_names(module: &Module) -> Vec<String> {
@@ -80,20 +91,21 @@ fn check_items(
     items: &[ModuleItem],
     module_syms: &HashMap<String, Kind>,
     scope: &Scope<'_>,
+    option_explicit: bool,
 ) -> Result<(), ParseError> {
     for item in items {
         match item {
-            ModuleItem::Procedure(p) => check_procedure(p, module_syms, scope)?,
+            ModuleItem::Procedure(p) => check_procedure(p, module_syms, scope, option_explicit)?,
             ModuleItem::Conditional {
                 branches,
                 else_items,
                 ..
             } => {
                 for (_, body) in branches {
-                    check_items(body, module_syms, scope)?;
+                    check_items(body, module_syms, scope, option_explicit)?;
                 }
                 if let Some(body) = else_items {
-                    check_items(body, module_syms, scope)?;
+                    check_items(body, module_syms, scope, option_explicit)?;
                 }
             }
             _ => {}
@@ -165,6 +177,7 @@ fn check_procedure(
     proc: &Procedure,
     module_syms: &HashMap<String, Kind>,
     scope: &Scope<'_>,
+    option_explicit: bool,
 ) -> Result<(), ParseError> {
     let mut locals = HashMap::new();
     locals.insert(norm(&proc.name), Kind::Callable);
@@ -175,12 +188,15 @@ fn check_procedure(
         );
     }
     collect_locals(&proc.body, &mut locals);
-    collect_implicit_locals(&proc.body, &mut locals);
+    if !option_explicit {
+        collect_implicit_locals(&proc.body, &mut locals);
+    }
     check_duplicate_declarations(&proc.body, &proc.params)?;
     let ctx = Ctx {
         module: module_syms,
         locals: &locals,
         scope,
+        option_explicit,
     };
     check_block(&proc.body, &ctx)
 }
@@ -189,6 +205,7 @@ struct Ctx<'a> {
     module: &'a HashMap<String, Kind>,
     locals: &'a HashMap<String, Kind>,
     scope: &'a Scope<'a>,
+    option_explicit: bool,
 }
 
 impl Ctx<'_> {
@@ -466,12 +483,14 @@ fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
             Ok(())
         }
         Stmt::For {
+            var,
             from,
             to,
             step,
             body,
             ..
         } => {
+            check_expr(var, ctx)?;
             check_expr(from, ctx)?;
             check_expr(to, ctx)?;
             if let Some(s) = step {
@@ -479,7 +498,13 @@ fn check_stmt(stmt: &Stmt, ctx: &Ctx<'_>) -> Result<(), ParseError> {
             }
             check_block(body, ctx)
         }
-        Stmt::ForEach { iterable, body, .. } => {
+        Stmt::ForEach {
+            var,
+            iterable,
+            body,
+            ..
+        } => {
+            check_expr(var, ctx)?;
             check_expr(iterable, ctx)?;
             check_block(body, ctx)
         }
@@ -539,6 +564,18 @@ fn check_args(args: &[Arg], ctx: &Ctx<'_>) -> Result<(), ParseError> {
 
 fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
     match expr {
+        Expr::Ident { name, pos } => {
+            if ctx.option_explicit && ctx.scope.complete_project {
+                let lower = norm(name);
+                if !ctx.known(&lower) && !is_standard_vba_const(&lower) {
+                    return Err(ParseError {
+                        message: format!("Variable not defined: {name}"),
+                        pos: *pos,
+                    });
+                }
+            }
+            Ok(())
+        }
         Expr::Call { target, args, .. } => {
             if let Expr::Ident { name, pos } = target.as_ref() {
                 check_call_name(name, *pos, ctx)?;
@@ -563,6 +600,10 @@ fn check_expr(expr: &Expr, ctx: &Ctx<'_>) -> Result<(), ParseError> {
         }
         _ => Ok(()),
     }
+}
+
+fn is_standard_vba_const(lower: &str) -> bool {
+    lower.starts_with("vb") || lower.starts_with("xl")
 }
 
 fn check_call_name(name: &str, pos: super::lexer::Pos, ctx: &Ctx<'_>) -> Result<(), ParseError> {
@@ -872,5 +913,15 @@ mod tests {
     fn accepts_a_for_each_element_variable_as_a_call_target() {
         let src = "Sub Test()\n    For Each c In rng\n        c 5\n    Next c\nEnd Sub\n";
         assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn option_explicit_rejects_undeclared_variables() {
+        let bad = "Option Explicit\nSub Test()\n    x = 1\nEnd Sub\n";
+        let err = check(bad).unwrap_err();
+        assert!(err.contains("Variable not defined: x"), "{err}");
+
+        let good = "Option Explicit\nSub Test()\n    Dim x As Long\n    x = 1\nEnd Sub\n";
+        assert!(check(good).is_ok());
     }
 }

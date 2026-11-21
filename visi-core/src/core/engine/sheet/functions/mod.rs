@@ -76,6 +76,15 @@ impl Sheet {
         self.evaluate_function(name, args, context, None, None, &mut deps, &LetScope::Empty)
     }
 
+    pub(crate) fn evaluate_parsed_expr(
+        &self,
+        expr: &Expr,
+        context: Option<&Context>,
+    ) -> Result<ResultData, EngineError> {
+        let mut deps = Vec::new();
+        self.evaluate_ast(expr, context, None, None, &mut deps, &LetScope::Empty)
+    }
+
     /// Evaluates a function call by name.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn evaluate_function(
@@ -593,6 +602,11 @@ impl Sheet {
         }
         if let Some(r) = self.eval_info_lookup_fn(call, deps) {
             return post_process(r);
+        }
+        if let Some(project) = context.and_then(|c| c.vba_project)
+            && let Some(res) = crate::core::vba::eval_vba_udf(project, name, &evaluated_args)
+        {
+            return post_process(Ok(res));
         }
         post_process(Err(EngineError::EvalError(EvalError::UnknownFunction(
             format!("Unknown function: {}", name),

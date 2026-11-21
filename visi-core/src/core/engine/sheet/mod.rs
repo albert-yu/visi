@@ -25,6 +25,7 @@ pub struct Context<'a> {
     /// Store sheet order, so `SHEET()` works.
     /// `sheets` is a HashMap, so this is needed
     pub sheet_order: Vec<String>,
+    pub(crate) vba_project: Option<&'a crate::core::vba::VbaProject>,
 }
 
 impl<'a> Context<'a> {
@@ -35,6 +36,7 @@ impl<'a> Context<'a> {
             pivot_tables: &[],
             defined_names: &[],
             sheet_order: Vec::new(),
+            vba_project: None,
         }
     }
 

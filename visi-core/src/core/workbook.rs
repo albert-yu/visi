@@ -552,11 +552,52 @@ impl WorkbookManager {
     }
 
     pub fn evaluate(&mut self) -> crate::Result<()> {
+        self.evaluate_inner(false)
+    }
+
+    pub fn evaluate_with_macros(&mut self) -> crate::Result<()> {
+        self.evaluate_inner(true)
+    }
+
+    pub fn referenced_vba_udfs(&self) -> Vec<String> {
+        let Some(project) = self.vba_project.as_ref() else {
+            return Vec::new();
+        };
+        let udfs = crate::core::vba::public_udf_names(project);
+        if udfs.is_empty() {
+            return Vec::new();
+        }
+        let udf_upper: std::collections::HashMap<String, String> = udfs
+            .into_iter()
+            .map(|n| (n.to_ascii_uppercase(), n))
+            .collect();
+        let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for sheet in &self.sheets {
+            for r in 0..sheet.row_count() {
+                for c in 0..sheet.col_count() {
+                    if let Some(src) = sheet.get_src(&CellRef::new(r, c))
+                        && let Some(body) = src.strip_prefix('=')
+                        && let Ok(ast) = crate::core::parser::parse_excel_formula(body)
+                    {
+                        collect_called_udfs(&ast, &udf_upper, &mut found);
+                    }
+                }
+            }
+        }
+        found.into_iter().collect()
+    }
+
+    fn evaluate_inner(&mut self, enable_macros: bool) -> crate::Result<()> {
         if self.sheets.is_empty() {
             return Ok(());
         }
 
         let sheet_order: Vec<String> = self.sheets.iter().map(|s| s.name.clone()).collect();
+        let vba_ref = if enable_macros {
+            self.vba_project.as_ref()
+        } else {
+            None
+        };
 
         for _pass in 0..3 {
             for sheet in &mut self.sheets {
@@ -576,6 +617,7 @@ impl WorkbookManager {
                 context.pivot_tables = &self.pivot_tables;
                 context.defined_names = &self.defined_names;
                 context.sheet_order = sheet_order.clone();
+                context.vba_project = vba_ref;
 
                 let _ = target_sheet.commit(Some(&context));
             }
@@ -1750,6 +1792,35 @@ impl WorkbookManager {
                 self.sheets[sheet_idx].set_cell_src(r, c, String::new());
             }
         }
+    }
+}
+
+fn collect_called_udfs(
+    expr: &crate::core::parser::Expr,
+    udf_upper: &std::collections::HashMap<String, String>,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    use crate::core::parser::Expr;
+    match expr {
+        Expr::FunctionCall { name, args } => {
+            if let Some(orig) = udf_upper.get(&name.to_ascii_uppercase()) {
+                out.insert(orig.clone());
+            }
+            for a in args {
+                collect_called_udfs(a, udf_upper, out);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_called_udfs(left, udf_upper, out);
+            collect_called_udfs(right, udf_upper, out);
+        }
+        Expr::UnaryOp { expr, .. } => collect_called_udfs(expr, udf_upper, out),
+        Expr::List(items) => {
+            for item in items {
+                collect_called_udfs(item, udf_upper, out);
+            }
+        }
+        _ => {}
     }
 }
 

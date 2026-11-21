@@ -37,6 +37,7 @@ pub mod typecheck;
 #[doc = "VBA project, module, syntax-checking, and macro execution support."]
 pub mod vba;
 pub(crate) mod vba_synth;
+pub(crate) mod vba_validate;
 #[doc(hidden)]
 pub mod vba_xlsx;
 #[doc = "Workbook-level management APIs over sheets and workbook objects."]

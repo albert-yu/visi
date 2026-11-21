@@ -301,6 +301,15 @@ pub struct EvalArgs {
         help = "Detect circular dependencies and fail before recalculating"
     )]
     pub detect_cycles: bool,
+
+    #[usage(
+        long,
+        help = "Enable VBA user-defined function (UDF) execution during formula evaluation"
+    )]
+    pub enable_macros: bool,
+
+    #[usage(long, help = "Disable VBA UDF execution without prompting")]
+    pub no_macros: bool,
 }
 
 #[derive(Args, Debug)]

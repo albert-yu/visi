@@ -1,0 +1,66 @@
+[
+  {
+    "id": "vbal_5_6_13_byref_byval",
+    "spec": "[MS-VBAL] 5.6.13.1",
+    "procedure": "Main",
+    "source": "Sub Bump(x, ByVal y)\n    x = x + 10\n    y = y + 10\nEnd Sub\nFunction Main()\n    Dim a As Long, b As Long, c As Long\n    a = 1: b = 2: c = 3\n    Bump a, b\n    Bump (c), b\n    Main = a & \",\" & b & \",\" & c\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "11,2,3"
+  },
+  {
+    "id": "vbal_5_6_13_named_optional_paramarray",
+    "spec": "[MS-VBAL] 5.3.1.8 / 5.6.13",
+    "procedure": "Main",
+    "source": "Function Combine(a As Long, Optional b As Long = 5, Optional c) As String\n    Combine = a & \":\" & b & \":\" & IsMissing(c)\nEnd Function\nFunction SumAll(ParamArray vals() As Variant) As Long\n    Dim i As Long, t As Long\n    For i = LBound(vals) To UBound(vals)\n        t = t + vals(i)\n    Next i\n    SumAll = t\nEnd Function\nFunction Main()\n    Main = Combine(10) & \"|\" & Combine(b:=20, a:=1, c:=9) & \"|\" & SumAll(1, 2, 3, 4)\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "10:5:True|1:20:False|10"
+  },
+  {
+    "id": "vbal_5_4_3_arrays_redim_preserve",
+    "spec": "[MS-VBAL] 5.4.3.3",
+    "procedure": "Main",
+    "source": "Option Base 1\nFunction Main()\n    Dim a() As Long\n    ReDim a(1 To 2, 1 To 2)\n    a(1, 1) = 10: a(2, 2) = 40\n    ReDim Preserve a(1 To 2, 1 To 3)\n    a(2, 3) = 50\n    Main = LBound(a, 1) & \",\" & UBound(a, 2) & \",\" & a(2, 2) & \",\" & a(2, 3)\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "1,3,40,50"
+  },
+  {
+    "id": "vbal_5_5_types_coercion_udt_enum",
+    "spec": "[MS-VBAL] 2.1 / 5.5",
+    "procedure": "Main",
+    "source": "Enum Kind\n    First = 1\n    Second\nEnd Enum\nType Pair\n    X As Byte\n    Y As Long\nEnd Type\nFunction Main()\n    Dim p As Pair, q As Pair\n    p.X = 2.5\n    p.Y = Kind.Second\n    q = p\n    q.X = 9\n    Main = p.X & \",\" & p.Y & \",\" & q.X\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "2,2,9"
+  },
+  {
+    "id": "vbal_5_6_9_4_like_and_option_compare_text",
+    "spec": "[MS-VBAL] 5.6.9.4",
+    "procedure": "Main",
+    "source": "Option Compare Text\nFunction Main()\n    Main = (\"Hello\" = \"hello\") & \",\" & (\"AbC12\" Like \"abc##\") & \",\" & (\"z\" Like \"[!0-9]\")\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "True,True,True"
+  },
+  {
+    "id": "vbal_5_4_5_error_handling_resume",
+    "spec": "[MS-VBAL] 5.4.5",
+    "procedure": "Main",
+    "source": "Function Main()\n    Dim d As Long, r As Long\n    d = 0\n    On Error GoTo Fix\n    r = 10 / d\n    Main = r\n    Exit Function\nFix:\n    d = 2\n    Resume\nEnd Function\n",
+    "expected_type": "Long",
+    "expected_value": "5"
+  },
+  {
+    "id": "vbal_6_stdlib_dates_format_financial",
+    "spec": "[MS-VBAL] 6.1",
+    "procedure": "Main",
+    "source": "Function Main()\n    Dim d As Date\n    d = DateAdd(\"m\", 1, DateSerial(2024, 1, 31))\n    Main = Format(d, \"yyyy-mm-dd\") & \"|\" & Round(SLN(10000, 1000, 9), 0) & \"|\" & Join(Split(\"a,b,c\", \",\"), \"-\")\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "2024-02-29|1000|a-b-c"
+  },
+  {
+    "id": "vbal_6_collection_dictionary_regexp",
+    "spec": "[MS-VBAL] 6.1 / In-Memory COM",
+    "procedure": "Main",
+    "source": "Function Main()\n    Dim c As New Collection\n    c.Add \"one\", \"k1\"\n    Dim d As Object\n    Set d = CreateObject(\"Scripting.Dictionary\")\n    d(\"a\") = 42\n    Dim re As Object\n    Set re = CreateObject(\"VBScript.RegExp\")\n    re.Pattern = \"\\d+\"\n    re.Global = True\n    Main = c(\"K1\") & \"|\" & d(\"a\") & \"|\" & re.Replace(\"x12y34\", \"#\")\nEnd Function\n",
+    "expected_type": "String",
+    "expected_value": "one|42|x#y#"
+  }
+]

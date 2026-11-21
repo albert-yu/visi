@@ -42,6 +42,9 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
 }
 
 fn closes_block(t: &Token, next: &Token) -> bool {
+    if t.is_punct("#") {
+        return next.is_kw("else") || next.is_kw("elseif") || next.is_kw("end");
+    }
     if t.is_kw("end") {
         return next.is_kw("sub")
             || next.is_kw("function")
@@ -606,6 +609,10 @@ impl Parser {
             return Ok(Stmt::Label { name, pos });
         }
 
+        if t.is_punct("#") && self.at(1).is_kw("if") {
+            return self.parse_stmt_conditional(pos);
+        }
+
         if let Some(kw) = t.ident() {
             let lower = kw.to_ascii_lowercase();
             match lower.as_str() {
@@ -826,6 +833,11 @@ impl Parser {
             let (name, _) = self.expect_ident()?;
             let params = self.parse_param_list()?;
             return Ok(Stmt::EventDef { name, params, pos });
+        }
+        if self.peek().is_kw("implements") {
+            self.i += 1;
+            let (name, _) = self.parse_dotted_name()?;
+            return Ok(Stmt::Implements { name, pos });
         }
         if self.eat_kw("const") {
             let vars = self.parse_var_decls(true)?;
@@ -1320,11 +1332,20 @@ impl Parser {
                 self.expect_kw("next")?;
                 OnErrorKind::ResumeNext
             } else if self.eat_kw("goto") {
-                let label = self.parse_label_ref()?;
-                if label == "0" {
-                    OnErrorKind::Disable
+                if self.eat_punct("-") {
+                    let label = self.parse_label_ref()?;
+                    if label == "1" {
+                        OnErrorKind::ClearError
+                    } else {
+                        return Err(self.error("expected -1 after On Error GoTo -"));
+                    }
                 } else {
-                    OnErrorKind::GoTo(label)
+                    let label = self.parse_label_ref()?;
+                    if label == "0" {
+                        OnErrorKind::Disable
+                    } else {
+                        OnErrorKind::GoTo(label)
+                    }
                 }
             } else {
                 return Err(self.expected("Resume Next or GoTo after On Error"));
@@ -1352,8 +1373,44 @@ impl Parser {
         })
     }
 
+    fn parse_stmt_conditional(&mut self, pos: Pos) -> Result<Stmt, ParseError> {
+        self.expect_punct("#")?;
+        self.expect_kw("if")?;
+        let mut branches = Vec::new();
+        let cond = self.parse_expr()?;
+        self.expect_kw("then")?;
+        self.expect_stmt_end()?;
+        branches.push((cond, self.parse_block()?));
+
+        while self.peek().is_punct("#") && self.at(1).is_kw("elseif") {
+            self.i += 2;
+            let cond = self.parse_expr()?;
+            self.expect_kw("then")?;
+            self.expect_stmt_end()?;
+            branches.push((cond, self.parse_block()?));
+        }
+
+        let else_body = if self.peek().is_punct("#") && self.at(1).is_kw("else") {
+            self.i += 2;
+            self.expect_stmt_end()?;
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+
+        if !(self.peek().is_punct("#") && self.at(1).is_kw("end") && self.at(2).is_kw("if")) {
+            return Err(self.unclosed("Expected #End If", pos));
+        }
+        self.i += 3;
+        Ok(Stmt::Conditional {
+            branches,
+            else_body,
+            pos,
+        })
+    }
+
     fn parse_assign_or_call(&mut self, pos: Pos) -> Result<Stmt, ParseError> {
-        let target = self.parse_postfix()?;
+        let target = self.parse_postfix_with_space_call(false)?;
 
         if self.peek().is_punct("=") {
             self.i += 1;
@@ -1641,6 +1698,13 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        self.parse_postfix_with_space_call(true)
+    }
+
+    fn parse_postfix_with_space_call(
+        &mut self,
+        allow_space_paren: bool,
+    ) -> Result<Expr, ParseError> {
         let mut expr = self.parse_primary()?;
         loop {
             let pos = self.pos();
@@ -1660,7 +1724,9 @@ impl Parser {
                     name,
                     pos,
                 };
-            } else if self.peek().is_punct("(") {
+            } else if self.peek().is_punct("(")
+                && (allow_space_paren || !self.peek().preceded_by_space)
+            {
                 let args = self.parse_paren_args()?;
                 expr = Expr::Call {
                     target: Box::new(expr),

@@ -37,7 +37,15 @@ pub enum ObjRef {
     Interior(u64),
     Font(u64),
     Range(u64),
+    Names,
+    Name(usize),
     UserClass(u64),
+    Collection(u64),
+    Dictionary(u64),
+    RegExp(u64),
+    RegExpMatches(u64),
+    RegExpMatch(u64, usize),
+    RegExpSubMatches(u64, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +83,8 @@ impl ObjRef {
             ObjRef::Worksheets => "Sheets",
             ObjRef::Worksheet(_) => "Worksheet",
             ObjRef::Range(_) => "Range",
+            ObjRef::Names => "Names",
+            ObjRef::Name(_) => "Name",
             ObjRef::Interior(_) => "Interior",
             ObjRef::Font(_) => "Font",
             ObjRef::ListObjects(_) => "ListObjects",
@@ -88,6 +98,12 @@ impl ObjRef {
             ObjRef::PivotFields(_) => "PivotFields",
             ObjRef::PivotField(..) => "PivotField",
             ObjRef::UserClass(_) => "Object",
+            ObjRef::Collection(_) => "Collection",
+            ObjRef::Dictionary(_) => "Dictionary",
+            ObjRef::RegExp(_) => "IRegExp2",
+            ObjRef::RegExpMatches(_) => "IMatchCollection2",
+            ObjRef::RegExpMatch(..) => "IMatch2",
+            ObjRef::RegExpSubMatches(..) => "ISubMatches",
         }
     }
 
@@ -100,7 +116,15 @@ impl ObjRef {
             | (ObjRef::Worksheets, ObjRef::Worksheets) => true,
             (ObjRef::Worksheet(a), ObjRef::Worksheet(b)) => a == b,
             (ObjRef::Range(a), ObjRef::Range(b)) => a == b,
+            (ObjRef::Names, ObjRef::Names) => true,
+            (ObjRef::Name(a), ObjRef::Name(b)) => a == b,
             (ObjRef::UserClass(a), ObjRef::UserClass(b)) => a == b,
+            (ObjRef::Collection(a), ObjRef::Collection(b)) => a == b,
+            (ObjRef::Dictionary(a), ObjRef::Dictionary(b)) => a == b,
+            (ObjRef::RegExp(a), ObjRef::RegExp(b)) => a == b,
+            (ObjRef::RegExpMatches(a), ObjRef::RegExpMatches(b)) => a == b,
+            (ObjRef::RegExpMatch(a, i), ObjRef::RegExpMatch(b, j))
+            | (ObjRef::RegExpSubMatches(a, i), ObjRef::RegExpSubMatches(b, j)) => a == b && i == j,
             (ObjRef::Interior(a), ObjRef::Interior(b)) => a == b,
             (ObjRef::Font(a), ObjRef::Font(b)) => a == b,
             (ObjRef::ListObjects(a), ObjRef::ListObjects(b))
@@ -123,11 +147,19 @@ pub fn is_host_name(name: &str) -> bool {
         name.to_ascii_lowercase().as_str(),
         "thisworkbook"
             | "activeworkbook"
+            | "activesheet"
+            | "activecell"
             | "application"
             | "worksheets"
             | "sheets"
             | "range"
             | "cells"
+            | "rows"
+            | "columns"
+            | "names"
+            | "evaluate"
+            | "intersect"
+            | "union"
     )
 }
 
@@ -163,6 +195,12 @@ pub struct Host<'w> {
 
     pub enable_events: bool,
 
+    pub screen_updating: bool,
+
+    pub display_alerts: bool,
+
+    pub calculation: i32,
+
     pub pending_cell_changes: Vec<RangeRef>,
 
     pub pending_calculate_sheets: Vec<u64>,
@@ -183,6 +221,9 @@ impl<'w> Host<'w> {
             next_token: 1,
             active_sheet,
             enable_events: true,
+            screen_updating: true,
+            display_alerts: true,
+            calculation: -4105,
             pending_cell_changes: Vec::new(),
             pending_calculate_sheets: Vec::new(),
         })
@@ -253,24 +294,27 @@ impl<'w> Host<'w> {
     pub fn global(&mut self, name: &str) -> Option<ObjRef> {
         Some(match name.to_ascii_lowercase().as_str() {
             "thisworkbook" | "activeworkbook" => ObjRef::Workbook,
+            "activesheet" => ObjRef::Worksheet(self.active_sheet),
+            "activecell" => self.new_range(self.active_sheet, 0, 0, 1, 1),
             "application" => ObjRef::Application,
             "worksheets" | "sheets" => ObjRef::Worksheets,
+            "names" => ObjRef::Names,
             _ => return None,
         })
     }
 
     pub fn global_call(&mut self, name: &str, args: &[Variant]) -> Option<VResult<Variant>> {
         let lower = name.to_ascii_lowercase();
-        let obj = match lower.as_str() {
-            "range" | "cells" => ObjRef::Worksheet(self.active_sheet),
-            "worksheets" | "sheets" => ObjRef::Worksheets,
-            _ => return None,
-        };
-        let member = match lower.as_str() {
-            "worksheets" | "sheets" => return Some(self.call_object(&ObjRef::Worksheets, args)),
-            other => other,
-        };
-        Some(self.get_member(&obj, member, args))
+        match lower.as_str() {
+            "range" | "cells" | "rows" | "columns" => {
+                let obj = ObjRef::Worksheet(self.active_sheet);
+                Some(self.get_member(&obj, &lower, args))
+            }
+            "worksheets" | "sheets" => Some(self.call_object(&ObjRef::Worksheets, args)),
+            "names" => Some(self.names_member("item", args)),
+            "evaluate" | "intersect" | "union" => Some(self.application_member(&lower, args)),
+            _ => None,
+        }
     }
 
     pub fn get_member(&mut self, obj: &ObjRef, name: &str, args: &[Variant]) -> VResult<Variant> {
@@ -285,6 +329,8 @@ impl<'w> Host<'w> {
             ObjRef::Worksheets => self.worksheets_member(name, args),
             ObjRef::Worksheet(id) => self.worksheet_member(*id, name, args),
             ObjRef::Range(token) => self.range_member(*token, name, args),
+            ObjRef::Names => self.names_member(name, args),
+            ObjRef::Name(idx) => self.name_member(*idx, name),
             ObjRef::Interior(token) => self.interior_member(*token, name),
             ObjRef::Font(token) => self.font_member(*token, name),
             ObjRef::ListObjects(sheet_id) => self.list_objects_member(*sheet_id, name, args),
@@ -297,7 +343,13 @@ impl<'w> Host<'w> {
             ObjRef::PivotTable(id) => self.pivot_table_member(*id, name, args),
             ObjRef::PivotFields(id) => self.pivot_fields_member(*id, name, args),
             ObjRef::PivotField(id, idx) => self.pivot_field_member(*id, *idx, name),
-            ObjRef::UserClass(_) => Err(unsupported("user class member access on host")),
+            ObjRef::UserClass(_)
+            | ObjRef::Collection(_)
+            | ObjRef::Dictionary(_)
+            | ObjRef::RegExp(_)
+            | ObjRef::RegExpMatches(_)
+            | ObjRef::RegExpMatch(..)
+            | ObjRef::RegExpSubMatches(..) => Err(unsupported("non-host object member access")),
         }
     }
 
@@ -311,6 +363,34 @@ impl<'w> Host<'w> {
         match (obj, name.to_ascii_lowercase().as_str()) {
             (ObjRef::Application, "enableevents") => {
                 self.enable_events = value.to_bool()?;
+                Ok(())
+            }
+            (ObjRef::Application, "screenupdating") => {
+                self.screen_updating = value.to_bool()?;
+                Ok(())
+            }
+            (ObjRef::Application, "displayalerts") => {
+                self.display_alerts = value.to_bool()?;
+                Ok(())
+            }
+            (ObjRef::Application, "calculation") => {
+                self.calculation = long_arg(value)?;
+                Ok(())
+            }
+            (ObjRef::Workbook, "date1904") => {
+                self.wb.date1904 = value.to_bool()?;
+                self.mutated = true;
+                Ok(())
+            }
+            (ObjRef::Worksheet(id), "visible") => {
+                let idx = self.sheet_index(*id)?;
+                let v = long_arg(value)?;
+                self.wb.sheets[idx].visibility = match v {
+                    0 => crate::core::SheetVisibility::Hidden,
+                    2 => crate::core::SheetVisibility::VeryHidden,
+                    _ => crate::core::SheetVisibility::Visible,
+                };
+                self.mutated = true;
                 Ok(())
             }
             (ObjRef::ListObject(id), "name") => {
@@ -573,6 +653,21 @@ impl<'w> Host<'w> {
                     self.call_object(&ObjRef::Worksheets, args)
                 }
             }
+            "activesheet" => Ok(Variant::Object(ObjRef::Worksheet(self.active_sheet))),
+            "names" => {
+                if args.is_empty() {
+                    Ok(Variant::Object(ObjRef::Names))
+                } else {
+                    self.names_member("item", args)
+                }
+            }
+            "date1904" => Ok(Variant::Boolean(self.wb.date1904)),
+            "application" => Ok(Variant::Object(ObjRef::Application)),
+            "calculate" => {
+                self.stale = true;
+                self.recalculate();
+                Ok(Variant::Empty)
+            }
             "name" => Ok(Variant::Str("Book1".to_string())),
             "save" => Ok(Variant::Empty),
             _ => Err(unsupported(&format!("Workbook.{name}"))),
@@ -583,6 +678,26 @@ impl<'w> Host<'w> {
         match name.to_ascii_lowercase().as_str() {
             "count" => Ok(Variant::Long(self.wb.sheets.len() as i32)),
             "item" => self.call_object(&ObjRef::Worksheets, args),
+            "add" => {
+                let mut idx = self.wb.sheets.len() + 1;
+                let mut new_name = format!("Sheet{idx}");
+                while self
+                    .wb
+                    .sheets
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(&new_name))
+                {
+                    idx += 1;
+                    new_name = format!("Sheet{idx}");
+                }
+                self.wb
+                    .add_sheet(&new_name)
+                    .map_err(|e| app_defined(e.to_string()))?;
+                let id = self.wb.sheets.last().ok_or_else(VbaError::subscript)?.id;
+                self.active_sheet = id;
+                self.mutated = true;
+                Ok(Variant::Object(ObjRef::Worksheet(id)))
+            }
             _ => Err(unsupported(&format!("Sheets.{name}"))),
         }
     }
@@ -607,6 +722,59 @@ impl<'w> Host<'w> {
     fn worksheet_member(&mut self, id: u64, name: &str, args: &[Variant]) -> VResult<Variant> {
         match name.to_ascii_lowercase().as_str() {
             "name" => Ok(Variant::Str(self.sheet(id)?.name.clone())),
+            "index" => Ok(Variant::Long(self.sheet_index(id)? as i32 + 1)),
+            "visible" => {
+                let st = self.sheet(id)?.visibility;
+                let code = match st {
+                    crate::core::SheetVisibility::Visible => -1,
+                    crate::core::SheetVisibility::Hidden => 0,
+                    crate::core::SheetVisibility::VeryHidden => 2,
+                };
+                Ok(Variant::Long(code))
+            }
+            "activate" | "select" => {
+                let _ = self.sheet_index(id)?;
+                self.active_sheet = id;
+                Ok(Variant::Empty)
+            }
+            "parent" => Ok(Variant::Object(ObjRef::Workbook)),
+            "application" => Ok(Variant::Object(ObjRef::Application)),
+            "calculate" => {
+                self.stale = true;
+                self.recalculate();
+                Ok(Variant::Empty)
+            }
+            "usedrange" => {
+                let sheet = self.sheet(id)?;
+                let mut min_r = u32::MAX;
+                let mut max_r = 0u32;
+                let mut min_c = u32::MAX;
+                let mut max_c = 0u32;
+                for r in 0..sheet.row_count() {
+                    for c in 0..sheet.col_count() {
+                        let cell = CellRef::new(r, c);
+                        let non_empty = sheet.get_src(&cell).is_some_and(|s| !s.is_empty())
+                            || !matches!(sheet.get_result_data(&cell), ResultData::None);
+                        if non_empty {
+                            min_r = min_r.min(r as u32);
+                            max_r = max_r.max(r as u32);
+                            min_c = min_c.min(c as u32);
+                            max_c = max_c.max(c as u32);
+                        }
+                    }
+                }
+                if min_r == u32::MAX {
+                    Ok(Variant::Object(self.new_range(id, 0, 0, 1, 1)))
+                } else {
+                    Ok(Variant::Object(self.new_range(
+                        id,
+                        min_r,
+                        min_c,
+                        max_r - min_r + 1,
+                        max_c - min_c + 1,
+                    )))
+                }
+            }
             "range" => {
                 let obj = self.resolve_range_args(id, args)?;
                 Ok(Variant::Object(obj))
@@ -783,6 +951,141 @@ impl<'w> Host<'w> {
             )),
             "insert" | "delete" => {
                 self.structural_edit(r, name.eq_ignore_ascii_case("insert"), name)?;
+                Ok(Variant::Empty)
+            }
+            "parent" | "worksheet" => Ok(Variant::Object(ObjRef::Worksheet(r.sheet_id))),
+            "application" => Ok(Variant::Object(ObjRef::Application)),
+            "item" => self.range_index(r, args),
+            "rows" => {
+                if args.is_empty() {
+                    Ok(Variant::Object(
+                        self.new_range(r.sheet_id, r.row, r.col, r.height, r.width),
+                    ))
+                } else {
+                    let row_idx = int_arg(args, 0)?;
+                    if row_idx < 1 {
+                        return Err(app_defined("Invalid row index"));
+                    }
+                    let target_row = r.row + (row_idx as u32 - 1);
+                    Ok(Variant::Object(
+                        self.new_range(r.sheet_id, target_row, r.col, 1, r.width),
+                    ))
+                }
+            }
+            "columns" => {
+                if args.is_empty() {
+                    Ok(Variant::Object(
+                        self.new_range(r.sheet_id, r.row, r.col, r.height, r.width),
+                    ))
+                } else {
+                    let col_idx = int_arg(args, 0)?;
+                    if col_idx < 1 {
+                        return Err(app_defined("Invalid column index"));
+                    }
+                    let target_col = r.col + (col_idx as u32 - 1);
+                    Ok(Variant::Object(
+                        self.new_range(r.sheet_id, r.row, target_col, r.height, 1),
+                    ))
+                }
+            }
+            "hasformula" => {
+                let sheet = self.sheet(r.sheet_id)?;
+                let mut first: Option<bool> = None;
+                for dr in 0..r.height {
+                    for dc in 0..r.width {
+                        let cell = CellRef::new((r.row + dr) as usize, (r.col + dc) as usize);
+                        let is_f = sheet.get_src(&cell).is_some_and(|s| s.starts_with('='));
+                        match first {
+                            None => first = Some(is_f),
+                            Some(prev) if prev != is_f => return Ok(Variant::Null),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Variant::Boolean(first.unwrap_or(false)))
+            }
+            "clear" | "clearcontents" => {
+                let clear_style = name.eq_ignore_ascii_case("clear");
+                let sheet_idx = self.sheet_index(r.sheet_id)?;
+                for dr in 0..r.height {
+                    for dc in 0..r.width {
+                        let row = (r.row + dr) as usize;
+                        let col = (r.col + dc) as usize;
+                        self.wb.sheets[sheet_idx].set_cell_src(row, col, String::new());
+                        if clear_style {
+                            self.wb.sheets[sheet_idx]
+                                .update_cell_style(row, col, |s| *s = CellStyle::default());
+                        }
+                    }
+                }
+                self.mutated = true;
+                self.stale = true;
+                Ok(Variant::Empty)
+            }
+            "clearformats" => {
+                let sheet_idx = self.sheet_index(r.sheet_id)?;
+                for dr in 0..r.height {
+                    for dc in 0..r.width {
+                        self.wb.sheets[sheet_idx].update_cell_style(
+                            (r.row + dr) as usize,
+                            (r.col + dc) as usize,
+                            |s| *s = CellStyle::default(),
+                        );
+                    }
+                }
+                self.mutated = true;
+                Ok(Variant::Empty)
+            }
+            "copy" => {
+                if let Some(Variant::Object(ObjRef::Range(dst_tok))) = args.first() {
+                    let dst = self.range(*dst_tok, "Copy")?;
+                    let src_idx = self.sheet_index(r.sheet_id)?;
+                    let dst_idx = self.sheet_index(dst.sheet_id)?;
+                    let mut cells = Vec::with_capacity((r.height * r.width) as usize);
+                    for dr in 0..r.height {
+                        for dc in 0..r.width {
+                            let sr = (r.row + dr) as usize;
+                            let sc = (r.col + dc) as usize;
+                            let raw = self.wb.sheets[src_idx]
+                                .get_src(&CellRef::new(sr, sc))
+                                .cloned()
+                                .unwrap_or_default();
+                            let style = self.wb.sheets[src_idx].get_cell_style(sr, sc).cloned();
+                            cells.push((dr, dc, raw, style));
+                        }
+                    }
+                    let max_tr = (dst.row + r.height).saturating_sub(1) as usize;
+                    let max_tc = (dst.col + r.width).saturating_sub(1) as usize;
+                    self.wb.sheets[dst_idx].ensure_capacity(max_tr, max_tc);
+                    for (dr, dc, raw, style) in cells {
+                        let tr = (dst.row + dr) as usize;
+                        let tc = (dst.col + dc) as usize;
+                        self.wb.sheets[dst_idx].set_cell_src(tr, tc, raw);
+                        if let Some(st) = style {
+                            self.wb.sheets[dst_idx].update_cell_style(tr, tc, |s| *s = st.clone());
+                        }
+                    }
+                    self.mutated = true;
+                    self.stale = true;
+                }
+                Ok(Variant::Empty)
+            }
+            "end" => {
+                let dir = args
+                    .first()
+                    .map(long_arg)
+                    .transpose()?
+                    .ok_or_else(VbaError::invalid_call)?;
+                let (tr, tc) = self.range_end(r.sheet_id, r.row, r.col, dir)?;
+                Ok(Variant::Object(self.new_range(r.sheet_id, tr, tc, 1, 1)))
+            }
+            "currentregion" => {
+                let (r0, c0, h, w) = self.current_region(r.sheet_id, r.row, r.col)?;
+                Ok(Variant::Object(self.new_range(r.sheet_id, r0, c0, h, w)))
+            }
+            "calculate" => {
+                self.stale = true;
+                self.recalculate();
                 Ok(Variant::Empty)
             }
             _ => Err(unsupported(&format!("Range.{name}"))),
@@ -1558,11 +1861,11 @@ impl<'w> Host<'w> {
                 values.push(cell_value(sheet, r.row + dr, r.col + dc, value2));
             }
         }
-        Ok(Variant::Array(std::rc::Rc::new(VarArray {
-            rows: r.height as usize,
-            cols: r.width as usize,
+        Ok(Variant::Array(std::rc::Rc::new(VarArray::new_2d_1based(
+            r.height as usize,
+            r.width as usize,
             values,
-        })))
+        ))))
     }
 
     fn read_formula(&mut self, r: RangeRef) -> VResult<Variant> {
@@ -1580,11 +1883,11 @@ impl<'w> Host<'w> {
                 values.push(Variant::Str(cell_formula(sheet, r.row + dr, r.col + dc)));
             }
         }
-        Ok(Variant::Array(std::rc::Rc::new(VarArray {
-            rows: r.height as usize,
-            cols: r.width as usize,
+        Ok(Variant::Array(std::rc::Rc::new(VarArray::new_2d_1based(
+            r.height as usize,
+            r.width as usize,
             values,
-        })))
+        ))))
     }
 
     fn write_range(&mut self, r: RangeRef, value: &Variant) -> VResult<()> {
@@ -1595,8 +1898,60 @@ impl<'w> Host<'w> {
             }
             other => other,
         };
+        if let Variant::Array(arr) = value
+            && !r.is_single()
+            && arr.dims.len() == 2
+        {
+            let last_row = u64::from(r.row) + u64::from(r.height) - 1;
+            let last_col = u64::from(r.col) + u64::from(r.width) - 1;
+            if (last_row + 1) * (last_col + 1) > MAX_ALLOCATED_CELLS {
+                return Err(VbaError::new(
+                    7,
+                    format!(
+                        "Out of memory: writing {} would allocate more than {} cells",
+                        format_address(&r, true, true),
+                        MAX_ALLOCATED_CELLS
+                    ),
+                ));
+            }
+            let (r_lo, r_hi) = arr.dims[0];
+            let (c_lo, c_hi) = arr.dims[1];
+            let sheet_idx = self.sheet_index(r.sheet_id)?;
+            self.wb.sheets[sheet_idx].ensure_capacity(last_row as usize, last_col as usize);
+            for dr in 0..r.height {
+                for dc in 0..r.width {
+                    let ai = r_lo + dr as i32;
+                    let aj = c_lo + dc as i32;
+                    let cell_val = if ai <= r_hi && aj <= c_hi {
+                        arr.get_nd(&[ai, aj])?
+                    } else {
+                        Variant::ErrValue(2042)
+                    };
+                    let src = cell_src(&cell_val)?;
+                    self.wb.sheets[sheet_idx].set_cell_src(
+                        (r.row + dr) as usize,
+                        (r.col + dc) as usize,
+                        src,
+                    );
+                }
+            }
+            self.mutated = true;
+            self.stale = true;
+            if self.enable_events {
+                self.pending_cell_changes.push(r);
+            }
+            return Ok(());
+        }
         let scalar = match value {
-            Variant::Array(a) => a.get(1, 1)?,
+            Variant::Array(a) => {
+                let lo0 = a.dims.first().map(|d| d.0).unwrap_or(1);
+                if a.dims.len() == 2 {
+                    let lo1 = a.dims[1].0;
+                    a.get_nd(&[lo0, lo1])?
+                } else {
+                    a.get_nd(&[lo0])?
+                }
+            }
             other => other.clone(),
         };
         let src = cell_src(&scalar)?;
@@ -1645,13 +2000,303 @@ impl<'w> Host<'w> {
     }
 
     fn application_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
-        if name.eq_ignore_ascii_case("worksheetfunction") {
-            return Ok(Variant::Object(ObjRef::WorksheetFunction));
-        }
-        if name.eq_ignore_ascii_case("enableevents") {
-            return Ok(Variant::Boolean(self.enable_events));
+        match name.to_ascii_lowercase().as_str() {
+            "worksheetfunction" => return Ok(Variant::Object(ObjRef::WorksheetFunction)),
+            "enableevents" => return Ok(Variant::Boolean(self.enable_events)),
+            "screenupdating" => return Ok(Variant::Boolean(self.screen_updating)),
+            "displayalerts" => return Ok(Variant::Boolean(self.display_alerts)),
+            "calculation" => return Ok(Variant::Long(self.calculation)),
+            "activesheet" => return Ok(Variant::Object(ObjRef::Worksheet(self.active_sheet))),
+            "activeworkbook" | "thisworkbook" => return Ok(Variant::Object(ObjRef::Workbook)),
+            "worksheets" | "sheets" => return Ok(Variant::Object(ObjRef::Worksheets)),
+            "name" => return Ok(Variant::Str("Microsoft Excel".to_string())),
+            "version" => return Ok(Variant::Str("16.0".to_string())),
+            "volatile" => return Ok(Variant::Empty),
+            "calculate" => {
+                self.stale = true;
+                self.recalculate();
+                return Ok(Variant::Empty);
+            }
+            "evaluate" => {
+                let formula = args
+                    .first()
+                    .ok_or_else(VbaError::invalid_call)?
+                    .to_vba_string()?;
+                return self.evaluate_formula_str(&formula);
+            }
+            "intersect" => return self.intersect_ranges(args),
+            "union" => return self.union_ranges(args),
+            _ => {}
         }
         self.worksheet_function(name, args, false)
+    }
+
+    fn evaluate_formula_str(&mut self, formula: &str) -> VResult<Variant> {
+        let stripped = formula.trim().strip_prefix('=').unwrap_or(formula.trim());
+        if let Some((row, col, height, width)) = parse_address(stripped) {
+            return Ok(Variant::Object(self.new_range(
+                self.active_sheet,
+                row,
+                col,
+                height,
+                width,
+            )));
+        }
+        let _ = self.wb.evaluate();
+        self.stale = false;
+        let parsed = crate::core::parser::parse_excel_formula(stripped)
+            .map_err(|_| app_defined(format!("Cannot evaluate formula: {formula}")))?;
+        let sheet_idx = self.sheet_index(self.active_sheet)?;
+        let mut ctx = crate::core::engine::Context::new();
+        for s in &self.wb.sheets {
+            ctx.add_table(s.name.clone(), s);
+        }
+        ctx.pivot_tables = &self.wb.pivot_tables;
+        ctx.defined_names = &self.wb.defined_names;
+        ctx.sheet_order = self.wb.sheets.iter().map(|s| s.name.clone()).collect();
+        match self.wb.sheets[sheet_idx].evaluate_parsed_expr(&parsed, Some(&ctx)) {
+            Ok(res) => Ok(result_to_variant(&res)),
+            Err(_) => Ok(Variant::ErrValue(2015)),
+        }
+    }
+
+    fn intersect_ranges(&mut self, args: &[Variant]) -> VResult<Variant> {
+        if args.len() < 2 {
+            return Err(VbaError::invalid_call());
+        }
+        let mut cur: Option<RangeRef> = None;
+        for arg in args {
+            let Variant::Object(ObjRef::Range(tok)) = arg else {
+                return Err(VbaError::type_mismatch());
+            };
+            let r = self.range(*tok, "Intersect")?;
+            match cur {
+                None => cur = Some(r),
+                Some(acc) => {
+                    if acc.sheet_id != r.sheet_id {
+                        return Ok(Variant::Object(ObjRef::Nothing));
+                    }
+                    let r0 = acc.row.max(r.row);
+                    let c0 = acc.col.max(r.col);
+                    let r1 = (acc.row + acc.height).min(r.row + r.height);
+                    let c1 = (acc.col + acc.width).min(r.col + r.width);
+                    if r0 >= r1 || c0 >= c1 {
+                        return Ok(Variant::Object(ObjRef::Nothing));
+                    }
+                    cur = Some(RangeRef {
+                        sheet_id: acc.sheet_id,
+                        row: r0,
+                        col: c0,
+                        height: r1 - r0,
+                        width: c1 - c0,
+                    });
+                }
+            }
+        }
+        let r = cur.unwrap();
+        Ok(Variant::Object(
+            self.new_range(r.sheet_id, r.row, r.col, r.height, r.width),
+        ))
+    }
+
+    fn union_ranges(&mut self, args: &[Variant]) -> VResult<Variant> {
+        if args.len() < 2 {
+            return Err(VbaError::invalid_call());
+        }
+        let mut cur: Option<RangeRef> = None;
+        for arg in args {
+            let Variant::Object(ObjRef::Range(tok)) = arg else {
+                return Err(VbaError::type_mismatch());
+            };
+            let r = self.range(*tok, "Union")?;
+            match cur {
+                None => cur = Some(r),
+                Some(acc) => {
+                    if acc.sheet_id != r.sheet_id {
+                        return Err(app_defined(
+                            "Method 'Union' of object '_Application' failed",
+                        ));
+                    }
+                    let r0 = acc.row.min(r.row);
+                    let c0 = acc.col.min(r.col);
+                    let r1 = (acc.row + acc.height).max(r.row + r.height);
+                    let c1 = (acc.col + acc.width).max(r.col + r.width);
+                    cur = Some(RangeRef {
+                        sheet_id: acc.sheet_id,
+                        row: r0,
+                        col: c0,
+                        height: r1 - r0,
+                        width: c1 - c0,
+                    });
+                }
+            }
+        }
+        let r = cur.unwrap();
+        Ok(Variant::Object(
+            self.new_range(r.sheet_id, r.row, r.col, r.height, r.width),
+        ))
+    }
+
+    fn names_member(&mut self, name: &str, args: &[Variant]) -> VResult<Variant> {
+        match name.to_ascii_lowercase().as_str() {
+            "count" => Ok(Variant::Long(self.wb.defined_names.len() as i32)),
+            "item" => {
+                let key = args.first().ok_or_else(VbaError::invalid_call)?;
+                let idx = if let Variant::Str(n) = key {
+                    self.wb
+                        .defined_names
+                        .iter()
+                        .position(|d| d.name.eq_ignore_ascii_case(n))
+                        .ok_or_else(|| app_defined("Application-defined or object-defined error"))?
+                } else {
+                    let i = crate::core::vba::value::bankers_round(key.to_f64()?) as i64;
+                    if i < 1 || (i as usize) > self.wb.defined_names.len() {
+                        return Err(VbaError::subscript());
+                    }
+                    i as usize - 1
+                };
+                Ok(Variant::Object(ObjRef::Name(idx)))
+            }
+            "add" => {
+                let n = args
+                    .first()
+                    .ok_or_else(VbaError::invalid_call)?
+                    .to_vba_string()?;
+                let refers_to = args
+                    .get(1)
+                    .ok_or_else(VbaError::invalid_call)?
+                    .to_vba_string()?;
+                self.wb.add_defined_name(crate::core::DefinedName {
+                    name: n.clone(),
+                    formula: refers_to,
+                    local_sheet_id: None,
+                    comment: None,
+                    hidden: false,
+                });
+                let idx = self
+                    .wb
+                    .defined_names
+                    .iter()
+                    .position(|d| d.name.eq_ignore_ascii_case(&n))
+                    .unwrap_or(0);
+                self.mutated = true;
+                Ok(Variant::Object(ObjRef::Name(idx)))
+            }
+            _ => Err(unsupported(&format!("Names.{name}"))),
+        }
+    }
+
+    fn name_member(&mut self, idx: usize, name: &str) -> VResult<Variant> {
+        let dn = self
+            .wb
+            .defined_names
+            .get(idx)
+            .cloned()
+            .ok_or_else(VbaError::subscript)?;
+        match name.to_ascii_lowercase().as_str() {
+            "name" => Ok(Variant::Str(dn.name)),
+            "refersto" | "value" => Ok(Variant::Str(dn.formula)),
+            "delete" => {
+                self.wb.defined_names.remove(idx);
+                self.mutated = true;
+                Ok(Variant::Empty)
+            }
+            _ => Err(unsupported(&format!("Name.{name}"))),
+        }
+    }
+
+    fn cell_non_empty(&self, sheet: &Sheet, row: u32, col: u32) -> bool {
+        let cr = CellRef::new(row as usize, col as usize);
+        sheet.get_src(&cr).is_some_and(|s| !s.is_empty())
+            || !matches!(sheet.get_result_data(&cr), ResultData::None)
+    }
+
+    fn range_end(&self, sheet_id: u64, row: u32, col: u32, dir: i32) -> VResult<(u32, u32)> {
+        let sheet = self.sheet(sheet_id)?;
+        let (dr, dc): (i32, i32) = match dir {
+            -4162 => (-1, 0),
+            -4121 => (1, 0),
+            -4159 => (0, -1),
+            -4161 => (0, 1),
+            _ => return Err(app_defined("Invalid direction for Range.End")),
+        };
+        let max_r = (sheet.row_count() as u32).max(row + 1);
+        let max_c = (sheet.col_count() as u32).max(col + 1);
+        let cur_non_empty = self.cell_non_empty(sheet, row, col);
+        let step = |r: u32, c: u32| -> Option<(u32, u32)> {
+            let nr = r as i64 + i64::from(dr);
+            let nc = c as i64 + i64::from(dc);
+            if nr < 0 || nc < 0 || nr >= i64::from(MAX_ROWS) || nc >= i64::from(MAX_COLS) {
+                None
+            } else {
+                Some((nr as u32, nc as u32))
+            }
+        };
+        let Some((mut r, mut c)) = step(row, col) else {
+            return Ok((row, col));
+        };
+        if cur_non_empty && self.cell_non_empty(sheet, r, c) {
+            while let Some((nr, nc)) = step(r, c) {
+                if nr >= max_r || nc >= max_c || !self.cell_non_empty(sheet, nr, nc) {
+                    break;
+                }
+                r = nr;
+                c = nc;
+            }
+            return Ok((r, c));
+        }
+        loop {
+            if self.cell_non_empty(sheet, r, c) {
+                return Ok((r, c));
+            }
+            let Some((nr, nc)) = step(r, c) else {
+                return Ok((r, c));
+            };
+            if (dr > 0 && nr >= max_r) || (dc > 0 && nc >= max_c) {
+                return Ok((
+                    if dr > 0 { MAX_ROWS - 1 } else { r },
+                    if dc > 0 { MAX_COLS - 1 } else { c },
+                ));
+            }
+            r = nr;
+            c = nc;
+        }
+    }
+
+    fn current_region(&self, sheet_id: u64, row: u32, col: u32) -> VResult<(u32, u32, u32, u32)> {
+        let sheet = self.sheet(sheet_id)?;
+        let max_r = sheet.row_count() as u32;
+        let max_c = sheet.col_count() as u32;
+        if row >= max_r || col >= max_c {
+            return Ok((row, col, 1, 1));
+        }
+        let mut r0 = row;
+        let mut r1 = row;
+        let mut c0 = col;
+        let mut c1 = col;
+        loop {
+            let mut grew = false;
+            if r0 > 0 && (c0..=c1).any(|c| self.cell_non_empty(sheet, r0 - 1, c)) {
+                r0 -= 1;
+                grew = true;
+            }
+            if r1 + 1 < max_r && (c0..=c1).any(|c| self.cell_non_empty(sheet, r1 + 1, c)) {
+                r1 += 1;
+                grew = true;
+            }
+            if c0 > 0 && (r0..=r1).any(|r| self.cell_non_empty(sheet, r, c0 - 1)) {
+                c0 -= 1;
+                grew = true;
+            }
+            if c1 + 1 < max_c && (r0..=r1).any(|r| self.cell_non_empty(sheet, r, c1 + 1)) {
+                c1 += 1;
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+        Ok((r0, c0, r1 - r0 + 1, c1 - c0 + 1))
     }
 
     fn worksheet_function(
@@ -1916,7 +2561,9 @@ fn cell_src(v: &Variant) -> VResult<String> {
             _ => s.clone(),
         },
         Variant::ErrValue(n) => error_text(*n).to_string(),
-        Variant::Object(_) | Variant::Array(_) => return Err(VbaError::type_mismatch()),
+        Variant::Object(_) | Variant::Array(_) | Variant::Udt(_) | Variant::Missing => {
+            return Err(VbaError::type_mismatch());
+        }
         other => {
             let f = other.to_f64()?;
             if !f.is_finite() {
@@ -3546,5 +4193,87 @@ mod tests {
     fn table_range_1_is_the_grid_and_2_includes_the_page_rows() {
         assert_eq!(pivot_probe("pt.TableRange1.Address"), "String|$F$3:$G$7");
         assert_eq!(pivot_probe("pt.TableRange2.Address"), "String|$F$1:$G$7");
+    }
+
+    #[test]
+    fn phase4_excel_object_model_range_end_currentregion_copy_intersect_union_names_evaluate() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.sheets[0].set_cell_src(0, 0, "10".to_string());
+        wb.sheets[0].set_cell_src(1, 0, "20".to_string());
+        wb.sheets[0].set_cell_src(2, 0, "30".to_string());
+        wb.sheets[0].set_cell_src(0, 1, "=A1*2".to_string());
+        wb.ensure_vba_project().unwrap();
+
+        let src = "\
+Attribute VB_Name = \"M\"
+Function RunOM()
+    Dim lastCell As Range
+    Set lastCell = Range(\"A1\").End(xlDown)
+    Dim reg As Range
+    Set reg = Range(\"A1\").CurrentRegion
+    Dim used As Range
+    Set used = ActiveSheet.UsedRange
+    Dim inter As Range
+    Set inter = Application.Intersect(Range(\"A1:B3\"), Range(\"B2:C4\"))
+    Dim uni As Range
+    Set uni = Application.Union(Range(\"A1\"), Range(\"C3\"))
+    Dim ev
+    ev = Application.Evaluate(\"SUM(A1:A3)\")
+    Names.Add \"TaxRate\", \"=0.15\"
+    Range(\"A1:A2\").Copy Range(\"D1\")
+    Dim arr(1 To 2, 1 To 2)
+    arr(1, 1) = 1: arr(1, 2) = 2
+    arr(2, 1) = 3: arr(2, 2) = 4
+    Range(\"F1:G2\").Value = arr
+    Dim hf As Boolean
+    hf = Range(\"B1\").HasFormula
+    Range(\"D2\").ClearContents
+    Dim ws2 As Worksheet
+    Set ws2 = Worksheets.Add
+    RunOM = lastCell.Row & \"|\" & reg.Address & \"|\" & used.Address & \"|\" & inter.Address & \"|\" & uni.Address & \"|\" & ev & \"|\" & Names(\"TaxRate\").RefersTo & \"|\" & Worksheets(\"Sheet1\").Range(\"G2\").Value & \"|\" & hf & \"|\" & Worksheets.Count & \"|\" & ws2.Index
+End Function
+";
+        wb.add_vba_module(
+            "M".to_string(),
+            crate::core::VbaModuleKind::Standard,
+            src.to_string(),
+            None,
+        )
+        .unwrap();
+        let out = wb.run_macro(Some("M"), "RunOM", &[]).unwrap();
+        assert_eq!(
+            out.value.as_deref(),
+            Some("3|$A$1:$B$3|$A$1:$B$3|$B$2:$B$3|$A$1:$C$3|60|=0.15|4|True|2|2")
+        );
+    }
+
+    #[test]
+    fn phase4_opt_in_worksheet_vba_udfs() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.sheets[0].set_cell_src(0, 0, "7".to_string());
+        wb.sheets[0].set_cell_src(0, 1, "=DoublePlusOne(A1)".to_string());
+        wb.ensure_vba_project().unwrap();
+        wb.add_vba_module(
+            "Udfs".to_string(),
+            crate::core::VbaModuleKind::Standard,
+            "Attribute VB_Name = \"Udfs\"\nPublic Function DoublePlusOne(x As Double) As Double\n    DoublePlusOne = x * 2 + 1\nEnd Function\n".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(wb.referenced_vba_udfs(), vec!["DoublePlusOne".to_string()]);
+
+        wb.evaluate().unwrap();
+        assert!(
+            wb.sheets[0]
+                .get_display_string(&crate::core::CellRef::new(0, 1))
+                .contains("Unknown function")
+        );
+
+        wb.evaluate_with_macros().unwrap();
+        assert_eq!(
+            wb.sheets[0].get_display_string(&crate::core::CellRef::new(0, 1)),
+            "15"
+        );
     }
 }

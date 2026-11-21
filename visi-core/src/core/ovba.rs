@@ -68,6 +68,9 @@ fn decompress_chunk(chunk_data: &[u8], out: &mut Vec<u8>) -> Result<(), String> 
                     .len()
                     .checked_sub(offset)
                     .ok_or("copy token offset points before the start of the output")?;
+                if (out.len() - chunk_start_out) + length > 4096 {
+                    return Err("decompressed chunk exceeds 4096-byte MS-OVBA limit".to_string());
+                }
                 for k in 0..length {
                     let b = out[copy_start + k];
                     out.push(b);
@@ -95,18 +98,16 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, String> {
         let body = compress_chunk(chunk);
         let total_size = 2 + body.len();
         if total_size > 4098 {
-            return Err(format!(
-                "VBA source can't be encoded: a {}-byte block has too few repeated \
-                 sequences to fit Excel's compressed module format (needs {} bytes, \
-                 budget is 4096)",
-                chunk.len(),
-                body.len()
-            ));
+            let chunk_size_field = (chunk.len() - 1) as u16;
+            let header: u16 = (0b011 << 12) | chunk_size_field;
+            out.extend_from_slice(&header.to_le_bytes());
+            out.extend_from_slice(chunk);
+        } else {
+            let chunk_size_field = (total_size - 3) as u16;
+            let header: u16 = (1 << 15) | (0b011 << 12) | chunk_size_field;
+            out.extend_from_slice(&header.to_le_bytes());
+            out.extend_from_slice(&body);
         }
-        let chunk_size_field = (total_size - 3) as u16;
-        let header: u16 = (1 << 15) | (0b011 << 12) | chunk_size_field;
-        out.extend_from_slice(&header.to_le_bytes());
-        out.extend_from_slice(&body);
         remaining = rest;
     }
     Ok(out)
@@ -253,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn compress_errors_instead_of_panicking_on_incompressible_chunk() {
+    fn compress_falls_back_to_raw_chunk_on_incompressible_data() {
         let mut state = 0x2463_9A11u32;
         let original: Vec<u8> = (0..4096)
             .map(|_| {
@@ -263,7 +264,9 @@ mod tests {
                 state as u8
             })
             .collect();
-        assert!(compress(&original).is_err());
+        let compressed = compress(&original).unwrap();
+        let decompressed = decompress(&compressed).unwrap();
+        assert_eq!(decompressed, original);
     }
 
     #[test]
