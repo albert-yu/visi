@@ -5,8 +5,9 @@ use crate::core::engine::{
     CellType, FreezePane, MergedCellRange, ResultData, Sheet, SheetVisibility,
 };
 use crate::core::opc::{
-    CT_COMMENTS, CT_SHARED_STRINGS, OpcPackage, REL_COMMENTS, REL_HYPERLINK, REL_SHARED_STRINGS,
-    Relationship, next_rid, rel_type_matches,
+    CT_CHART, CT_COMMENTS, CT_DRAWING, CT_SHARED_STRINGS, CT_TABLE, OpcPackage, REL_CHART,
+    REL_COMMENTS, REL_DRAWING, REL_HYPERLINK, REL_SHARED_STRINGS, REL_TABLE, Relationship,
+    next_rid, rel_type_matches, rels_path_for,
 };
 use crate::core::parser::col_idx_to_letters;
 use crate::core::pivot::PivotTable;
@@ -135,7 +136,6 @@ impl OoxmlSourceState {
     pub(crate) fn can_patch_surgically(
         &self,
         sheets: &[Sheet],
-        charts: &[Chart],
         pivots: &[PivotTable],
         vba: Option<&VbaProject>,
     ) -> bool {
@@ -143,18 +143,17 @@ impl OoxmlSourceState {
             return false;
         }
         for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
-            if sheet.id != snap.sheet_id || sheet.tables != snap.tables {
+            if sheet.id != snap.sheet_id {
                 return false;
             }
         }
-        charts == self.charts.as_slice()
-            && pivots == self.pivots.as_slice()
-            && vba == self.vba.as_ref()
+        pivots == self.pivots.as_slice() && vba == self.vba.as_ref()
     }
 
     pub(crate) fn patch_to_bytes(
         &self,
         sheets: &[Sheet],
+        charts: &[Chart],
         defined_names: &[crate::core::DefinedName],
     ) -> Result<Vec<u8>, String> {
         let mut pkg = self.package.clone();
@@ -252,6 +251,24 @@ impl OoxmlSourceState {
             let hyperlinks_changed = sheet.hyperlinks != snap.hyperlinks;
             let validations_changed = sheet.data_validations != snap.data_validations;
             let cf_changed = sheet.conditional_formats != snap.conditional_formats;
+            let tables_changed = sheet.tables != snap.tables;
+
+            let default_cur_sheet = sheets.first().map(|s| s.name.as_str()).unwrap_or("");
+            let default_prev_sheet = self
+                .sheet_snapshots
+                .first()
+                .map(|s| s.name.as_str())
+                .unwrap_or("");
+            let cur_sheet_charts: Vec<&Chart> = charts
+                .iter()
+                .filter(|c| chart_target_sheet_name(c, default_cur_sheet) == sheet.name)
+                .collect();
+            let prev_sheet_charts: Vec<&Chart> = self
+                .charts
+                .iter()
+                .filter(|c| chart_target_sheet_name(c, default_prev_sheet) == snap.name)
+                .collect();
+            let charts_changed = cur_sheet_charts != prev_sheet_charts;
 
             if !cells_changed
                 && !cols_changed
@@ -263,6 +280,8 @@ impl OoxmlSourceState {
                 && !hyperlinks_changed
                 && !validations_changed
                 && !cf_changed
+                && !tables_changed
+                && !charts_changed
             {
                 continue;
             }
@@ -279,7 +298,9 @@ impl OoxmlSourceState {
                 || freeze_changed
                 || hyperlinks_changed
                 || validations_changed
-                || cf_changed;
+                || cf_changed
+                || tables_changed
+                || charts_changed;
 
             if !ws_xml_changed {
                 continue;
@@ -327,6 +348,27 @@ impl OoxmlSourceState {
                     &mut pkg,
                     &snap.part_path,
                     &sheet.hyperlinks,
+                    self.flavor,
+                );
+            }
+
+            if tables_changed {
+                patch_tables(
+                    &mut doc.root,
+                    &mut pkg,
+                    &snap.part_path,
+                    &sheet.tables,
+                    self.flavor,
+                );
+            }
+
+            if charts_changed {
+                patch_charts(
+                    &mut doc.root,
+                    &mut pkg,
+                    &snap.part_path,
+                    &sheet.name,
+                    &cur_sheet_charts,
                     self.flavor,
                 );
             }
@@ -1164,6 +1206,194 @@ fn patch_comments(
 
     let xml = crate::core::xlsx::comments::write_comments_xml(comments, flavor);
     pkg.set_part(target_part, xml.into_bytes());
+}
+
+fn chart_target_sheet_name<'a>(ch: &'a Chart, default_sheet: &'a str) -> &'a str {
+    let ref_sheet = ch.data_range.split('!').next().unwrap_or("").trim();
+    if ref_sheet.is_empty() {
+        default_sheet
+    } else {
+        ref_sheet.trim_matches('\'')
+    }
+}
+
+fn allocate_free_numbered_part(pkg: &OpcPackage, prefix: &str, suffix: &str) -> (usize, String) {
+    let mut id = 1usize;
+    loop {
+        let candidate = format!("{prefix}{id}{suffix}");
+        if !pkg.has_part(&candidate) {
+            return (id, candidate);
+        }
+        id += 1;
+    }
+}
+
+fn patch_tables(
+    ws_root: &mut XmlElement,
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    tables: &[ExcelTable],
+    flavor: NamespaceFlavor,
+) {
+    ws_root.remove_children_by_local("tableParts");
+    let mut rels = pkg.read_relationships(ws_part);
+    let mut old_parts: Vec<String> = Vec::new();
+    let before_rels = rels.len();
+    rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "table") {
+            if !r.is_external() {
+                old_parts.push(r.resolved_target(ws_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    let mut rels_changed = rels.len() != before_rels;
+    let mut ct = pkg.read_content_types();
+    let mut ct_changed = false;
+
+    for part in old_parts {
+        pkg.remove_part(&part);
+        if ct.remove_override(&part) {
+            ct_changed = true;
+        }
+    }
+
+    if !tables.is_empty() {
+        let mut tps_el = XmlElement::new(ws_root.qualified_child_name("tableParts"));
+        tps_el.set_attr("count", tables.len().to_string());
+        for tbl in tables {
+            let (tbl_id, tbl_part) = allocate_free_numbered_part(pkg, "xl/tables/table", ".xml");
+            let tbl_xml = crate::core::xlsx::table::serialize_table_xml(tbl, tbl_id, flavor);
+            pkg.set_part(&tbl_part, tbl_xml.into_bytes());
+            ct.set_override(&tbl_part, CT_TABLE);
+            ct_changed = true;
+
+            let rid = next_rid(&rels);
+            let rel_target = format!("../{}", tbl_part.trim_start_matches("xl/"));
+            rels.push(Relationship {
+                id: rid.clone(),
+                rel_type: REL_TABLE.to_string(),
+                target: rel_target,
+                target_mode: None,
+            });
+            rels_changed = true;
+
+            let mut tp_el = XmlElement::new(tps_el.qualified_child_name("tablePart"));
+            tp_el.set_attr("r:id", rid);
+            tps_el.children.push(XmlNode::Element(tp_el));
+        }
+        if ws_root.attr("xmlns:r").is_none() {
+            ws_root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        ws_root.insert_child_in_schema_order(tps_el, WORKSHEET_SCHEMA_ORDER);
+    }
+
+    if rels_changed {
+        pkg.write_relationships(ws_part, &rels);
+    }
+    if ct_changed {
+        pkg.write_content_types(&ct);
+    }
+}
+
+fn patch_charts(
+    ws_root: &mut XmlElement,
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    ws_name: &str,
+    charts: &[&Chart],
+    flavor: NamespaceFlavor,
+) {
+    ws_root.remove_children_by_local("drawing");
+    let mut rels = pkg.read_relationships(ws_part);
+    let mut old_drawings: Vec<String> = Vec::new();
+    let before_rels = rels.len();
+    rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "drawing") {
+            if !r.is_external() {
+                old_drawings.push(r.resolved_target(ws_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    let mut rels_changed = rels.len() != before_rels;
+    let mut ct = pkg.read_content_types();
+    let mut ct_changed = false;
+
+    for drawing_part in old_drawings {
+        let drawing_rels = pkg.read_relationships(&drawing_part);
+        for drel in drawing_rels {
+            if rel_type_matches(&drel.rel_type, "chart") && !drel.is_external() {
+                let chart_part = drel.resolved_target(&drawing_part);
+                pkg.remove_part(&chart_part);
+                if ct.remove_override(&chart_part) {
+                    ct_changed = true;
+                }
+            }
+        }
+        pkg.remove_part(&rels_path_for(&drawing_part));
+        pkg.remove_part(&drawing_part);
+        if ct.remove_override(&drawing_part) {
+            ct_changed = true;
+        }
+    }
+
+    if !charts.is_empty() {
+        let (_, drawing_part) = allocate_free_numbered_part(pkg, "xl/drawings/drawing", ".xml");
+        let mut drawing_rels: Vec<Relationship> = Vec::new();
+        let mut anchors: Vec<(usize, usize, String)> = Vec::new();
+
+        for ch in charts {
+            let (_, chart_part) = allocate_free_numbered_part(pkg, "xl/charts/chart", ".xml");
+            let chart_xml = crate::core::xlsx::chart::serialize_chart_xml(ch, ws_name, flavor);
+            pkg.set_part(&chart_part, chart_xml.into_bytes());
+            ct.set_override(&chart_part, CT_CHART);
+
+            let c_rid = next_rid(&drawing_rels);
+            let chart_target = format!("../{}", chart_part.trim_start_matches("xl/"));
+            drawing_rels.push(Relationship {
+                id: c_rid.clone(),
+                rel_type: REL_CHART.to_string(),
+                target: chart_target,
+                target_mode: None,
+            });
+            anchors.push((ch.anchor_row, ch.anchor_col, c_rid));
+        }
+
+        let drawing_xml = crate::core::xlsx::chart::serialize_drawing_xml(&anchors, flavor);
+        pkg.set_part(&drawing_part, drawing_xml.into_bytes());
+        pkg.write_relationships(&drawing_part, &drawing_rels);
+        ct.set_override(&drawing_part, CT_DRAWING);
+        ct_changed = true;
+
+        let d_rid = next_rid(&rels);
+        let drawing_target = format!("../{}", drawing_part.trim_start_matches("xl/"));
+        rels.push(Relationship {
+            id: d_rid.clone(),
+            rel_type: REL_DRAWING.to_string(),
+            target: drawing_target,
+            target_mode: None,
+        });
+        rels_changed = true;
+
+        if ws_root.attr("xmlns:r").is_none() {
+            ws_root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        let mut dr_el = XmlElement::new(ws_root.qualified_child_name("drawing"));
+        dr_el.set_attr("r:id", d_rid);
+        ws_root.insert_child_in_schema_order(dr_el, WORKSHEET_SCHEMA_ORDER);
+    }
+
+    if rels_changed {
+        pkg.write_relationships(ws_part, &rels);
+    }
+    if ct_changed {
+        pkg.write_content_types(&ct);
+    }
 }
 
 fn patch_freeze_pane(ws_root: &mut XmlElement, freeze: Option<FreezePane>) {

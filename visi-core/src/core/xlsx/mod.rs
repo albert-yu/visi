@@ -4101,4 +4101,63 @@ mod tests {
             Some("310".to_string())
         );
     }
+
+    #[test]
+    fn test_surgical_patch_tables_and_charts_preserves_unmodeled_parts_and_ext_lst() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "Item".to_string());
+        base_mgr.set_cell(0, 0, 1, "Qty".to_string());
+        base_mgr.set_cell(0, 1, 0, "Widget".to_string());
+        base_mgr.set_cell(0, 1, 1, "10".to_string());
+        base_mgr.set_cell(0, 2, 0, "Gadget".to_string());
+        base_mgr.set_cell(0, 2, 1, "20".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-TBL-CHART}\"><customTag/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet1.xml", ws_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded
+            .add_table(None, "Orders", 0, 0, 2, 1, true, false)
+            .unwrap();
+        loaded
+            .add_chart(
+                "Sheet1",
+                crate::core::chart::ChartType::Column,
+                "Sheet1!A1:B3".to_string(),
+                Some("Order Qty".to_string()),
+                Some((0, 4)),
+            )
+            .unwrap();
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        let patched_ws = patched_pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(patched_ws.contains("KEEP-TBL-CHART"), "{patched_ws}");
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        assert_eq!(reloaded.sheets[0].tables.len(), 1);
+        assert_eq!(reloaded.sheets[0].tables[0].name, "Orders");
+        assert_eq!(reloaded.charts.len(), 1);
+        assert_eq!(reloaded.charts[0].title.as_deref(), Some("Order Qty"));
+    }
 }

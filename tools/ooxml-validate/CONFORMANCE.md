@@ -110,13 +110,13 @@ Surgical patching (`OoxmlSourceState::patch_to_bytes`) preserves unmodeled parts
 
 Currently, mutating any of the following forces a **full-export fallback** (which drops unmodeled parts/extensions from the source workbook):
 - Adding, removing, or reordering sheets (`sheets.len()` or `sheet.id` mismatch)
-- Modifying tables, charts, pivot tables, or VBA modules
+- Modifying pivot tables or VBA modules
 
-Comments, hyperlinks, data validations, and conditional formatting now patch **surgically** in-place (preserving unmodeled parts, relationships, and `<extLst>`).
+Comments, hyperlinks, data validations, conditional formatting, tables, and charts now patch **surgically** in-place (preserving unmodeled parts, relationships, and `<extLst>`).
 
 ---
 
 ## Priority Backlog to Reach Full Compatibility
 
-1. **Narrow remaining full-export fallbacks in `patch.rs`** (tables, charts, pivot tables, sheet add/delete).
+1. **Narrow remaining full-export fallbacks in `patch.rs`** (pivot tables, sheet add/delete).
 2. **Add `OpenXmlValidator` (`S`) and Excel/LibreOffice oracle (`O`)** verification stages to CI/release workflows.
