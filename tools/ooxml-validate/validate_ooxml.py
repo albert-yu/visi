@@ -287,6 +287,10 @@ def check_count_attr(elem: etree._Element, part_name: str) -> list[str]:
 
 
 XML_SPACE_ATTR = "{http://www.w3.org/XML/1998/namespace}space"
+MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+MC_IGNORABLE_ATTR = f"{{{MC_NS}}}Ignorable"
+MC_ALTERNATE_CONTENT = f"{{{MC_NS}}}AlternateContent"
+MC_FALLBACK = f"{{{MC_NS}}}Fallback"
 
 
 @functools.lru_cache(maxsize=8)
@@ -313,14 +317,51 @@ def load_xsd_cache(xsd_dir: Path | None) -> dict[str, etree.XMLSchema]:
     return cache
 
 
+def _preprocess_markup_compatibility(root: etree._Element) -> None:
+    ignorable_uris: set[str] = set()
+    for elem in list(root.iter()):
+        if not isinstance(elem.tag, str):
+            continue
+        raw_ignorable = elem.attrib.pop(MC_IGNORABLE_ATTR, None)
+        if raw_ignorable:
+            for prefix in raw_ignorable.split():
+                uri = elem.nsmap.get(prefix)
+                if uri:
+                    ignorable_uris.add(uri)
+
+    for elem in list(root.iter()):
+        if not isinstance(elem.tag, str):
+            continue
+        if elem.tag == MC_ALTERNATE_CONTENT:
+            parent = elem.getparent()
+            if parent is None:
+                continue
+            idx = list(parent).index(elem)
+            fallback = elem.find(MC_FALLBACK)
+            if fallback is not None:
+                for offset, child in enumerate(list(fallback)):
+                    parent.insert(idx + offset, child)
+            parent.remove(elem)
+
+    if ignorable_uris:
+        for elem in list(root.iter()):
+            if not isinstance(elem.tag, str):
+                continue
+            for attr_key in list(elem.attrib):
+                if attr_key.startswith("{"):
+                    attr_ns = attr_key[1 : attr_key.index("}")]
+                    if attr_ns in ignorable_uris or attr_ns == MC_NS:
+                        del elem.attrib[attr_key]
+
+
 def prepare_for_xsd_validation(root: etree._Element, xsd_name: str) -> etree._Element:
-    if xsd_name != "sml.xsd":
-        return root
     cloned = copy.deepcopy(root)
-    for elem in cloned.iter():
-        if isinstance(elem.tag, str) and local_name(elem.tag) == "t":
-            if elem.attrib.get(XML_SPACE_ATTR) == "preserve":
-                del elem.attrib[XML_SPACE_ATTR]
+    _preprocess_markup_compatibility(cloned)
+    if xsd_name == "sml.xsd":
+        for elem in cloned.iter():
+            if isinstance(elem.tag, str) and local_name(elem.tag) == "t":
+                if elem.attrib.get(XML_SPACE_ATTR) == "preserve":
+                    del elem.attrib[XML_SPACE_ATTR]
     return cloned
 
 

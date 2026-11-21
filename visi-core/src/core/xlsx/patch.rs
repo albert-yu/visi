@@ -5,13 +5,17 @@ use crate::core::engine::{
     CellType, FreezePane, MergedCellRange, ResultData, Sheet, SheetVisibility,
 };
 use crate::core::opc::{
-    CT_SHARED_STRINGS, OpcPackage, REL_SHARED_STRINGS, Relationship, next_rid, rel_type_matches,
+    CT_CHART, CT_COMMENTS, CT_DRAWING, CT_PIVOT_CACHE_DEF, CT_PIVOT_CACHE_RECORDS, CT_PIVOT_TABLE,
+    CT_SHARED_STRINGS, CT_TABLE, CT_VBA_PROJECT, CT_WORKBOOK, CT_WORKBOOK_MACRO_ENABLED,
+    CT_WORKSHEET, OpcPackage, REL_CHART, REL_COMMENTS, REL_DRAWING, REL_HYPERLINK,
+    REL_PIVOT_CACHE_DEF, REL_PIVOT_CACHE_RECORDS, REL_PIVOT_TABLE, REL_SHARED_STRINGS, REL_TABLE,
+    REL_VBA_PROJECT, REL_WORKSHEET, Relationship, next_rid, rel_type_matches, rels_path_for,
 };
 use crate::core::parser::col_idx_to_letters;
 use crate::core::pivot::PivotTable;
 use crate::core::style::CellStyle;
 use crate::core::table::ExcelTable;
-use crate::core::vba::VbaProject;
+use crate::core::vba::{VbaModuleKind, VbaProject};
 use crate::core::xlsx::dom::{
     STYLESHEET_SCHEMA_ORDER, WORKBOOK_SCHEMA_ORDER, WORKSHEET_SCHEMA_ORDER, XmlDocument,
     XmlElement, XmlNode,
@@ -131,47 +135,100 @@ impl OoxmlSourceState {
         }
     }
 
-    pub(crate) fn can_patch_surgically(
-        &self,
-        sheets: &[Sheet],
-        charts: &[Chart],
-        pivots: &[PivotTable],
-        vba: Option<&VbaProject>,
-    ) -> bool {
-        if sheets.len() != self.sheet_snapshots.len() {
-            return false;
-        }
-        for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
-            if sheet.id != snap.sheet_id
-                || sheet.tables != snap.tables
-                || sheet.comments != snap.comments
-                || sheet.hyperlinks != snap.hyperlinks
-                || sheet.data_validations != snap.data_validations
-                || sheet.conditional_formats != snap.conditional_formats
-            {
-                return false;
-            }
-        }
-        charts == self.charts.as_slice()
-            && pivots == self.pivots.as_slice()
-            && vba == self.vba.as_ref()
+    pub(crate) fn can_patch_surgically(&self, sheets: &[Sheet]) -> bool {
+        !sheets.is_empty()
     }
 
     pub(crate) fn patch_to_bytes(
         &self,
         sheets: &[Sheet],
+        charts: &[Chart],
+        pivots: &[PivotTable],
+        vba: Option<&VbaProject>,
         defined_names: &[crate::core::DefinedName],
     ) -> Result<Vec<u8>, String> {
         let mut pkg = self.package.clone();
 
-        let cur_date1904 = sheets.iter().any(|s| s.date1904);
-        let defined_names_changed = defined_names != self.defined_names.as_slice();
-        let workbook_meta_changed = cur_date1904 != self.date1904
-            || defined_names_changed
+        let snap_by_id: HashMap<u64, (usize, &SheetSnapshot)> = self
+            .sheet_snapshots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.sheet_id, (i, s)))
+            .collect();
+        let active_ids: HashSet<u64> = sheets.iter().map(|s| s.id).collect();
+        let topology_changed = sheets.len() != self.sheet_snapshots.len()
             || sheets
                 .iter()
                 .zip(self.sheet_snapshots.iter())
-                .any(|(s, snap)| s.name != snap.name || s.visibility != snap.visibility);
+                .any(|(s, snap)| s.id != snap.sheet_id);
+
+        let mut added_sheet_info: HashMap<u64, (String, String)> = HashMap::new();
+        if topology_changed {
+            let mut wb_rels = pkg.read_relationships(&self.workbook_part);
+            let mut wb_rels_changed = false;
+            let mut ct = pkg.read_content_types();
+            let mut ct_changed = false;
+
+            for snap in &self.sheet_snapshots {
+                if !active_ids.contains(&snap.sheet_id) {
+                    remove_sheet_part_and_children(&mut pkg, &mut ct, &snap.part_path);
+                    ct_changed = true;
+                    let before = wb_rels.len();
+                    wb_rels.retain(|r| {
+                        !(rel_type_matches(&r.rel_type, "worksheet")
+                            && !r.is_external()
+                            && r.resolved_target(&self.workbook_part)
+                                .eq_ignore_ascii_case(&snap.part_path))
+                    });
+                    if wb_rels.len() != before {
+                        wb_rels_changed = true;
+                    }
+                }
+            }
+
+            for sheet in sheets {
+                if !snap_by_id.contains_key(&sheet.id) {
+                    let (_, new_part) =
+                        allocate_free_numbered_part(&pkg, "xl/worksheets/sheet", ".xml");
+                    let base_xml = format!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"{}\"><sheetData/></worksheet>",
+                        self.flavor.spreadsheetml()
+                    );
+                    pkg.set_part(&new_part, base_xml.into_bytes());
+                    ct.set_override(&new_part, CT_WORKSHEET);
+                    ct_changed = true;
+
+                    let rid = next_rid(&wb_rels);
+                    let target = new_part.trim_start_matches("xl/").to_string();
+                    wb_rels.push(Relationship {
+                        id: rid.clone(),
+                        rel_type: REL_WORKSHEET.to_string(),
+                        target,
+                        target_mode: None,
+                    });
+                    wb_rels_changed = true;
+                    added_sheet_info.insert(sheet.id, (rid, new_part));
+                }
+            }
+
+            if wb_rels_changed {
+                pkg.write_relationships(&self.workbook_part, &wb_rels);
+            }
+            if ct_changed {
+                pkg.write_content_types(&ct);
+            }
+        }
+
+        let cur_date1904 = sheets.iter().any(|s| s.date1904);
+        let defined_names_changed = defined_names != self.defined_names.as_slice();
+        let workbook_meta_changed = topology_changed
+            || cur_date1904 != self.date1904
+            || defined_names_changed
+            || sheets.iter().any(|s| {
+                snap_by_id
+                    .get(&s.id)
+                    .is_some_and(|(_, snap)| s.name != snap.name || s.visibility != snap.visibility)
+            });
         if workbook_meta_changed
             && let Some(wb_xml) = pkg.get_str(&self.workbook_part)
             && let Ok(mut doc) = XmlDocument::parse(&wb_xml)
@@ -212,24 +269,44 @@ impl OoxmlSourceState {
                 }
             }
             if let Some(sheets_el) = doc.root.child_mut("sheets") {
-                let mut sheet_idx = 0usize;
-                for node in &mut sheets_el.children {
+                let mut existing_sheet_els: Vec<XmlElement> = Vec::new();
+                for node in std::mem::take(&mut sheets_el.children) {
                     if let XmlNode::Element(el) = node
                         && el.local_name() == "sheet"
                     {
-                        if let Some(sheet) = sheets.get(sheet_idx) {
-                            el.set_attr("name", sheet.name.clone());
-                            match crate::core::xlsx::workbook::sheet_visibility_attr(
-                                sheet.visibility,
-                            ) {
-                                Some(state) => el.set_attr("state", state),
-                                None => {
-                                    el.remove_attr("state");
-                                }
-                            }
-                        }
-                        sheet_idx += 1;
+                        existing_sheet_els.push(el);
                     }
+                }
+                let mut max_sheet_id: u32 = existing_sheet_els
+                    .iter()
+                    .filter_map(|el| el.attr("sheetId").and_then(|v| v.parse::<u32>().ok()))
+                    .max()
+                    .unwrap_or(0);
+                let mut by_snap_idx: HashMap<usize, XmlElement> =
+                    existing_sheet_els.into_iter().enumerate().collect();
+
+                for sheet in sheets {
+                    let mut el = if let Some(&(snap_idx, _)) = snap_by_id.get(&sheet.id)
+                        && let Some(orig) = by_snap_idx.remove(&snap_idx)
+                    {
+                        orig
+                    } else {
+                        max_sheet_id += 1;
+                        let mut new_el = XmlElement::new(sheets_el.qualified_child_name("sheet"));
+                        new_el.set_attr("sheetId", max_sheet_id.to_string());
+                        if let Some((rid, _)) = added_sheet_info.get(&sheet.id) {
+                            new_el.set_attr("r:id", rid.clone());
+                        }
+                        new_el
+                    };
+                    el.set_attr("name", sheet.name.clone());
+                    match crate::core::xlsx::workbook::sheet_visibility_attr(sheet.visibility) {
+                        Some(state) => el.set_attr("state", state),
+                        None => {
+                            el.remove_attr("state");
+                        }
+                    }
+                    sheets_el.children.push(XmlNode::Element(el));
                 }
             }
             pkg.set_part(&self.workbook_part, doc.to_xml_string().into_bytes());
@@ -237,8 +314,37 @@ impl OoxmlSourceState {
 
         let mut sst_patcher: Option<SharedStringsPatcher> = None;
         let mut styles_patcher: Option<StylesPatcher> = None;
+        let mut any_formula_changed = defined_names_changed || topology_changed;
 
-        for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
+        let empty_snap_template = |sheet: &Sheet, part_path: String| SheetSnapshot {
+            sheet_id: sheet.id,
+            name: sheet.name.clone(),
+            visibility: sheet.visibility,
+            part_path,
+            cells: HashMap::new(),
+            column_widths: HashMap::new(),
+            hidden_cols: HashSet::new(),
+            row_heights: HashMap::new(),
+            hidden_rows: HashSet::new(),
+            merged_cells: Vec::new(),
+            freeze_pane: None,
+            comments: Vec::new(),
+            hyperlinks: Vec::new(),
+            data_validations: Vec::new(),
+            conditional_formats: Vec::new(),
+            tables: Vec::new(),
+        };
+
+        for sheet in sheets {
+            let owned_empty;
+            let snap: &SheetSnapshot = if let Some(&(_, existing)) = snap_by_id.get(&sheet.id) {
+                existing
+            } else if let Some((_, new_part)) = added_sheet_info.get(&sheet.id) {
+                owned_empty = empty_snap_template(sheet, new_part.clone());
+                &owned_empty
+            } else {
+                continue;
+            };
             let cur_cells = snapshot_cells(sheet);
             let cur_widths = snapshot_col_widths(sheet);
             let cur_hidden_cols = snapshot_hidden_cols(sheet);
@@ -252,6 +358,28 @@ impl OoxmlSourceState {
             let hidden_rows_changed = cur_hidden_rows != snap.hidden_rows;
             let merges_changed = sheet.merged_cells != snap.merged_cells;
             let freeze_changed = sheet.freeze_pane != snap.freeze_pane;
+            let comments_changed = sheet.comments != snap.comments;
+            let hyperlinks_changed = sheet.hyperlinks != snap.hyperlinks;
+            let validations_changed = sheet.data_validations != snap.data_validations;
+            let cf_changed = sheet.conditional_formats != snap.conditional_formats;
+            let tables_changed = sheet.tables != snap.tables;
+
+            let default_cur_sheet = sheets.first().map(|s| s.name.as_str()).unwrap_or("");
+            let default_prev_sheet = self
+                .sheet_snapshots
+                .first()
+                .map(|s| s.name.as_str())
+                .unwrap_or("");
+            let cur_sheet_charts: Vec<&Chart> = charts
+                .iter()
+                .filter(|c| chart_target_sheet_name(c, default_cur_sheet) == sheet.name)
+                .collect();
+            let prev_sheet_charts: Vec<&Chart> = self
+                .charts
+                .iter()
+                .filter(|c| chart_target_sheet_name(c, default_prev_sheet) == snap.name)
+                .collect();
+            let charts_changed = cur_sheet_charts != prev_sheet_charts;
 
             if !cells_changed
                 && !cols_changed
@@ -259,7 +387,33 @@ impl OoxmlSourceState {
                 && !hidden_rows_changed
                 && !merges_changed
                 && !freeze_changed
+                && !comments_changed
+                && !hyperlinks_changed
+                && !validations_changed
+                && !cf_changed
+                && !tables_changed
+                && !charts_changed
             {
+                continue;
+            }
+
+            if comments_changed {
+                patch_comments(&mut pkg, &snap.part_path, &sheet.comments, self.flavor);
+            }
+
+            let ws_xml_changed = cells_changed
+                || cols_changed
+                || heights_changed
+                || hidden_rows_changed
+                || merges_changed
+                || freeze_changed
+                || hyperlinks_changed
+                || validations_changed
+                || cf_changed
+                || tables_changed
+                || charts_changed;
+
+            if !ws_xml_changed {
                 continue;
             }
 
@@ -280,15 +434,73 @@ impl OoxmlSourceState {
                 patch_merge_cells(&mut doc.root, &sheet.merged_cells);
             }
 
+            if cf_changed {
+                if styles_patcher.is_none() {
+                    styles_patcher = Some(StylesPatcher::load(
+                        &pkg,
+                        self.styles_part.as_deref(),
+                        self.flavor,
+                    ));
+                }
+                patch_conditional_formats(
+                    &mut doc.root,
+                    &sheet.conditional_formats,
+                    styles_patcher.as_mut().unwrap(),
+                );
+            }
+
+            if validations_changed {
+                patch_data_validations(&mut doc.root, &sheet.data_validations);
+            }
+
+            if hyperlinks_changed {
+                patch_hyperlinks(
+                    &mut doc.root,
+                    &mut pkg,
+                    &snap.part_path,
+                    &sheet.hyperlinks,
+                    self.flavor,
+                );
+            }
+
+            if tables_changed {
+                patch_tables(
+                    &mut doc.root,
+                    &mut pkg,
+                    &snap.part_path,
+                    &sheet.tables,
+                    self.flavor,
+                );
+            }
+
+            if charts_changed {
+                patch_charts(
+                    &mut doc.root,
+                    &mut pkg,
+                    &snap.part_path,
+                    &sheet.name,
+                    &cur_sheet_charts,
+                    self.flavor,
+                );
+            }
+
             if cells_changed || heights_changed || hidden_rows_changed {
                 let mut changed_cells: Vec<(usize, usize, Option<&CellSnapshot>)> = Vec::new();
                 for (&rc, cur) in &cur_cells {
-                    if snap.cells.get(&rc) != Some(cur) {
+                    let prev = snap.cells.get(&rc);
+                    if prev != Some(cur) {
+                        if cur.src.starts_with('=') || prev.is_some_and(|p| p.src.starts_with('='))
+                        {
+                            any_formula_changed = true;
+                        }
                         changed_cells.push((rc.0, rc.1, Some(cur)));
                     }
                 }
-                for &rc in snap.cells.keys() {
+                for (&rc, prev) in &snap.cells {
                     if !cur_cells.contains_key(&rc) {
+                        if prev.src.starts_with('=') {
+                            any_formula_changed = true;
+                        }
                         changed_cells.push((rc.0, rc.1, None));
                     }
                 }
@@ -390,7 +602,89 @@ impl OoxmlSourceState {
             pkg.set_part(&styles_part, st.doc.to_xml_string().into_bytes());
         }
 
+        if any_formula_changed {
+            invalidate_calc_chain(&mut pkg, &self.workbook_part);
+        }
+
+        let deleted_sheet_ids: HashSet<u64> = self
+            .sheet_snapshots
+            .iter()
+            .map(|s| s.sheet_id)
+            .filter(|id| !active_ids.contains(id))
+            .collect();
+        let renamed_sheet_ids: HashSet<u64> = sheets
+            .iter()
+            .filter(|s| {
+                snap_by_id
+                    .get(&s.id)
+                    .is_some_and(|(_, snap)| snap.name != s.name)
+            })
+            .map(|s| s.id)
+            .collect();
+        let pivots_changed = pivots != self.pivots.as_slice()
+            || (!deleted_sheet_ids.is_empty() && (!self.pivots.is_empty() || !pivots.is_empty()))
+            || (!renamed_sheet_ids.is_empty() && !pivots.is_empty());
+        if pivots_changed {
+            let mut sheet_part_by_id: HashMap<u64, String> = HashMap::new();
+            for sheet in sheets {
+                if let Some(&(_, snap)) = snap_by_id.get(&sheet.id) {
+                    sheet_part_by_id.insert(sheet.id, snap.part_path.clone());
+                } else if let Some((_, new_part)) = added_sheet_info.get(&sheet.id) {
+                    sheet_part_by_id.insert(sheet.id, new_part.clone());
+                }
+            }
+            patch_pivots(
+                &mut pkg,
+                &self.workbook_part,
+                sheets,
+                &sheet_part_by_id,
+                pivots,
+                self.flavor,
+            )?;
+        }
+
+        if vba != self.vba.as_ref() {
+            patch_vba(&mut pkg, &self.workbook_part, sheets, vba)?;
+        }
+
         pkg.to_bytes()
+    }
+}
+
+fn invalidate_calc_chain(pkg: &mut OpcPackage, workbook_part: &str) {
+    let mut calc_chain_parts: Vec<String> = Vec::new();
+    let mut rels = pkg.read_relationships(workbook_part);
+    let before_rels = rels.len();
+    rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "calcChain") {
+            if !r.is_external() {
+                calc_chain_parts.push(r.resolved_target(workbook_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    if rels.len() != before_rels {
+        pkg.write_relationships(workbook_part, &rels);
+    }
+
+    if calc_chain_parts.is_empty() && pkg.has_part("xl/calcChain.xml") {
+        calc_chain_parts.push("xl/calcChain.xml".to_string());
+    }
+
+    if !calc_chain_parts.is_empty() {
+        let mut ct = pkg.read_content_types();
+        let mut ct_changed = false;
+        for part in &calc_chain_parts {
+            pkg.remove_part(part);
+            if ct.remove_override(part) {
+                ct_changed = true;
+            }
+        }
+        if ct_changed {
+            pkg.write_content_types(&ct);
+        }
     }
 }
 
@@ -797,6 +1091,819 @@ impl StylesPatcher {
         self.dirty = true;
         xf_idx
     }
+
+    fn register_dxf(&mut self, style: &CellStyle) -> u32 {
+        let dxfs = self
+            .doc
+            .root
+            .ensure_child_in_schema_order("dxfs", STYLESHEET_SCHEMA_ORDER);
+        let dxf_idx = dxfs.children_by_local("dxf").count() as u32;
+        let mut dxf_el = XmlElement::new(dxfs.qualified_child_name("dxf"));
+        let has_font = style.bold.unwrap_or(false)
+            || style.italic.unwrap_or(false)
+            || style.underline.unwrap_or(false)
+            || style.strikethrough.unwrap_or(false)
+            || style.font_color.is_some();
+        if has_font {
+            let mut font_el = XmlElement::new(dxf_el.qualified_child_name("font"));
+            if style.bold.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("b"),
+                )));
+            }
+            if style.italic.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("i"),
+                )));
+            }
+            if style.strikethrough.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("strike"),
+                )));
+            }
+            if style.underline.unwrap_or(false) {
+                font_el.children.push(XmlNode::Element(XmlElement::new(
+                    font_el.qualified_child_name("u"),
+                )));
+            }
+            if let Some(argb) = style.font_color.as_deref().and_then(parse_color_argb) {
+                let mut color_el = XmlElement::new(font_el.qualified_child_name("color"));
+                color_el.set_attr("rgb", argb);
+                font_el.children.push(XmlNode::Element(color_el));
+            }
+            dxf_el.children.push(XmlNode::Element(font_el));
+        }
+        if let Some(argb) = style.bg_color.as_deref().and_then(parse_color_argb) {
+            let mut fill_el = XmlElement::new(dxf_el.qualified_child_name("fill"));
+            let mut pf_el = XmlElement::new(fill_el.qualified_child_name("patternFill"));
+            let pat = style
+                .fill_pattern
+                .unwrap_or(crate::core::style::FillPattern::Solid)
+                .as_ooxml();
+            pf_el.set_attr("patternType", pat);
+            let mut bg_el = XmlElement::new(pf_el.qualified_child_name("bgColor"));
+            bg_el.set_attr("rgb", argb);
+            pf_el.children.push(XmlNode::Element(bg_el));
+            fill_el.children.push(XmlNode::Element(pf_el));
+            dxf_el.children.push(XmlNode::Element(fill_el));
+        }
+        dxfs.children.push(XmlNode::Element(dxf_el));
+        dxfs.set_attr("count", (dxf_idx + 1).to_string());
+        self.dirty = true;
+        dxf_idx
+    }
+}
+
+fn patch_conditional_formats(
+    ws_root: &mut XmlElement,
+    rules: &[crate::core::ConditionalFormatRule],
+    styles: &mut StylesPatcher,
+) {
+    ws_root.remove_children_by_local("conditionalFormatting");
+    for cf in rules {
+        let mut cf_el = XmlElement::new(ws_root.qualified_child_name("conditionalFormatting"));
+        cf_el.set_attr("sqref", cf.sqref.clone());
+        let mut rule_el = XmlElement::new(cf_el.qualified_child_name("cfRule"));
+        rule_el.set_attr("type", cf.rule_type.clone());
+        rule_el.set_attr("priority", cf.priority.to_string());
+        if let Some(ref op) = cf.operator {
+            rule_el.set_attr("operator", op.clone());
+        }
+        if let Some(ref style) = cf.style
+            && !style.is_empty()
+        {
+            let dxf_id = styles.register_dxf(style);
+            rule_el.set_attr("dxfId", dxf_id.to_string());
+        }
+        if cf.stop_if_true {
+            rule_el.set_attr("stopIfTrue", "1");
+        }
+        for formula in &cf.formulas {
+            let mut f_el = XmlElement::new(rule_el.qualified_child_name("formula"));
+            f_el.children.push(XmlNode::Text(formula.clone()));
+            rule_el.children.push(XmlNode::Element(f_el));
+        }
+        cf_el.children.push(XmlNode::Element(rule_el));
+        ws_root.insert_child_in_schema_order(cf_el, WORKSHEET_SCHEMA_ORDER);
+    }
+}
+
+fn patch_data_validations(ws_root: &mut XmlElement, rules: &[crate::core::DataValidationRule]) {
+    ws_root.remove_children_by_local("dataValidations");
+    if rules.is_empty() {
+        return;
+    }
+    let mut dvs_el = XmlElement::new(ws_root.qualified_child_name("dataValidations"));
+    dvs_el.set_attr("count", rules.len().to_string());
+    for dv in rules {
+        let mut dv_el = XmlElement::new(dvs_el.qualified_child_name("dataValidation"));
+        dv_el.set_attr("type", dv.kind.as_ooxml());
+        dv_el.set_attr("sqref", dv.sqref.clone());
+        if let Some(op) = dv.operator {
+            dv_el.set_attr("operator", op.as_ooxml());
+        }
+        if dv.allow_blank {
+            dv_el.set_attr("allowBlank", "1");
+        }
+        if dv.show_input_message {
+            dv_el.set_attr("showInputMessage", "1");
+        }
+        if dv.show_error_message {
+            dv_el.set_attr("showErrorMessage", "1");
+        }
+        if let Some(ref t) = dv.prompt_title {
+            dv_el.set_attr("promptTitle", t.clone());
+        }
+        if let Some(ref p) = dv.prompt {
+            dv_el.set_attr("prompt", p.clone());
+        }
+        if let Some(ref t) = dv.error_title {
+            dv_el.set_attr("errorTitle", t.clone());
+        }
+        if let Some(ref e) = dv.error {
+            dv_el.set_attr("error", e.clone());
+        }
+        if let Some(ref f1) = dv.formula1 {
+            let mut f1_el = XmlElement::new(dv_el.qualified_child_name("formula1"));
+            f1_el.children.push(XmlNode::Text(f1.clone()));
+            dv_el.children.push(XmlNode::Element(f1_el));
+        }
+        if let Some(ref f2) = dv.formula2 {
+            let mut f2_el = XmlElement::new(dv_el.qualified_child_name("formula2"));
+            f2_el.children.push(XmlNode::Text(f2.clone()));
+            dv_el.children.push(XmlNode::Element(f2_el));
+        }
+        dvs_el.children.push(XmlNode::Element(dv_el));
+    }
+    ws_root.insert_child_in_schema_order(dvs_el, WORKSHEET_SCHEMA_ORDER);
+}
+
+fn patch_hyperlinks(
+    ws_root: &mut XmlElement,
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    hyperlinks: &[crate::core::CellHyperlink],
+    flavor: NamespaceFlavor,
+) {
+    ws_root.remove_children_by_local("hyperlinks");
+    let mut rels = pkg.read_relationships(ws_part);
+    let before_rels = rels.len();
+    rels.retain(|r| !rel_type_matches(&r.rel_type, "hyperlink"));
+    let mut rels_changed = rels.len() != before_rels;
+
+    if !hyperlinks.is_empty() {
+        let mut hls_el = XmlElement::new(ws_root.qualified_child_name("hyperlinks"));
+        let mut needs_rel_ns = false;
+        for hl in hyperlinks {
+            let range_ref = if hl.start_row == hl.end_row && hl.start_col == hl.end_col {
+                format!("{}{}", col_idx_to_letters(hl.start_col), hl.start_row + 1)
+            } else {
+                format!(
+                    "{}{}:{}{}",
+                    col_idx_to_letters(hl.start_col),
+                    hl.start_row + 1,
+                    col_idx_to_letters(hl.end_col),
+                    hl.end_row + 1
+                )
+            };
+            let mut hl_el = XmlElement::new(hls_el.qualified_child_name("hyperlink"));
+            hl_el.set_attr("ref", range_ref);
+            if let Some(ref target) = hl.target {
+                let rid = next_rid(&rels);
+                rels.push(Relationship {
+                    id: rid.clone(),
+                    rel_type: REL_HYPERLINK.to_string(),
+                    target: target.clone(),
+                    target_mode: Some("External".to_string()),
+                });
+                rels_changed = true;
+                needs_rel_ns = true;
+                hl_el.set_attr("r:id", rid);
+            }
+            if let Some(ref loc) = hl.location {
+                hl_el.set_attr("location", loc.clone());
+            }
+            if let Some(ref disp) = hl.display {
+                hl_el.set_attr("display", disp.clone());
+            }
+            if let Some(ref tip) = hl.tooltip {
+                hl_el.set_attr("tooltip", tip.clone());
+            }
+            hls_el.children.push(XmlNode::Element(hl_el));
+        }
+        if needs_rel_ns && ws_root.attr("xmlns:r").is_none() {
+            ws_root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        ws_root.insert_child_in_schema_order(hls_el, WORKSHEET_SCHEMA_ORDER);
+    }
+
+    if rels_changed {
+        pkg.write_relationships(ws_part, &rels);
+    }
+}
+
+fn patch_comments(
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    comments: &[crate::core::CellComment],
+    flavor: NamespaceFlavor,
+) {
+    let mut rels = pkg.read_relationships(ws_part);
+    let existing_part = rels
+        .iter()
+        .find(|r| rel_type_matches(&r.rel_type, "comments") && !r.is_external())
+        .map(|r| r.resolved_target(ws_part));
+
+    if comments.is_empty() {
+        let before = rels.len();
+        rels.retain(|r| !rel_type_matches(&r.rel_type, "comments"));
+        if rels.len() != before {
+            pkg.write_relationships(ws_part, &rels);
+        }
+        if let Some(part) = existing_part {
+            pkg.remove_part(&part);
+            let mut ct = pkg.read_content_types();
+            if ct.remove_override(&part) {
+                pkg.write_content_types(&ct);
+            }
+        }
+        return;
+    }
+
+    let target_part = if let Some(part) = existing_part {
+        part
+    } else {
+        let mut idx = 1usize;
+        let candidate = loop {
+            let p = format!("xl/comments{idx}.xml");
+            if !pkg.has_part(&p) {
+                break p;
+            }
+            idx += 1;
+        };
+        let rid = next_rid(&rels);
+        let rel_target = format!("../{}", candidate.trim_start_matches("xl/"));
+        rels.push(Relationship {
+            id: rid,
+            rel_type: REL_COMMENTS.to_string(),
+            target: rel_target,
+            target_mode: None,
+        });
+        pkg.write_relationships(ws_part, &rels);
+        let mut ct = pkg.read_content_types();
+        ct.set_override(&candidate, CT_COMMENTS);
+        pkg.write_content_types(&ct);
+        candidate
+    };
+
+    let xml = crate::core::xlsx::comments::write_comments_xml(comments, flavor);
+    pkg.set_part(target_part, xml.into_bytes());
+}
+
+fn remove_sheet_part_and_children(
+    pkg: &mut OpcPackage,
+    ct: &mut crate::core::opc::ContentTypes,
+    ws_part: &str,
+) {
+    let rels = pkg.read_relationships(ws_part);
+    for r in rels {
+        if r.is_external() {
+            continue;
+        }
+        let target = r.resolved_target(ws_part);
+        if rel_type_matches(&r.rel_type, "comments") || rel_type_matches(&r.rel_type, "table") {
+            pkg.remove_part(&target);
+            ct.remove_override(&target);
+        } else if rel_type_matches(&r.rel_type, "drawing") {
+            for drel in pkg.read_relationships(&target) {
+                if rel_type_matches(&drel.rel_type, "chart") && !drel.is_external() {
+                    let chart_part = drel.resolved_target(&target);
+                    pkg.remove_part(&chart_part);
+                    ct.remove_override(&chart_part);
+                }
+            }
+            pkg.remove_part(&rels_path_for(&target));
+            pkg.remove_part(&target);
+            ct.remove_override(&target);
+        } else if rel_type_matches(&r.rel_type, "pivotTable") {
+            pkg.remove_part(&rels_path_for(&target));
+            pkg.remove_part(&target);
+            ct.remove_override(&target);
+        }
+    }
+    pkg.remove_part(&rels_path_for(ws_part));
+    pkg.remove_part(ws_part);
+    ct.remove_override(ws_part);
+}
+
+fn chart_target_sheet_name<'a>(ch: &'a Chart, default_sheet: &'a str) -> &'a str {
+    let ref_sheet = ch.data_range.split('!').next().unwrap_or("").trim();
+    if ref_sheet.is_empty() {
+        default_sheet
+    } else {
+        ref_sheet.trim_matches('\'')
+    }
+}
+
+fn allocate_free_numbered_part(pkg: &OpcPackage, prefix: &str, suffix: &str) -> (usize, String) {
+    let mut id = 1usize;
+    loop {
+        let candidate = format!("{prefix}{id}{suffix}");
+        if !pkg.has_part(&candidate) {
+            return (id, candidate);
+        }
+        id += 1;
+    }
+}
+
+fn patch_tables(
+    ws_root: &mut XmlElement,
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    tables: &[ExcelTable],
+    flavor: NamespaceFlavor,
+) {
+    ws_root.remove_children_by_local("tableParts");
+    let mut rels = pkg.read_relationships(ws_part);
+    let mut old_parts: Vec<String> = Vec::new();
+    let before_rels = rels.len();
+    rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "table") {
+            if !r.is_external() {
+                old_parts.push(r.resolved_target(ws_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    let mut rels_changed = rels.len() != before_rels;
+    let mut ct = pkg.read_content_types();
+    let mut ct_changed = false;
+
+    for part in old_parts {
+        pkg.remove_part(&part);
+        if ct.remove_override(&part) {
+            ct_changed = true;
+        }
+    }
+
+    if !tables.is_empty() {
+        let mut tps_el = XmlElement::new(ws_root.qualified_child_name("tableParts"));
+        tps_el.set_attr("count", tables.len().to_string());
+        for tbl in tables {
+            let (tbl_id, tbl_part) = allocate_free_numbered_part(pkg, "xl/tables/table", ".xml");
+            let tbl_xml = crate::core::xlsx::table::serialize_table_xml(tbl, tbl_id, flavor);
+            pkg.set_part(&tbl_part, tbl_xml.into_bytes());
+            ct.set_override(&tbl_part, CT_TABLE);
+            ct_changed = true;
+
+            let rid = next_rid(&rels);
+            let rel_target = format!("../{}", tbl_part.trim_start_matches("xl/"));
+            rels.push(Relationship {
+                id: rid.clone(),
+                rel_type: REL_TABLE.to_string(),
+                target: rel_target,
+                target_mode: None,
+            });
+            rels_changed = true;
+
+            let mut tp_el = XmlElement::new(tps_el.qualified_child_name("tablePart"));
+            tp_el.set_attr("r:id", rid);
+            tps_el.children.push(XmlNode::Element(tp_el));
+        }
+        if ws_root.attr("xmlns:r").is_none() {
+            ws_root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        ws_root.insert_child_in_schema_order(tps_el, WORKSHEET_SCHEMA_ORDER);
+    }
+
+    if rels_changed {
+        pkg.write_relationships(ws_part, &rels);
+    }
+    if ct_changed {
+        pkg.write_content_types(&ct);
+    }
+}
+
+fn patch_charts(
+    ws_root: &mut XmlElement,
+    pkg: &mut OpcPackage,
+    ws_part: &str,
+    ws_name: &str,
+    charts: &[&Chart],
+    flavor: NamespaceFlavor,
+) {
+    ws_root.remove_children_by_local("drawing");
+    let mut rels = pkg.read_relationships(ws_part);
+    let mut old_drawings: Vec<String> = Vec::new();
+    let before_rels = rels.len();
+    rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "drawing") {
+            if !r.is_external() {
+                old_drawings.push(r.resolved_target(ws_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    let mut rels_changed = rels.len() != before_rels;
+    let mut ct = pkg.read_content_types();
+    let mut ct_changed = false;
+
+    for drawing_part in old_drawings {
+        let drawing_rels = pkg.read_relationships(&drawing_part);
+        for drel in drawing_rels {
+            if rel_type_matches(&drel.rel_type, "chart") && !drel.is_external() {
+                let chart_part = drel.resolved_target(&drawing_part);
+                pkg.remove_part(&chart_part);
+                if ct.remove_override(&chart_part) {
+                    ct_changed = true;
+                }
+            }
+        }
+        pkg.remove_part(&rels_path_for(&drawing_part));
+        pkg.remove_part(&drawing_part);
+        if ct.remove_override(&drawing_part) {
+            ct_changed = true;
+        }
+    }
+
+    if !charts.is_empty() {
+        let (_, drawing_part) = allocate_free_numbered_part(pkg, "xl/drawings/drawing", ".xml");
+        let mut drawing_rels: Vec<Relationship> = Vec::new();
+        let mut anchors: Vec<(usize, usize, String)> = Vec::new();
+
+        for ch in charts {
+            let (_, chart_part) = allocate_free_numbered_part(pkg, "xl/charts/chart", ".xml");
+            let chart_xml = crate::core::xlsx::chart::serialize_chart_xml(ch, ws_name, flavor);
+            pkg.set_part(&chart_part, chart_xml.into_bytes());
+            ct.set_override(&chart_part, CT_CHART);
+
+            let c_rid = next_rid(&drawing_rels);
+            let chart_target = format!("../{}", chart_part.trim_start_matches("xl/"));
+            drawing_rels.push(Relationship {
+                id: c_rid.clone(),
+                rel_type: REL_CHART.to_string(),
+                target: chart_target,
+                target_mode: None,
+            });
+            anchors.push((ch.anchor_row, ch.anchor_col, c_rid));
+        }
+
+        let drawing_xml = crate::core::xlsx::chart::serialize_drawing_xml(&anchors, flavor);
+        pkg.set_part(&drawing_part, drawing_xml.into_bytes());
+        pkg.write_relationships(&drawing_part, &drawing_rels);
+        ct.set_override(&drawing_part, CT_DRAWING);
+        ct_changed = true;
+
+        let d_rid = next_rid(&rels);
+        let drawing_target = format!("../{}", drawing_part.trim_start_matches("xl/"));
+        rels.push(Relationship {
+            id: d_rid.clone(),
+            rel_type: REL_DRAWING.to_string(),
+            target: drawing_target,
+            target_mode: None,
+        });
+        rels_changed = true;
+
+        if ws_root.attr("xmlns:r").is_none() {
+            ws_root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        let mut dr_el = XmlElement::new(ws_root.qualified_child_name("drawing"));
+        dr_el.set_attr("r:id", d_rid);
+        ws_root.insert_child_in_schema_order(dr_el, WORKSHEET_SCHEMA_ORDER);
+    }
+
+    if rels_changed {
+        pkg.write_relationships(ws_part, &rels);
+    }
+    if ct_changed {
+        pkg.write_content_types(&ct);
+    }
+}
+
+fn patch_pivots(
+    pkg: &mut OpcPackage,
+    workbook_part: &str,
+    sheets: &[Sheet],
+    sheet_part_by_id: &HashMap<u64, String>,
+    pivots: &[PivotTable],
+    flavor: NamespaceFlavor,
+) -> Result<(), String> {
+    let sheet_refs: Vec<&Sheet> = sheets.iter().collect();
+    let mut units = Vec::new();
+    for pivot in pivots {
+        if sheets.iter().any(|s| s.id == pivot.dest_sheet_id) {
+            units.push(crate::core::pivot_xlsx::build_pivot_xml_unit(
+                &sheet_refs,
+                pivot,
+                units.len(),
+                flavor,
+            )?);
+        }
+    }
+
+    let mut ct = pkg.read_content_types();
+    let mut ct_changed = false;
+
+    for ws_part in sheet_part_by_id.values() {
+        let mut ws_rels = pkg.read_relationships(ws_part);
+        let before = ws_rels.len();
+        let mut old_pt_parts = Vec::new();
+        ws_rels.retain(|r| {
+            if rel_type_matches(&r.rel_type, "pivotTable") {
+                if !r.is_external() {
+                    old_pt_parts.push(r.resolved_target(ws_part));
+                }
+                false
+            } else {
+                true
+            }
+        });
+        if ws_rels.len() != before {
+            pkg.write_relationships(ws_part, &ws_rels);
+        }
+        for pt_part in old_pt_parts {
+            pkg.remove_part(&rels_path_for(&pt_part));
+            pkg.remove_part(&pt_part);
+            if ct.remove_override(&pt_part) {
+                ct_changed = true;
+            }
+        }
+    }
+
+    let mut wb_rels = pkg.read_relationships(workbook_part);
+    let before_wb_rels = wb_rels.len();
+    let mut old_pcd_parts = Vec::new();
+    wb_rels.retain(|r| {
+        if rel_type_matches(&r.rel_type, "pivotCacheDefinition") {
+            if !r.is_external() {
+                old_pcd_parts.push(r.resolved_target(workbook_part));
+            }
+            false
+        } else {
+            true
+        }
+    });
+    let mut wb_rels_changed = wb_rels.len() != before_wb_rels;
+
+    for pcd_part in old_pcd_parts {
+        for pcd_rel in pkg.read_relationships(&pcd_part) {
+            if rel_type_matches(&pcd_rel.rel_type, "pivotCacheRecords") && !pcd_rel.is_external() {
+                let pcr_part = pcd_rel.resolved_target(&pcd_part);
+                pkg.remove_part(&pcr_part);
+                if ct.remove_override(&pcr_part) {
+                    ct_changed = true;
+                }
+            }
+        }
+        pkg.remove_part(&rels_path_for(&pcd_part));
+        pkg.remove_part(&pcd_part);
+        if ct.remove_override(&pcd_part) {
+            ct_changed = true;
+        }
+    }
+
+    let wb_xml = pkg
+        .get_str(workbook_part)
+        .ok_or_else(|| format!("Missing workbook part '{workbook_part}'"))?;
+    let mut wb_doc = XmlDocument::parse(&wb_xml)?;
+    wb_doc.root.remove_children_by_local("pivotCaches");
+
+    if !units.is_empty() {
+        let mut pivot_caches_el = XmlElement::new(wb_doc.root.qualified_child_name("pivotCaches"));
+        for (cache_id, unit) in units.into_iter().enumerate() {
+            let (_, pcd_part) =
+                allocate_free_numbered_part(pkg, "xl/pivotCache/pivotCacheDefinition", ".xml");
+            let (_, pcr_part) =
+                allocate_free_numbered_part(pkg, "xl/pivotCache/pivotCacheRecords", ".xml");
+            let (_, pt_part) =
+                allocate_free_numbered_part(pkg, "xl/pivotTables/pivotTable", ".xml");
+
+            pkg.set_part(&pcd_part, unit.cache_definition_xml.into_bytes());
+            pkg.set_part(&pcr_part, unit.cache_records_xml.into_bytes());
+            pkg.set_part(&pt_part, unit.pivot_table_xml.into_bytes());
+
+            ct.set_override(&pcd_part, CT_PIVOT_CACHE_DEF);
+            ct.set_override(&pcr_part, CT_PIVOT_CACHE_RECORDS);
+            ct.set_override(&pt_part, CT_PIVOT_TABLE);
+            ct_changed = true;
+
+            let pcr_rel_target = pcr_part.trim_start_matches("xl/pivotCache/").to_string();
+            pkg.write_relationships(
+                &pcd_part,
+                &[Relationship {
+                    id: "rId1".to_string(),
+                    rel_type: REL_PIVOT_CACHE_RECORDS.to_string(),
+                    target: pcr_rel_target,
+                    target_mode: None,
+                }],
+            );
+
+            let pt_to_pcd_target = format!("../{}", pcd_part.trim_start_matches("xl/"));
+            pkg.write_relationships(
+                &pt_part,
+                &[Relationship {
+                    id: "rId1".to_string(),
+                    rel_type: REL_PIVOT_CACHE_DEF.to_string(),
+                    target: pt_to_pcd_target,
+                    target_mode: None,
+                }],
+            );
+
+            let wb_rid = next_rid(&wb_rels);
+            wb_rels.push(Relationship {
+                id: wb_rid.clone(),
+                rel_type: REL_PIVOT_CACHE_DEF.to_string(),
+                target: pcd_part.trim_start_matches("xl/").to_string(),
+                target_mode: None,
+            });
+            wb_rels_changed = true;
+
+            let mut pc_el = XmlElement::new(pivot_caches_el.qualified_child_name("pivotCache"));
+            pc_el.set_attr("cacheId", cache_id.to_string());
+            pc_el.set_attr("r:id", wb_rid);
+            pivot_caches_el.children.push(XmlNode::Element(pc_el));
+
+            if let Some(ws_part) = sheet_part_by_id.get(&unit.dest_sheet_id) {
+                let mut ws_rels = pkg.read_relationships(ws_part);
+                let pt_rid = next_rid(&ws_rels);
+                ws_rels.push(Relationship {
+                    id: pt_rid,
+                    rel_type: REL_PIVOT_TABLE.to_string(),
+                    target: format!("../{}", pt_part.trim_start_matches("xl/")),
+                    target_mode: None,
+                });
+                pkg.write_relationships(ws_part, &ws_rels);
+            }
+        }
+
+        if wb_doc.root.attr("xmlns:r").is_none() {
+            wb_doc.root.set_attr("xmlns:r", flavor.office_rels());
+        }
+        wb_doc
+            .root
+            .insert_child_in_schema_order(pivot_caches_el, WORKBOOK_SCHEMA_ORDER);
+    }
+
+    pkg.set_part(workbook_part, wb_doc.to_xml_string().into_bytes());
+    if wb_rels_changed {
+        pkg.write_relationships(workbook_part, &wb_rels);
+    }
+    if ct_changed {
+        pkg.write_content_types(&ct);
+    }
+    Ok(())
+}
+
+fn remove_vba_signature_parts(
+    pkg: &mut OpcPackage,
+    ct: &mut crate::core::opc::ContentTypes,
+    vba_part: &str,
+) {
+    for rel in pkg.read_relationships(vba_part) {
+        if !rel.is_external() {
+            let target = rel.resolved_target(vba_part);
+            pkg.remove_part(&target);
+            ct.remove_override(&target);
+        }
+    }
+    pkg.remove_part(&rels_path_for(vba_part));
+    if pkg.remove_part("xl/vbaProjectSignature.bin") {
+        ct.remove_override("xl/vbaProjectSignature.bin");
+    }
+}
+
+fn patch_vba(
+    pkg: &mut OpcPackage,
+    workbook_part: &str,
+    sheets: &[Sheet],
+    vba: Option<&VbaProject>,
+) -> Result<(), String> {
+    let mut wb_rels = pkg.read_relationships(workbook_part);
+    let mut ct = pkg.read_content_types();
+
+    match vba {
+        Some(project) if !project.modules.is_empty() => {
+            let new_vba_bin = crate::core::vba_xlsx::build_vba_project_bin(project)?;
+            let existing_vba_part = wb_rels
+                .iter()
+                .find(|r| rel_type_matches(&r.rel_type, "vbaProject") && !r.is_external())
+                .map(|r| r.resolved_target(workbook_part));
+            let vba_part = existing_vba_part
+                .clone()
+                .unwrap_or_else(|| "xl/vbaProject.bin".to_string());
+
+            remove_vba_signature_parts(pkg, &mut ct, &vba_part);
+            pkg.set_part(&vba_part, new_vba_bin);
+
+            ct.set_override(workbook_part, CT_WORKBOOK_MACRO_ENABLED);
+            ct.set_override(&vba_part, CT_VBA_PROJECT);
+            pkg.write_content_types(&ct);
+
+            if existing_vba_part.is_none() {
+                let rid = next_rid(&wb_rels);
+                wb_rels.push(Relationship {
+                    id: rid,
+                    rel_type: REL_VBA_PROJECT.to_string(),
+                    target: vba_part.trim_start_matches("xl/").to_string(),
+                    target_mode: None,
+                });
+                pkg.write_relationships(workbook_part, &wb_rels);
+            }
+
+            if let Some(wb_xml) = pkg.get_str(workbook_part)
+                && let Ok(mut wb_doc) = XmlDocument::parse(&wb_xml)
+            {
+                let wb_pr = wb_doc
+                    .root
+                    .ensure_child_in_schema_order("workbookPr", WORKBOOK_SCHEMA_ORDER);
+                if wb_pr.attr("codeName").is_none() {
+                    wb_pr.set_attr("codeName", "ThisWorkbook");
+                }
+
+                let sheet_name_by_id: HashMap<u64, &str> =
+                    sheets.iter().map(|s| (s.id, s.name.as_str())).collect();
+                let mut code_name_by_sheet_name: HashMap<&str, &str> = HashMap::new();
+                for module in &project.modules {
+                    if module.kind == VbaModuleKind::Document
+                        && module.name != "ThisWorkbook"
+                        && let Some(sheet_id) = module.bound_sheet_id
+                        && let Some(&sheet_name) = sheet_name_by_id.get(&sheet_id)
+                    {
+                        code_name_by_sheet_name.insert(sheet_name, module.name.as_str());
+                    }
+                }
+
+                if let Some(sheets_el) = wb_doc.root.child_mut("sheets") {
+                    for node in &mut sheets_el.children {
+                        if let XmlNode::Element(el) = node
+                            && el.local_name() == "sheet"
+                        {
+                            if let Some(name) = el.attr("name")
+                                && let Some(&code_name) = code_name_by_sheet_name.get(name)
+                            {
+                                el.set_attr("codeName", code_name);
+                            } else {
+                                el.remove_attr("codeName");
+                            }
+                        }
+                    }
+                }
+                pkg.set_part(workbook_part, wb_doc.to_xml_string().into_bytes());
+            }
+        }
+        _ => {
+            let before = wb_rels.len();
+            let mut old_vba_parts = Vec::new();
+            wb_rels.retain(|r| {
+                if rel_type_matches(&r.rel_type, "vbaProject") {
+                    if !r.is_external() {
+                        old_vba_parts.push(r.resolved_target(workbook_part));
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+            if wb_rels.len() != before {
+                pkg.write_relationships(workbook_part, &wb_rels);
+            }
+            if old_vba_parts.is_empty() && pkg.has_part("xl/vbaProject.bin") {
+                old_vba_parts.push("xl/vbaProject.bin".to_string());
+            }
+            for vba_part in old_vba_parts {
+                remove_vba_signature_parts(pkg, &mut ct, &vba_part);
+                pkg.remove_part(&vba_part);
+                ct.remove_override(&vba_part);
+            }
+
+            ct.set_override(workbook_part, CT_WORKBOOK);
+            pkg.write_content_types(&ct);
+
+            if let Some(wb_xml) = pkg.get_str(workbook_part)
+                && let Ok(mut wb_doc) = XmlDocument::parse(&wb_xml)
+            {
+                if let Some(wb_pr) = wb_doc.root.child_mut("workbookPr") {
+                    wb_pr.remove_attr("codeName");
+                }
+                if let Some(sheets_el) = wb_doc.root.child_mut("sheets") {
+                    for node in &mut sheets_el.children {
+                        if let XmlNode::Element(el) = node
+                            && el.local_name() == "sheet"
+                        {
+                            el.remove_attr("codeName");
+                        }
+                    }
+                }
+                pkg.set_part(workbook_part, wb_doc.to_xml_string().into_bytes());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn patch_freeze_pane(ws_root: &mut XmlElement, freeze: Option<FreezePane>) {

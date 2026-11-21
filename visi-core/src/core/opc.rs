@@ -34,11 +34,21 @@ pub(crate) const REL_CORE_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
 pub(crate) const REL_EXTENDED_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties";
+pub(crate) const REL_PIVOT_CACHE_DEF: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition";
+pub(crate) const REL_PIVOT_CACHE_RECORDS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords";
+pub(crate) const REL_PIVOT_TABLE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable";
+pub(crate) const REL_VBA_PROJECT: &str =
+    "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
 pub(crate) const CT_RELS: &str = "application/vnd.openxmlformats-package.relationships+xml";
 pub(crate) const CT_XML: &str = "application/xml";
 pub(crate) const CT_WORKBOOK: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
+pub(crate) const CT_WORKBOOK_MACRO_ENABLED: &str =
+    "application/vnd.ms-excel.sheet.macroEnabled.main+xml";
 pub(crate) const CT_WORKSHEET: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
 pub(crate) const CT_SHARED_STRINGS: &str =
@@ -58,6 +68,13 @@ pub(crate) const CT_CORE_PROPERTIES: &str =
     "application/vnd.openxmlformats-package.core-properties+xml";
 pub(crate) const CT_EXTENDED_PROPERTIES: &str =
     "application/vnd.openxmlformats-officedocument.extended-properties+xml";
+pub(crate) const CT_PIVOT_CACHE_DEF: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml";
+pub(crate) const CT_PIVOT_CACHE_RECORDS: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml";
+pub(crate) const CT_PIVOT_TABLE: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml";
+pub(crate) const CT_VBA_PROJECT: &str = "application/vnd.ms-office.vbaProject";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relationship {
@@ -147,6 +164,14 @@ impl ContentTypes {
         } else {
             self.overrides.push((normalized, content_type.to_string()));
         }
+    }
+
+    pub(crate) fn remove_override(&mut self, part_name: &str) -> bool {
+        let normalized = format!("/{}", normalize_part_name(part_name));
+        let before = self.overrides.len();
+        self.overrides
+            .retain(|(p, _)| !p.eq_ignore_ascii_case(&normalized));
+        self.overrides.len() != before
     }
 
     #[cfg(test)]
@@ -255,6 +280,19 @@ impl OpcPackage {
     pub(crate) fn has_part(&self, part_name: &str) -> bool {
         let key = normalize_part_name(part_name).to_ascii_lowercase();
         self.index_by_lower.contains_key(&key)
+    }
+
+    pub(crate) fn remove_part(&mut self, part_name: &str) -> bool {
+        let key = normalize_part_name(part_name).to_ascii_lowercase();
+        let Some(idx) = self.index_by_lower.remove(&key) else {
+            return false;
+        };
+        self.parts.remove(idx);
+        self.index_by_lower.clear();
+        for (i, (name, _)) in self.parts.iter().enumerate() {
+            self.index_by_lower.insert(name.to_ascii_lowercase(), i);
+        }
+        true
     }
 
     pub(crate) fn get_bytes(&self, part_name: &str) -> Option<&[u8]> {

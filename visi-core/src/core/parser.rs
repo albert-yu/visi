@@ -851,35 +851,40 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                     row_abs,
                     col_abs,
                 } => {
-                    let sheet_id = if let Some(ref name) = sheet {
-                        if let Some(t) = sheets.iter().find(|t| t.name == *name) {
-                            t.id
+                    if sheet.as_deref().is_some_and(|s| s.contains(':')) {
+                        let text: String = chars[i..next_i].iter().collect();
+                        parts.push(FormulaPart::Text(text));
+                    } else {
+                        let sheet_id = if let Some(ref name) = sheet {
+                            if let Some(t) = sheets.iter().find(|t| t.name == *name) {
+                                t.id
+                            } else if !sheets.is_empty() {
+                                sheets[0].id
+                            } else {
+                                0
+                            }
                         } else if !sheets.is_empty() {
                             sheets[0].id
                         } else {
                             0
-                        }
-                    } else if !sheets.is_empty() {
-                        sheets[0].id
-                    } else {
-                        0
-                    };
+                        };
 
-                    parts.push(FormulaPart::SheetReference {
-                        sheet_id,
-                        row,
-                        col,
-                        row_ref_type: if row_abs {
-                            RefType::Absolute
-                        } else {
-                            RefType::Relative
-                        },
-                        col_ref_type: if col_abs {
-                            RefType::Absolute
-                        } else {
-                            RefType::Relative
-                        },
-                    });
+                        parts.push(FormulaPart::SheetReference {
+                            sheet_id,
+                            row,
+                            col,
+                            row_ref_type: if row_abs {
+                                RefType::Absolute
+                            } else {
+                                RefType::Relative
+                            },
+                            col_ref_type: if col_abs {
+                                RefType::Absolute
+                            } else {
+                                RefType::Relative
+                            },
+                        });
+                    }
                 }
                 FoundRef::Range {
                     sheet,
@@ -892,47 +897,52 @@ pub fn compile_formula(code: &str, sheets: &[Sheet]) -> CompiledFormula {
                     end_row_abs,
                     end_col_abs,
                 } => {
-                    let sheet_id = if let Some(ref name) = sheet {
-                        if let Some(t) = sheets.iter().find(|t| t.name == *name) {
-                            t.id
+                    if sheet.as_deref().is_some_and(|s| s.contains(':')) {
+                        let text: String = chars[i..next_i].iter().collect();
+                        parts.push(FormulaPart::Text(text));
+                    } else {
+                        let sheet_id = if let Some(ref name) = sheet {
+                            if let Some(t) = sheets.iter().find(|t| t.name == *name) {
+                                t.id
+                            } else if !sheets.is_empty() {
+                                sheets[0].id
+                            } else {
+                                0
+                            }
                         } else if !sheets.is_empty() {
                             sheets[0].id
                         } else {
                             0
-                        }
-                    } else if !sheets.is_empty() {
-                        sheets[0].id
-                    } else {
-                        0
-                    };
+                        };
 
-                    parts.push(FormulaPart::RangeReference {
-                        sheet_id,
-                        start_row,
-                        start_col,
-                        end_row,
-                        end_col,
-                        start_row_ref_type: if start_row_abs {
-                            RefType::Absolute
-                        } else {
-                            RefType::Relative
-                        },
-                        start_col_ref_type: if start_col_abs {
-                            RefType::Absolute
-                        } else {
-                            RefType::Relative
-                        },
-                        end_row_ref_type: if end_row_abs {
-                            RefType::Absolute
-                        } else {
-                            RefType::Relative
-                        },
-                        end_col_ref_type: if end_col_abs {
-                            RefType::Absolute
-                        } else {
-                            RefType::Relative
-                        },
-                    });
+                        parts.push(FormulaPart::RangeReference {
+                            sheet_id,
+                            start_row,
+                            start_col,
+                            end_row,
+                            end_col,
+                            start_row_ref_type: if start_row_abs {
+                                RefType::Absolute
+                            } else {
+                                RefType::Relative
+                            },
+                            start_col_ref_type: if start_col_abs {
+                                RefType::Absolute
+                            } else {
+                                RefType::Relative
+                            },
+                            end_row_ref_type: if end_row_abs {
+                                RefType::Absolute
+                            } else {
+                                RefType::Relative
+                            },
+                            end_col_ref_type: if end_col_abs {
+                                RefType::Absolute
+                            } else {
+                                RefType::Relative
+                            },
+                        });
+                    }
                 }
                 FoundRef::Structured {
                     sheet,
@@ -2053,6 +2063,55 @@ impl<'a> Parser<'a> {
                         name: id_name.clone(),
                         args,
                     });
+                }
+
+                if self.peek() == Some(&EvalToken::Colon)
+                    && matches!(
+                        self.tokens.get(self.pos + 1),
+                        Some(EvalToken::Identifier(_))
+                    )
+                    && self.tokens.get(self.pos + 2) == Some(&EvalToken::Exclamation)
+                {
+                    self.next();
+                    let Some(EvalToken::Identifier(end_sheet)) = self.next().cloned() else {
+                        unreachable!()
+                    };
+                    self.next();
+                    let sheet_span = format!("{id_name}:{end_sheet}");
+                    let target_tok = self
+                        .next()
+                        .ok_or_else(|| "Expected cell or column reference after `!`".to_string())?;
+                    let target_str = ref_token_text(target_tok).ok_or_else(|| {
+                        format!(
+                            "Expected cell, row, or column reference after `!`, got {:?}",
+                            target_tok
+                        )
+                    })?;
+
+                    if self.peek() == Some(&EvalToken::Colon) {
+                        self.next();
+                        let end_tok = self.next().ok_or_else(|| {
+                            "Expected cell, row, or column reference after `:`".to_string()
+                        })?;
+                        let end_str = ref_token_text(end_tok).ok_or_else(|| {
+                            format!(
+                                "Expected cell, row, or column reference after `:`, got {:?}",
+                                end_tok
+                            )
+                        })?;
+
+                        return range_ref_from_texts(Some(sheet_span), &target_str, &end_str);
+                    } else {
+                        let (row, col, row_abs, col_abs) = parse_cell_ref_parts(&target_str)
+                            .ok_or_else(|| format!("Invalid cell: {}", target_str))?;
+                        return Ok(Expr::CellRef {
+                            sheet: Some(sheet_span),
+                            row,
+                            col,
+                            row_abs,
+                            col_abs,
+                        });
+                    }
                 }
 
                 if self.peek() == Some(&EvalToken::Exclamation) {

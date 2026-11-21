@@ -2867,6 +2867,10 @@ mod tests {
         let mut zip = zip::ZipArchive::new(cursor).unwrap();
         assert!(zip.by_name("xl/pivotTables/pivotTable1.xml").is_ok());
         assert!(
+            zip.by_name("xl/pivotTables/_rels/pivotTable1.xml.rels")
+                .is_ok()
+        );
+        assert!(
             zip.by_name("xl/pivotCache/pivotCacheDefinition1.xml")
                 .is_ok()
         );
@@ -3830,5 +3834,615 @@ mod tests {
         assert_eq!(cf_style.bold, Some(true));
         assert_eq!(cf_style.font_color.as_deref(), Some("#9C0006"));
         assert_eq!(cf_style.bg_color.as_deref(), Some("#FFC7CE"));
+    }
+
+    #[test]
+    fn test_surgical_patch_invalidates_calc_chain_only_when_formulas_change() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "10".to_string());
+        base_mgr.set_cell(0, 0, 1, "=A1*2".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "xl/calcChain.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><calcChain xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><c r=\"B1\" i=\"1\"/></calcChain>".to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "xl/calcChain.xml",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml",
+        );
+        pkg.write_content_types(&ct);
+        let mut rels = pkg.read_relationships("xl/workbook.xml");
+        let rid = crate::core::opc::next_rid(&rels);
+        rels.push(crate::core::opc::Relationship {
+            id: rid,
+            rel_type:
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain"
+                    .to_string(),
+            target: "calcChain.xml".to_string(),
+            target_mode: None,
+        });
+        pkg.write_relationships("xl/workbook.xml", &rels);
+        let with_cc_bytes = pkg.to_bytes().unwrap();
+
+        let mut loaded_non_formula =
+            crate::core::WorkbookManager::load_bytes(&with_cc_bytes).unwrap();
+        loaded_non_formula.set_cell(0, 2, 0, "note".to_string());
+        let patched_same = loaded_non_formula.save_bytes().unwrap();
+        let pkg_same = crate::core::opc::OpcPackage::from_bytes(&patched_same).unwrap();
+        assert!(pkg_same.has_part("xl/calcChain.xml"));
+        crate::core::xlsx::validate::validate_ooxml_package(&patched_same).unwrap();
+
+        let mut loaded_formula = crate::core::WorkbookManager::load_bytes(&with_cc_bytes).unwrap();
+        loaded_formula.set_cell(0, 0, 1, "=A1*3".to_string());
+        loaded_formula.evaluate().unwrap();
+        let patched_formula = loaded_formula.save_bytes().unwrap();
+        let pkg_formula = crate::core::opc::OpcPackage::from_bytes(&patched_formula).unwrap();
+        assert!(!pkg_formula.has_part("xl/calcChain.xml"));
+        assert!(
+            !pkg_formula
+                .read_relationships("xl/workbook.xml")
+                .iter()
+                .any(|r| crate::core::opc::rel_type_matches(&r.rel_type, "calcChain"))
+        );
+        let ct_after = pkg_formula.get_str("[Content_Types].xml").unwrap();
+        assert!(!ct_after.contains("calcChain.xml"));
+        crate::core::xlsx::validate::validate_ooxml_package(&patched_formula).unwrap();
+    }
+
+    #[test]
+    fn test_let_and_lambda_xlpm_round_trip() {
+        let mut mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        mgr.set_cell(0, 0, 0, "10".to_string());
+        mgr.set_cell(0, 1, 0, "20".to_string());
+        mgr.set_cell(0, 0, 1, "=LET(x, A1*2, x + 5)".to_string());
+        mgr.set_cell(0, 1, 1, "=SUM(MAP(A1:A2, LAMBDA(v, v*3)))".to_string());
+        mgr.evaluate().unwrap();
+        assert_eq!(
+            mgr.sheets[0].columns[1].data.get(0).map(|v| v.to_string()),
+            Some("25".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[1].data.get(1).map(|v| v.to_string()),
+            Some("90".to_string())
+        );
+
+        let bytes = mgr.save_bytes().unwrap();
+        let pkg = crate::core::opc::OpcPackage::from_bytes(&bytes).unwrap();
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(
+            ws_xml.contains("_xlfn.LET(_xlpm.x, A1*2, _xlpm.x + 5)"),
+            "{ws_xml}"
+        );
+        assert!(
+            ws_xml.contains("_xlfn.MAP(A1:A2, _xlfn.LAMBDA(_xlpm.v, _xlpm.v*3))"),
+            "{ws_xml}"
+        );
+        crate::core::xlsx::validate::validate_ooxml_package(&bytes).unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        loaded.set_cell(0, 0, 0, "100".to_string());
+        loaded.evaluate().unwrap();
+        assert_eq!(
+            loaded.sheets[0].columns[1]
+                .data
+                .get(0)
+                .map(|v| v.to_string()),
+            Some("205".to_string())
+        );
+        assert_eq!(
+            loaded.sheets[0].columns[1]
+                .data
+                .get(1)
+                .map(|v| v.to_string()),
+            Some("360".to_string())
+        );
+    }
+
+    #[test]
+    fn test_surgical_patch_annotations_preserves_unmodeled_parts_and_ext_lst() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "50".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-ME}\"><customMarker/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet1.xml", ws_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded.sheets[0].comments.push(crate::core::CellComment {
+            row: 0,
+            col: 0,
+            author: "Alice".to_string(),
+            text: "Surgical note".to_string(),
+        });
+        loaded.sheets[0]
+            .hyperlinks
+            .push(crate::core::CellHyperlink {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 0,
+                target: Some("https://example.com".to_string()),
+                location: None,
+                display: Some("Link".to_string()),
+                tooltip: None,
+            });
+        loaded.sheets[0]
+            .data_validations
+            .push(crate::core::DataValidationRule {
+                sqref: "A1".to_string(),
+                kind: crate::core::DataValidationKind::Whole,
+                operator: Some(crate::core::DataValidationOperator::Between),
+                allow_blank: true,
+                formula1: Some("1".to_string()),
+                formula2: Some("100".to_string()),
+                ..Default::default()
+            });
+        loaded.sheets[0]
+            .conditional_formats
+            .push(crate::core::ConditionalFormatRule {
+                sqref: "A1".to_string(),
+                rule_type: "cellIs".to_string(),
+                operator: Some("greaterThan".to_string()),
+                priority: 1,
+                stop_if_true: false,
+                formulas: vec!["10".to_string()],
+                style: Some(crate::core::CellStyle {
+                    bold: Some(true),
+                    bg_color: Some("#FFEEAA".to_string()),
+                    ..Default::default()
+                }),
+            });
+
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        let patched_ws = patched_pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(patched_ws.contains("KEEP-ME"), "{patched_ws}");
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        assert_eq!(reloaded.sheets[0].comments.len(), 1);
+        assert_eq!(reloaded.sheets[0].comments[0].text, "Surgical note");
+        assert_eq!(reloaded.sheets[0].hyperlinks.len(), 1);
+        assert_eq!(
+            reloaded.sheets[0].hyperlinks[0].target.as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(reloaded.sheets[0].data_validations.len(), 1);
+        assert_eq!(reloaded.sheets[0].conditional_formats.len(), 1);
+    }
+
+    #[test]
+    fn test_3d_sheet_reference_eval_and_xlsx_round_trip() {
+        let mut mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        mgr.rename_sheet("Sheet1", "Summary").unwrap();
+        mgr.add_sheet("Q1").unwrap();
+        mgr.add_sheet("Q2").unwrap();
+        mgr.add_sheet("Q3").unwrap();
+        mgr.add_sheet("Q4 Sales").unwrap();
+        mgr.add_sheet("Q5 Sales").unwrap();
+
+        mgr.set_cell(1, 0, 0, "10".to_string());
+        mgr.set_cell(1, 1, 0, "20".to_string());
+        mgr.set_cell(2, 0, 0, "30".to_string());
+        mgr.set_cell(2, 1, 0, "40".to_string());
+        mgr.set_cell(3, 0, 0, "50".to_string());
+        mgr.set_cell(3, 1, 0, "60".to_string());
+        mgr.set_cell(4, 0, 0, "100".to_string());
+        mgr.set_cell(5, 0, 0, "250".to_string());
+
+        mgr.set_cell(0, 0, 0, "=SUM(Q1:Q3!A1)".to_string());
+        mgr.set_cell(0, 1, 0, "=SUM(Q1:Q3!A1:A2)".to_string());
+        mgr.set_cell(0, 2, 0, "=AVERAGE(Q3:Q1!A1)".to_string());
+        mgr.set_cell(0, 3, 0, "=SUM('Q4 Sales:Q5 Sales'!A1)".to_string());
+        mgr.evaluate().unwrap();
+
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(0).map(|v| v.to_string()),
+            Some("90".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(1).map(|v| v.to_string()),
+            Some("210".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(2).map(|v| v.to_string()),
+            Some("30".to_string())
+        );
+        assert_eq!(
+            mgr.sheets[0].columns[0].data.get(3).map(|v| v.to_string()),
+            Some("350".to_string())
+        );
+
+        let bytes = mgr.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&bytes).unwrap();
+        let pkg = crate::core::opc::OpcPackage::from_bytes(&bytes).unwrap();
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(ws_xml.contains("SUM(Q1:Q3!A1)"), "{ws_xml}");
+        assert!(ws_xml.contains("SUM('Q4 Sales:Q5 Sales'!A1)"), "{ws_xml}");
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&bytes).unwrap();
+        loaded.set_cell(2, 0, 0, "130".to_string());
+        loaded.evaluate().unwrap();
+        assert_eq!(
+            loaded.sheets[0].columns[0]
+                .data
+                .get(0)
+                .map(|v| v.to_string()),
+            Some("190".to_string())
+        );
+        assert_eq!(
+            loaded.sheets[0].columns[0]
+                .data
+                .get(1)
+                .map(|v| v.to_string()),
+            Some("310".to_string())
+        );
+    }
+
+    #[test]
+    fn test_surgical_patch_tables_and_charts_preserves_unmodeled_parts_and_ext_lst() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "Item".to_string());
+        base_mgr.set_cell(0, 0, 1, "Qty".to_string());
+        base_mgr.set_cell(0, 1, 0, "Widget".to_string());
+        base_mgr.set_cell(0, 1, 1, "10".to_string());
+        base_mgr.set_cell(0, 2, 0, "Gadget".to_string());
+        base_mgr.set_cell(0, 2, 1, "20".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-TBL-CHART}\"><customTag/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet1.xml", ws_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded
+            .add_table(None, "Orders", 0, 0, 2, 1, true, false)
+            .unwrap();
+        loaded
+            .add_chart(
+                "Sheet1",
+                crate::core::chart::ChartType::Column,
+                "Sheet1!A1:B3".to_string(),
+                Some("Order Qty".to_string()),
+                Some((0, 4)),
+            )
+            .unwrap();
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        let patched_ws = patched_pkg.get_str("xl/worksheets/sheet1.xml").unwrap();
+        assert!(patched_ws.contains("KEEP-TBL-CHART"), "{patched_ws}");
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        assert_eq!(reloaded.sheets[0].tables.len(), 1);
+        assert_eq!(reloaded.sheets[0].tables[0].name, "Orders");
+        assert_eq!(reloaded.charts.len(), 1);
+        assert_eq!(reloaded.charts[0].title.as_deref(), Some("Order Qty"));
+    }
+
+    #[test]
+    fn test_surgical_patch_sheet_add_and_delete_preserves_unmodeled_parts() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.add_sheet("Keep").unwrap();
+        base_mgr.add_sheet("DropMe").unwrap();
+        base_mgr.set_cell(0, 0, 0, "Root".to_string());
+        base_mgr.set_cell(1, 0, 0, "42".to_string());
+        base_mgr.set_cell(2, 0, 0, "Gone".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws2_xml = pkg.get_str("xl/worksheets/sheet2.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-SHEET-EXT}\"><tag/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet2.xml", ws2_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded.delete_sheet("DropMe").unwrap();
+        loaded.add_sheet("Added").unwrap();
+        let new_idx = loaded.sheets.len() - 1;
+        loaded.set_cell(new_idx, 0, 0, "=Keep!A1*2".to_string());
+        loaded.evaluate().unwrap();
+
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        let keep_ws = patched_pkg.get_str("xl/worksheets/sheet2.xml").unwrap();
+        assert!(keep_ws.contains("KEEP-SHEET-EXT"), "{keep_ws}");
+
+        let reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        let names: Vec<&str> = reloaded.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Sheet1", "Keep", "Added"]);
+        assert_eq!(
+            reloaded.sheets[2].columns[0]
+                .data
+                .get(0)
+                .map(|v| v.to_string()),
+            Some("84".to_string())
+        );
+    }
+
+    #[test]
+    fn test_surgical_patch_pivot_tables_preserves_unmodeled_parts_and_ext_lst() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.add_sheet("Extra").unwrap();
+        let rows = [
+            ("Region", "Quarter", "Sales"),
+            ("East", "Q1", "100"),
+            ("West", "Q1", "250"),
+            ("East", "Q2", "150"),
+        ];
+        for (r, (reg, qtr, sales)) in rows.iter().enumerate() {
+            base_mgr.set_cell(0, r, 0, (*reg).to_string());
+            base_mgr.set_cell(0, r, 1, (*qtr).to_string());
+            base_mgr.set_cell(0, r, 2, (*sales).to_string());
+        }
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-PIVOT-EXT}\"><customTag/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet1.xml", ws_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        loaded
+            .add_pivot_table_from_range("SalesPiv", None, 0, 0, 3, 2, None, 0, 5, true, true)
+            .unwrap();
+        loaded
+            .add_pivot_field("SalesPiv", crate::core::PivotArea::Row, "Region", None)
+            .unwrap();
+        loaded
+            .add_pivot_field(
+                "SalesPiv",
+                crate::core::PivotArea::Value,
+                "Sales",
+                Some(crate::core::PivotAggregation::Sum),
+            )
+            .unwrap();
+        loaded.refresh_pivot_table("SalesPiv").unwrap();
+
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        assert!(
+            patched_pkg
+                .get_str("xl/worksheets/sheet1.xml")
+                .unwrap()
+                .contains("KEEP-PIVOT-EXT")
+        );
+        assert!(patched_pkg.has_part("xl/pivotTables/pivotTable1.xml"));
+        assert!(patched_pkg.has_part("xl/pivotCache/pivotCacheDefinition1.xml"));
+        assert!(patched_pkg.has_part("xl/pivotCache/pivotCacheRecords1.xml"));
+
+        let mut reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        assert_eq!(reloaded.pivot_tables.len(), 1);
+        assert_eq!(reloaded.pivot_tables[0].name, "SalesPiv");
+
+        reloaded
+            .add_pivot_field("SalesPiv", crate::core::PivotArea::Column, "Quarter", None)
+            .unwrap();
+        reloaded.delete_sheet("Extra").unwrap();
+        reloaded.add_sheet("Summary").unwrap();
+        reloaded.rename_sheet("Sheet1", "Data").unwrap();
+        reloaded.refresh_pivot_table("SalesPiv").unwrap();
+
+        let patched2 = reloaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched2).unwrap();
+
+        let patched2_pkg = crate::core::opc::OpcPackage::from_bytes(&patched2).unwrap();
+        assert!(patched2_pkg.has_part("docProps/core.xml"));
+        assert!(
+            patched2_pkg
+                .get_str("xl/worksheets/sheet1.xml")
+                .unwrap()
+                .contains("KEEP-PIVOT-EXT")
+        );
+
+        let mut reloaded2 = crate::core::WorkbookManager::load_bytes(&patched2).unwrap();
+        assert_eq!(reloaded2.pivot_tables.len(), 1);
+        assert_eq!(reloaded2.pivot_tables[0].col_fields.len(), 1);
+        assert_eq!(reloaded2.pivot_tables[0].col_fields[0].column, "Quarter");
+
+        reloaded2.delete_pivot_table("SalesPiv").unwrap();
+        let patched3 = reloaded2.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched3).unwrap();
+
+        let patched3_pkg = crate::core::opc::OpcPackage::from_bytes(&patched3).unwrap();
+        assert!(patched3_pkg.has_part("docProps/core.xml"));
+        assert!(!patched3_pkg.has_part("xl/pivotTables/pivotTable1.xml"));
+        assert!(!patched3_pkg.has_part("xl/pivotCache/pivotCacheDefinition1.xml"));
+        assert!(!patched3_pkg.has_part("xl/pivotCache/pivotCacheRecords1.xml"));
+        assert!(
+            !patched3_pkg
+                .get_str("xl/workbook.xml")
+                .unwrap()
+                .contains("pivotCaches")
+        );
+
+        let reloaded3 = crate::core::WorkbookManager::load_bytes(&patched3).unwrap();
+        assert!(reloaded3.pivot_tables.is_empty());
+    }
+
+    #[test]
+    fn test_surgical_patch_vba_preserves_unmodeled_parts_and_ext_lst() {
+        let mut base_mgr = crate::core::WorkbookManager::new_empty().unwrap();
+        base_mgr.set_cell(0, 0, 0, "42".to_string());
+        base_mgr.evaluate().unwrap();
+        let base_bytes = base_mgr.save_bytes().unwrap();
+
+        let mut pkg = crate::core::opc::OpcPackage::from_bytes(&base_bytes).unwrap();
+        pkg.set_part(
+            "docProps/core.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><coreProperties/>"
+                .to_vec(),
+        );
+        let mut ct = pkg.read_content_types();
+        ct.set_override(
+            "docProps/core.xml",
+            "application/vnd.openxmlformats-package.core-properties+xml",
+        );
+        pkg.write_content_types(&ct);
+        let ws_xml = pkg.get_str("xl/worksheets/sheet1.xml").unwrap().replace(
+            "</worksheet>",
+            "<extLst><ext uri=\"{KEEP-VBA-EXT}\"><customTag/></ext></extLst></worksheet>",
+        );
+        pkg.set_part("xl/worksheets/sheet1.xml", ws_xml.into_bytes());
+        let seeded = pkg.to_bytes().unwrap();
+
+        let mut loaded = crate::core::WorkbookManager::load_bytes(&seeded).unwrap();
+        let sheet1_id = loaded.sheets[0].id;
+        loaded
+            .add_vba_module(
+                "Mod1".to_string(),
+                crate::core::vba::VbaModuleKind::Standard,
+                "Attribute VB_Name = \"Mod1\"\nPublic Sub Hello()\nEnd Sub\n".to_string(),
+                None,
+            )
+            .unwrap();
+        loaded
+            .add_vba_module(
+                "Sheet1".to_string(),
+                crate::core::vba::VbaModuleKind::Document,
+                "Attribute VB_Name = \"Sheet1\"\n".to_string(),
+                Some(sheet1_id),
+            )
+            .unwrap();
+
+        let patched = loaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched).unwrap();
+
+        let patched_pkg = crate::core::opc::OpcPackage::from_bytes(&patched).unwrap();
+        assert!(patched_pkg.has_part("docProps/core.xml"));
+        assert!(
+            patched_pkg
+                .get_str("xl/worksheets/sheet1.xml")
+                .unwrap()
+                .contains("KEEP-VBA-EXT")
+        );
+        assert!(patched_pkg.has_part("xl/vbaProject.bin"));
+        assert_eq!(
+            patched_pkg
+                .read_content_types()
+                .content_type_for("xl/workbook.xml"),
+            Some("application/vnd.ms-excel.sheet.macroEnabled.main+xml")
+        );
+
+        let mut reloaded = crate::core::WorkbookManager::load_bytes(&patched).unwrap();
+        let proj = reloaded.vba_project.as_ref().unwrap();
+        assert_eq!(proj.modules.len(), 2);
+        let doc_mod = proj.modules.iter().find(|m| m.name == "Sheet1").unwrap();
+        assert_eq!(doc_mod.bound_sheet_id, Some(reloaded.sheets[0].id));
+
+        reloaded
+            .add_vba_module(
+                "Mod2".to_string(),
+                crate::core::vba::VbaModuleKind::Standard,
+                "Attribute VB_Name = \"Mod2\"\nPublic Sub Two()\nEnd Sub\n".to_string(),
+                None,
+            )
+            .unwrap();
+        let patched2 = reloaded.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched2).unwrap();
+
+        let mut reloaded2 = crate::core::WorkbookManager::load_bytes(&patched2).unwrap();
+        assert_eq!(reloaded2.vba_project.as_ref().unwrap().modules.len(), 3);
+
+        reloaded2.remove_vba_module("Mod1").unwrap();
+        reloaded2.remove_vba_module("Mod2").unwrap();
+        reloaded2.remove_vba_module("Sheet1").unwrap();
+        let patched3 = reloaded2.save_bytes().unwrap();
+        crate::core::xlsx::validate::validate_ooxml_package(&patched3).unwrap();
+
+        let patched3_pkg = crate::core::opc::OpcPackage::from_bytes(&patched3).unwrap();
+        assert!(patched3_pkg.has_part("docProps/core.xml"));
+        assert!(
+            patched3_pkg
+                .get_str("xl/worksheets/sheet1.xml")
+                .unwrap()
+                .contains("KEEP-VBA-EXT")
+        );
+        assert!(!patched3_pkg.has_part("xl/vbaProject.bin"));
+        assert_eq!(
+            patched3_pkg
+                .read_content_types()
+                .content_type_for("xl/workbook.xml"),
+            Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml")
+        );
+
+        let reloaded3 = crate::core::WorkbookManager::load_bytes(&patched3).unwrap();
+        assert!(reloaded3.vba_project.is_none());
     }
 }
