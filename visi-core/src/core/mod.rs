@@ -81,4 +81,8 @@ pub use vba::{
     ModuleSyntax, RunOutcome, VbaModule, VbaModuleKind, VbaProject, check_syntax,
     check_syntax_partial, run_macro, validate_vba_module_name,
 };
-pub use workbook::{DefinedName, SheetSummary, WorkbookManager, WorkbookSummary};
+#[cfg(not(target_arch = "wasm32"))]
+pub use workbook::IncrementalFile;
+pub use workbook::{
+    DefinedName, IncrementalWriteReport, SheetSummary, WorkbookManager, WorkbookSummary,
+};

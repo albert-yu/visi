@@ -544,3 +544,49 @@ test("locale and A1 coordinate helpers", () => {
   wbUs.free();
   wbGb.free();
 });
+
+test("incremental bytes writes for xlsx and xlsb", () => {
+  for (const [fmt, ws1, ws2] of [
+    ["xlsx", "xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"],
+    ["xlsb", "xl/worksheets/sheet1.bin", "xl/worksheets/sheet2.bin"],
+  ]) {
+    const wb = new Workbook();
+    wb.addSheet("Second");
+    wb.setCell(0, 0, "10", "Sheet1");
+    wb.setCell(0, 0, "20", "Second");
+    wb.evaluate();
+    assert.equal(wb.hasPendingChanges, true);
+    assert.equal(wb.baselineFormat, undefined);
+
+    const r1 = wb.saveIncrementalBytes(fmt);
+    assert.equal(r1.report.format, fmt);
+    assert.equal(r1.report.fullRewrite, true);
+    assert.equal(r1.report.hasChanges, true);
+    assert.equal(wb.baselineFormat, fmt);
+    assert.equal(wb.hasPendingChanges, false);
+    assert.ok(r1.bytes instanceof Uint8Array);
+    assert.ok(r1.bytes.length > 0);
+
+    const noop = wb.saveIncrementalBytes();
+    assert.equal(noop.report.fullRewrite, false);
+    assert.equal(noop.report.hasChanges, false);
+
+    wb.setCell(0, 0, "25", "Second");
+    wb.evaluate();
+    assert.equal(wb.hasPendingChanges, true);
+    const r2 = wb.saveIncrementalBytes();
+    assert.equal(r2.report.fullRewrite, false);
+    assert.ok(r2.report.modifiedParts.includes(ws2));
+    assert.ok(!r2.report.modifiedParts.includes(ws1));
+    assert.equal(wb.hasPendingChanges, false);
+
+    const reloaded = Workbook.loadBytes(r2.bytes);
+    assert.equal(reloaded.baselineFormat, fmt);
+    assert.equal(reloaded.hasPendingChanges, false);
+    assert.equal(reloaded.getCell(0, 0, "Sheet1"), 10);
+    assert.equal(reloaded.getCell(0, 0, "Second"), 25);
+
+    reloaded.free();
+    wb.free();
+  }
+});

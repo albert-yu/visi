@@ -242,6 +242,20 @@ export interface ParsedRangeRef {
   endRow: number;
   endCol: number;
 }
+
+export interface IncrementalWriteReport {
+  format: WorkbookFormat;
+  fullRewrite: boolean;
+  hasChanges: boolean;
+  modifiedParts: string[];
+  addedParts: string[];
+  removedParts: string[];
+}
+
+export interface IncrementalWriteResult {
+  bytes: Uint8Array;
+  report: IncrementalWriteReport;
+}
 "#;
 
 #[derive(Serialize)]

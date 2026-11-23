@@ -10,7 +10,16 @@ fn write_file_version(out: &mut Vec<u8>) {
 }
 
 pub(crate) fn build(sheet_names: &[String]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(sheet_names.len() * 64 + 192);
+    let entries: Vec<(String, String)> = sheet_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), format!("rId{}", index + 1)))
+        .collect();
+    build_with_rids(&entries)
+}
+
+pub(crate) fn build_with_rids(sheets: &[(String, String)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(sheets.len() * 64 + 192);
     write_empty_record(0x0083, &mut out);
     write_file_version(&mut out);
     write_record(
@@ -42,11 +51,11 @@ pub(crate) fn build(sheet_names: &[String]) -> Vec<u8> {
     );
     write_empty_record(0x0088, &mut out);
     write_empty_record(0x008f, &mut out);
-    for (index, name) in sheet_names.iter().enumerate() {
+    for (index, (name, rid)) in sheets.iter().enumerate() {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&((index + 1) as u32).to_le_bytes());
-        write_wide_string(&format!("rId{}", index + 1), &mut payload);
+        write_wide_string(rid, &mut payload);
         write_wide_string(name, &mut payload);
         write_record(0x009c, &payload, &mut out);
     }

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Cursor, Read, Seek, Write};
 
 use quick_xml::events::Event;
 use zip::write::SimpleFileOptions;
@@ -214,10 +214,25 @@ impl ContentTypes {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PartDiff {
+    pub(crate) modified: Vec<String>,
+    pub(crate) added: Vec<String>,
+    pub(crate) removed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackedChange {
+    Added,
+    Modified,
+    Removed,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpcPackage {
     parts: Vec<(String, Vec<u8>)>,
     index_by_lower: HashMap<String, usize>,
+    tracker: Option<BTreeMap<String, (String, TrackedChange)>>,
 }
 
 impl OpcPackage {
@@ -225,8 +240,33 @@ impl OpcPackage {
         Self::default()
     }
 
+    pub(crate) fn start_tracking(&mut self) {
+        self.tracker = Some(BTreeMap::new());
+    }
+
+    pub(crate) fn finish_tracking(&mut self) -> PartDiff {
+        let mut diff = PartDiff::default();
+        if let Some(tracker) = self.tracker.take() {
+            for (_, (name, change)) in tracker {
+                match change {
+                    TrackedChange::Added => diff.added.push(name),
+                    TrackedChange::Modified => diff.modified.push(name),
+                    TrackedChange::Removed => diff.removed.push(name),
+                }
+            }
+        }
+        diff.modified.sort();
+        diff.added.sort();
+        diff.removed.sort();
+        diff
+    }
+
     pub(crate) fn from_bytes(buffer: &[u8]) -> Result<Self, String> {
-        let mut archive = zip::ZipArchive::new(Cursor::new(buffer))
+        Self::from_reader(Cursor::new(buffer))
+    }
+
+    pub(crate) fn from_reader<R: Read + Seek>(reader: R) -> Result<Self, String> {
+        let mut archive = zip::ZipArchive::new(reader)
             .map_err(|e| format!("Failed to open OPC ZIP package: {e}"))?;
         let mut pkg = Self::new();
         for idx in 0..archive.len() {
@@ -246,22 +286,26 @@ impl OpcPackage {
         Ok(pkg)
     }
 
-    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    pub(crate) fn write_to<W: Write + Seek>(&self, writer: W) -> Result<W, String> {
+        let mut zip_writer = zip::ZipWriter::new(writer);
         let options = SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .compression_level(Some(6));
         for (name, bytes) in &self.parts {
-            writer
+            zip_writer
                 .start_file(name, options)
                 .map_err(|e| format!("Failed to start ZIP entry '{name}': {e}"))?;
-            writer
+            zip_writer
                 .write_all(bytes)
                 .map_err(|e| format!("Failed to write ZIP entry '{name}': {e}"))?;
         }
-        writer
+        zip_writer
             .finish()
             .map_err(|e| format!("Failed to finalize OPC ZIP package: {e}"))
+    }
+
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        self.write_to(Cursor::new(Vec::new()))
             .map(Cursor::into_inner)
     }
 
@@ -269,11 +313,32 @@ impl OpcPackage {
         let normalized = normalize_part_name(&part_name.into());
         let key = normalized.to_ascii_lowercase();
         if let Some(&idx) = self.index_by_lower.get(&key) {
-            self.parts[idx].1 = bytes;
+            if self.parts[idx].1 != bytes {
+                self.parts[idx].1 = bytes;
+                if let Some(ref mut tracker) = self.tracker {
+                    let canonical = self.parts[idx].0.clone();
+                    match tracker.get(&key).map(|(_, c)| *c) {
+                        Some(TrackedChange::Added) => {}
+                        _ => {
+                            tracker.insert(key, (canonical, TrackedChange::Modified));
+                        }
+                    }
+                }
+            }
         } else {
             let idx = self.parts.len();
-            self.parts.push((normalized, bytes));
-            self.index_by_lower.insert(key, idx);
+            self.parts.push((normalized.clone(), bytes));
+            self.index_by_lower.insert(key.clone(), idx);
+            if let Some(ref mut tracker) = self.tracker {
+                match tracker.get(&key).map(|(_, c)| *c) {
+                    Some(TrackedChange::Removed) => {
+                        tracker.insert(key, (normalized, TrackedChange::Modified));
+                    }
+                    _ => {
+                        tracker.insert(key, (normalized, TrackedChange::Added));
+                    }
+                }
+            }
         }
     }
 
@@ -287,10 +352,20 @@ impl OpcPackage {
         let Some(idx) = self.index_by_lower.remove(&key) else {
             return false;
         };
-        self.parts.remove(idx);
+        let (removed_name, _) = self.parts.remove(idx);
         self.index_by_lower.clear();
         for (i, (name, _)) in self.parts.iter().enumerate() {
             self.index_by_lower.insert(name.to_ascii_lowercase(), i);
+        }
+        if let Some(ref mut tracker) = self.tracker {
+            match tracker.get(&key).map(|(_, c)| *c) {
+                Some(TrackedChange::Added) => {
+                    tracker.remove(&key);
+                }
+                _ => {
+                    tracker.insert(key, (removed_name, TrackedChange::Removed));
+                }
+            }
         }
         true
     }

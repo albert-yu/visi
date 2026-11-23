@@ -530,3 +530,75 @@ def test_locale_support():
     wb_de.set_cell(0, 0, "22.06.2026")
     wb_de.evaluate()
     assert wb_de.get_cell(0, 0) == 46195.0
+
+
+def test_incremental_bytes_xlsx_and_xlsb():
+    for fmt, ws1, wb_part in (
+        ("xlsx", "xl/worksheets/sheet1.xml", "xl/workbook.xml"),
+        ("xlsb", "xl/worksheets/sheet1.bin", "xl/workbook.bin"),
+    ):
+        wb = visi_core.Workbook()
+        wb.set_cell(0, 0, "10")
+        wb.evaluate()
+        assert wb.has_pending_changes
+        assert wb.baseline_format is None
+
+        data1, report1 = wb.save_incremental_bytes(fmt)
+        assert report1["format"] == fmt
+        assert report1["full_rewrite"] is True
+        assert report1["has_changes"] is True
+        assert wb.baseline_format == fmt
+        assert not wb.has_pending_changes
+        assert len(data1) > 0
+
+        _, noop_report = wb.save_incremental_bytes()
+        assert noop_report["full_rewrite"] is False
+        assert noop_report["has_changes"] is False
+
+        wb.set_cell(0, 0, "25")
+        wb.evaluate()
+        assert wb.has_pending_changes
+        data2, report2 = wb.save_incremental_bytes()
+        assert report2["full_rewrite"] is False
+        assert ws1 in report2["modified_parts"]
+        assert wb_part not in report2["modified_parts"]
+        assert not wb.has_pending_changes
+
+        reloaded = visi_core.Workbook.load_bytes(data2)
+        assert reloaded.baseline_format == fmt
+        assert not reloaded.has_pending_changes
+        assert reloaded.get_cell(0, 0) == 25
+
+
+def test_incremental_file_context_manager(tmp_path):
+    for ext in ("xlsx", "xlsm", "xlsb"):
+        path = tmp_path / f"session.{ext}"
+        with visi_core.IncrementalFile.create(path) as f:
+            assert f.has_pending_changes
+            f.workbook.set_cell(0, 0, "100")
+            if ext == "xlsm":
+                f.workbook.add_macro("Mod1", MACRO_SRC)
+            f.workbook.evaluate()
+            r1 = f.flush()
+            assert r1["full_rewrite"] is True
+            assert not f.has_pending_changes
+
+            r_noop = f.flush()
+            assert r_noop["has_changes"] is False
+
+            f.workbook.set_cell(0, 0, "200")
+            f.workbook.evaluate()
+            assert f.has_pending_changes
+
+        reopened = visi_core.IncrementalFile.open(path)
+        assert not reopened.has_pending_changes
+        assert reopened.workbook.get_cell(0, 0) == 200
+        reopened.workbook.set_cell(1, 0, "300")
+        reopened.workbook.evaluate()
+        r2 = reopened.flush()
+        assert r2["full_rewrite"] is False
+        assert r2["has_changes"] is True
+
+        final_wb = visi_core.Workbook.load(path)
+        assert final_wb.get_cell(0, 0) == 200
+        assert final_wb.get_cell(1, 0) == 300

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use js_sys::{Array, Object, Reflect};
+use js_sys::{Array, Object, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use visi_engine::core::chart::ChartType;
 use visi_engine::core::typecheck::{
@@ -149,6 +149,17 @@ struct TypecheckReport {
     #[serde(rename = "warningCount")]
     warning_count_camel: usize,
     diagnostics: Vec<DiagnosticEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsIncrementalWriteReport {
+    format: String,
+    full_rewrite: bool,
+    has_changes: bool,
+    modified_parts: Vec<String>,
+    added_parts: Vec<String>,
+    removed_parts: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -487,6 +498,44 @@ impl Workbook {
     #[wasm_bindgen(js_name = saveBytes)]
     pub fn save_bytes(&self, format: Option<String>) -> WasmResult<Vec<u8>> {
         self.to_bytes(format)
+    }
+
+    #[wasm_bindgen(getter, js_name = hasPendingChanges)]
+    pub fn has_pending_changes(&self) -> bool {
+        self.inner.has_pending_changes()
+    }
+
+    #[wasm_bindgen(getter, js_name = baselineFormat)]
+    pub fn baseline_format(&self) -> Option<String> {
+        self.inner
+            .baseline_format()
+            .map(|f| f.extension().to_string())
+    }
+
+    #[wasm_bindgen(js_name = saveIncrementalBytes)]
+    pub fn save_incremental_bytes(&mut self, format: Option<String>) -> WasmResult<JsValue> {
+        let fmt = match format.as_deref() {
+            Some(s) => parse_workbook_format(s).map_err(Wrapped)?,
+            None => self.inner.baseline_format().unwrap_or(WorkbookFormat::Xlsx),
+        };
+        let (bytes, report) = self.inner.save_incremental_bytes(fmt).map_err(Wrapped)?;
+        let js_report = JsIncrementalWriteReport {
+            format: report.format.extension().to_string(),
+            full_rewrite: report.full_rewrite,
+            has_changes: report.has_changes(),
+            modified_parts: report.modified_parts,
+            added_parts: report.added_parts,
+            removed_parts: report.removed_parts,
+        };
+        let result = Object::new();
+        let js_bytes = Uint8Array::from(bytes.as_slice());
+        let _ = Reflect::set(&result, &JsValue::from_str("bytes"), &js_bytes.into());
+        let _ = Reflect::set(
+            &result,
+            &JsValue::from_str("report"),
+            &to_js_value(&js_report)?,
+        );
+        Ok(result.into())
     }
 
     pub fn roundtrip(&self) -> WasmResult<Workbook> {
