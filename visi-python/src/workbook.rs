@@ -9,13 +9,27 @@ use visi_engine::core::typecheck::{
 use visi_engine::core::{
     CellRef, Context, PivotArea, VbaModuleKind, col_idx_to_letters, value_field_labels,
 };
-use visi_engine::{WorkbookFormat, WorkbookManager};
+use visi_engine::{IncrementalWriteReport, WorkbookFormat, WorkbookManager};
 
 use crate::enums::{
     parse_cell_type, parse_chart_type, parse_pivot_agg, parse_pivot_area, parse_vba_module_kind,
 };
 use crate::errors::{Wrapped, invalid_argument};
 use crate::value::result_to_py;
+
+fn report_to_py<'py>(
+    py: Python<'py>,
+    report: &IncrementalWriteReport,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("format", report.format.extension())?;
+    d.set_item("full_rewrite", report.full_rewrite)?;
+    d.set_item("has_changes", report.has_changes())?;
+    d.set_item("modified_parts", &report.modified_parts)?;
+    d.set_item("added_parts", &report.added_parts)?;
+    d.set_item("removed_parts", &report.removed_parts)?;
+    Ok(d)
+}
 
 #[pyclass(module = "visi_core")]
 pub struct Workbook {
@@ -108,6 +122,42 @@ impl Workbook {
         }
         std::fs::write(&path, data)?;
         Ok(())
+    }
+
+    #[getter]
+    fn has_pending_changes(&self) -> bool {
+        self.inner.has_pending_changes()
+    }
+
+    #[getter]
+    fn baseline_format(&self) -> Option<&'static str> {
+        self.inner.baseline_format().map(WorkbookFormat::extension)
+    }
+
+    #[pyo3(signature = (format=None))]
+    fn save_incremental_bytes<'py>(
+        &mut self,
+        py: Python<'py>,
+        format: Option<&str>,
+    ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyDict>)> {
+        let format = match format {
+            Some(s) => s.parse::<WorkbookFormat>().map_err(Wrapped)?,
+            None => self.inner.baseline_format().unwrap_or(WorkbookFormat::Xlsx),
+        };
+        let (data, report) = self.inner.save_incremental_bytes(format).map_err(Wrapped)?;
+        Ok((PyBytes::new(py, &data), report_to_py(py, &report)?))
+    }
+
+    fn save_incremental<'py>(
+        &mut self,
+        py: Python<'py>,
+        path: PathBuf,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let report = self
+            .inner
+            .save_incremental_to_path(&path)
+            .map_err(Wrapped)?;
+        report_to_py(py, &report)
     }
 
     fn roundtrip(&self) -> PyResult<Self> {
@@ -676,5 +726,122 @@ impl Workbook {
             out.push(d);
         }
         PyList::new(py, out)
+    }
+}
+
+#[pyclass(module = "visi_core")]
+pub struct IncrementalFile {
+    path: PathBuf,
+    format: WorkbookFormat,
+    workbook: Py<Workbook>,
+    synced_to_path: bool,
+}
+
+#[pymethods]
+impl IncrementalFile {
+    #[staticmethod]
+    fn open(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+        let format = WorkbookFormat::from_path(&path).ok_or_else(|| {
+            invalid_argument(format!(
+                "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                path.display()
+            ))
+        })?;
+        let inner = WorkbookManager::load_path(&path).map_err(Wrapped)?;
+        let workbook = Py::new(py, Workbook { inner })?;
+        Ok(Self {
+            path,
+            format,
+            workbook,
+            synced_to_path: true,
+        })
+    }
+
+    #[staticmethod]
+    fn create(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+        let format = WorkbookFormat::from_path(&path).ok_or_else(|| {
+            invalid_argument(format!(
+                "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                path.display()
+            ))
+        })?;
+        let inner = WorkbookManager::new_empty().map_err(Wrapped)?;
+        let workbook = Py::new(py, Workbook { inner })?;
+        Ok(Self {
+            path,
+            format,
+            workbook,
+            synced_to_path: false,
+        })
+    }
+
+    #[staticmethod]
+    fn open_or_create(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+        if path.exists() {
+            Self::open(py, path)
+        } else {
+            Self::create(py, path)
+        }
+    }
+
+    #[getter]
+    fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    #[getter]
+    fn format(&self) -> &'static str {
+        self.format.extension()
+    }
+
+    #[getter]
+    fn workbook<'py>(&self, py: Python<'py>) -> Py<Workbook> {
+        self.workbook.clone_ref(py)
+    }
+
+    #[getter]
+    fn has_pending_changes(&self, py: Python<'_>) -> bool {
+        let wb = self.workbook.borrow(py);
+        !self.synced_to_path
+            || wb.inner.baseline_format() != Some(self.format)
+            || wb.inner.has_pending_changes()
+    }
+
+    fn flush<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        if !self.has_pending_changes(py) {
+            let report = IncrementalWriteReport {
+                format: self.format,
+                full_rewrite: false,
+                modified_parts: Vec::new(),
+                added_parts: Vec::new(),
+                removed_parts: Vec::new(),
+            };
+            return report_to_py(py, &report);
+        }
+        let mut wb = self.workbook.borrow_mut(py);
+        let report = wb
+            .inner
+            .save_incremental_to_path(&self.path)
+            .map_err(Wrapped)?;
+        self.synced_to_path = true;
+        report_to_py(py, &report)
+    }
+
+    fn __enter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    #[pyo3(signature = (exc_type=None, _exc_value=None, _traceback=None))]
+    fn __exit__(
+        &mut self,
+        py: Python<'_>,
+        exc_type: Option<Bound<'_, PyAny>>,
+        _exc_value: Option<Bound<'_, PyAny>>,
+        _traceback: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        if exc_type.is_none() {
+            let _ = self.flush(py)?;
+        }
+        Ok(false)
     }
 }

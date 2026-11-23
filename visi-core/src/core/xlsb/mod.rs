@@ -2,6 +2,7 @@ mod chart;
 mod formula;
 mod function_registry;
 mod package;
+pub(crate) mod patch;
 mod pivot;
 mod record;
 mod shared_strings;
@@ -233,6 +234,20 @@ fn import_xlsb_data_inner(
 #[doc = "Exports workbook sheets as an XLSB package."]
 pub fn export_xlsb_data(sheets: &[Sheet]) -> crate::Result<Vec<u8>> {
     package::write(sheets).map_err(crate::Error::Xlsb)
+}
+
+pub(crate) fn export_xlsb_package(sheets: &[Sheet]) -> crate::Result<crate::core::opc::OpcPackage> {
+    package::build_package(sheets).map_err(crate::Error::Xlsb)
+}
+
+pub(crate) fn import_xlsb_with_source(
+    buffer: &[u8],
+) -> crate::Result<(ImportedWorkbookData, patch::XlsbSourceState)> {
+    let data = import_xlsb_data(buffer, &[], |_, _, _| {})?;
+    let pkg = crate::core::opc::OpcPackage::from_bytes(buffer).map_err(crate::Error::Xlsb)?;
+    let sheets: Vec<Sheet> = data.0.iter().map(|s| s.sheet.clone()).collect();
+    let source = patch::XlsbSourceState::capture(pkg, &sheets).map_err(crate::Error::Xlsb)?;
+    Ok((data, source))
 }
 
 #[cfg(test)]

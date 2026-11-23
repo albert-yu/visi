@@ -46,6 +46,7 @@ fn run_macro(
 #[pymodule]
 fn visi_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<workbook::Workbook>()?;
+    m.add_class::<workbook::IncrementalFile>()?;
     m.add_class::<value::CellError>()?;
     m.add_function(wrap_pyfunction!(eval_file, m)?)?;
     m.add_function(wrap_pyfunction!(check_syntax, m)?)?;

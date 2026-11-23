@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::{Seek, Write};
 
 use crate::core::chart::Chart;
 use crate::core::engine::{
@@ -7,7 +8,7 @@ use crate::core::engine::{
 use crate::core::opc::{
     CT_CHART, CT_COMMENTS, CT_DRAWING, CT_PIVOT_CACHE_DEF, CT_PIVOT_CACHE_RECORDS, CT_PIVOT_TABLE,
     CT_SHARED_STRINGS, CT_TABLE, CT_VBA_PROJECT, CT_WORKBOOK, CT_WORKBOOK_MACRO_ENABLED,
-    CT_WORKSHEET, OpcPackage, REL_CHART, REL_COMMENTS, REL_DRAWING, REL_HYPERLINK,
+    CT_WORKSHEET, OpcPackage, PartDiff, REL_CHART, REL_COMMENTS, REL_DRAWING, REL_HYPERLINK,
     REL_PIVOT_CACHE_DEF, REL_PIVOT_CACHE_RECORDS, REL_PIVOT_TABLE, REL_SHARED_STRINGS, REL_TABLE,
     REL_VBA_PROJECT, REL_WORKSHEET, Relationship, next_rid, rel_type_matches, rels_path_for,
 };
@@ -75,6 +76,14 @@ struct SheetSnapshot {
     tables: Vec<ExcelTable>,
 }
 
+struct PatchedPackage {
+    package: OpcPackage,
+    diff: PartDiff,
+    sheet_parts: Vec<String>,
+    shared_strings_part: Option<String>,
+    styles_part: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct OoxmlSourceState {
     package: OpcPackage,
@@ -139,6 +148,102 @@ impl OoxmlSourceState {
         !sheets.is_empty()
     }
 
+    pub(crate) fn has_pending_changes(
+        &self,
+        sheets: &[Sheet],
+        charts: &[Chart],
+        pivots: &[PivotTable],
+        vba: Option<&VbaProject>,
+        defined_names: &[crate::core::DefinedName],
+    ) -> bool {
+        let topology_changed = sheets.len() != self.sheet_snapshots.len()
+            || sheets
+                .iter()
+                .zip(self.sheet_snapshots.iter())
+                .any(|(s, snap)| s.id != snap.sheet_id);
+        if topology_changed {
+            return true;
+        }
+        let cur_date1904 = sheets.iter().any(|s| s.date1904);
+        if cur_date1904 != self.date1904
+            || defined_names != self.defined_names.as_slice()
+            || pivots != self.pivots.as_slice()
+            || vba != self.vba.as_ref()
+            || charts != self.charts.as_slice()
+        {
+            return true;
+        }
+        for (sheet, snap) in sheets.iter().zip(self.sheet_snapshots.iter()) {
+            if sheet.name != snap.name
+                || sheet.visibility != snap.visibility
+                || sheet.merged_cells != snap.merged_cells
+                || sheet.freeze_pane != snap.freeze_pane
+                || sheet.comments != snap.comments
+                || sheet.hyperlinks != snap.hyperlinks
+                || sheet.data_validations != snap.data_validations
+                || sheet.conditional_formats != snap.conditional_formats
+                || sheet.tables != snap.tables
+                || snapshot_cells(sheet) != snap.cells
+                || snapshot_col_widths(sheet) != snap.column_widths
+                || snapshot_hidden_cols(sheet) != snap.hidden_cols
+                || snapshot_row_heights(sheet) != snap.row_heights
+                || snapshot_hidden_rows(sheet) != snap.hidden_rows
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn write_to<W: Write + Seek>(&self, writer: W) -> Result<W, String> {
+        self.package.write_to(writer)
+    }
+
+    pub(crate) fn apply_patch(
+        &mut self,
+        sheets: &[Sheet],
+        charts: &[Chart],
+        pivots: &[PivotTable],
+        vba: Option<&VbaProject>,
+        defined_names: &[crate::core::DefinedName],
+    ) -> Result<PartDiff, String> {
+        if !self.has_pending_changes(sheets, charts, pivots, vba, defined_names) {
+            return Ok(PartDiff::default());
+        }
+        let patched = self.build_patched_package(sheets, charts, pivots, vba, defined_names)?;
+        let mut new_snapshots = Vec::with_capacity(sheets.len());
+        for (sheet, part_path) in sheets.iter().zip(patched.sheet_parts) {
+            new_snapshots.push(SheetSnapshot {
+                sheet_id: sheet.id,
+                name: sheet.name.clone(),
+                visibility: sheet.visibility,
+                part_path,
+                cells: snapshot_cells(sheet),
+                column_widths: snapshot_col_widths(sheet),
+                hidden_cols: snapshot_hidden_cols(sheet),
+                row_heights: snapshot_row_heights(sheet),
+                hidden_rows: snapshot_hidden_rows(sheet),
+                merged_cells: sheet.merged_cells.clone(),
+                freeze_pane: sheet.freeze_pane,
+                comments: sheet.comments.clone(),
+                hyperlinks: sheet.hyperlinks.clone(),
+                data_validations: sheet.data_validations.clone(),
+                conditional_formats: sheet.conditional_formats.clone(),
+                tables: sheet.tables.clone(),
+            });
+        }
+        self.package = patched.package;
+        self.date1904 = sheets.iter().any(|s| s.date1904);
+        self.defined_names = defined_names.to_vec();
+        self.shared_strings_part = patched.shared_strings_part;
+        self.styles_part = patched.styles_part;
+        self.sheet_snapshots = new_snapshots;
+        self.charts = charts.to_vec();
+        self.pivots = pivots.to_vec();
+        self.vba = vba.cloned();
+        Ok(patched.diff)
+    }
+
     pub(crate) fn patch_to_bytes(
         &self,
         sheets: &[Sheet],
@@ -147,7 +252,20 @@ impl OoxmlSourceState {
         vba: Option<&VbaProject>,
         defined_names: &[crate::core::DefinedName],
     ) -> Result<Vec<u8>, String> {
+        let patched = self.build_patched_package(sheets, charts, pivots, vba, defined_names)?;
+        patched.package.to_bytes()
+    }
+
+    fn build_patched_package(
+        &self,
+        sheets: &[Sheet],
+        charts: &[Chart],
+        pivots: &[PivotTable],
+        vba: Option<&VbaProject>,
+        defined_names: &[crate::core::DefinedName],
+    ) -> Result<PatchedPackage, String> {
         let mut pkg = self.package.clone();
+        pkg.start_tracking();
 
         let snap_by_id: HashMap<u64, (usize, &SheetSnapshot)> = self
             .sheet_snapshots
@@ -561,6 +679,7 @@ impl OoxmlSourceState {
             pkg.set_part(&snap.part_path, doc.to_xml_string().into_bytes());
         }
 
+        let mut next_sst_part = self.shared_strings_part.clone();
         if let Some(sst) = sst_patcher
             && sst.dirty
         {
@@ -570,6 +689,7 @@ impl OoxmlSourceState {
                 .unwrap_or_else(|| "xl/sharedStrings.xml".to_string());
             let had_part = pkg.has_part(&sst_part);
             pkg.set_part(&sst_part, sst.doc.to_xml_string().into_bytes());
+            next_sst_part = Some(sst_part.clone());
             if !had_part {
                 let mut ct = pkg.read_content_types();
                 ct.set_override(&sst_part, CT_SHARED_STRINGS);
@@ -592,6 +712,7 @@ impl OoxmlSourceState {
             }
         }
 
+        let mut next_styles_part = self.styles_part.clone();
         if let Some(st) = styles_patcher
             && st.dirty
         {
@@ -600,6 +721,7 @@ impl OoxmlSourceState {
                 .clone()
                 .unwrap_or_else(|| "xl/styles.xml".to_string());
             pkg.set_part(&styles_part, st.doc.to_xml_string().into_bytes());
+            next_styles_part = Some(styles_part);
         }
 
         if any_formula_changed {
@@ -647,7 +769,27 @@ impl OoxmlSourceState {
             patch_vba(&mut pkg, &self.workbook_part, sheets, vba)?;
         }
 
-        pkg.to_bytes()
+        let sheet_parts: Vec<String> = sheets
+            .iter()
+            .map(|sheet| {
+                if let Some(&(_, snap)) = snap_by_id.get(&sheet.id) {
+                    snap.part_path.clone()
+                } else if let Some((_, new_part)) = added_sheet_info.get(&sheet.id) {
+                    new_part.clone()
+                } else {
+                    String::new()
+                }
+            })
+            .collect();
+
+        let diff = pkg.finish_tracking();
+        Ok(PatchedPackage {
+            package: pkg,
+            diff,
+            sheet_parts,
+            shared_strings_part: next_sst_part,
+            styles_part: next_styles_part,
+        })
     }
 }
 

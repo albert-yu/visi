@@ -20,7 +20,10 @@ pub type ImportedWorkbookData = (
 );
 
 #[doc = "An Excel workbook package format supported for output."]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum WorkbookFormat {
     #[doc = "The XML-based `.xlsx` package format."]
     #[default]
@@ -65,10 +68,10 @@ impl FromStr for WorkbookFormat {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "xlsx" => Ok(Self::Xlsx),
+            "xlsx" | "xlsm" => Ok(Self::Xlsx),
             "xlsb" => Ok(Self::Xlsb),
             other => Err(crate::Error::InvalidArgument(format!(
-                "unsupported workbook format '{other}'; expected xlsx or xlsb"
+                "unsupported workbook format '{other}'; expected xlsx, xlsm, or xlsb"
             ))),
         }
     }

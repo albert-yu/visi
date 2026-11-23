@@ -38,6 +38,7 @@ impl From<Wrapped> for JsValue {
             CoreError::EmptyWorkbook => "EmptyWorkbookError",
             CoreError::LastSheetInWorkbook => "LastSheetError",
             CoreError::DocumentModuleExists => "DocumentModuleExistsError",
+            CoreError::Io(_) => "IoError",
             _ => "VisiError",
         };
 

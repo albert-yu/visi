@@ -136,6 +136,7 @@ impl From<Wrapped> for PyErr {
             CoreError::EmptyWorkbook => PyErr::new::<EmptyWorkbookError, _>((msg,)),
             CoreError::LastSheetInWorkbook => PyErr::new::<LastSheetError, _>((msg,)),
             CoreError::DocumentModuleExists => PyErr::new::<DocumentModuleExistsError, _>((msg,)),
+            CoreError::Io(_) => PyErr::new::<pyo3::exceptions::PyOSError, _>((msg,)),
             _ => PyErr::new::<VisiError, _>((msg,)),
         };
 

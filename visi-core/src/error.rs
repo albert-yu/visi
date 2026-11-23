@@ -113,6 +113,8 @@ pub enum Error {
     },
 
     Eval(EngineError),
+
+    Io(String),
 }
 
 impl Error {
@@ -187,6 +189,7 @@ impl std::fmt::Display for Error {
                 None => write!(f, "line {line}, column {column}: {message}"),
             },
             Error::Eval(err) => write!(f, "evaluation error: {err}"),
+            Error::Io(msg) => write!(f, "I/O error: {msg}"),
         }
     }
 }
@@ -203,6 +206,12 @@ impl std::error::Error for Error {
 impl From<EngineError> for Error {
     fn from(err: EngineError) -> Self {
         Error::Eval(err)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::Io(err.to_string())
     }
 }
 

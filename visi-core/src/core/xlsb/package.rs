@@ -38,21 +38,7 @@ fn workbook_relationships(sheet_count: usize) -> String {
     xml
 }
 
-fn add_file(
-    writer: &mut zip::ZipWriter<Cursor<Vec<u8>>>,
-    name: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .compression_level(Some(6));
-    writer
-        .start_file(name, options)
-        .map_err(|error| error.to_string())?;
-    writer.write_all(bytes).map_err(|error| error.to_string())
-}
-
-pub(crate) fn write(sheets: &[Sheet]) -> Result<Vec<u8>, String> {
+pub(crate) fn build_package(sheets: &[Sheet]) -> Result<crate::core::opc::OpcPackage, String> {
     if sheets.is_empty() {
         return Err("cannot write an XLSB workbook without worksheets".to_string());
     }
@@ -65,41 +51,32 @@ pub(crate) fn write(sheets: &[Sheet]) -> Result<Vec<u8>, String> {
         .iter()
         .map(|sheet| sheet.name.clone())
         .collect::<Vec<_>>();
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    add_file(
-        &mut writer,
+    let mut pkg = crate::core::opc::OpcPackage::new();
+    pkg.set_part(
         "[Content_Types].xml",
-        content_types(sheets.len()).as_bytes(),
-    )?;
-    add_file(&mut writer, "_rels/.rels", ROOT_RELS.as_bytes())?;
-    add_file(&mut writer, "docProps/core.xml", CORE_XML.as_bytes())?;
-    add_file(&mut writer, "docProps/app.xml", APP_XML.as_bytes())?;
-    add_file(
-        &mut writer,
-        "xl/workbook.bin",
-        &super::workbook::build(&names),
-    )?;
-    add_file(
-        &mut writer,
+        content_types(sheets.len()).into_bytes(),
+    );
+    pkg.set_part("_rels/.rels", ROOT_RELS.as_bytes().to_vec());
+    pkg.set_part("docProps/core.xml", CORE_XML.as_bytes().to_vec());
+    pkg.set_part("docProps/app.xml", APP_XML.as_bytes().to_vec());
+    pkg.set_part("xl/workbook.bin", super::workbook::build(&names));
+    pkg.set_part(
         "xl/_rels/workbook.bin.rels",
-        workbook_relationships(sheets.len()).as_bytes(),
-    )?;
-    add_file(&mut writer, "xl/styles.bin", &super::styles::build())?;
-    add_file(&mut writer, "xl/sharedStrings.bin", &strings.encode())?;
-    for (index, part) in worksheet_parts.iter().enumerate() {
-        add_file(
-            &mut writer,
-            &format!("xl/worksheets/sheet{}.bin", index + 1),
-            part,
-        )?;
+        workbook_relationships(sheets.len()).into_bytes(),
+    );
+    pkg.set_part("xl/styles.bin", super::styles::build());
+    pkg.set_part("xl/sharedStrings.bin", strings.encode());
+    for (index, part) in worksheet_parts.into_iter().enumerate() {
+        pkg.set_part(format!("xl/worksheets/sheet{}.bin", index + 1), part);
     }
-    writer
-        .finish()
-        .map_err(|error| error.to_string())
-        .map(Cursor::into_inner)
+    Ok(pkg)
 }
 
-fn read_varint(data: &[u8], offset: &mut usize) -> Option<u32> {
+pub(crate) fn write(sheets: &[Sheet]) -> Result<Vec<u8>, String> {
+    build_package(sheets)?.to_bytes()
+}
+
+pub(crate) fn read_varint(data: &[u8], offset: &mut usize) -> Option<u32> {
     let mut value = 0u32;
     let mut shift = 0;
     loop {
@@ -319,7 +296,7 @@ fn read_wide_string(data: &[u8], offset: &mut usize) -> Option<String> {
     String::from_utf16(&encoded).ok()
 }
 
-fn workbook_sheets(data: &[u8]) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn workbook_sheets(data: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut offset = 0usize;
     let mut sheets = Vec::new();
     while offset < data.len() {

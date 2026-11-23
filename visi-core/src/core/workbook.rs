@@ -5,7 +5,7 @@ use crate::core::formula::CompiledFormula;
 use crate::core::grid_edit::{Axis, GridEdit};
 use crate::core::locale::Locale;
 use crate::core::parser::col_idx_to_letters;
-use crate::core::xlsb::{export_xlsb_data, import_xlsb_data};
+use crate::core::xlsb::{export_xlsb_data, import_xlsb_with_source};
 use crate::core::xlsx::import_xlsx_with_source;
 use crate::core::{
     ExcelTable, PivotAggregation, PivotArea, PivotField, PivotFilterField, PivotGrid, PivotSource,
@@ -17,6 +17,11 @@ use crate::core::{
 };
 use crate::{Error, ObjectKind};
 use std::collections::{HashMap, HashSet};
+use std::io::{Cursor, Seek, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::ops::{Deref, DerefMut};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
 
 fn resize_table_columns(
     table: &mut ExcelTable,
@@ -83,6 +88,41 @@ pub struct DefinedName {
     pub comment: Option<String>,
 }
 
+#[doc = "Summary of an incremental workbook write."]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IncrementalWriteReport {
+    #[doc = "The package format written."]
+    pub format: WorkbookFormat,
+    #[doc = "Whether a full package export was required instead of a surgical patch."]
+    pub full_rewrite: bool,
+    #[doc = "Package part paths modified in place during this write."]
+    pub modified_parts: Vec<String>,
+    #[doc = "Package part paths newly added during this write."]
+    pub added_parts: Vec<String>,
+    #[doc = "Package part paths removed during this write."]
+    pub removed_parts: Vec<String>,
+}
+
+impl IncrementalWriteReport {
+    #[doc = "Returns whether any package parts were written or rewritten."]
+    pub fn has_changes(&self) -> bool {
+        self.full_rewrite
+            || !self.modified_parts.is_empty()
+            || !self.added_parts.is_empty()
+            || !self.removed_parts.is_empty()
+    }
+
+    #[doc = "Returns the total number of modified, added, and removed package parts."]
+    pub fn changed_part_count(&self) -> usize {
+        self.modified_parts.len() + self.added_parts.len() + self.removed_parts.len()
+    }
+}
+
+pub(crate) enum SourcePackage {
+    Xlsx(crate::core::xlsx::patch::OoxmlSourceState),
+    Xlsb(crate::core::xlsb::patch::XlsbSourceState),
+}
+
 #[derive(Default)]
 pub struct WorkbookManager {
     pub sheets: Vec<Sheet>,
@@ -99,7 +139,7 @@ pub struct WorkbookManager {
 
     pub date1904: bool,
 
-    pub(crate) source_package: Option<crate::core::xlsx::patch::OoxmlSourceState>,
+    pub(crate) source_package: Option<SourcePackage>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -235,13 +275,12 @@ impl WorkbookManager {
             match detect_workbook_format(buffer)? {
                 WorkbookFormat::Xlsx => {
                     let (data, defined_names, source) = import_xlsx_with_source(buffer)?;
-                    (data, defined_names, Some(source))
+                    (data, defined_names, Some(SourcePackage::Xlsx(source)))
                 }
-                WorkbookFormat::Xlsb => (
-                    import_xlsb_data(buffer, &[], |_, _, _| {})?,
-                    Vec::new(),
-                    None,
-                ),
+                WorkbookFormat::Xlsb => {
+                    let (data, source) = import_xlsb_with_source(buffer)?;
+                    (data, Vec::new(), Some(SourcePackage::Xlsb(source)))
+                }
             };
 
         let locale = Locale::default();
@@ -280,6 +319,30 @@ impl WorkbookManager {
         self.defined_names.len() != before
     }
 
+    fn validate_xlsb_export(&self) -> crate::Result<()> {
+        if !self.charts.is_empty() {
+            return Err(Error::Xlsb(
+                "charts are not supported in XLSB output".to_string(),
+            ));
+        }
+        if !self.pivot_tables.is_empty() {
+            return Err(Error::Xlsb(
+                "pivot tables are not supported in XLSB output".to_string(),
+            ));
+        }
+        if self.vba_project.is_some() {
+            return Err(Error::Xlsb(
+                "VBA projects are not supported in XLSB output".to_string(),
+            ));
+        }
+        if self.sheets.iter().any(|sheet| !sheet.tables.is_empty()) {
+            return Err(Error::Xlsb(
+                "Excel tables are not supported in XLSB output".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn save_bytes(&self) -> crate::Result<Vec<u8>> {
         self.save_bytes_as(WorkbookFormat::Xlsx)
     }
@@ -287,7 +350,7 @@ impl WorkbookManager {
     pub fn save_bytes_as(&self, format: WorkbookFormat) -> crate::Result<Vec<u8>> {
         match format {
             WorkbookFormat::Xlsx => {
-                if let Some(ref source) = self.source_package
+                if let Some(SourcePackage::Xlsx(ref source)) = self.source_package
                     && source.can_patch_surgically(&self.sheets)
                 {
                     return source
@@ -309,29 +372,161 @@ impl WorkbookManager {
                 )
             }
             WorkbookFormat::Xlsb => {
-                if !self.charts.is_empty() {
-                    return Err(Error::Xlsb(
-                        "charts are not supported in XLSB output".to_string(),
-                    ));
-                }
-                if !self.pivot_tables.is_empty() {
-                    return Err(Error::Xlsb(
-                        "pivot tables are not supported in XLSB output".to_string(),
-                    ));
-                }
-                if self.vba_project.is_some() {
-                    return Err(Error::Xlsb(
-                        "VBA projects are not supported in XLSB output".to_string(),
-                    ));
-                }
-                if self.sheets.iter().any(|sheet| !sheet.tables.is_empty()) {
-                    return Err(Error::Xlsb(
-                        "Excel tables are not supported in XLSB output".to_string(),
-                    ));
+                self.validate_xlsb_export()?;
+                if let Some(SourcePackage::Xlsb(ref source)) = self.source_package
+                    && source.can_patch_surgically(&self.sheets)
+                {
+                    return source.patch_to_bytes(&self.sheets).map_err(Error::Xlsb);
                 }
                 export_xlsb_data(&self.sheets)
             }
         }
+    }
+
+    pub fn has_incremental_baseline(&self) -> bool {
+        self.source_package.is_some()
+    }
+
+    pub fn baseline_format(&self) -> Option<WorkbookFormat> {
+        match self.source_package.as_ref()? {
+            SourcePackage::Xlsx(_) => Some(WorkbookFormat::Xlsx),
+            SourcePackage::Xlsb(_) => Some(WorkbookFormat::Xlsb),
+        }
+    }
+
+    pub fn has_pending_changes(&self) -> bool {
+        match self.source_package.as_ref() {
+            None => true,
+            Some(SourcePackage::Xlsx(source)) => source.has_pending_changes(
+                &self.sheets,
+                &self.charts,
+                &self.pivot_tables,
+                self.vba_project.as_ref(),
+                &self.defined_names,
+            ),
+            Some(SourcePackage::Xlsb(source)) => source.has_pending_changes(&self.sheets),
+        }
+    }
+
+    pub fn write_incremental<W: Write + Seek>(
+        &mut self,
+        writer: W,
+        format: WorkbookFormat,
+    ) -> crate::Result<IncrementalWriteReport> {
+        match format {
+            WorkbookFormat::Xlsx => {
+                if let Some(SourcePackage::Xlsx(ref mut source)) = self.source_package
+                    && source.can_patch_surgically(&self.sheets)
+                {
+                    let diff = source
+                        .apply_patch(
+                            &self.sheets,
+                            &self.charts,
+                            &self.pivot_tables,
+                            self.vba_project.as_ref(),
+                            &self.defined_names,
+                        )
+                        .map_err(Error::Xlsx)?;
+                    source.write_to(writer).map_err(Error::Xlsx)?;
+                    return Ok(IncrementalWriteReport {
+                        format,
+                        full_rewrite: false,
+                        modified_parts: diff.modified,
+                        added_parts: diff.added,
+                        removed_parts: diff.removed,
+                    });
+                }
+                let bytes = crate::core::xlsx::export_xlsx_data_with_defined_names(
+                    &self.sheets,
+                    &self.charts,
+                    &self.pivot_tables,
+                    self.vba_project.as_ref(),
+                    &self.defined_names,
+                )?;
+                let source = crate::core::xlsx::capture_source_state_from_bytes(
+                    &bytes,
+                    &self.sheets,
+                    &self.charts,
+                    &self.pivot_tables,
+                    self.vba_project.as_ref(),
+                )?;
+                let mut writer = writer;
+                writer.write_all(&bytes)?;
+                self.source_package = Some(SourcePackage::Xlsx(source));
+                Ok(IncrementalWriteReport {
+                    format,
+                    full_rewrite: true,
+                    modified_parts: Vec::new(),
+                    added_parts: Vec::new(),
+                    removed_parts: Vec::new(),
+                })
+            }
+            WorkbookFormat::Xlsb => {
+                self.validate_xlsb_export()?;
+                if let Some(SourcePackage::Xlsb(ref mut source)) = self.source_package
+                    && source.can_patch_surgically(&self.sheets)
+                {
+                    let diff = source.apply_patch(&self.sheets).map_err(Error::Xlsb)?;
+                    source.write_to(writer).map_err(Error::Xlsb)?;
+                    return Ok(IncrementalWriteReport {
+                        format,
+                        full_rewrite: false,
+                        modified_parts: diff.modified,
+                        added_parts: diff.added,
+                        removed_parts: diff.removed,
+                    });
+                }
+                let pkg = crate::core::xlsb::export_xlsb_package(&self.sheets)?;
+                let source = crate::core::xlsb::patch::XlsbSourceState::capture(pkg, &self.sheets)
+                    .map_err(Error::Xlsb)?;
+                source.write_to(writer).map_err(Error::Xlsb)?;
+                self.source_package = Some(SourcePackage::Xlsb(source));
+                Ok(IncrementalWriteReport {
+                    format,
+                    full_rewrite: true,
+                    modified_parts: Vec::new(),
+                    added_parts: Vec::new(),
+                    removed_parts: Vec::new(),
+                })
+            }
+        }
+    }
+
+    pub fn save_incremental_bytes(
+        &mut self,
+        format: WorkbookFormat,
+    ) -> crate::Result<(Vec<u8>, IncrementalWriteReport)> {
+        let mut cursor = Cursor::new(Vec::new());
+        let report = self.write_incremental(&mut cursor, format)?;
+        Ok((cursor.into_inner(), report))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_path(path: impl AsRef<Path>) -> crate::Result<Self> {
+        let bytes = std::fs::read(path.as_ref())?;
+        Self::load_bytes(&bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_incremental_to_path(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> crate::Result<IncrementalWriteReport> {
+        let path = path.as_ref();
+        let format = WorkbookFormat::from_path(path).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                path.display()
+            ))
+        })?;
+        let (bytes, report) = self.save_incremental_bytes(format)?;
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, bytes)?;
+        Ok(report)
     }
 
     pub fn from_csv_bytes(buffer: &[u8], sheet_name: &str) -> crate::Result<Self> {
@@ -1825,6 +2020,127 @@ fn collect_called_udfs(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[doc = "File-backed workbook session supporting incremental flushes to `.xlsx`, `.xlsm`, and `.xlsb`."]
+pub struct IncrementalFile {
+    path: PathBuf,
+    format: WorkbookFormat,
+    workbook: WorkbookManager,
+    synced_to_path: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl IncrementalFile {
+    #[doc = "Opens an existing workbook file and captures its baseline for incremental writes."]
+    pub fn open(path: impl AsRef<Path>) -> crate::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let format = WorkbookFormat::from_path(&path).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                path.display()
+            ))
+        })?;
+        let workbook = WorkbookManager::load_path(&path)?;
+        Ok(Self {
+            path,
+            format,
+            workbook,
+            synced_to_path: true,
+        })
+    }
+
+    #[doc = "Creates a new empty workbook session bound to a target file path."]
+    pub fn create(path: impl AsRef<Path>) -> crate::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let format = WorkbookFormat::from_path(&path).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "cannot infer workbook format from '{}'; use a .xlsx, .xlsm, or .xlsb extension",
+                path.display()
+            ))
+        })?;
+        let workbook = WorkbookManager::new_empty()?;
+        Ok(Self {
+            path,
+            format,
+            workbook,
+            synced_to_path: false,
+        })
+    }
+
+    #[doc = "Opens the file if it exists, or creates a new empty workbook session bound to the path."]
+    pub fn open_or_create(path: impl AsRef<Path>) -> crate::Result<Self> {
+        if path.as_ref().exists() {
+            Self::open(path)
+        } else {
+            Self::create(path)
+        }
+    }
+
+    #[doc = "Returns the bound file path."]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[doc = "Returns the target workbook format inferred from the bound file path."]
+    pub fn format(&self) -> WorkbookFormat {
+        self.format
+    }
+
+    #[doc = "Returns a shared reference to the underlying workbook."]
+    pub fn workbook(&self) -> &WorkbookManager {
+        &self.workbook
+    }
+
+    #[doc = "Returns a mutable reference to the underlying workbook."]
+    pub fn workbook_mut(&mut self) -> &mut WorkbookManager {
+        &mut self.workbook
+    }
+
+    #[doc = "Returns whether there are unflushed changes for the bound file."]
+    pub fn has_pending_changes(&self) -> bool {
+        !self.synced_to_path
+            || self.workbook.baseline_format() != Some(self.format)
+            || self.workbook.has_pending_changes()
+    }
+
+    #[doc = "Flushes pending changes incrementally to the bound file path, skipping I/O when clean."]
+    pub fn flush(&mut self) -> crate::Result<IncrementalWriteReport> {
+        if !self.has_pending_changes() {
+            return Ok(IncrementalWriteReport {
+                format: self.format,
+                full_rewrite: false,
+                modified_parts: Vec::new(),
+                added_parts: Vec::new(),
+                removed_parts: Vec::new(),
+            });
+        }
+        let report = self.workbook.save_incremental_to_path(&self.path)?;
+        self.synced_to_path = true;
+        Ok(report)
+    }
+
+    #[doc = "Consumes the session and returns the underlying workbook."]
+    pub fn into_inner(self) -> WorkbookManager {
+        self.workbook
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Deref for IncrementalFile {
+    type Target = WorkbookManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.workbook
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DerefMut for IncrementalFile {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.workbook
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1957,5 +2273,302 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn incremental_xlsx_advances_baseline_and_patches_only_dirty_sheets() {
+        let mut wb = workbook_with_sheets(&["Alpha", "Beta"]);
+        wb.set_cell(0, 0, 0, "10".to_string());
+        wb.set_cell(1, 0, 0, "20".to_string());
+        assert!(!wb.has_incremental_baseline());
+        assert!(wb.has_pending_changes());
+
+        let (bytes1, report1) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(report1.full_rewrite);
+        assert!(report1.has_changes());
+        assert_eq!(wb.baseline_format(), Some(WorkbookFormat::Xlsx));
+        assert!(!wb.has_pending_changes());
+        assert!(!bytes1.is_empty());
+
+        let (_, report_noop) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(!report_noop.full_rewrite);
+        assert!(!report_noop.has_changes());
+        assert_eq!(report_noop.changed_part_count(), 0);
+
+        wb.set_cell(1, 0, 0, "25".to_string());
+        assert!(wb.has_pending_changes());
+        let (_, report2) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(!report2.full_rewrite);
+        assert!(
+            report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet2.xml")
+        );
+        assert!(
+            !report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet1.xml")
+        );
+        assert!(!wb.has_pending_changes());
+
+        wb.set_cell(0, 1, 0, "hello".to_string());
+        let (bytes3, report3) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(!report3.full_rewrite);
+        assert!(
+            report3
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet1.xml")
+        );
+        assert!(
+            !report3
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet2.xml")
+        );
+
+        let reloaded = WorkbookManager::load_bytes(&bytes3).unwrap();
+        assert_eq!(
+            reloaded.sheets[0].get_src(&CellRef::new(0, 0)).unwrap(),
+            "10"
+        );
+        assert_eq!(
+            reloaded.sheets[0].get_src(&CellRef::new(1, 0)).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            reloaded.sheets[1].get_src(&CellRef::new(0, 0)).unwrap(),
+            "25"
+        );
+    }
+
+    #[test]
+    fn incremental_xlsb_patches_only_dirty_sheets_and_topology() {
+        let mut wb = workbook_with_sheets(&["First", "Second"]);
+        wb.set_cell(0, 0, 0, "100".to_string());
+        wb.set_cell(0, 1, 0, "kept".to_string());
+        wb.set_cell(1, 0, 0, "200".to_string());
+        wb.evaluate().unwrap();
+
+        let (_, report1) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(report1.full_rewrite);
+        assert_eq!(wb.baseline_format(), Some(WorkbookFormat::Xlsb));
+        assert!(!wb.has_pending_changes());
+
+        let (_, report_noop) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(!report_noop.full_rewrite);
+        assert!(!report_noop.has_changes());
+
+        wb.set_cell(1, 0, 0, "250".to_string());
+        wb.set_cell(1, 1, 0, "added_str".to_string());
+        wb.evaluate().unwrap();
+        let (_, report2) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(!report2.full_rewrite);
+        assert!(
+            report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet2.bin")
+        );
+        assert!(
+            report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/sharedStrings.bin")
+        );
+        assert!(
+            !report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet1.bin")
+        );
+        assert!(
+            !report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/workbook.bin")
+        );
+
+        wb.add_sheet("Third").unwrap();
+        wb.set_cell(2, 0, 0, "300".to_string());
+        wb.evaluate().unwrap();
+        let (_, report3) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(!report3.full_rewrite);
+        assert!(
+            report3
+                .added_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet3.bin")
+        );
+        assert!(
+            report3
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/workbook.bin")
+        );
+
+        wb.rename_sheet("First", "RenamedFirst").unwrap();
+        wb.delete_sheet("Second").unwrap();
+        let (bytes4, report4) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(!report4.full_rewrite);
+        assert!(
+            report4
+                .removed_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet2.bin")
+        );
+        assert!(
+            report4
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/workbook.bin")
+        );
+
+        let reloaded = WorkbookManager::load_bytes(&bytes4).unwrap();
+        assert_eq!(reloaded.sheets.len(), 2);
+        assert_eq!(reloaded.sheets[0].name, "RenamedFirst");
+        assert_eq!(reloaded.sheets[1].name, "Third");
+        assert_eq!(
+            reloaded.sheets[0].get_src(&CellRef::new(0, 0)).unwrap(),
+            "100"
+        );
+        assert_eq!(
+            reloaded.sheets[0].get_src(&CellRef::new(1, 0)).unwrap(),
+            "kept"
+        );
+        assert_eq!(
+            reloaded.sheets[1].get_src(&CellRef::new(0, 0)).unwrap(),
+            "300"
+        );
+        assert_eq!(reloaded.baseline_format(), Some(WorkbookFormat::Xlsb));
+        assert!(!reloaded.has_pending_changes());
+    }
+
+    #[test]
+    fn incremental_xlsm_preserves_vba_without_rewriting_vba_part() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "1".to_string());
+        wb.add_vba_module(
+            "Mod1".to_string(),
+            VbaModuleKind::Standard,
+            "Sub Hello()\nEnd Sub\n".to_string(),
+            None,
+        )
+        .unwrap();
+
+        let (_, report1) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(report1.full_rewrite);
+
+        wb.set_cell(0, 0, 0, "2".to_string());
+        let (bytes2, report2) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(!report2.full_rewrite);
+        assert!(
+            report2
+                .modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet1.xml")
+        );
+        assert!(
+            !report2
+                .modified_parts
+                .iter()
+                .any(|p| p.contains("vbaProject"))
+        );
+
+        let reloaded = WorkbookManager::load_bytes(&bytes2).unwrap();
+        assert_eq!(
+            reloaded.sheets[0].get_src(&CellRef::new(0, 0)).unwrap(),
+            "2"
+        );
+        assert!(reloaded.vba_project.is_some());
+    }
+
+    #[test]
+    fn incremental_cross_format_switch_rebuilds_baseline() {
+        let mut wb = WorkbookManager::new_empty().unwrap();
+        wb.set_cell(0, 0, 0, "42".to_string());
+        wb.evaluate().unwrap();
+
+        let (_, r1) = wb.save_incremental_bytes(WorkbookFormat::Xlsx).unwrap();
+        assert!(r1.full_rewrite);
+        assert_eq!(wb.baseline_format(), Some(WorkbookFormat::Xlsx));
+
+        let (_, r2) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(r2.full_rewrite);
+        assert_eq!(wb.baseline_format(), Some(WorkbookFormat::Xlsb));
+
+        wb.set_cell(0, 1, 0, "99".to_string());
+        wb.evaluate().unwrap();
+        let (_, r3) = wb.save_incremental_bytes(WorkbookFormat::Xlsb).unwrap();
+        assert!(!r3.full_rewrite);
+        assert!(
+            r3.modified_parts
+                .iter()
+                .any(|p| p == "xl/worksheets/sheet1.bin")
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn incremental_file_session_supports_xlsx_xlsm_and_xlsb() {
+        let dir =
+            std::env::temp_dir().join(format!("visi_incremental_test_{}", generate_unique_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for ext in ["xlsx", "xlsm", "xlsb"] {
+            let path = dir.join(format!("book.{ext}"));
+            let mut file = IncrementalFile::create(&path).unwrap();
+            assert!(file.has_pending_changes());
+            file.set_cell(0, 0, 0, "10".to_string());
+            if ext == "xlsm" {
+                file.add_vba_module(
+                    "Mod1".to_string(),
+                    VbaModuleKind::Standard,
+                    "Sub Ping()\nEnd Sub\n".to_string(),
+                    None,
+                )
+                .unwrap();
+            }
+            file.evaluate().unwrap();
+
+            let r1 = file.flush().unwrap();
+            assert!(r1.full_rewrite);
+            assert!(!file.has_pending_changes());
+
+            let r_noop = file.flush().unwrap();
+            assert!(!r_noop.full_rewrite);
+            assert!(!r_noop.has_changes());
+
+            file.set_cell(0, 0, 0, "20".to_string());
+            file.evaluate().unwrap();
+            assert!(file.has_pending_changes());
+
+            let r2 = file.flush().unwrap();
+            assert!(!r2.full_rewrite);
+            assert!(r2.has_changes());
+            assert!(!file.has_pending_changes());
+
+            let mut reopened = IncrementalFile::open(&path).unwrap();
+            assert!(!reopened.has_pending_changes());
+            assert_eq!(
+                reopened.sheets[0].get_src(&CellRef::new(0, 0)).unwrap(),
+                "20"
+            );
+            reopened.set_cell(0, 1, 0, "30".to_string());
+            reopened.evaluate().unwrap();
+            let r3 = reopened.flush().unwrap();
+            assert!(!r3.full_rewrite);
+            assert!(r3.has_changes());
+
+            let final_wb = WorkbookManager::load_path(&path).unwrap();
+            assert_eq!(
+                final_wb.sheets[0].get_src(&CellRef::new(1, 0)).unwrap(),
+                "30"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

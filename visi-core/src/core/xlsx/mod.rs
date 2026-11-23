@@ -48,6 +48,21 @@ pub(crate) fn import_xlsx_with_source(
     Ok((data, defined_names, source))
 }
 
+pub(crate) fn capture_source_state_from_bytes(
+    buffer: &[u8],
+    sheets: &[Sheet],
+    charts: &[crate::core::chart::Chart],
+    pivots: &[crate::core::pivot::PivotTable],
+    vba: Option<&crate::core::vba::VbaProject>,
+) -> crate::Result<patch::OoxmlSourceState> {
+    let pkg = OpcPackage::from_bytes(buffer)
+        .map_err(|e| crate::Error::Xlsx(format!("Failed to open Excel file: {e}")))?;
+    let wb = workbook::read_workbook(&pkg).map_err(crate::Error::Xlsx)?;
+    Ok(patch::OoxmlSourceState::capture(
+        pkg, &wb, sheets, charts, pivots, vba,
+    ))
+}
+
 pub(crate) fn import_xlsx_data_raw(
     buffer: &[u8],
     existing_sheets: &[Sheet],
